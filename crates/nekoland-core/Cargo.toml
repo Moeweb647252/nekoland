@@ -1,0 +1,13 @@
+[package]
+name = "nekoland-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bevy_app.workspace = true
+bevy_ecs.workspace = true
+bevy_utils.workspace = true
+calloop.workspace = true
+tracing.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "nekoland-msg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+nekoland-ipc = { path = "../crates/nekoland-ipc" }
+serde_json.workspace = true
+
+[dev-dependencies]
+nekoland = { path = "../nekoland" }
+nekoland-core = { path = "../crates/nekoland-core" }

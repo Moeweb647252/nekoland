@@ -1,0 +1,29 @@
+[package]
+name = "nekoland"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nekoland-backend = { path = "../crates/nekoland-backend" }
+nekoland-config = { path = "../crates/nekoland-config" }
+nekoland-core = { path = "../crates/nekoland-core" }
+nekoland-input = { path = "../crates/nekoland-input" }
+nekoland-ipc = { path = "../crates/nekoland-ipc" }
+nekoland-protocol = { path = "../crates/nekoland-protocol" }
+nekoland-render = { path = "../crates/nekoland-render" }
+nekoland-shell = { path = "../crates/nekoland-shell" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+bevy_ecs.workspace = true
+nekoland-ecs = { path = "../crates/nekoland-ecs" }
+serde.workspace = true
+serde_json.workspace = true
+smithay.workspace = true
+tempfile = "3.26"
+wayland-client = "0.31.10"
+wayland-protocols = { version = "0.32.11", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3.11", features = ["client"] }

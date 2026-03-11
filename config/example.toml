@@ -1,0 +1,36 @@
+default_layout = "floating"
+
+[theme]
+name = "nord-light"
+cursor_theme = "Bibata-Modern-Ice"
+border_color = "#81a1c1"
+background_color = "#e5e9f0"
+
+[input]
+focus_follows_mouse = false
+repeat_rate = 40
+
+[ipc]
+command_history_limit = 128
+
+[commands]
+terminal = "wezterm start --always-new-process"
+launcher = "wofi --show drun"
+power_menu = "wlogout --protocol layer-shell"
+
+[xwayland]
+enabled = true
+
+[[outputs]]
+name = "HDMI-A-1"
+mode = "2560x1440@144"
+scale = 1
+enabled = true
+
+[keybinds.bindings]
+"Super+Return" = "spawn-terminal"
+"Super+Space" = "launcher"
+"Super+P" = "show-power-menu"
+"Super+Shift+Q" = "close-window"
+"Super+1" = "workspace 1"
+"Super+2" = "workspace 2"

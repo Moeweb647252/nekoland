@@ -1,0 +1,35 @@
+default_layout = "floating"
+
+[theme]
+name = "catppuccin-latte"
+cursor_theme = "default"
+border_color = "#5c7cfa"
+background_color = "#f5f7ff"
+
+[input]
+focus_follows_mouse = true
+repeat_rate = 30
+
+[ipc]
+command_history_limit = 64
+
+[startup]
+commands = ["alacritty"]
+
+[commands]
+terminal = "foot"
+launcher = "fuzzel"
+
+[xwayland]
+enabled = true
+
+[[outputs]]
+name = "eDP-1"
+mode = "1920x1080@60"
+scale = 1
+enabled = true
+
+[keybinds.bindings]
+"Super+Return" = "spawn-terminal"
+"Super+Space" = "launcher"
+"Super+Q" = "close-window"

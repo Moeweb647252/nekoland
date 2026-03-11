@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nekoland-core",
+    "crates/nekoland-protocol",
+    "crates/nekoland-ecs",
+    "crates/nekoland-input",
+    "crates/nekoland-shell",
+    "crates/nekoland-render",
+    "crates/nekoland-backend",
+    "crates/nekoland-ipc",
+    "crates/nekoland-config",
+    "nekoland",
+    "nekoland-msg",
+]
+default-members = ["nekoland"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+bevy_app = "0.18"
+bevy_ecs = "0.18"
+bevy_utils = "0.18"
+calloop = "0.14"
+ron = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+slog = "2"
+smithay = { version = "0.7", default-features = false, features = ["backend_winit", "desktop", "wayland_frontend", "xwayland"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"

@@ -1,0 +1,17 @@
+[package]
+name = "nekoland-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bevy_app.workspace = true
+bevy_ecs.workspace = true
+calloop.workspace = true
+nekoland-core = { path = "../nekoland-core" }
+nekoland-ecs = { path = "../nekoland-ecs" }
+nekoland-protocol = { path = "../nekoland-protocol" }
+serde.workspace = true
+smithay.workspace = true
+tracing.workspace = true

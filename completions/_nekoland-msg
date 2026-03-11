@@ -1,0 +1,459 @@
+#compdef nekoland-msg
+
+autoload -U is-at-least
+
+_nekoland-msg() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_nekoland-msg_commands" \
+"*::: :->nekoland-msg" \
+&& ret=0
+    case $state in
+    (nekoland-msg)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:nekoland-msg-command-$line[1]:"
+        case $line[1] in
+            (query)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_nekoland-msg__query_commands" \
+"*::: :->query" \
+&& ret=0
+
+    case $state in
+    (query)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:nekoland-msg-query-command-$line[1]:"
+        case $line[1] in
+            (tree)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(outputs)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(workspaces)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(window)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_nekoland-msg__window_commands" \
+"*::: :->window" \
+&& ret=0
+
+    case $state in
+    (window)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:nekoland-msg-window-command-$line[1]:"
+        case $line[1] in
+            (focus)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':surface_id:_default' \
+&& ret=0
+;;
+(close)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':surface_id:_default' \
+&& ret=0
+;;
+(move)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':surface_id:_default' \
+':x:_default' \
+':y:_default' \
+&& ret=0
+;;
+(resize)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':surface_id:_default' \
+':width:_default' \
+':height:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(popup)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_nekoland-msg__popup_commands" \
+"*::: :->popup" \
+&& ret=0
+
+    case $state in
+    (popup)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:nekoland-msg-popup-command-$line[1]:"
+        case $line[1] in
+            (dismiss)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':surface_id:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(workspace)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_nekoland-msg__workspace_commands" \
+"*::: :->workspace" \
+&& ret=0
+
+    case $state in
+    (workspace)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:nekoland-msg-workspace-command-$line[1]:"
+        case $line[1] in
+            (switch)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':workspace:_default' \
+&& ret=0
+;;
+(create)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':workspace:_default' \
+&& ret=0
+;;
+(destroy)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':workspace:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(output)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_nekoland-msg__output_commands" \
+"*::: :->output" \
+&& ret=0
+
+    case $state in
+    (output)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:nekoland-msg-output-command-$line[1]:"
+        case $line[1] in
+            (enable)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':output:_default' \
+&& ret=0
+;;
+(disable)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':output:_default' \
+&& ret=0
+;;
+(configure)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':output:_default' \
+':mode:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(completion)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':shell:(bash zsh fish)' \
+&& ret=0
+;;
+(subscribe)
+_arguments "${_arguments_options[@]}" : \
+'*--event=[]:EVENTS:_default' \
+'-h[]' \
+'--help[]' \
+'--json[]' \
+'(--jsonl)--pretty[]' \
+'(--pretty)--jsonl[]' \
+'--no-payloads[]' \
+'::topic:(window popup workspace output tree all)' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_nekoland-msg__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:nekoland-msg-help-command-$line[1]:"
+        case $line[1] in
+            (subscribe)
+_arguments "${_arguments_options[@]}" : \
+'--json[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(get_tree)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(get_outputs)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(get_workspaces)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_nekoland-msg_commands] )) ||
+_nekoland-msg_commands() {
+    local commands; commands=(
+'query:' \
+'window:' \
+'popup:' \
+'workspace:' \
+'output:' \
+'completion:' \
+'subscribe:' \
+'help:' \
+'get_tree:' \
+'get_outputs:' \
+'get_workspaces:' \
+    )
+    _describe -t commands 'nekoland-msg commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__completion_commands] )) ||
+_nekoland-msg__completion_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg completion commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__get_outputs_commands] )) ||
+_nekoland-msg__get_outputs_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg get_outputs commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__get_tree_commands] )) ||
+_nekoland-msg__get_tree_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg get_tree commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__get_workspaces_commands] )) ||
+_nekoland-msg__get_workspaces_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg get_workspaces commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__help_commands] )) ||
+_nekoland-msg__help_commands() {
+    local commands; commands=(
+'subscribe:' \
+    )
+    _describe -t commands 'nekoland-msg help commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__help__subscribe_commands] )) ||
+_nekoland-msg__help__subscribe_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg help subscribe commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__output_commands] )) ||
+_nekoland-msg__output_commands() {
+    local commands; commands=(
+'enable:' \
+'disable:' \
+'configure:' \
+    )
+    _describe -t commands 'nekoland-msg output commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__output__configure_commands] )) ||
+_nekoland-msg__output__configure_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg output configure commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__output__disable_commands] )) ||
+_nekoland-msg__output__disable_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg output disable commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__output__enable_commands] )) ||
+_nekoland-msg__output__enable_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg output enable commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__popup_commands] )) ||
+_nekoland-msg__popup_commands() {
+    local commands; commands=(
+'dismiss:' \
+    )
+    _describe -t commands 'nekoland-msg popup commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__popup__dismiss_commands] )) ||
+_nekoland-msg__popup__dismiss_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg popup dismiss commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__query_commands] )) ||
+_nekoland-msg__query_commands() {
+    local commands; commands=(
+'tree:' \
+'outputs:' \
+'workspaces:' \
+    )
+    _describe -t commands 'nekoland-msg query commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__query__outputs_commands] )) ||
+_nekoland-msg__query__outputs_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg query outputs commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__query__tree_commands] )) ||
+_nekoland-msg__query__tree_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg query tree commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__query__workspaces_commands] )) ||
+_nekoland-msg__query__workspaces_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg query workspaces commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__subscribe_commands] )) ||
+_nekoland-msg__subscribe_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg subscribe commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__window_commands] )) ||
+_nekoland-msg__window_commands() {
+    local commands; commands=(
+'focus:' \
+'close:' \
+'move:' \
+'resize:' \
+    )
+    _describe -t commands 'nekoland-msg window commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__window__close_commands] )) ||
+_nekoland-msg__window__close_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg window close commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__window__focus_commands] )) ||
+_nekoland-msg__window__focus_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg window focus commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__window__move_commands] )) ||
+_nekoland-msg__window__move_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg window move commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__window__resize_commands] )) ||
+_nekoland-msg__window__resize_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg window resize commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__workspace_commands] )) ||
+_nekoland-msg__workspace_commands() {
+    local commands; commands=(
+'switch:' \
+'create:' \
+'destroy:' \
+    )
+    _describe -t commands 'nekoland-msg workspace commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__workspace__create_commands] )) ||
+_nekoland-msg__workspace__create_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg workspace create commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__workspace__destroy_commands] )) ||
+_nekoland-msg__workspace__destroy_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg workspace destroy commands' commands "$@"
+}
+(( $+functions[_nekoland-msg__workspace__switch_commands] )) ||
+_nekoland-msg__workspace__switch_commands() {
+    local commands; commands=()
+    _describe -t commands 'nekoland-msg workspace switch commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_nekoland-msg" ]; then
+    _nekoland-msg "$@"
+else
+    compdef _nekoland-msg nekoland-msg
+fi

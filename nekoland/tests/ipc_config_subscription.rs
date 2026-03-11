@@ -1,0 +1,204 @@
+use std::fs;
+use std::io::ErrorKind;
+use std::path::Path;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use nekoland::build_app;
+use nekoland_core::app::RunLoopSettings;
+use nekoland_ipc::commands::ConfigSnapshot;
+use nekoland_ipc::{
+    IpcServerState, IpcSubscription, IpcSubscriptionEvent, SubscriptionTopic, subscribe_to_path,
+};
+
+mod common;
+
+const INITIAL_CONFIG: &str = r##"
+default_layout = "tiling"
+
+[theme]
+name = "latte"
+cursor_theme = "breeze"
+border_color = "#112233"
+background_color = "#f5f5f5"
+
+[input]
+focus_follows_mouse = false
+repeat_rate = 30
+
+[ipc]
+command_history_limit = 7
+
+[commands]
+terminal = "foot"
+
+[xwayland]
+enabled = true
+
+[[outputs]]
+name = "eDP-1"
+mode = "1920x1080@60"
+scale = 1
+enabled = true
+
+[keybinds.bindings]
+"Super+Return" = "spawn-terminal"
+"##;
+
+const RELOADED_CONFIG: &str = r##"
+default_layout = "floating"
+
+[theme]
+name = "frappe"
+cursor_theme = "capitaine"
+border_color = "#445566"
+background_color = "#101010"
+
+[input]
+focus_follows_mouse = true
+repeat_rate = 45
+
+[ipc]
+command_history_limit = 3
+
+[commands]
+terminal = "wezterm start --always-new-process"
+
+[xwayland]
+enabled = false
+
+[[outputs]]
+name = "HDMI-A-1"
+mode = "2560x1440@75"
+scale = 2
+enabled = true
+
+[keybinds.bindings]
+"Super+P" = "show-power-menu"
+"##;
+
+#[test]
+fn config_subscription_reports_hot_reloaded_runtime_config() {
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let runtime_dir = common::RuntimeDirGuard::new("nekoland-config-subscription");
+    let config_path = runtime_dir.path.join("config-subscription.toml");
+    fs::write(&config_path, INITIAL_CONFIG).expect("temporary config should be writable");
+
+    let mut app = build_app(&config_path);
+    app.insert_resource(RunLoopSettings {
+        frame_timeout: Duration::from_millis(1),
+        max_frames: Some(240),
+    });
+
+    let ipc_socket_path = {
+        let world = app.inner().world();
+        let server_state = world
+            .get_resource::<IpcServerState>()
+            .expect("IPC server state should be available immediately after build");
+
+        match (server_state.listening, &server_state.startup_error) {
+            (true, _) => server_state.socket_path.clone(),
+            (false, Some(error)) if error.contains("Operation not permitted") => {
+                eprintln!("skipping config subscription test in restricted environment: {error}");
+                return;
+            }
+            (false, Some(error)) => panic!("IPC startup failed before run: {error}"),
+            (false, None) => panic!("IPC startup produced neither socket nor error"),
+        }
+    };
+
+    let subscription_thread = thread::spawn(move || {
+        wait_for_config_change(
+            &ipc_socket_path,
+            IpcSubscription {
+                topic: SubscriptionTopic::Config,
+                include_payloads: true,
+                events: vec!["config_changed".to_owned()],
+            },
+        )
+    });
+    let rewrite_thread = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(50));
+        fs::write(&config_path, RELOADED_CONFIG).map_err(|error| error.to_string())
+    });
+
+    app.run().expect("nekoland app should complete the configured frame budget");
+
+    rewrite_thread
+        .join()
+        .expect("config rewrite thread should exit cleanly")
+        .expect("config rewrite should succeed");
+
+    let event = match subscription_thread.join().expect("subscription thread should exit cleanly") {
+        Ok(event) => event,
+        Err(common::TestControl::Skip(reason)) => {
+            eprintln!("skipping config subscription test in restricted environment: {reason}");
+            return;
+        }
+        Err(common::TestControl::Fail(reason)) => {
+            panic!("config subscription test failed: {reason}");
+        }
+    };
+
+    assert_eq!(event.topic, SubscriptionTopic::Config);
+    assert_eq!(event.event, "config_changed");
+
+    let payload = event.payload.expect("config subscription should include a payload");
+    let config = serde_json::from_value::<ConfigSnapshot>(payload)
+        .expect("config_changed payload should decode");
+    assert_eq!(config.default_layout, "floating");
+    assert_eq!(config.command_history_limit, 3);
+    assert!(!config.xwayland_enabled);
+    assert_eq!(config.commands.terminal.as_deref(), Some("wezterm start --always-new-process"));
+    assert_eq!(config.outputs.len(), 1);
+    assert_eq!(config.outputs[0].name, "HDMI-A-1");
+    assert_eq!(config.outputs[0].mode, "2560x1440@75");
+    assert_eq!(config.outputs[0].scale, 2);
+    assert!(
+        config.keybindings.contains_key("Super+P"),
+        "config_changed should expose the reloaded keybinding map: {:?}",
+        config.keybindings
+    );
+}
+
+fn wait_for_config_change(
+    socket_path: &Path,
+    subscription: IpcSubscription,
+) -> Result<IpcSubscriptionEvent, common::TestControl> {
+    let mut stream = subscribe_to_path(socket_path, &subscription).map_err(|error| {
+        if ipc_error_is_skippable(&error) {
+            common::TestControl::Skip(error.to_string())
+        } else {
+            common::TestControl::Fail(error.to_string())
+        }
+    })?;
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match stream.read_event() {
+            Ok(event) => return Ok(event),
+            Err(error) if ipc_error_is_retryable(&error) => {
+                if Instant::now() >= deadline {
+                    return Err(common::TestControl::Fail(
+                        "timed out waiting for config_changed".to_owned(),
+                    ));
+                }
+            }
+            Err(error) if ipc_error_is_skippable(&error) => {
+                return Err(common::TestControl::Skip(error.to_string()));
+            }
+            Err(error) => return Err(common::TestControl::Fail(error.to_string())),
+        }
+    }
+}
+
+fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
+    matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+}
+
+fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::PermissionDenied | ErrorKind::WouldBlock | ErrorKind::TimedOut
+    ) || error.raw_os_error() == Some(1)
+}

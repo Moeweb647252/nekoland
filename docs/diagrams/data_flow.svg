@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 120">
+  <rect x="20" y="30" width="140" height="60" rx="12" fill="#e3fafc"/>
+  <rect x="210" y="30" width="140" height="60" rx="12" fill="#fff3bf"/>
+  <rect x="400" y="30" width="140" height="60" rx="12" fill="#d3f9d8"/>
+  <text x="90" y="65" text-anchor="middle" font-family="monospace" font-size="16">protocol</text>
+  <text x="280" y="65" text-anchor="middle" font-family="monospace" font-size="16">ecs</text>
+  <text x="470" y="65" text-anchor="middle" font-family="monospace" font-size="16">systems</text>
+  <path d="M160 60h50" stroke="#343a40" stroke-width="4" fill="none"/>
+  <path d="M350 60h50" stroke="#343a40" stroke-width="4" fill="none"/>
+</svg>
+

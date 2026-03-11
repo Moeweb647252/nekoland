@@ -1,0 +1,24 @@
+name: completions
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify-nekoland-msg-completions:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test nekoland-msg
+        run: cargo test -p nekoland-msg
+
+      - name: Verify generated shell completions
+        run: bash ./tools/generate-completions.sh --check
