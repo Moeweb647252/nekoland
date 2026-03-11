@@ -26,12 +26,21 @@ bevy_app = "0.18"
 bevy_ecs = "0.18"
 bevy_utils = "0.18"
 calloop = "0.14"
-ron = "0.8"
+ron = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 slog = "2"
-smithay = { version = "0.7", default-features = false, features = ["backend_winit", "desktop", "wayland_frontend", "xwayland"] }
-toml = "0.8"
+smithay = { version = "0.7", default-features = false, features = [
+    "backend_drm",
+    "backend_gbm",
+    "backend_udev",
+    "backend_winit",
+    "desktop",
+    "renderer_gl",
+    "wayland_frontend",
+    "xwayland",
+] }
+toml = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

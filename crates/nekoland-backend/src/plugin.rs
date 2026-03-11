@@ -24,6 +24,10 @@ use crate::{
     virtual_output, winit,
 };
 
+use drm::device::SharedDrmState;
+use drm::gbm::SharedGbmState;
+use drm::surface::DrmRenderState;
+
 #[derive(Debug, Clone, Default, Resource)]
 pub struct BackendOutputRegistry {
     pub connected_outputs: Vec<String>,
@@ -57,6 +61,10 @@ impl NekolandPlugin for BackendPlugin {
             .init_resource::<PendingOutputServerRequests>()
             .init_resource::<PendingOutputPresentationEvents>()
             .init_resource::<OutputPresentationState>()
+            // DRM backend shared state (NonSend: raw fd must stay on main thread).
+            .insert_non_send_resource(SharedDrmState::default())
+            .insert_non_send_resource(SharedGbmState::default())
+            .insert_non_send_resource(DrmRenderState::default())
             .add_message::<OutputConnected>()
             .add_message::<OutputDisconnected>()
             .add_systems(
@@ -65,7 +73,7 @@ impl NekolandPlugin for BackendPlugin {
                     detect_backend_system,
                     virtual_output::virtual_backend_system,
                     drm::device::drm_device_system,
-                    drm::surface::drm_surface_system,
+                    drm::surface::drm_present_completion_system,
                     drm::gbm::gbm_allocator_system,
                     winit::backend::winit_backend_system,
                     ensure_primary_output_system,
@@ -73,7 +81,6 @@ impl NekolandPlugin for BackendPlugin {
                     sync_configured_outputs_system,
                     apply_output_server_requests_system,
                     winit::backend::sync_winit_window_system,
-                    drm::surface::drm_present_completion_system,
                     virtual_output::virtual_present_completion_system,
                     winit::backend::winit_present_completion_system,
                     apply_output_presentation_events_system,
@@ -84,6 +91,9 @@ impl NekolandPlugin for BackendPlugin {
                 PresentSchedule,
                 (
                     virtual_output::virtual_output_capture_system,
+                    // DRM and Winit render systems are mutually exclusive at
+                    // runtime — each is gated by SelectedBackend.
+                    drm::surface::drm_render_system,
                     winit::backend::winit_render_system,
                 )
                     .chain(),

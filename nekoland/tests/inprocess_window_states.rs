@@ -245,12 +245,13 @@ fn unmaximize_request_restores_tiled_layout_geometry() {
         "restore maximize should still observe the maximize configure: {summary:?}"
     );
 
-    let (window_state, geometry, _) = snapshot_window_and_output(app);
-    assert_eq!(window_state, WindowState::Tiled);
-    assert_eq!(geometry.x, 0);
-    assert_eq!(geometry.y, 32);
+    let (window_state, geometry, output) = snapshot_window_and_output(app);
+    assert_eq!(window_state, WindowState::Floating);
+    // Toplevel requests are 440x700 in this scenario. Center within the output.
     assert_eq!(geometry.width, 440);
     assert_eq!(geometry.height, 700);
+    assert_eq!(geometry.x, (output.width as i32 - 440) / 2);
+    assert_eq!(geometry.y, (output.height as i32 - 700) / 2);
 }
 
 #[test]
@@ -262,13 +263,12 @@ fn unfullscreen_request_restores_tiled_layout_geometry() {
         summary.surface_configure_count >= 2,
         "restore fullscreen should still observe the fullscreen configure: {summary:?}"
     );
-
-    let (window_state, geometry, _) = snapshot_window_and_output(app);
-    assert_eq!(window_state, WindowState::Tiled);
-    assert_eq!(geometry.x, 0);
-    assert_eq!(geometry.y, 32);
+    let (window_state, geometry, output) = snapshot_window_and_output(app);
+    assert_eq!(window_state, WindowState::Floating);
     assert_eq!(geometry.width, 440);
     assert_eq!(geometry.height, 700);
+    assert_eq!(geometry.x, (output.width as i32 - 440) / 2);
+    assert_eq!(geometry.y, (output.height as i32 - 700) / 2);
 }
 
 #[test]
@@ -370,13 +370,12 @@ fn move_and_resize_requests_with_invalid_serial_are_ignored() {
         summary.interactive_request_serial, None,
         "invalid move+resize scenario should not consume a real pointer serial"
     );
-
-    let (window_state, geometry, _) = snapshot_window_and_output(app);
-    assert_eq!(window_state, WindowState::Tiled);
-    assert_eq!(geometry.x, 0);
-    assert_eq!(geometry.y, 32);
+    let (window_state, geometry, output) = snapshot_window_and_output(app);
+    assert_eq!(window_state, WindowState::Floating);
     assert_eq!(geometry.width, 440);
     assert_eq!(geometry.height, 700);
+    assert_eq!(geometry.x, (output.width as i32 - 440) / 2);
+    assert_eq!(geometry.y, (output.height as i32 - 700) / 2);
 }
 
 #[test]
@@ -875,14 +874,14 @@ fn workspace_switch_dismisses_popups_and_reconfigures_reactivated_toplevels() {
 fn run_scenario(
     scenario: WindowScenario,
 ) -> Option<(nekoland_core::prelude::NekolandApp, ScenarioSummary)> {
-    let _env_lock = common::env_lock()
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poison| poison.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-window-state-runtime");
-    let config_path =
-        common::write_default_config_with_xwayland_disabled(&runtime_dir.path, "window-states.toml");
+    let config_path = common::write_default_config_with_xwayland_disabled(
+        &runtime_dir.path,
+        "window-states.toml",
+    );
 
     let mut app = build_app(config_path);
     app.insert_resource(RunLoopSettings {
@@ -1005,9 +1004,7 @@ fn run_scenario_with_subscription(
     scenario: WindowScenario,
     subscription: IpcSubscription,
 ) -> Option<(nekoland_core::prelude::NekolandApp, ScenarioSummary, Vec<IpcSubscriptionEvent>)> {
-    let _env_lock = common::env_lock()
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poison| poison.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-window-state-runtime");
@@ -1646,8 +1643,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ScenarioClientState {
                     state.maybe_create_toplevel(qh);
                 }
                 "xdg_wm_base" => {
-                    state.wm_base =
-                        Some(registry.bind::<xdg_wm_base::XdgWmBase, _, _>(name, version.min(3), qh, ()));
+                    state.wm_base = Some(registry.bind::<xdg_wm_base::XdgWmBase, _, _>(
+                        name,
+                        version.min(3),
+                        qh,
+                        (),
+                    ));
                     state.maybe_create_toplevel(qh);
                 }
                 "wl_seat" => {
@@ -1745,8 +1746,8 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for ScenarioClientState {
                         .shm
                         .as_ref()
                         .expect("wl_shm should be bound before the toplevel is configured");
-                    let (file, pool, buffer) =
-                        create_test_buffer(shm, qh).expect("window state client should create a wl_shm buffer");
+                    let (file, pool, buffer) = create_test_buffer(shm, qh)
+                        .expect("window state client should create a wl_shm buffer");
                     surface.attach(Some(&buffer), 0, 0);
                     state.toplevel_backing_file = Some(file);
                     state.toplevel_pool = Some(pool);

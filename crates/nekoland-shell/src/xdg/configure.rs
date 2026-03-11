@@ -185,7 +185,9 @@ pub fn configure_sequence_system(
                         continue;
                     }
 
-                    *state = WindowState::Tiled;
+                    // Restore to floating so the window falls back under the
+                    // floating layout engine and is free to be moved/resized.
+                    *state = WindowState::Floating;
                     handled = true;
                     break;
                 }
@@ -229,7 +231,9 @@ pub fn configure_sequence_system(
                         continue;
                     }
 
-                    *state = WindowState::Tiled;
+                    // Restore to floating so the window falls back under the
+                    // floating layout engine and is free to be moved/resized.
+                    *state = WindowState::Floating;
                     handled = true;
                     break;
                 }

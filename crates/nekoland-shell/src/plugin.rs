@@ -39,9 +39,12 @@ impl NekolandPlugin for ShellPlugin {
                     layer::arrange::layer_arrangement_system,
                     layer::arrange::work_area_system,
                     x11::xwayland::xwayland_bridge_system,
+                    // Floating is the active layout strategy.
+                    // tiling_layout_system and stacking_layout_system are not
+                    // yet implemented and are excluded from the schedule.
+                    // See layout/tiling.rs and layout/stacking.rs for the
+                    // extension guide.
                     layout::floating::floating_layout_system,
-                    layout::tiling::tiling_layout_system,
-                    layout::stacking::stacking_layout_system,
                     layout::fullscreen::fullscreen_layout_system,
                     focus::window_focus_request_system,
                     focus::focus_management_system,
