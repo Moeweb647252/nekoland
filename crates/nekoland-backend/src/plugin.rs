@@ -129,6 +129,10 @@ fn ensure_primary_output_system(
     mut pending_output_events: ResMut<PendingOutputEvents>,
     mut seeded: bevy_ecs::prelude::Local<bool>,
 ) {
+    if selected_backend.kind == BackendKind::Drm {
+        return;
+    }
+
     if *seeded || selected_backend.kind == BackendKind::Auto || !existing_outputs.is_empty() {
         return;
     }

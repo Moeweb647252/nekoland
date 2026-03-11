@@ -1,22 +1,25 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy_ecs::prelude::{Local, NonSend, NonSendMut, Query, Res, ResMut};
 use drm_fourcc::DrmFourcc;
-use nekoland_ecs::components::{OutputDevice, OutputProperties};
+use nekoland_ecs::components::{OutputDevice, OutputProperties, SurfaceGeometry, WlSurfaceHandle};
 use nekoland_ecs::resources::{CompositorConfig, PendingOutputPresentationEvents, RenderList};
+use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags};
 use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::renderer::Color32F;
+use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::surface::{
+    WaylandSurfaceRenderElement, render_elements_from_surface_tree,
+};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::drm::control::{Device as ControlDevice, ModeTypeFlags, connector, crtc};
 use smithay::utils::{Clock, Monotonic, Size, Transform};
 
-use crate::plugin::{
-    OutputPresentationRuntime, emit_present_completion_events, emit_present_completion_events_at,
-};
+use crate::plugin::{OutputPresentationRuntime, emit_present_completion_events};
 use crate::traits::{BackendKind, SelectedBackend};
 
 use super::device::{ConnectorInfo, SharedDrmState};
@@ -68,17 +71,23 @@ pub(crate) fn drm_present_completion_system(
 pub(crate) fn drm_render_system(
     selected_backend: Res<SelectedBackend>,
     config: Option<Res<CompositorConfig>>,
-    outputs: Query<(&OutputDevice, &OutputProperties)>,
-    _render_list: Res<RenderList>,
+    mut outputs: Query<(&OutputDevice, &mut OutputProperties)>,
+    surfaces: Query<(&WlSurfaceHandle, &SurfaceGeometry)>,
+    render_list: Res<RenderList>,
+    surface_registry: Option<NonSend<ProtocolSurfaceRegistry>>,
     drm_shared: NonSend<SharedDrmState>,
     gbm_shared: NonSend<SharedGbmState>,
     mut render_state: NonSendMut<DrmRenderState>,
-    mut pending_presentation_events: ResMut<PendingOutputPresentationEvents>,
-    mut presentation_runtime: Local<OutputPresentationRuntime>,
 ) {
     if selected_backend.kind != BackendKind::Drm {
         return;
     }
+
+    let Some(surface_registry) = surface_registry else { return };
+    let geometry_by_surface = surfaces
+        .iter()
+        .map(|(surface, geometry)| (surface.id, geometry.clone()))
+        .collect::<HashMap<_, _>>();
 
     let mut drm_ref = drm_shared.borrow_mut();
     let Some(drm) = drm_ref.as_mut() else { return };
@@ -97,25 +106,30 @@ pub(crate) fn drm_render_system(
         }
     }
 
-    // now_nanos used to be here
-    for (output_device, output_properties) in outputs.iter() {
+    let mut active_connectors = HashSet::new();
+    let DrmRenderState { ref mut renderer, ref mut surfaces } = *render_state;
+    let renderer = renderer.as_mut().expect("initialised above");
+
+    for (output_device, mut output_properties) in outputs.iter_mut() {
         let Some(connector_info) =
             drm.connectors.iter().find(|c| c.name == output_device.name && c.connected).cloned()
         else {
             continue;
         };
 
+        active_connectors.insert(connector_info.name.clone());
+
         // Create surface on first encounter, then look it up.
-        if !render_state.surfaces.contains_key(&connector_info.name) {
+        if !surfaces.contains_key(&connector_info.name) {
             match create_connector_surface(
                 &mut drm.device,
                 &drm.fd,
                 gbm,
                 &connector_info,
-                output_properties,
+                &mut output_properties,
             ) {
                 Ok(state) => {
-                    render_state.surfaces.insert(connector_info.name.clone(), state);
+                    surfaces.insert(connector_info.name.clone(), state);
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -128,17 +142,35 @@ pub(crate) fn drm_render_system(
             }
         }
 
-        let elements: Vec<smithay::backend::renderer::element::solid::SolidColorRenderElement> =
-            vec![];
-        let clear = clear_color(config.as_deref());
-        let now_nanos = monotonic_now_nanos();
-
-        // Destructure to split the mutable borrow of DrmRenderState
-        let DrmRenderState { ref mut renderer, ref mut surfaces } = *render_state;
-        let renderer = renderer.as_mut().expect("initialised above");
         let Some(surface) = surfaces.get_mut(&connector_info.name) else {
             continue;
         };
+
+        let scale = output_properties.scale.max(1) as f64;
+        let mut elements = Vec::<WaylandSurfaceRenderElement<GlesRenderer>>::new();
+        for render_element in &render_list.elements {
+            if render_element.surface_id == 0 {
+                continue;
+            }
+
+            let Some(wl_surface) = surface_registry.surface(render_element.surface_id) else {
+                continue;
+            };
+            let Some(geometry) = geometry_by_surface.get(&render_element.surface_id) else {
+                continue;
+            };
+
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                wl_surface,
+                (geometry.x, geometry.y),
+                scale,
+                render_element.opacity,
+                Kind::Unspecified,
+            ));
+        }
+
+        let clear = clear_color(config.as_deref());
 
         match surface.compositor.render_frame::<_, _>(
             renderer,
@@ -146,19 +178,19 @@ pub(crate) fn drm_render_system(
             clear,
             FrameFlags::DEFAULT,
         ) {
-            Ok(_) => {
+            Ok(result) => {
+                if result.is_empty {
+                    tracing::trace!(connector = %connector_info.name, "DRM frame empty");
+                    continue;
+                }
                 if let Err(e) = surface.compositor.queue_frame(()) {
                     tracing::warn!(connector = %connector_info.name, error = %e, "DRM queue_frame failed");
                     continue;
                 }
-                emit_present_completion_events_at(
-                    BackendKind::Drm,
-                    &selected_backend,
-                    &outputs,
-                    &mut pending_presentation_events,
-                    &mut presentation_runtime,
-                    now_nanos,
-                );
+                if let Err(e) = surface.compositor.frame_submitted() {
+                    tracing::warn!(connector = %connector_info.name, error = %e, "DRM frame_submitted failed");
+                    continue;
+                }
                 tracing::trace!(connector = %connector_info.name, "DRM frame queued");
             }
             Err(e) => {
@@ -166,6 +198,8 @@ pub(crate) fn drm_render_system(
             }
         }
     }
+
+    surfaces.retain(|name, _| active_connectors.contains(name));
 }
 
 fn init_gles_renderer(
@@ -183,7 +217,7 @@ fn create_connector_surface(
     fd: &DrmDeviceFd,
     gbm: &GbmState,
     connector_info: &ConnectorInfo,
-    output_properties: &OutputProperties,
+    output_properties: &mut OutputProperties,
 ) -> Result<ConnectorState, Box<dyn std::error::Error>> {
     let resources = fd.resource_handles()?;
     let crtc_handle = pick_crtc(fd, connector_info.handle, &resources)?;
@@ -194,6 +228,9 @@ fn create_connector_surface(
 
     let (width, height) = mode.size();
     let refresh_millihz = mode_refresh_millihz(&mode);
+    output_properties.width = width.max(1) as u32;
+    output_properties.height = height.max(1) as u32;
+    output_properties.refresh_millihz = refresh_millihz;
 
     let output = Output::new(
         connector_info.name.clone(),
@@ -325,9 +362,4 @@ fn parse_hex_color32f(color: &str) -> Option<Color32F> {
         f32::from(b) / 255.0,
         f32::from(a) / 255.0,
     ))
-}
-
-fn monotonic_now_nanos() -> u64 {
-    let now = std::time::Duration::from(Clock::<Monotonic>::new().now());
-    now.as_nanos().min(u128::from(u64::MAX)) as u64
 }

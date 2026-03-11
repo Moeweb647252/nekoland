@@ -53,6 +53,7 @@ enum DndPumpPhase {
 
 #[derive(Debug, Resource)]
 struct DndTransferPump {
+    source_window_ready: Arc<AtomicBool>,
     source_pointer_ready: Arc<AtomicBool>,
     source_drag_started: Arc<AtomicBool>,
     target_ready: Arc<AtomicBool>,
@@ -177,6 +178,7 @@ fn run_dnd_transfer_scenario()
     });
     app.inner_mut()
         .insert_resource(DndTransferPump {
+            source_window_ready: source_window_ready.clone(),
             source_pointer_ready: source_pointer_ready.clone(),
             source_drag_started: source_drag_started.clone(),
             target_ready: target_client_ready.clone(),
@@ -285,16 +287,16 @@ fn pump_dnd_transfer_input(
     mut keyboard_focus: ResMut<KeyboardFocusState>,
     mut pointer: ResMut<GlobalPointerPosition>,
     mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
-    windows: Query<(&WlSurfaceHandle, &SurfaceGeometry, &XdgWindow), With<XdgWindow>>,
+    mut windows: Query<(&WlSurfaceHandle, &mut SurfaceGeometry, &XdgWindow), With<XdgWindow>>,
 ) {
     if clock.frame < INPUT_PUMP_START_FRAME || pump.phase == DndPumpPhase::Done {
         return;
     }
 
     let mut known_windows = windows
-        .iter()
+        .iter_mut()
         .map(|(surface, geometry, window)| (surface.id, geometry.clone(), window.title.clone()))
-        .collect::<Vec<_>>();
+        .collect::<Vec<_>>();  
     known_windows.sort_by_key(|(surface_id, _, _)| *surface_id);
 
     let source_window = known_windows
@@ -316,11 +318,30 @@ fn pump_dnd_transfer_input(
         return;
     };
 
+    let mut target_geometry = target_geometry;
+    if pump.phase == DndPumpPhase::WaitForWindows
+        && geometries_overlap(&source_geometry, &target_geometry)
+    {
+        let mut adjusted_target = target_geometry.clone();
+        adjusted_target.x = source_geometry.x + source_geometry.width as i32 + 32;
+        adjusted_target.y = source_geometry.y;
+        for (surface, mut geometry, _) in windows.iter_mut() {
+            if surface.id == target_surface_id {
+                *geometry = adjusted_target.clone();
+                break;
+            }
+        }
+        target_geometry = adjusted_target;
+    }
+
     let source_position = pointer_in_geometry(&source_geometry);
     let target_position = pointer_in_geometry(&target_geometry);
 
     match pump.phase {
         DndPumpPhase::WaitForWindows => {
+            if !pump.source_window_ready.load(Ordering::SeqCst) {
+                return;
+            }
             pump.phase = DndPumpPhase::MoveToSource;
         }
         DndPumpPhase::MoveToSource => {
@@ -334,7 +355,7 @@ fn pump_dnd_transfer_input(
             pump.phase = DndPumpPhase::WaitForSourceFocus;
         }
         DndPumpPhase::WaitForSourceFocus => {
-            if pump.source_pointer_ready.load(Ordering::SeqCst) || pump.source_focus_attempts >= 8 {
+            if pump.source_pointer_ready.load(Ordering::SeqCst) {
                 pump.phase = DndPumpPhase::PressSource;
             } else {
                 keyboard_focus.focused_surface = Some(source_surface_id);
@@ -438,6 +459,19 @@ fn pointer_in_geometry(geometry: &SurfaceGeometry) -> (f64, f64) {
     let x = f64::from(geometry.x) + 64.0f64.min(f64::from(geometry.width.saturating_sub(1)));
     let y = f64::from(geometry.y) + 64.0f64.min(f64::from(geometry.height.saturating_sub(1)));
     (x, y)
+}
+
+fn geometries_overlap(a: &SurfaceGeometry, b: &SurfaceGeometry) -> bool {
+    let a_left = i64::from(a.x);
+    let a_top = i64::from(a.y);
+    let a_right = a_left + i64::from(a.width);
+    let a_bottom = a_top + i64::from(a.height);
+    let b_left = i64::from(b.x);
+    let b_top = i64::from(b.y);
+    let b_right = b_left + i64::from(b.width);
+    let b_bottom = b_top + i64::from(b.height);
+
+    a_left < b_right && a_right > b_left && a_top < b_bottom && a_bottom > b_top
 }
 
 fn create_test_buffer<T>(

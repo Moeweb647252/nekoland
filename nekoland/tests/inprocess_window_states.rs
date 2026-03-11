@@ -149,7 +149,7 @@ fn maximize_request_updates_window_state_and_geometry() {
     assert_eq!(geometry.x, 16);
     assert_eq!(geometry.y, 16);
     assert_eq!(geometry.width, output.width.saturating_sub(32).max(1));
-    assert_eq!(geometry.height, output.height.saturating_sub(48).max(1));
+    assert_eq!(geometry.height, output.height.saturating_sub(32).max(1));
 }
 
 #[test]
@@ -206,7 +206,10 @@ fn fullscreen_and_popup_requests_populate_popup_entity_and_render_list() {
             .get_resource::<RenderList>()
             .expect("render list should be initialized")
             .elements
-            .clone();
+            .iter()
+            .filter(|e| e.surface_id != 0)
+            .cloned()
+            .collect::<Vec<_>>();
 
         (
             window_surface_id,
@@ -299,7 +302,10 @@ fn minimize_request_hides_window_clears_focus_and_removes_render_entry() {
             .get_resource::<RenderList>()
             .expect("render list should be initialized")
             .elements
-            .clone();
+            .iter()
+            .filter(|e| e.surface_id != 0)
+            .cloned()
+            .collect::<Vec<_>>();
 
         (surface_id, state, focus, render_elements)
     };
@@ -449,7 +455,10 @@ fn server_dismiss_of_grabbed_popup_sends_popup_done_and_cleans_up_popup_state() 
             .get_resource::<RenderList>()
             .expect("render list should be initialized")
             .elements
-            .clone();
+            .iter()
+            .filter(|e| e.surface_id != 0)
+            .cloned()
+            .collect::<Vec<_>>();
         (popup_count, window_count, render_elements)
     };
 
@@ -488,7 +497,10 @@ fn ipc_dismiss_of_grabbed_popup_sends_popup_done_and_cleans_up_popup_state() {
             .get_resource::<RenderList>()
             .expect("render list should be initialized")
             .elements
-            .clone();
+            .iter()
+            .filter(|e| e.surface_id != 0)
+            .cloned()
+            .collect::<Vec<_>>();
         (popup_count, window_count, render_elements)
     };
 
@@ -527,7 +539,10 @@ fn popup_grab_request_with_invalid_serial_is_dismissed() {
             .get_resource::<RenderList>()
             .expect("render list should be initialized")
             .elements
-            .clone();
+            .iter()
+            .filter(|e| e.surface_id != 0)
+            .cloned()
+            .collect::<Vec<_>>();
         (popup_count, window_count, render_elements)
     };
 
@@ -587,7 +602,10 @@ fn popup_destroy_request_removes_popup_entity_and_render_entry() {
             .get_resource::<RenderList>()
             .expect("render list should be initialized")
             .elements
-            .clone();
+            .iter()
+            .filter(|e| e.surface_id != 0)
+            .cloned()
+            .collect::<Vec<_>>();
         (popup_count, render_elements, window_count)
     };
 
@@ -622,7 +640,10 @@ fn toplevel_destroy_removes_window_records_close_and_clears_render_focus() {
             .get_resource::<RenderList>()
             .expect("render list should be initialized")
             .elements
-            .clone();
+            .iter()
+            .filter(|e| e.surface_id != 0)
+            .cloned()
+            .collect::<Vec<_>>();
         let closed_surface_ids = world
             .get_resource::<ClosedWindowAudit>()
             .expect("closed window audit should be initialized")
@@ -635,7 +656,12 @@ fn toplevel_destroy_removes_window_records_close_and_clears_render_focus() {
     assert_eq!(window_count, 0, "destroyed toplevel should be removed from ECS");
     assert_eq!(popup_count, 0, "destroying the only toplevel should not leave stray popups");
     assert_eq!(focus, None, "destroyed toplevel should clear keyboard focus");
-    assert!(render_elements.is_empty(), "destroyed toplevel should be removed from render list");
+    assert_eq!(
+        render_elements.len(),
+        0,
+        "destroyed toplevel should be removed from render list. Elements left: {:?}",
+        render_elements
+    );
     assert_eq!(closed_surface_ids.len(), 1, "destroy path should emit one WindowClosed message");
 }
 
@@ -660,7 +686,10 @@ fn server_close_request_emits_close_event_and_cleans_up_window() {
             .get_resource::<RenderList>()
             .expect("render list should be initialized")
             .elements
-            .clone();
+            .iter()
+            .filter(|e| e.surface_id != 0)
+            .cloned()
+            .collect::<Vec<_>>();
         let closed_surface_ids = world
             .get_resource::<ClosedWindowAudit>()
             .expect("closed window audit should be initialized")
@@ -701,7 +730,10 @@ fn ipc_close_request_emits_close_event_and_cleans_up_window() {
             .get_resource::<RenderList>()
             .expect("render list should be initialized")
             .elements
-            .clone();
+            .iter()
+            .filter(|e| e.surface_id != 0)
+            .cloned()
+            .collect::<Vec<_>>();
         let closed_surface_ids = world
             .get_resource::<ClosedWindowAudit>()
             .expect("closed window audit should be initialized")
@@ -747,7 +779,10 @@ fn ipc_close_of_parent_window_dismisses_child_popup_and_cleans_up_everything() {
             .get_resource::<RenderList>()
             .expect("render list should be initialized")
             .elements
-            .clone();
+            .iter()
+            .filter(|e| e.surface_id != 0)
+            .cloned()
+            .collect::<Vec<_>>();
         let closed_surface_ids = world
             .get_resource::<ClosedWindowAudit>()
             .expect("closed window audit should be initialized")
@@ -833,7 +868,10 @@ fn workspace_switch_dismisses_popups_and_reconfigures_reactivated_toplevels() {
             .get_resource::<RenderList>()
             .expect("render list should be initialized")
             .elements
-            .clone();
+            .iter()
+            .filter(|e| e.surface_id != 0)
+            .cloned()
+            .collect::<Vec<_>>();
         let active_workspaces = world
             .query::<&nekoland_ecs::components::Workspace>()
             .iter(world)

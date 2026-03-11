@@ -55,7 +55,7 @@ pub fn external_command_launch_system(
                         pid: child.id(),
                     });
                     pending_input_events.items.push(nekoland_ecs::resources::InputEventRecord {
-                        source: "keybinding".to_owned(),
+                        source: "commands".to_owned(),
                         detail: format!(
                             "{} -> launched `{}` (pid {})",
                             request.origin,
@@ -82,7 +82,7 @@ pub fn external_command_launch_system(
                 error: error.clone(),
             });
             pending_input_events.items.push(nekoland_ecs::resources::InputEventRecord {
-                source: "keybinding".to_owned(),
+                source: "commands".to_owned(),
                 detail: format!("{} -> {error}", request.origin),
             });
         }
