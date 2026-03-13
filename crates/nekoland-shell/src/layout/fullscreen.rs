@@ -1,47 +1,36 @@
 use bevy_ecs::prelude::{Query, Res, With};
-use nekoland_ecs::components::{
-    LayoutSlot, OutputProperties, SurfaceGeometry, WindowState, Workspace, XdgWindow,
-};
+use nekoland_ecs::components::{WindowMode, XdgWindow};
 use nekoland_ecs::resources::WorkArea;
+use nekoland_ecs::views::{OutputRuntime, WindowRuntime};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FullscreenLayout;
 
+/// Applies fullscreen and maximized geometry after layout/work-area state has been updated.
 pub fn fullscreen_layout_system(
-    outputs: Query<&OutputProperties>,
-    mut windows: Query<(&mut SurfaceGeometry, &WindowState, &LayoutSlot), With<XdgWindow>>,
-    workspaces: Query<&Workspace>,
+    outputs: Query<OutputRuntime>,
+    mut windows: Query<WindowRuntime, With<XdgWindow>>,
     work_area: Res<WorkArea>,
 ) {
     let Some(output) = outputs.iter().next() else {
         tracing::trace!("fullscreen layout system tick");
         return;
     };
-    let active_workspace = workspaces
-        .iter()
-        .find(|workspace| workspace.active)
-        .map(|workspace| workspace.id.0)
-        .or_else(|| {
-            workspaces.iter().min_by_key(|workspace| workspace.id).map(|workspace| workspace.id.0)
-        });
-
-    for (mut geometry, state, layout_slot) in &mut windows {
-        if active_workspace.is_some_and(|workspace| layout_slot.workspace != workspace) {
-            continue;
-        }
-
-        match state {
-            WindowState::Fullscreen => {
-                geometry.x = 0;
-                geometry.y = 0;
-                geometry.width = output.width.max(1);
-                geometry.height = output.height.max(1);
+    for mut window in &mut windows {
+        match *window.mode {
+            WindowMode::Fullscreen => {
+                window.geometry.x = 0;
+                window.geometry.y = 0;
+                window.geometry.width = output.properties.width.max(1);
+                window.geometry.height = output.properties.height.max(1);
             }
-            WindowState::Maximized => {
-                geometry.x = work_area.x + 16;
-                geometry.y = work_area.y + 16;
-                geometry.width = work_area.width.saturating_sub(32).max(1);
-                geometry.height = work_area.height.saturating_sub(32).max(1);
+            WindowMode::Maximized => {
+                // Keep a small inset so maximized windows still leave room for compositor-side
+                // borders and do not visually merge into the output edge.
+                window.geometry.x = work_area.x + 16;
+                window.geometry.y = work_area.y + 16;
+                window.geometry.width = work_area.width.saturating_sub(32).max(1);
+                window.geometry.height = work_area.height.saturating_sub(32).max(1);
             }
             _ => {}
         }

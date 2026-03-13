@@ -1,58 +1,69 @@
 use std::collections::BTreeSet;
 
+use bevy_ecs::entity_disabling::Disabled;
+use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With};
+use bevy_ecs::query::Allow;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    BorderTheme, BufferState, LayoutSlot, ServerDecoration, SurfaceGeometry, WindowAnimation,
-    WindowState, WlSurfaceHandle, Workspace, XdgWindow,
+    BorderTheme, BufferState, ServerDecoration, SurfaceGeometry, WindowAnimation, WindowLayout,
+    WindowMode, WindowPolicyState, WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
-    CompositorConfig, PendingXdgRequests, WindowLifecycleAction, WindowLifecycleRequest,
+    CompositorConfig, EntityIndex, PendingPopupServerRequests, PendingXdgRequests,
+    PopupServerAction, PopupServerRequest, WindowLifecycleAction, WindowLifecycleRequest, WorkArea,
     XdgSurfaceRole,
 };
+use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowRuntime, WorkspaceRuntime};
+use nekoland_ecs::workspace_membership::active_workspace_runtime_target_or_index;
+
+use crate::layout::floating::{
+    centre_x, centre_y, placement_work_area, should_auto_place_floating_window,
+};
+use crate::window_policy::refresh_window_policy;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToplevelManager;
 
+/// Owns the XDG toplevel lifecycle bridge from protocol requests into ECS window entities.
+///
+/// Requests that arrive before the corresponding entity exists are deferred and retried on later
+/// ticks instead of being dropped.
 pub fn toplevel_lifecycle_system(
     mut commands: Commands,
     config: Res<CompositorConfig>,
+    work_area: Res<WorkArea>,
     mut pending_xdg_requests: ResMut<PendingXdgRequests>,
-    existing_surfaces: Query<&WlSurfaceHandle, With<XdgWindow>>,
-    mut windows: Query<
-        (
-            Entity,
-            &WlSurfaceHandle,
-            &mut SurfaceGeometry,
-            &mut BufferState,
-            &mut XdgWindow,
-            &WindowState,
-        ),
-        With<XdgWindow>,
-    >,
-    workspaces: Query<&Workspace>,
+    mut pending_popup_requests: ResMut<PendingPopupServerRequests>,
+    entity_index: Res<EntityIndex>,
+    existing_surfaces: Query<&WlSurfaceHandle, (With<XdgWindow>, Allow<Disabled>)>,
+    outputs: Query<OutputRuntime>,
+    mut windows: Query<(Entity, WindowRuntime), (With<XdgWindow>, Allow<Disabled>)>,
+    popups: Query<PopupRuntime, (With<XdgPopup>, Allow<Disabled>)>,
+    workspaces: Query<(Entity, WorkspaceRuntime)>,
     mut window_created: MessageWriter<WindowCreated>,
     mut window_closed: MessageWriter<WindowClosed>,
 ) {
     let mut known_surfaces =
         existing_surfaces.iter().map(|surface| surface.id).collect::<BTreeSet<_>>();
     let mut deferred = Vec::new();
+    let placement_area =
+        placement_work_area(&work_area, outputs.iter().next().map(|output| output.properties));
 
-    for request in pending_xdg_requests.items.drain(..) {
+    for request in pending_xdg_requests.drain() {
         match request.action.clone() {
             WindowLifecycleAction::Committed { role: XdgSurfaceRole::Toplevel, size }
                 if known_surfaces.insert(request.surface_id) =>
             {
-                let workspace_id = workspaces
-                    .iter()
-                    .find(|workspace| workspace.active)
-                    .map(|workspace| workspace.id.0)
-                    .unwrap_or(1);
+                let workspace_entity =
+                    active_workspace_runtime_target_or_index(&workspaces, &entity_index, 1);
                 let geometry = size
                     .unwrap_or(nekoland_ecs::resources::SurfaceExtent { width: 960, height: 720 });
-                commands.spawn((
+                let title = format!("Window {}", request.surface_id);
+                let policy = config.resolve_window_policy("org.nekoland.demo", &title, false);
+                let mut window_entity = commands.spawn((
                     WindowBundle {
                         surface: WlSurfaceHandle { id: request.surface_id },
                         geometry: SurfaceGeometry {
@@ -61,52 +72,62 @@ pub fn toplevel_lifecycle_system(
                             width: geometry.width.max(1),
                             height: geometry.height.max(1),
                         },
-                        buffer: BufferState { attached: true, scale: 1 },
+                        buffer: BufferState { attached: size.is_some(), scale: 1 },
                         window: XdgWindow {
                             app_id: "org.nekoland.demo".to_owned(),
-                            title: format!("Window {}", request.surface_id),
+                            title: title.clone(),
                             last_acked_configure: None,
                         },
-                        state: default_window_state(&config),
+                        layout: policy.layout,
+                        mode: policy.mode,
                         decoration: ServerDecoration { enabled: true },
                         border_theme: BorderTheme {
-                            width: border_width(&config.default_layout),
+                            width: policy.layout.border_width(),
                             color: config.border_color.clone(),
                         },
                         animation: WindowAnimation::default(),
                     },
-                    LayoutSlot { workspace: workspace_id, column: 0, row: 0 },
+                    WindowPolicyState { applied: policy, locked: false },
                 ));
-                window_created.write(WindowCreated {
-                    surface_id: request.surface_id,
-                    title: format!("Window {}", request.surface_id),
-                });
+                if let Some(workspace_entity) = workspace_entity {
+                    window_entity.insert(ChildOf(workspace_entity));
+                }
+                window_created.write(WindowCreated { surface_id: request.surface_id, title });
             }
             WindowLifecycleAction::Committed {
                 role: XdgSurfaceRole::Toplevel,
                 size: Some(size),
             } => {
-                let mut handled = false;
-
-                for (_, surface, mut geometry, mut buffer, _, state) in &mut windows {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
-                    buffer.attached = true;
-                    if !matches!(
-                        state,
-                        WindowState::Maximized | WindowState::Fullscreen | WindowState::Hidden
-                    ) {
-                        geometry.width = size.width.max(1);
-                        geometry.height = size.height.max(1);
-                    }
-                    handled = true;
-                    break;
+                let mut window = entity_index
+                    .entity_for_surface(request.surface_id)
+                    .and_then(|entity| windows.get_mut(entity).ok());
+                if window.is_none() {
+                    window = windows
+                        .iter_mut()
+                        .find(|(_, window)| window.surface_id() == request.surface_id);
                 }
 
-                if !handled {
+                let Some((_, mut window)) = window else {
                     deferred.push(request);
+                    continue;
+                };
+
+                window.buffer.expect("xdg toplevel should have buffer state").attached = true;
+                if !matches!(
+                    *window.mode,
+                    WindowMode::Maximized | WindowMode::Fullscreen | WindowMode::Hidden
+                ) {
+                    window.geometry.width = size.width.max(1);
+                    window.geometry.height = size.height.max(1);
+                } else if let Some(restored) = window.restore.snapshot.as_mut() {
+                    restored.geometry.width = size.width.max(1);
+                    restored.geometry.height = size.height.max(1);
+                    if restored.layout == WindowLayout::Floating
+                        && should_auto_place_floating_window(&window.placement, &restored.geometry)
+                    {
+                        restored.geometry.x = centre_x(&placement_area, restored.geometry.width);
+                        restored.geometry.y = centre_y(&placement_area, restored.geometry.height);
+                    }
                 }
             }
             WindowLifecycleAction::Committed { role: XdgSurfaceRole::Toplevel, size: None } => {
@@ -118,53 +139,70 @@ pub fn toplevel_lifecycle_system(
                 tracing::trace!(surface_id = request.surface_id, "configure requested");
             }
             WindowLifecycleAction::Destroyed { role: XdgSurfaceRole::Toplevel } => {
-                let mut handled = false;
-
-                for (entity, surface, _, _, _, _) in &mut windows {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
-                    commands.entity(entity).despawn();
-                    known_surfaces.remove(&request.surface_id);
-                    window_closed.write(WindowClosed { surface_id: request.surface_id });
-                    handled = true;
-                    break;
+                let mut window = entity_index
+                    .entity_for_surface(request.surface_id)
+                    .and_then(|entity| windows.get_mut(entity).ok());
+                if window.is_none() {
+                    window = windows
+                        .iter_mut()
+                        .find(|(_, window)| window.surface_id() == request.surface_id);
                 }
 
-                if !handled {
+                let Some((entity, _)) = window else {
                     deferred.push(request);
-                }
+                    continue;
+                };
+
+                enqueue_popup_dismissals(
+                    request.surface_id,
+                    &entity_index,
+                    &popups,
+                    &mut pending_popup_requests,
+                );
+                commands.entity(entity).despawn();
+                known_surfaces.remove(&request.surface_id);
+                window_closed.write(WindowClosed { surface_id: request.surface_id });
             }
             WindowLifecycleAction::MetadataChanged { title, app_id } => {
-                let mut handled = false;
-
-                for (_, surface, _, _, mut window, _) in &mut windows {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
-                    if let Some(title) = &title {
-                        window.title = title.clone();
-                    }
-                    if let Some(app_id) = &app_id {
-                        window.app_id = app_id.clone();
-                    }
-                    handled = true;
-                    break;
+                let mut window = entity_index
+                    .entity_for_surface(request.surface_id)
+                    .and_then(|entity| windows.get_mut(entity).ok());
+                if window.is_none() {
+                    window = windows
+                        .iter_mut()
+                        .find(|(_, window)| window.surface_id() == request.surface_id);
                 }
 
-                if !handled {
+                let Some((_, mut window_runtime)) = window else {
                     deferred.push(request);
+                    continue;
+                };
+
+                let window = window_runtime.xdg_window.as_mut().expect("xdg window should exist");
+                if let Some(title) = &title {
+                    window.title = title.clone();
                 }
+                if let Some(app_id) = &app_id {
+                    window.app_id = app_id.clone();
+                }
+                let policy = config.resolve_window_policy(&window.app_id, &window.title, false);
+                refresh_window_policy(
+                    policy,
+                    &mut window_runtime.layout,
+                    &mut window_runtime.mode,
+                    &mut window_runtime.restore,
+                    &mut window_runtime.policy_state,
+                );
             }
             _ => deferred.push(request),
         }
     }
 
-    pending_xdg_requests.items = deferred;
+    pending_xdg_requests.replace(deferred);
 }
 
+/// Debug helper kept around for tracing deferred protocol requests while the lifecycle systems are
+/// still growing new request kinds.
 #[allow(dead_code)]
 fn _trace_unhandled_request(request: &WindowLifecycleRequest) {
     match &request.action {
@@ -203,7 +241,7 @@ fn _trace_unhandled_request(request: &WindowLifecycleRequest) {
                 surface_id = request.surface_id,
                 seat_name,
                 serial,
-                edges,
+                %edges,
                 "deferred interactive resize request"
             );
         }
@@ -255,16 +293,205 @@ fn _trace_unhandled_request(request: &WindowLifecycleRequest) {
     }
 }
 
-fn default_window_state(config: &CompositorConfig) -> WindowState {
-    match config.default_layout.as_str() {
-        "floating" => WindowState::Floating,
-        "maximized" => WindowState::Maximized,
-        "fullscreen" => WindowState::Fullscreen,
-        "tiling" | "stacking" => WindowState::Floating,
-        _ => WindowState::Floating,
+/// Queues popup dismissals before removing a parent toplevel so popup teardown follows the same
+/// server-request path as explicit popup dismiss actions.
+fn enqueue_popup_dismissals(
+    parent_surface_id: u64,
+    entity_index: &EntityIndex,
+    popups: &Query<PopupRuntime, (With<XdgPopup>, Allow<Disabled>)>,
+    pending_popup_requests: &mut PendingPopupServerRequests,
+) {
+    let Some(parent_entity) = entity_index.entity_for_surface(parent_surface_id) else {
+        return;
+    };
+    let mut dismissed = BTreeSet::new();
+    for popup in popups.iter() {
+        if popup.child_of.parent() != parent_entity || !dismissed.insert(popup.surface_id()) {
+            continue;
+        }
+
+        pending_popup_requests.push(PopupServerRequest {
+            surface_id: popup.surface_id(),
+            action: PopupServerAction::Dismiss,
+        });
     }
 }
 
-fn border_width(default_layout: &str) -> u32 {
-    if matches!(default_layout, "tiling" | "stacking") { 2 } else { 1 }
+#[cfg(test)]
+mod tests {
+    use bevy_ecs::hierarchy::ChildOf;
+    use bevy_ecs::prelude::Entity;
+    use bevy_ecs::schedule::IntoScheduleConfigs;
+    use nekoland_core::prelude::NekolandApp;
+    use nekoland_core::schedules::LayoutSchedule;
+    use nekoland_ecs::bundles::WindowBundle;
+    use nekoland_ecs::components::{
+        BufferState, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode, WlSurfaceHandle,
+        Workspace, WorkspaceId, XdgPopup, XdgWindow,
+    };
+    use nekoland_ecs::events::{WindowClosed, WindowCreated};
+    use nekoland_ecs::resources::{
+        CompositorConfig, ConfiguredWindowRule, EntityIndex, PendingPopupServerRequests,
+        PendingXdgRequests, PopupServerAction, WindowLifecycleAction, WindowLifecycleRequest,
+        WorkArea, XdgSurfaceRole, rebuild_entity_index_system,
+    };
+
+    use super::toplevel_lifecycle_system;
+
+    #[test]
+    fn toplevel_create_inserts_child_of_active_workspace() {
+        let mut app = NekolandApp::new("toplevel-lifecycle-test");
+        app.insert_resource(CompositorConfig::default())
+            .insert_resource(WorkArea::default())
+            .insert_resource(PendingXdgRequests::default())
+            .insert_resource(PendingPopupServerRequests::default())
+            .insert_resource(EntityIndex::default());
+        app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_systems(
+            LayoutSchedule,
+            (rebuild_entity_index_system, toplevel_lifecycle_system).chain(),
+        );
+
+        let workspace_entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn(Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true })
+            .id();
+        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+            WindowLifecycleRequest {
+                surface_id: 21,
+                action: WindowLifecycleAction::Committed {
+                    role: XdgSurfaceRole::Toplevel,
+                    size: Some(nekoland_ecs::resources::SurfaceExtent { width: 800, height: 600 }),
+                },
+            },
+        );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner_mut().world_mut();
+        let mut windows = world.query::<(Entity, &WlSurfaceHandle)>();
+        let window_entity = windows
+            .iter(world)
+            .find(|(_, surface)| surface.id == 21)
+            .map(|(entity, _)| entity)
+            .expect("created toplevel window should exist");
+
+        let child_of = world.get::<ChildOf>(window_entity).expect("window should have ChildOf");
+        assert_eq!(
+            child_of.parent(),
+            workspace_entity,
+            "new toplevel should attach to the active workspace entity",
+        );
+    }
+
+    #[test]
+    fn toplevel_destroy_queues_popup_dismiss_before_window_despawn() {
+        let mut app = NekolandApp::new("toplevel-lifecycle-test");
+        app.insert_resource(CompositorConfig::default())
+            .insert_resource(WorkArea::default())
+            .insert_resource(PendingXdgRequests::default())
+            .insert_resource(PendingPopupServerRequests::default())
+            .insert_resource(EntityIndex::default());
+        app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_systems(
+            LayoutSchedule,
+            (rebuild_entity_index_system, toplevel_lifecycle_system).chain(),
+        );
+
+        app.inner_mut().world_mut().spawn(Workspace {
+            id: WorkspaceId(1),
+            name: "1".to_owned(),
+            active: true,
+        });
+        let parent = app
+            .inner_mut()
+            .world_mut()
+            .spawn((WindowBundle {
+                surface: WlSurfaceHandle { id: 11 },
+                geometry: SurfaceGeometry { x: 0, y: 0, width: 800, height: 600 },
+                buffer: BufferState { attached: true, scale: 1 },
+                window: XdgWindow::default(),
+                layout: WindowLayout::Tiled,
+                mode: WindowMode::Normal,
+                decoration: Default::default(),
+                border_theme: Default::default(),
+                animation: WindowAnimation::default(),
+            },))
+            .id();
+        app.inner_mut().world_mut().spawn((
+            WlSurfaceHandle { id: 12 },
+            XdgPopup { configure_serial: None, grab_serial: None, reposition_token: None },
+            ChildOf(parent),
+        ));
+
+        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+            WindowLifecycleRequest {
+                surface_id: 11,
+                action: WindowLifecycleAction::Destroyed { role: XdgSurfaceRole::Toplevel },
+            },
+        );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let pending = app.inner().world().resource::<PendingPopupServerRequests>().as_slice();
+        assert_eq!(pending.len(), 1, "destroying a toplevel should queue one popup dismiss");
+        assert_eq!(pending[0].surface_id, 12);
+        assert!(matches!(pending[0].action, PopupServerAction::Dismiss));
+    }
+
+    #[test]
+    fn metadata_change_reapplies_matching_window_rule() {
+        let mut app = NekolandApp::new("toplevel-policy-test");
+        let mut config = CompositorConfig::default();
+        config.window_rules.push(ConfiguredWindowRule {
+            app_id: Some("org.nekoland.rules".to_owned()),
+            title: None,
+            layout: Some(WindowLayout::Tiled),
+            mode: None,
+        });
+        app.insert_resource(config)
+            .insert_resource(WorkArea::default())
+            .insert_resource(PendingXdgRequests::default())
+            .insert_resource(PendingPopupServerRequests::default())
+            .insert_resource(EntityIndex::default());
+        app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_systems(
+            LayoutSchedule,
+            (rebuild_entity_index_system, toplevel_lifecycle_system).chain(),
+        );
+
+        app.inner_mut().world_mut().spawn(Workspace {
+            id: WorkspaceId(1),
+            name: "1".to_owned(),
+            active: true,
+        });
+        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+            WindowLifecycleRequest {
+                surface_id: 21,
+                action: WindowLifecycleAction::Committed {
+                    role: XdgSurfaceRole::Toplevel,
+                    size: Some(nekoland_ecs::resources::SurfaceExtent { width: 800, height: 600 }),
+                },
+            },
+        );
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+            WindowLifecycleRequest {
+                surface_id: 21,
+                action: WindowLifecycleAction::MetadataChanged {
+                    title: Some("Rules".to_owned()),
+                    app_id: Some("org.nekoland.rules".to_owned()),
+                },
+            },
+        );
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner_mut().world_mut();
+        let mut windows = world.query::<(&WlSurfaceHandle, &WindowLayout, &WindowMode)>();
+        let (_, layout, mode) = windows
+            .iter(world)
+            .find(|(surface, _, _)| surface.id == 21)
+            .expect("toplevel window should still exist");
+        assert_eq!(*layout, WindowLayout::Tiled);
+        assert_eq!(*mode, WindowMode::Normal);
+    }
 }

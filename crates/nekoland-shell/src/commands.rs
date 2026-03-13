@@ -5,23 +5,18 @@ use bevy_ecs::prelude::{Res, ResMut, Resource};
 use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
 use nekoland_ecs::resources::{
     CommandExecutionRecord, CommandExecutionStatus, CommandHistoryState, CompositorClock,
-    CompositorConfig, ExternalCommandConfig, ExternalCommandRequest,
-    PendingExternalCommandRequests, PendingInputEvents,
+    CompositorConfig, ExternalCommandRequest, PendingExternalCommandRequests, PendingInputEvents,
 };
 use nekoland_protocol::{ProtocolServerState, XWaylandServerState};
 
+/// Tracks whether startup commands have already been queued for this session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
 pub struct StartupCommandState {
     pub queued: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExternalCommandKind {
-    Terminal,
-    Launcher,
-    PowerMenu,
-}
-
+/// Attempts to launch queued external commands and records the result as both ECS messages and
+/// human-readable input-log entries.
 pub fn external_command_launch_system(
     protocol_server: Option<Res<ProtocolServerState>>,
     xwayland_server: Option<Res<XWaylandServerState>>,
@@ -30,7 +25,7 @@ pub fn external_command_launch_system(
     mut launched_events: MessageWriter<ExternalCommandLaunched>,
     mut failed_events: MessageWriter<ExternalCommandFailed>,
 ) {
-    for request in pending_external_commands.items.drain(..) {
+    for request in pending_external_commands.drain() {
         let mut last_error = None;
         let mut launched = false;
 
@@ -49,12 +44,17 @@ pub fn external_command_launch_system(
 
             match command.spawn() {
                 Ok(child) => {
+                    tracing::info!(
+                        "Command args={:?}, env={:?} executed",
+                        args,
+                        nested_wayland_env
+                    );
                     launched_events.write(ExternalCommandLaunched {
                         origin: request.origin.clone(),
                         command: candidate.clone(),
                         pid: child.id(),
                     });
-                    pending_input_events.items.push(nekoland_ecs::resources::InputEventRecord {
+                    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
                         source: "commands".to_owned(),
                         detail: format!(
                             "{} -> launched `{}` (pid {})",
@@ -81,7 +81,7 @@ pub fn external_command_launch_system(
                 candidates: request.candidates.clone(),
                 error: error.clone(),
             });
-            pending_input_events.items.push(nekoland_ecs::resources::InputEventRecord {
+            pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
                 source: "commands".to_owned(),
                 detail: format!("{} -> {error}", request.origin),
             });
@@ -89,9 +89,11 @@ pub fn external_command_launch_system(
     }
 }
 
+/// Queues startup commands once the nested protocol socket and optional XWayland bridge are ready.
 pub fn startup_command_queue_system(
     config: Res<CompositorConfig>,
     protocol_server: Option<Res<ProtocolServerState>>,
+    xwayland_server: Option<Res<XWaylandServerState>>,
     mut startup_commands: ResMut<StartupCommandState>,
     mut pending_input_events: ResMut<PendingInputEvents>,
     mut pending_external_commands: ResMut<PendingExternalCommandRequests>,
@@ -113,6 +115,12 @@ pub fn startup_command_queue_system(
         return;
     };
 
+    if let Some(xwayland) = xwayland_server.as_deref() {
+        if xwayland.enabled && !xwayland.ready {
+            return;
+        }
+    }
+
     startup_commands.queued = true;
     if config.startup_commands.is_empty() {
         return;
@@ -123,14 +131,14 @@ pub fn startup_command_queue_system(
     for command in &config.startup_commands {
         let argv = split_command_line(command);
         if argv.is_empty() {
-            pending_input_events.items.push(nekoland_ecs::resources::InputEventRecord {
+            pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
                 source: "startup".to_owned(),
                 detail: "ignored empty startup command".to_owned(),
             });
             continue;
         }
 
-        pending_external_commands.items.push(ExternalCommandRequest {
+        pending_external_commands.push(ExternalCommandRequest {
             origin: format!("startup -> {command}"),
             candidates: vec![argv],
         });
@@ -143,12 +151,13 @@ pub fn startup_command_queue_system(
         queued_commands,
         "queued startup commands for nested Wayland session"
     );
-    pending_input_events.items.push(nekoland_ecs::resources::InputEventRecord {
+    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
         source: "startup".to_owned(),
         detail: format!("queued {queued_commands} startup command(s) for {socket_name}"),
     });
 }
 
+/// Folds command launch/failure messages into the bounded command history resource.
 pub fn command_history_system(
     config: Res<CompositorConfig>,
     clock: Res<CompositorClock>,
@@ -189,82 +198,24 @@ pub fn command_history_system(
     }
 }
 
-pub(crate) fn queue_external_command(
-    origin: String,
-    kind: ExternalCommandKind,
-    command_config: &ExternalCommandConfig,
-    pending_external_commands: &mut PendingExternalCommandRequests,
-) {
-    pending_external_commands.items.push(ExternalCommandRequest {
-        origin,
-        candidates: command_candidates(kind, command_config),
-    });
-}
-
-pub(crate) fn queue_exec_command(
+/// Convenience helper used by keybindings and other shell systems to enqueue one exact argv.
+pub fn queue_exec_command(
     origin: String,
     argv: Vec<String>,
     pending_external_commands: &mut PendingExternalCommandRequests,
 ) {
-    pending_external_commands.items.push(ExternalCommandRequest { origin, candidates: vec![argv] });
+    pending_external_commands.push(ExternalCommandRequest { origin, candidates: vec![argv] });
 }
 
-pub(crate) fn command_candidates(
-    kind: ExternalCommandKind,
-    command_config: &ExternalCommandConfig,
-) -> Vec<Vec<String>> {
-    let mut candidates = Vec::new();
-
-    if let Some(configured) = command_from_config(kind, command_config) {
-        candidates.push(configured);
-    }
-
-    for fallback in fallback_command_candidates(kind) {
-        if !candidates.contains(&fallback) {
-            candidates.push(fallback);
-        }
-    }
-
-    candidates
-}
-
-pub(crate) fn split_command_line(command: &str) -> Vec<String> {
+/// Parses one shell-like command line into argv, falling back to whitespace splitting when quoted
+/// parsing fails.
+pub fn split_command_line(command: &str) -> Vec<String> {
     parse_command_line(command)
         .filter(|argv| !argv.is_empty())
         .unwrap_or_else(|| command.split_whitespace().map(str::to_owned).collect())
 }
 
-fn fallback_command_candidates(kind: ExternalCommandKind) -> Vec<Vec<String>> {
-    match kind {
-        ExternalCommandKind::Terminal => ["foot", "wezterm", "alacritty", "kitty", "xterm"]
-            .into_iter()
-            .map(|program| vec![program.to_owned()])
-            .collect(),
-        ExternalCommandKind::Launcher => vec![
-            vec!["fuzzel".to_owned()],
-            vec!["wofi".to_owned(), "--show".to_owned(), "drun".to_owned()],
-            vec!["rofi".to_owned(), "-show".to_owned(), "drun".to_owned()],
-            vec!["bemenu-run".to_owned()],
-        ],
-        ExternalCommandKind::PowerMenu => {
-            vec![vec!["wlogout".to_owned()], vec!["nwg-bar".to_owned()]]
-        }
-    }
-}
-
-fn command_from_config(
-    kind: ExternalCommandKind,
-    command_config: &ExternalCommandConfig,
-) -> Option<Vec<String>> {
-    let command = match kind {
-        ExternalCommandKind::Terminal => command_config.terminal.as_deref(),
-        ExternalCommandKind::Launcher => command_config.launcher.as_deref(),
-        ExternalCommandKind::PowerMenu => command_config.power_menu.as_deref(),
-    }?;
-    let argv = split_command_line(command);
-    (!argv.is_empty()).then_some(argv)
-}
-
+/// Allows tests or nested sessions to disable startup commands entirely via environment variable.
 fn startup_commands_disabled_by_env() -> bool {
     std::env::var_os("NEKOLAND_DISABLE_STARTUP_COMMANDS").is_some_and(|value| {
         let value = value.to_string_lossy();
@@ -274,6 +225,8 @@ fn startup_commands_disabled_by_env() -> bool {
     })
 }
 
+/// Builds the environment variables needed for child processes to connect to the nested Wayland
+/// and optional XWayland session created by the compositor.
 fn nested_wayland_env(
     protocol_server: Option<&ProtocolServerState>,
     xwayland_server: Option<&XWaylandServerState>,
@@ -298,6 +251,7 @@ fn nested_wayland_env(
     env
 }
 
+/// Minimal quoted command-line parser used for config-provided startup commands.
 fn parse_command_line(command: &str) -> Option<Vec<String>> {
     let mut argv = Vec::new();
     let mut current = String::new();
@@ -353,4 +307,150 @@ fn parse_command_line(command: &str) -> Option<Vec<String>> {
     }
 
     Some(argv)
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_ecs::schedule::IntoScheduleConfigs;
+    use nekoland_core::prelude::NekolandApp;
+    use nekoland_core::schedules::LayoutSchedule;
+    use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
+    use nekoland_ecs::resources::{
+        CommandHistoryState, CompositorClock, CompositorConfig, PendingExternalCommandRequests,
+        PendingInputEvents,
+    };
+    use nekoland_protocol::{ProtocolServerState, XWaylandServerState};
+
+    use super::{StartupCommandState, startup_command_queue_system};
+
+    #[test]
+    fn startup_commands_wait_for_xwayland_ready_when_enabled() {
+        let mut config = CompositorConfig::default();
+        config.startup_commands = vec!["true".to_owned()];
+        let mut app = NekolandApp::new("startup-xwayland-test");
+        app.insert_resource(CompositorClock::default())
+            .insert_resource(config)
+            .insert_resource(StartupCommandState::default())
+            .insert_resource(CommandHistoryState::default())
+            .insert_resource(PendingExternalCommandRequests::default())
+            .insert_resource(PendingInputEvents::default())
+            .insert_resource(ProtocolServerState {
+                socket_name: Some("wayland-77".to_owned()),
+                runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
+                ..ProtocolServerState::default()
+            })
+            .insert_resource(XWaylandServerState {
+                enabled: true,
+                ready: false,
+                ..XWaylandServerState::default()
+            })
+            .inner_mut()
+            .add_message::<ExternalCommandLaunched>()
+            .add_message::<ExternalCommandFailed>()
+            .add_systems(
+                LayoutSchedule,
+                (
+                    startup_command_queue_system,
+                    super::external_command_launch_system,
+                    super::command_history_system,
+                )
+                    .chain(),
+            );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        let startup_state = world.get_resource::<StartupCommandState>().unwrap();
+        assert!(!startup_state.queued, "should wait for xwayland ready");
+
+        app.inner_mut().world_mut().resource_mut::<XWaylandServerState>().ready = true;
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        let startup_state = world.get_resource::<StartupCommandState>().unwrap();
+        let history = world.get_resource::<CommandHistoryState>().unwrap();
+        assert!(startup_state.queued, "should be queued after xwayland ready");
+        assert_eq!(history.items.len(), 1, "should have executed after xwayland ready");
+    }
+
+    #[test]
+    fn startup_commands_run_immediately_when_xwayland_disabled() {
+        let mut config = CompositorConfig::default();
+        config.startup_commands = vec!["true".to_owned()];
+        let mut app = NekolandApp::new("startup-xwayland-disabled-test");
+        app.insert_resource(CompositorClock::default())
+            .insert_resource(config)
+            .insert_resource(StartupCommandState::default())
+            .insert_resource(CommandHistoryState::default())
+            .insert_resource(PendingExternalCommandRequests::default())
+            .insert_resource(PendingInputEvents::default())
+            .insert_resource(ProtocolServerState {
+                socket_name: Some("wayland-77".to_owned()),
+                runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
+                ..ProtocolServerState::default()
+            })
+            .insert_resource(XWaylandServerState {
+                enabled: false,
+                ready: false,
+                ..XWaylandServerState::default()
+            })
+            .inner_mut()
+            .add_message::<ExternalCommandLaunched>()
+            .add_message::<ExternalCommandFailed>()
+            .add_systems(
+                LayoutSchedule,
+                (
+                    startup_command_queue_system,
+                    super::external_command_launch_system,
+                    super::command_history_system,
+                )
+                    .chain(),
+            );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        let startup_state = world.get_resource::<StartupCommandState>().unwrap();
+        let history = world.get_resource::<CommandHistoryState>().unwrap();
+        assert!(startup_state.queued, "should run when xwayland disabled");
+        assert_eq!(history.items.len(), 1, "should have executed");
+    }
+
+    #[test]
+    fn startup_commands_run_immediately_when_xwayland_not_present() {
+        let mut config = CompositorConfig::default();
+        config.startup_commands = vec!["true".to_owned()];
+        let mut app = NekolandApp::new("startup-no-xwayland-test");
+        app.insert_resource(CompositorClock::default())
+            .insert_resource(config)
+            .insert_resource(StartupCommandState::default())
+            .insert_resource(CommandHistoryState::default())
+            .insert_resource(PendingExternalCommandRequests::default())
+            .insert_resource(PendingInputEvents::default())
+            .insert_resource(ProtocolServerState {
+                socket_name: Some("wayland-77".to_owned()),
+                runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
+                ..ProtocolServerState::default()
+            })
+            .inner_mut()
+            .add_message::<ExternalCommandLaunched>()
+            .add_message::<ExternalCommandFailed>()
+            .add_systems(
+                LayoutSchedule,
+                (
+                    startup_command_queue_system,
+                    super::external_command_launch_system,
+                    super::command_history_system,
+                )
+                    .chain(),
+            );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        let startup_state = world.get_resource::<StartupCommandState>().unwrap();
+        let history = world.get_resource::<CommandHistoryState>().unwrap();
+        assert!(startup_state.queued, "should run when no xwayland resource");
+        assert_eq!(history.items.len(), 1, "should have executed");
+    }
 }

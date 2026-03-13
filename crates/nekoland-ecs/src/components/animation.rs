@@ -43,8 +43,11 @@ impl Default for WindowAnimation {
 
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FadeState {
+    /// Surface is fading in toward full opacity.
     In,
+    /// Surface is fading out toward transparency.
     Out,
+    /// No fade is currently progressing.
     #[default]
     Idle,
 }

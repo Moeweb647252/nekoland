@@ -8,6 +8,7 @@ use nekoland_ecs::resources::CompositorConfig;
 
 use crate::{hot_reload, loader, schema::NekolandConfigFile};
 
+/// Tracks where the active config came from and what happened during hot reload attempts.
 #[derive(Debug, Clone, Resource)]
 pub struct LoadedConfigSource {
     pub path: PathBuf,
@@ -43,6 +44,8 @@ impl NekolandPlugin for ConfigPlugin {
         let last_observed_modified = hot_reload::observed_modified_at(&self.path);
         hot_reload::install_config_watch_source(app, self.path.clone(), last_observed_modified);
 
+        // Falling back to defaults keeps the compositor bootable even when the configured path is
+        // missing or malformed; the failure is still preserved in `LoadedConfigSource`.
         let (config, loaded_from_disk, successful_reloads, last_reload_error) =
             match loader::load_from_path(&self.path) {
                 Ok(config) => {

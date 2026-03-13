@@ -13,6 +13,8 @@ use crate::{
 pub struct RenderPlugin;
 
 impl NekolandPlugin for RenderPlugin {
+    /// Register render-stage resources plus the strictly ordered render pipeline
+    /// that derives damage, render lists, callbacks, and post-processing.
     fn build(&self, app: &mut App) {
         app.init_resource::<RenderList>()
             .init_resource::<DamageState>()
@@ -20,6 +22,8 @@ impl NekolandPlugin for RenderPlugin {
             .init_resource::<OutputDamageRegions>()
             .add_systems(
                 RenderSchedule,
+                // Rendering stays linear on purpose: damage/render-list/cursor/frame-callback and
+                // post-processing steps all build on the state produced by the previous stage.
                 (
                     damage_tracker::damage_tracking_system,
                     compositor_render::compose_frame_system,

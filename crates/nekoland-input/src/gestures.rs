@@ -3,6 +3,10 @@ use bevy_ecs::prelude::{Local, Res};
 use nekoland_ecs::events::GestureSwipe;
 use nekoland_ecs::resources::GlobalPointerPosition;
 
+/// Temporary gesture recognizer that derives coarse swipe events from pointer movement buckets.
+///
+/// This is a placeholder for real gesture input and currently only emits a synthetic
+/// left-to-right three-finger swipe signal.
 pub fn gesture_recognition_system(
     pointer: Res<GlobalPointerPosition>,
     mut gesture_events: MessageWriter<GestureSwipe>,

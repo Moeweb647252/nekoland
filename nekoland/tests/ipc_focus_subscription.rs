@@ -1,3 +1,5 @@
+//! In-process integration test for focus-change subscription events.
+
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -7,7 +9,7 @@ use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    LayoutSlot, SurfaceGeometry, WindowState, WlSurfaceHandle, XdgWindow,
+    SurfaceGeometry, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::KeyboardFocusState;
 use nekoland_ipc::commands::{QueryCommand, TreeSnapshot, WindowCommand};
@@ -18,9 +20,13 @@ use nekoland_ipc::{
 
 mod common;
 
+/// Surface id of the window that starts focused.
 const PRIMARY_SURFACE_ID: u64 = 101;
+/// Surface id of the window the test later focuses through IPC.
 const TARGET_SURFACE_ID: u64 = 202;
 
+/// Verifies that a focus request results in a `focus_changed` subscription event with both the
+/// previous and new focused surfaces.
 #[test]
 fn focus_subscription_reports_window_focus_transitions() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -97,31 +103,32 @@ fn focus_subscription_reports_window_focus_transitions() {
     assert_eq!(focus_change.focused_surface, Some(TARGET_SURFACE_ID));
 }
 
+/// Seeds two windows so the focus request has deterministic targets.
 fn seed_windows(world: &mut bevy_ecs::world::World) {
     for (surface_id, title, x) in
         [(PRIMARY_SURFACE_ID, "Focus Window 1", 0), (TARGET_SURFACE_ID, "Focus Window 2", 480)]
     {
-        world.spawn((
-            WindowBundle {
-                surface: WlSurfaceHandle { id: surface_id },
-                geometry: SurfaceGeometry { x, y: 32, width: 440, height: 700 },
-                window: XdgWindow {
-                    app_id: "org.nekoland.focus".to_owned(),
-                    title: title.to_owned(),
-                    last_acked_configure: None,
-                },
-                state: WindowState::Tiled,
-                ..Default::default()
+        world.spawn((WindowBundle {
+            surface: WlSurfaceHandle { id: surface_id },
+            geometry: SurfaceGeometry { x, y: 32, width: 440, height: 700 },
+            window: XdgWindow {
+                app_id: "org.nekoland.focus".to_owned(),
+                title: title.to_owned(),
+                last_acked_configure: None,
             },
-            LayoutSlot { workspace: 1, column: 0, row: 0 },
-        ));
+            layout: WindowLayout::Tiled,
+            mode: WindowMode::Normal,
+            ..Default::default()
+        },));
     }
 }
 
+/// Returns the default config path used by this integration test.
 fn workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }
 
+/// Waits until both seeded windows appear in the tree query, then issues the focus request.
 fn issue_focus_command_when_windows_are_ready(
     socket_path: &Path,
 ) -> Result<(), common::TestControl> {
@@ -166,6 +173,7 @@ fn issue_focus_command_when_windows_are_ready(
     }
 }
 
+/// Waits for the `focus_changed` event targeting the expected surface.
 fn wait_for_focus_change(
     socket_path: &Path,
     subscription: IpcSubscription,
@@ -177,6 +185,8 @@ fn wait_for_focus_change(
     loop {
         match stream.read_event() {
             Ok(event) => {
+                // The focus topic may emit other transitions first; keep
+                // reading until the expected focused surface shows up.
                 let Some(payload) = event.payload else {
                     continue;
                 };
@@ -202,6 +212,7 @@ fn wait_for_focus_change(
     }
 }
 
+/// Queries the current tree snapshot over IPC.
 fn query_tree(socket_path: &Path) -> Result<TreeSnapshot, std::io::Error> {
     let reply = send_request_to_path(
         socket_path,
@@ -218,6 +229,7 @@ fn query_tree(socket_path: &Path) -> Result<TreeSnapshot, std::io::Error> {
     serde_json::from_value(payload).map_err(std::io::Error::other)
 }
 
+/// Maps IPC failures into the test's skip/fail control flow.
 fn classify_ipc_error(error: std::io::Error) -> common::TestControl {
     if ipc_error_is_skippable(&error) {
         return common::TestControl::Skip(error.to_string());
@@ -226,6 +238,7 @@ fn classify_ipc_error(error: std::io::Error) -> common::TestControl {
     common::TestControl::Fail(error.to_string())
 }
 
+/// Identifies retryable transient IPC errors.
 fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -236,6 +249,7 @@ fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     )
 }
 
+/// Identifies IPC errors that should skip the test in restricted environments.
 fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
     error.kind() == ErrorKind::PermissionDenied || error.raw_os_error() == Some(1)
 }

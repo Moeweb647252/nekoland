@@ -11,4 +11,5 @@ bevy_ecs.workspace = true
 nekoland-core = { path = "../nekoland-core" }
 nekoland-ecs = { path = "../nekoland-ecs" }
 nekoland-protocol = { path = "../nekoland-protocol" }
+nekoland-shell = { path = "../nekoland-shell" }
 tracing.workspace = true

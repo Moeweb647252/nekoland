@@ -1,3 +1,5 @@
+//! Core application loop, schedule definitions, and runtime glue shared by all nekoland crates.
+
 pub mod app;
 pub mod bridge;
 pub mod calloop;

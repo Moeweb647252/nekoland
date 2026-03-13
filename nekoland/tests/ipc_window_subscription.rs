@@ -1,3 +1,5 @@
+//! In-process integration test for window geometry/state subscription events.
+
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -7,7 +9,7 @@ use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    LayoutSlot, SurfaceGeometry, WindowState, WlSurfaceHandle, XdgWindow,
+    SurfaceGeometry, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ipc::commands::{QueryCommand, TreeSnapshot, WindowCommand, WindowSnapshot};
 use nekoland_ipc::{
@@ -18,21 +20,29 @@ use nekoland_ipc::{
 
 mod common;
 
+/// Surface id of the window whose move should trigger subscription events.
 const TARGET_SURFACE_ID: u64 = 101;
 
+/// Summary returned by the IPC command helper before the subscription events arrive.
 #[derive(Debug)]
 struct WindowChangeCommandSummary {
+    /// Snapshot observed before the move request is sent.
     initial_window: WindowSnapshot,
+    /// Requested x coordinate for the move command.
     target_x: i32,
+    /// Requested y coordinate for the move command.
     target_y: i32,
 }
 
+/// Pair of window subscription events that the scenario waits for.
 #[derive(Debug)]
 struct WindowChangeEvents {
     geometry: WindowGeometryChangeSnapshot,
     state: WindowStateChangeSnapshot,
 }
 
+/// Verifies that a move request produces both geometry-change and state-change subscription
+/// events.
 #[test]
 fn window_subscription_reports_geometry_and_state_transitions() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -121,27 +131,28 @@ fn window_subscription_reports_geometry_and_state_transitions() {
     assert_eq!(events.state.state, "Floating");
 }
 
+/// Seeds one window for the subscription scenario.
 fn seed_window(world: &mut bevy_ecs::world::World) {
-    world.spawn((
-        WindowBundle {
-            surface: WlSurfaceHandle { id: TARGET_SURFACE_ID },
-            geometry: SurfaceGeometry { x: 0, y: 32, width: 440, height: 700 },
-            window: XdgWindow {
-                app_id: "org.nekoland.window-subscription".to_owned(),
-                title: "Subscription Window".to_owned(),
-                last_acked_configure: None,
-            },
-            state: WindowState::Tiled,
-            ..Default::default()
+    world.spawn((WindowBundle {
+        surface: WlSurfaceHandle { id: TARGET_SURFACE_ID },
+        geometry: SurfaceGeometry { x: 0, y: 32, width: 440, height: 700 },
+        window: XdgWindow {
+            app_id: "org.nekoland.window-subscription".to_owned(),
+            title: "Subscription Window".to_owned(),
+            last_acked_configure: None,
         },
-        LayoutSlot { workspace: 1, column: 0, row: 0 },
-    ));
+        layout: WindowLayout::Tiled,
+        mode: WindowMode::Normal,
+        ..Default::default()
+    },));
 }
 
+/// Returns the default config path used by this integration test.
 fn workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }
 
+/// Waits until the seeded window appears in the tree query, then issues the move request.
 fn issue_move_command_when_window_is_ready(
     socket_path: &Path,
 ) -> Result<WindowChangeCommandSummary, common::TestControl> {
@@ -203,6 +214,7 @@ fn issue_move_command_when_window_is_ready(
     }
 }
 
+/// Waits for both geometry-change and state-change events targeting the expected window.
 fn wait_for_window_change_events(
     socket_path: &Path,
     subscription: IpcSubscription,
@@ -220,6 +232,8 @@ fn wait_for_window_change_events(
                     continue;
                 };
 
+                // Geometry and state transitions may be delivered as separate
+                // events, so cache each half until both have arrived.
                 match event.event.as_str() {
                     "window_geometry_changed" => {
                         let change =
@@ -263,6 +277,7 @@ fn wait_for_window_change_events(
     }
 }
 
+/// Queries the current tree snapshot over IPC.
 fn query_tree(socket_path: &Path) -> Result<TreeSnapshot, std::io::Error> {
     let reply = send_request_to_path(
         socket_path,
@@ -279,6 +294,7 @@ fn query_tree(socket_path: &Path) -> Result<TreeSnapshot, std::io::Error> {
     serde_json::from_value(payload).map_err(std::io::Error::other)
 }
 
+/// Maps IPC failures into the test's skip/fail control flow.
 fn classify_ipc_error(error: std::io::Error) -> common::TestControl {
     if ipc_error_is_skippable(&error) {
         return common::TestControl::Skip(error.to_string());
@@ -287,6 +303,7 @@ fn classify_ipc_error(error: std::io::Error) -> common::TestControl {
     common::TestControl::Fail(error.to_string())
 }
 
+/// Identifies retryable transient IPC errors.
 fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -297,6 +314,7 @@ fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     )
 }
 
+/// Identifies IPC errors that should skip the test in restricted environments.
 fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
     error.kind() == ErrorKind::PermissionDenied || error.raw_os_error() == Some(1)
 }

@@ -1,18 +1,25 @@
+//! In-process integration test that verifies live Wayland client traffic materializes ECS window
+//! state and render output.
+
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
 use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
-use nekoland_ecs::components::{WindowState, WlSurfaceHandle, XdgWindow};
+use nekoland_ecs::components::{
+    WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
+};
 use nekoland_ecs::resources::{KeyboardFocusState, RenderList};
 use nekoland_protocol::ProtocolServerState;
 
 mod common;
 
+/// Verifies that a live client round-trip creates window entities, render elements, and focus.
 #[test]
 fn live_client_roundtrip_populates_window_entities_and_render_state() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-inprocess-runtime");
     let config_path = workspace_config_path();
 
@@ -42,6 +49,8 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
     };
 
     let client_thread = thread::spawn(move || {
+        // Keep the client alive briefly after the first configure so the
+        // compositor has enough frames to materialize ECS and render state.
         common::run_xdg_client_with_hold(&socket_path, Duration::from_millis(100))
     });
     app.run().expect("nekoland app should complete the configured frame budget");
@@ -62,10 +71,17 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
 
     let (window_rows, render_elements, focused_surface) = {
         let world = app.inner_mut().world_mut();
-        let mut windows = world.query::<(&WlSurfaceHandle, &XdgWindow, &WindowState)>();
+        let mut windows =
+            world.query::<(&WlSurfaceHandle, &XdgWindow, &WindowLayout, &WindowMode)>();
         let window_rows = windows
             .iter(world)
-            .map(|(surface, window, state)| (surface.id, window.title.clone(), state.clone()))
+            .map(|(surface, window, layout, mode)| {
+                (
+                    surface.id,
+                    window.title.clone(),
+                    WindowDisplayState::from_layout_mode(layout.clone(), mode.clone()),
+                )
+            })
             .collect::<Vec<_>>();
         let render_elements = world
             .get_resource::<RenderList>()
@@ -86,7 +102,11 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
 
     let (surface_id, title, state) = window_rows[0].clone();
     assert_eq!(title, format!("Window {surface_id}"));
-    assert_ne!(state, WindowState::Hidden, "newly mapped client window should remain visible");
+    assert_ne!(
+        state,
+        WindowDisplayState::Hidden,
+        "newly mapped client window should remain visible"
+    );
     assert!(
         render_elements.iter().any(|element| element.surface_id == surface_id),
         "render list should include the client window surface: {render_elements:?}"
@@ -102,6 +122,7 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
     );
 }
 
+/// Returns the default config path used by this integration test.
 fn workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }

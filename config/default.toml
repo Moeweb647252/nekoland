@@ -14,11 +14,7 @@ repeat_rate = 30
 command_history_limit = 64
 
 [startup]
-commands = ["alacritty"]
-
-[commands]
-terminal = "foot"
-launcher = "fuzzel"
+commands = ["qs -c noctalia-shell"]
 
 [xwayland]
 enabled = true
@@ -30,6 +26,6 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Return" = "spawn-terminal"
-"Super+Space" = "launcher"
+"Super+Return" = ["foot"]
+"Super+Space" = ["fuzzel"]
 "Super+Q" = "close-window"

@@ -1,3 +1,5 @@
+//! In-process integration test for drag-and-drop data transfer between two real clients.
+
 use std::io::{Read, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -30,14 +32,22 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 mod common;
 
+/// Pointer button code used to start and finish the drag.
 const TEST_BUTTON_CODE: u32 = 0x110;
+/// MIME type offered for the drag-and-drop transfer.
 const TEST_MIME_TYPE: &str = "text/plain;charset=utf-8";
+/// Payload transferred from the source client to the target client.
 const TEST_DND_BYTES: &[u8] = b"nekoland dnd roundtrip";
+/// Width of the helper clients' SHM buffers.
 const TEST_BUFFER_WIDTH: u32 = 48;
+/// Height of the helper clients' SHM buffers.
 const TEST_BUFFER_HEIGHT: u32 = 48;
+/// Frame at which the synthetic DnD pump begins driving pointer state.
 const INPUT_PUMP_START_FRAME: u64 = 8;
+/// Generous frame budget for the two-client DnD scenario.
 const MAX_TEST_FRAMES: u64 = 1024;
 
+/// High-level state machine for the synthetic input pump that drives the DnD scenario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DndPumpPhase {
     WaitForWindows,
@@ -51,18 +61,28 @@ enum DndPumpPhase {
     Done,
 }
 
+/// Test pump that drives the pointer/button choreography needed for the drag-and-drop scenario.
 #[derive(Debug, Resource)]
 struct DndTransferPump {
+    /// Flag set once the source toplevel exists and has committed a buffer.
     source_window_ready: Arc<AtomicBool>,
+    /// Flag set once the source client observed pointer entry.
     source_pointer_ready: Arc<AtomicBool>,
+    /// Flag set once the source client called `start_drag`.
     source_drag_started: Arc<AtomicBool>,
+    /// Flag set once the target client exists and has committed a buffer.
     target_ready: Arc<AtomicBool>,
+    /// Flag set once the target observed a matching DnD offer.
     target_offer_ready: Arc<AtomicBool>,
+    /// Current phase of the synthetic pointer choreography.
     phase: DndPumpPhase,
+    /// Retry counter while waiting for source focus/pointer entry.
     source_focus_attempts: u8,
+    /// Retry counter while waiting for the target offer negotiation to settle.
     target_offer_attempts: u8,
 }
 
+/// Summary returned by the source DnD client.
 #[derive(Debug)]
 struct SourceClientSummary {
     globals: Vec<String>,
@@ -70,12 +90,14 @@ struct SourceClientSummary {
     send_requests: usize,
 }
 
+/// Summary returned by the target DnD client.
 #[derive(Debug)]
 struct TargetClientSummary {
     globals: Vec<String>,
     received_payload: Vec<u8>,
 }
 
+/// Source DnD client state that initiates the drag and serves offered data.
 #[derive(Debug, Default)]
 struct SourceClientState {
     globals: Vec<String>,
@@ -93,13 +115,19 @@ struct SourceClientState {
     _pool: Option<wl_shm_pool::WlShmPool>,
     _buffer: Option<wl_buffer::WlBuffer>,
     _backing_file: Option<std::fs::File>,
+    /// Whether the helper toplevel received its initial configure.
     configured: bool,
+    /// Whether the helper attached a real buffer and became mappable.
     buffer_attached: bool,
+    /// Whether the pointer is currently inside the source surface.
     pointer_inside: bool,
+    /// Whether the source already started the drag operation.
     drag_started: bool,
+    /// Number of `wl_data_source.send` requests served so far.
     send_requests: usize,
 }
 
+/// Target DnD client state that accepts the drop and reads the offered data.
 #[derive(Debug, Default)]
 struct TargetClientState {
     globals: Vec<String>,
@@ -115,20 +143,34 @@ struct TargetClientState {
     _pool: Option<wl_shm_pool::WlShmPool>,
     _buffer: Option<wl_buffer::WlBuffer>,
     _backing_file: Option<std::fs::File>,
+    /// Whether the helper toplevel received its initial configure.
     configured: bool,
+    /// Whether the helper attached a real buffer and became mappable.
     buffer_attached: bool,
+    /// Current drag offer announced by the compositor, if any.
     drag_offer: Option<wl_data_offer::WlDataOffer>,
+    /// Serial from the most recent `wl_data_device.enter`.
     enter_serial: Option<u32>,
+    /// Whether the target observed the MIME type this test expects.
     offered_test_mime: bool,
+    /// Whether the target already requested `offer.receive`.
     receive_requested: bool,
+    /// Pipe reader used to collect bytes from the accepted drop.
     pending_read: Option<std::os::unix::net::UnixStream>,
+    /// Bytes collected from the drag source.
     received_payload: Vec<u8>,
+    /// Number of `wl_data_device.enter` events observed.
     enter_count: usize,
+    /// Number of `wl_data_offer.offer` events observed.
     offer_count: usize,
+    /// Number of `wl_data_device.drop` events observed.
     drop_count: usize,
+    /// Number of `wl_data_device.leave` events observed.
     leave_count: usize,
 }
 
+/// Verifies that a drag-and-drop transfer round-trips through the compositor and is reflected in
+/// ECS drag-and-drop state.
 #[test]
 fn drag_and_drop_roundtrips_between_two_real_clients() {
     let Some((source, target, dnd_state)) = run_dnd_transfer_scenario() else {
@@ -157,6 +199,7 @@ fn drag_and_drop_roundtrips_between_two_real_clients() {
     );
 }
 
+/// Runs the full drag-and-drop transfer scenario between a source and a target client.
 fn run_dnd_transfer_scenario()
 -> Option<(SourceClientSummary, TargetClientSummary, DragAndDropState)> {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -280,6 +323,8 @@ fn run_dnd_transfer_scenario()
     Some((source_summary, target_summary, dnd_state))
 }
 
+/// Drives the synthetic pointer/button choreography that causes the two test clients to perform
+/// a drag-and-drop transfer.
 fn pump_dnd_transfer_input(
     clock: Res<CompositorClock>,
     dnd_state: Res<DragAndDropState>,
@@ -296,9 +341,11 @@ fn pump_dnd_transfer_input(
     let mut known_windows = windows
         .iter_mut()
         .map(|(surface, geometry, window)| (surface.id, geometry.clone(), window.title.clone()))
-        .collect::<Vec<_>>();  
+        .collect::<Vec<_>>();
     known_windows.sort_by_key(|(surface_id, _, _)| *surface_id);
 
+    // The helper clients label themselves via toplevel titles so the pump can
+    // keep source and target roles straight even if entity ordering changes.
     let source_window = known_windows
         .iter()
         .find(|(_, _, title)| title == "dnd-source")
@@ -369,7 +416,7 @@ fn pump_dnd_transfer_input(
             }
         }
         DndPumpPhase::PressSource => {
-            pending_protocol_inputs.items.push(BackendInputEvent {
+            pending_protocol_inputs.push(BackendInputEvent {
                 device: "dnd-test".to_owned(),
                 action: BackendInputAction::PointerButton {
                     button_code: TEST_BUTTON_CODE,
@@ -418,7 +465,7 @@ fn pump_dnd_transfer_input(
             }
         }
         DndPumpPhase::ReleaseOnTarget => {
-            pending_protocol_inputs.items.push(BackendInputEvent {
+            pending_protocol_inputs.push(BackendInputEvent {
                 device: "dnd-test".to_owned(),
                 action: BackendInputAction::PointerButton {
                     button_code: TEST_BUTTON_CODE,
@@ -431,6 +478,7 @@ fn pump_dnd_transfer_input(
     }
 }
 
+/// Applies one pointer motion event to the protocol input queue.
 fn apply_pointer_motion(
     pointer: &mut GlobalPointerPosition,
     pending_protocol_inputs: &mut PendingProtocolInputEvents,
@@ -439,7 +487,7 @@ fn apply_pointer_motion(
 ) {
     pointer.x = x;
     pointer.y = y;
-    pending_protocol_inputs.items.extend([
+    pending_protocol_inputs.extend([
         BackendInputEvent {
             device: "dnd-test".to_owned(),
             action: BackendInputAction::FocusChanged { focused: false },
@@ -455,12 +503,14 @@ fn apply_pointer_motion(
     ]);
 }
 
+/// Picks a pointer coordinate guaranteed to fall inside the supplied geometry.
 fn pointer_in_geometry(geometry: &SurfaceGeometry) -> (f64, f64) {
     let x = f64::from(geometry.x) + 64.0f64.min(f64::from(geometry.width.saturating_sub(1)));
     let y = f64::from(geometry.y) + 64.0f64.min(f64::from(geometry.height.saturating_sub(1)));
     (x, y)
 }
 
+/// Checks whether two geometries overlap.
 fn geometries_overlap(a: &SurfaceGeometry, b: &SurfaceGeometry) -> bool {
     let a_left = i64::from(a.x);
     let a_top = i64::from(a.y);
@@ -474,6 +524,7 @@ fn geometries_overlap(a: &SurfaceGeometry, b: &SurfaceGeometry) -> bool {
     a_left < b_right && a_right > b_left && a_top < b_bottom && a_bottom > b_top
 }
 
+/// Creates a small SHM buffer with deterministic pixel data for the helper clients.
 fn create_test_buffer<T>(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<T>,
@@ -509,6 +560,7 @@ where
     Ok((file, pool, buffer))
 }
 
+/// Runs the source DnD client until it starts the drag and serves any requested payload reads.
 fn run_source_client(
     socket_path: &Path,
     ready_flag: Arc<AtomicBool>,
@@ -564,6 +616,7 @@ fn run_source_client(
     })
 }
 
+/// Performs one read/dispatch cycle for the source DnD client.
 fn dispatch_source_client_once(
     event_queue: &mut EventQueue<SourceClientState>,
     state: &mut SourceClientState,
@@ -584,6 +637,7 @@ fn dispatch_source_client_once(
     Ok(())
 }
 
+/// Runs the target DnD client until it receives the drop payload.
 fn run_target_client(
     socket_path: &Path,
     ready_flag: Arc<AtomicBool>,
@@ -632,6 +686,7 @@ fn run_target_client(
     Ok(TargetClientSummary { globals: state.globals, received_payload: state.received_payload })
 }
 
+/// Performs one read/dispatch cycle for the target DnD client.
 fn dispatch_target_client_once(
     event_queue: &mut EventQueue<TargetClientState>,
     state: &mut TargetClientState,
@@ -1017,6 +1072,7 @@ delegate_noop!(TargetClientState: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(TargetClientState: ignore wl_buffer::WlBuffer);
 
 impl SourceClientState {
+    /// Create the source helper toplevel once both compositor globals are available.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;
@@ -1036,6 +1092,7 @@ impl SourceClientState {
         self.toplevel = Some(toplevel);
     }
 
+    /// Bind the seat-scoped data device once both the seat and manager are known.
     fn maybe_bind_devices(&mut self, qh: &QueueHandle<Self>) {
         if self.data_device.is_none() && self.data_device_manager.is_some() && self.seat.is_some() {
             let manager = self
@@ -1047,6 +1104,7 @@ impl SourceClientState {
         }
     }
 
+    /// Start the drag with a single offered MIME type and mark the source as active.
     fn start_drag(&mut self, qh: &QueueHandle<Self>, serial: u32) {
         let Some(manager) = self.data_device_manager.as_ref() else {
             return;
@@ -1066,6 +1124,7 @@ impl SourceClientState {
         self.drag_started = true;
     }
 
+    /// Attach a real SHM buffer so the source surface can participate in pointer focus and DnD.
     fn attach_test_buffer(&mut self, qh: &QueueHandle<Self>) {
         if self.buffer_attached || self.shm.is_none() || self.base_surface.is_none() {
             return;
@@ -1086,6 +1145,7 @@ impl SourceClientState {
 }
 
 impl TargetClientState {
+    /// Create the target helper toplevel once both compositor globals are available.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;
@@ -1105,6 +1165,7 @@ impl TargetClientState {
         self.toplevel = Some(toplevel);
     }
 
+    /// Bind the seat-scoped data device once both the seat and manager are known.
     fn maybe_bind_data_device(&mut self, qh: &QueueHandle<Self>) {
         if self.data_device.is_some() || self.data_device_manager.is_none() || self.seat.is_none() {
             return;
@@ -1118,6 +1179,7 @@ impl TargetClientState {
         self.data_device = Some(manager.get_data_device(seat, qh, ()));
     }
 
+    /// Accept the drag once the compositor provided both an enter serial and the expected MIME.
     fn maybe_accept_drag(&mut self) -> Result<(), common::TestControl> {
         let Some(offer) = self.drag_offer.as_ref() else {
             return Ok(());
@@ -1137,6 +1199,7 @@ impl TargetClientState {
         Ok(())
     }
 
+    /// Start reading the accepted offer into a local pipe once the MIME negotiation finished.
     fn maybe_request_receive(&mut self) -> Result<(), common::TestControl> {
         if self.receive_requested || !self.offered_test_mime {
             return Ok(());
@@ -1157,6 +1220,7 @@ impl TargetClientState {
         Ok(())
     }
 
+    /// Poll the receive pipe and finalize the drop once bytes arrive.
     fn try_read_received_payload(&mut self) -> Result<(), common::TestControl> {
         let Some(read_end) = self.pending_read.as_mut() else {
             return Ok(());

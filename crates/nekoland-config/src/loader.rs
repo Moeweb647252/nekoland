@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::schema::NekolandConfigFile;
 
+/// Errors returned while loading and decoding the on-disk config file.
 #[derive(Debug)]
 pub enum ConfigError {
     Io(std::io::Error),
@@ -29,6 +30,7 @@ impl From<std::io::Error> for ConfigError {
     }
 }
 
+/// Loads a config file based on its extension and decodes it into the TOML/RON schema struct.
 pub fn load_from_path(path: impl AsRef<Path>) -> Result<NekolandConfigFile, ConfigError> {
     let path = path.as_ref();
     let contents = std::fs::read_to_string(path)?;

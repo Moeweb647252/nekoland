@@ -7,14 +7,21 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bevy_ecs::prelude::{NonSendMut, Query, Res, ResMut, Resource};
+use bevy_ecs::entity_disabling::Disabled;
+use bevy_ecs::hierarchy::ChildOf;
+use bevy_ecs::prelude::{Entity, NonSendMut, Query, Res, ResMut, Resource, With};
+use bevy_ecs::query::Allow;
 use nekoland_config::LoadedConfigSource;
+use nekoland_ecs::control::{OutputControlApi, WindowControlApi, WorkspaceControlApi};
+use nekoland_ecs::selectors::{
+    OutputName, SurfaceId, WorkspaceLookup, WorkspaceName, WorkspaceSelector,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::query::{
-    ClipboardSnapshot, CommandSnapshot, CommandStatusSnapshot, ConfigCommandSnapshot,
-    ConfigOutputSnapshot, ConfigSnapshot, OutputSnapshot, PopupSnapshot, PrimarySelectionSnapshot,
-    QueryCommand, SelectionOwnerSnapshot, TreeSnapshot, WindowSnapshot, WorkspaceSnapshot,
+    ClipboardSnapshot, CommandSnapshot, CommandStatusSnapshot, ConfigOutputSnapshot,
+    ConfigSnapshot, OutputSnapshot, PopupSnapshot, PrimarySelectionSnapshot, QueryCommand,
+    SelectionOwnerSnapshot, TreeSnapshot, WindowSnapshot, WorkspaceSnapshot,
 };
 use crate::commands::{OutputCommand, PopupCommand, WindowCommand, WorkspaceCommand};
 use crate::subscribe::{
@@ -22,17 +29,18 @@ use crate::subscribe::{
 };
 use crate::{IpcCommand, IpcReply, IpcRequest};
 use nekoland_ecs::components::{
-    LayoutSlot, OutputDevice, OutputProperties, PopupGrab, SurfaceGeometry, WindowState,
-    WlSurfaceHandle, Workspace, X11Window, XdgPopup, XdgWindow,
+    WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgPopup,
 };
 use nekoland_ecs::resources::{
     ClipboardSelectionState, CommandExecutionStatus, CommandHistoryState, CompositorClock,
-    CompositorConfig, KeyboardFocusState, OutputServerAction, OutputServerRequest,
-    PendingOutputServerRequests, PendingPopupServerRequests, PendingWindowServerRequests,
-    PendingWorkspaceServerRequests, PopupServerAction, PopupServerRequest, PrimarySelectionState,
-    RenderList, SelectionOwner, WindowServerAction, WindowServerRequest, WorkspaceServerAction,
-    WorkspaceServerRequest,
+    CompositorConfig, EntityIndex, KeyboardFocusState, PendingOutputControls,
+    PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls, PopupServerAction,
+    PopupServerRequest, PrimarySelectionState, RenderList, SelectionOwner,
 };
+use nekoland_ecs::views::{
+    OutputRuntime, PopupSnapshotRuntime, WindowSnapshotRuntime, WorkspaceRuntime,
+};
+use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 const DEFAULT_IPC_SOCKET_NAME: &str = "nekoland-ipc.sock";
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(2);
@@ -98,6 +106,8 @@ pub struct IpcQueryCache {
 }
 
 impl IpcQueryCache {
+    /// Reuses the latest materialized query snapshots for request/response IPC so query handlers
+    /// do not need to walk ECS state independently on every client request.
     pub fn build_reply(&self, command: &QueryCommand) -> IpcReply {
         let payload = match command {
             QueryCommand::GetTree => serde_json::to_value(&self.tree),
@@ -151,19 +161,21 @@ impl IpcServerRuntime {
         query_cache: &IpcQueryCache,
         pending_subscription_events: &mut PendingSubscriptionEvents,
         pending_popup_requests: &mut PendingPopupServerRequests,
-        pending_window_requests: &mut PendingWindowServerRequests,
-        pending_workspace_requests: &mut PendingWorkspaceServerRequests,
-        pending_output_requests: &mut PendingOutputServerRequests,
+        pending_window_controls: &mut PendingWindowControls,
+        pending_workspace_controls: &mut PendingWorkspaceControls,
+        pending_output_controls: &mut PendingOutputControls,
     ) {
+        // Run the request/response state machine twice: once to accept/process new input, then a
+        // second time after subscription fan-out so queued replies flush in the same frame.
         self.accept_connections(server_state);
         self.process_connections(
             server_state,
             query_cache,
             pending_subscription_events,
             pending_popup_requests,
-            pending_window_requests,
-            pending_workspace_requests,
-            pending_output_requests,
+            pending_window_controls,
+            pending_workspace_controls,
+            pending_output_controls,
         );
         self.dispatch_subscription_events(pending_subscription_events);
         self.process_connections(
@@ -171,9 +183,9 @@ impl IpcServerRuntime {
             query_cache,
             pending_subscription_events,
             pending_popup_requests,
-            pending_window_requests,
-            pending_workspace_requests,
-            pending_output_requests,
+            pending_window_controls,
+            pending_workspace_controls,
+            pending_output_controls,
         );
     }
 
@@ -215,9 +227,9 @@ impl IpcServerRuntime {
         query_cache: &IpcQueryCache,
         pending_subscription_events: &mut PendingSubscriptionEvents,
         pending_popup_requests: &mut PendingPopupServerRequests,
-        pending_window_requests: &mut PendingWindowServerRequests,
-        pending_workspace_requests: &mut PendingWorkspaceServerRequests,
-        pending_output_requests: &mut PendingOutputServerRequests,
+        pending_window_controls: &mut PendingWindowControls,
+        pending_workspace_controls: &mut PendingWorkspaceControls,
+        pending_output_controls: &mut PendingOutputControls,
     ) {
         let mut keep = Vec::with_capacity(self.connections.len());
 
@@ -227,9 +239,9 @@ impl IpcServerRuntime {
                 query_cache,
                 pending_subscription_events,
                 pending_popup_requests,
-                pending_window_requests,
-                pending_workspace_requests,
-                pending_output_requests,
+                pending_window_controls,
+                pending_workspace_controls,
+                pending_output_controls,
             );
             if !should_close {
                 keep.push(connection);
@@ -243,11 +255,11 @@ impl IpcServerRuntime {
         &mut self,
         pending_subscription_events: &mut PendingSubscriptionEvents,
     ) {
-        if pending_subscription_events.events.is_empty() {
+        if pending_subscription_events.is_empty() {
             return;
         }
 
-        let events = std::mem::take(&mut pending_subscription_events.events);
+        let events = pending_subscription_events.take();
         for event in &events {
             for connection in &mut self.connections {
                 connection.queue_subscription_event(event);
@@ -280,9 +292,9 @@ impl IpcConnection {
         query_cache: &IpcQueryCache,
         _pending_subscription_events: &mut PendingSubscriptionEvents,
         pending_popup_requests: &mut PendingPopupServerRequests,
-        pending_window_requests: &mut PendingWindowServerRequests,
-        pending_workspace_requests: &mut PendingWorkspaceServerRequests,
-        pending_output_requests: &mut PendingOutputServerRequests,
+        pending_window_controls: &mut PendingWindowControls,
+        pending_workspace_controls: &mut PendingWorkspaceControls,
+        pending_output_controls: &mut PendingOutputControls,
     ) -> bool {
         if !self.request_processed {
             self.read_request(server_state);
@@ -292,9 +304,9 @@ impl IpcConnection {
                         request,
                         query_cache,
                         pending_popup_requests,
-                        pending_window_requests,
-                        pending_workspace_requests,
-                        pending_output_requests,
+                        pending_window_controls,
+                        pending_workspace_controls,
+                        pending_output_controls,
                     ),
                     Err(error) => RequestDisposition::Reply(IpcReply {
                         ok: false,
@@ -469,18 +481,18 @@ pub(crate) fn accept_connections_system(
     query_cache: Res<IpcQueryCache>,
     mut pending_subscription_events: ResMut<PendingSubscriptionEvents>,
     mut pending_popup_requests: ResMut<PendingPopupServerRequests>,
-    mut pending_window_requests: ResMut<PendingWindowServerRequests>,
-    mut pending_workspace_requests: ResMut<PendingWorkspaceServerRequests>,
-    mut pending_output_requests: ResMut<PendingOutputServerRequests>,
+    mut pending_window_controls: ResMut<PendingWindowControls>,
+    mut pending_workspace_controls: ResMut<PendingWorkspaceControls>,
+    mut pending_output_controls: ResMut<PendingOutputControls>,
 ) {
     runtime.pump(
         &mut server_state,
         &query_cache,
         &mut pending_subscription_events,
         &mut pending_popup_requests,
-        &mut pending_window_requests,
-        &mut pending_workspace_requests,
-        &mut pending_output_requests,
+        &mut pending_window_controls,
+        &mut pending_workspace_controls,
+        &mut pending_output_controls,
     );
 
     tracing::trace!(
@@ -495,17 +507,11 @@ pub(crate) fn accept_connections_system(
 }
 
 pub fn refresh_query_cache_system(
-    outputs: Query<(&OutputDevice, &OutputProperties)>,
-    workspaces: Query<&Workspace>,
-    windows: Query<(
-        &WlSurfaceHandle,
-        &XdgWindow,
-        Option<&X11Window>,
-        &SurfaceGeometry,
-        &WindowState,
-        Option<&LayoutSlot>,
-    )>,
-    popups: Query<(&WlSurfaceHandle, &XdgPopup, &SurfaceGeometry, Option<&PopupGrab>)>,
+    outputs: Query<OutputRuntime>,
+    workspaces: Query<(Entity, WorkspaceRuntime), Allow<Disabled>>,
+    windows: Query<WindowSnapshotRuntime, Allow<Disabled>>,
+    popups: Query<PopupSnapshotRuntime, (With<XdgPopup>, Allow<Disabled>)>,
+    surfaces: Query<&WlSurfaceHandle, Allow<Disabled>>,
     render_list: Res<RenderList>,
     keyboard_focus: Res<KeyboardFocusState>,
     clock: Res<CompositorClock>,
@@ -514,28 +520,29 @@ pub fn refresh_query_cache_system(
     clipboard_selection: Res<ClipboardSelectionState>,
     primary_selection: Res<PrimarySelectionState>,
     config_source: Option<Res<LoadedConfigSource>>,
+    entity_index: Option<Res<EntityIndex>>,
     mut query_cache: ResMut<IpcQueryCache>,
 ) {
     query_cache.outputs = outputs
         .iter()
-        .map(|(output, properties)| OutputSnapshot {
-            name: output.name.clone(),
-            kind: output.kind.clone(),
-            make: output.make.clone(),
-            model: output.model.clone(),
-            width: properties.width,
-            height: properties.height,
-            refresh_millihz: properties.refresh_millihz,
-            scale: properties.scale,
+        .map(|output| OutputSnapshot {
+            name: output.device.name.clone(),
+            kind: output.device.kind.clone(),
+            make: output.device.make.clone(),
+            model: output.device.model.clone(),
+            width: output.properties.width,
+            height: output.properties.height,
+            refresh_millihz: output.properties.refresh_millihz,
+            scale: output.properties.scale,
         })
         .collect();
 
     query_cache.workspaces = workspaces
         .iter()
-        .map(|workspace| WorkspaceSnapshot {
-            id: workspace.id.0,
-            name: workspace.name.clone(),
-            active: workspace.active,
+        .map(|(_, workspace)| WorkspaceSnapshot {
+            id: workspace.id().0,
+            name: workspace.name().to_owned(),
+            active: workspace.is_active(),
         })
         .collect();
 
@@ -567,7 +574,7 @@ pub fn refresh_query_cache_system(
         cursor_theme: config.cursor_theme.clone(),
         border_color: config.border_color.clone(),
         background_color: config.background_color.clone(),
-        default_layout: config.default_layout.clone(),
+        default_layout: config.default_layout.to_string(),
         focus_follows_mouse: config.focus_follows_mouse,
         repeat_rate: config.repeat_rate,
         command_history_limit: config.command_history_limit,
@@ -584,11 +591,6 @@ pub fn refresh_query_cache_system(
                 enabled: output.enabled,
             })
             .collect(),
-        commands: ConfigCommandSnapshot {
-            terminal: config.commands.terminal.clone(),
-            launcher: config.commands.launcher.clone(),
-            power_menu: config.commands.power_menu.clone(),
-        },
         keybindings: config.keybindings.clone(),
     };
 
@@ -635,33 +637,39 @@ pub fn refresh_query_cache_system(
 
     let windows = windows
         .iter()
-        .map(|(surface, window, x11_window, geometry, state, slot)| WindowSnapshot {
-            surface_id: surface.id,
-            title: window.title.clone(),
-            app_id: window.app_id.clone(),
-            xwayland: x11_window.is_some(),
-            x11_window_id: x11_window.map(|window| window.window_id),
-            override_redirect: x11_window.is_some_and(|window| window.override_redirect),
-            x: geometry.x,
-            y: geometry.y,
-            width: geometry.width,
-            height: geometry.height,
-            state: format!("{state:?}"),
-            workspace: slot.map(|slot| slot.workspace),
-            focused: keyboard_focus.focused_surface == Some(surface.id),
+        .map(|window| WindowSnapshot {
+            surface_id: window.surface_id(),
+            title: window.window.title.clone(),
+            app_id: window.window.app_id.clone(),
+            xwayland: window.x11_window.is_some(),
+            x11_window_id: window.x11_window.map(|x11_window| x11_window.window_id),
+            override_redirect: window
+                .x11_window
+                .is_some_and(|x11_window| x11_window.override_redirect),
+            x: window.geometry.x,
+            y: window.geometry.y,
+            width: window.geometry.width,
+            height: window.geometry.height,
+            state: window_state_label(window.layout.clone(), window.mode.clone()),
+            workspace: window_workspace_runtime_id(window.child_of, &workspaces),
+            focused: keyboard_focus.focused_surface == Some(window.surface_id()),
         })
         .collect::<Vec<_>>();
     let popups = popups
         .iter()
-        .map(|(surface, popup, geometry, grab)| PopupSnapshot {
-            surface_id: surface.id,
-            parent_surface_id: popup.parent_surface,
-            x: geometry.x,
-            y: geometry.y,
-            width: geometry.width,
-            height: geometry.height,
-            grab_active: grab.is_some_and(|grab| grab.active),
-            grab_serial: grab.and_then(|grab| grab.serial),
+        .map(|popup| PopupSnapshot {
+            surface_id: popup.surface_id(),
+            parent_surface_id: popup_parent_surface_id(
+                popup.child_of,
+                &surfaces,
+                entity_index.as_deref(),
+            ),
+            x: popup.geometry.x,
+            y: popup.geometry.y,
+            width: popup.geometry.width,
+            height: popup.geometry.height,
+            grab_active: popup.grab.is_some_and(|grab| grab.active),
+            grab_serial: popup.grab.and_then(|grab| grab.serial),
         })
         .collect::<Vec<_>>();
 
@@ -681,6 +689,21 @@ fn selection_owner_snapshot(owner: SelectionOwner) -> SelectionOwnerSnapshot {
         SelectionOwner::Client => SelectionOwnerSnapshot::Client,
         SelectionOwner::Compositor => SelectionOwnerSnapshot::Compositor,
     }
+}
+
+fn window_state_label(layout: WindowLayout, mode: WindowMode) -> String {
+    WindowDisplayState::from_layout_mode(layout, mode).label().to_owned()
+}
+
+fn popup_parent_surface_id(
+    child_of: &ChildOf,
+    surfaces: &Query<&WlSurfaceHandle, Allow<Disabled>>,
+    entity_index: Option<&EntityIndex>,
+) -> u64 {
+    entity_index
+        .and_then(|entity_index| entity_index.surface_id_for_entity(child_of.parent()))
+        .or_else(|| surfaces.get(child_of.parent()).ok().map(|surface| surface.id))
+        .unwrap_or_default()
 }
 
 fn bind_ipc_listener(socket_path: &Path) -> io::Result<UnixListener> {
@@ -779,16 +802,19 @@ fn reply_for_request(
     request: IpcRequest,
     query_cache: &IpcQueryCache,
     pending_popup_requests: &mut PendingPopupServerRequests,
-    pending_window_requests: &mut PendingWindowServerRequests,
-    pending_workspace_requests: &mut PendingWorkspaceServerRequests,
-    pending_output_requests: &mut PendingOutputServerRequests,
+    pending_window_controls: &mut PendingWindowControls,
+    pending_workspace_controls: &mut PendingWorkspaceControls,
+    pending_output_controls: &mut PendingOutputControls,
 ) -> RequestDisposition {
+    let keyboard_focus = KeyboardFocusState::default();
+    let mut windows = WindowControlApi::new(&keyboard_focus, pending_window_controls);
+    let mut workspaces = WorkspaceControlApi::new(pending_workspace_controls);
+    let mut outputs = OutputControlApi::new(pending_output_controls);
     match request.command {
         IpcCommand::Query(command) => RequestDisposition::Reply(query_cache.build_reply(&command)),
         IpcCommand::Subscribe(subscription) => RequestDisposition::Subscribe(subscription),
         IpcCommand::Popup(PopupCommand::Dismiss { surface_id }) => {
             pending_popup_requests
-                .items
                 .push(PopupServerRequest { surface_id, action: PopupServerAction::Dismiss });
             RequestDisposition::Reply(IpcReply {
                 ok: true,
@@ -797,9 +823,7 @@ fn reply_for_request(
             })
         }
         IpcCommand::Window(WindowCommand::Close { surface_id }) => {
-            pending_window_requests
-                .items
-                .push(WindowServerRequest { surface_id, action: WindowServerAction::Close });
+            windows.surface(SurfaceId(surface_id)).close();
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued close request for surface {surface_id}"),
@@ -807,9 +831,7 @@ fn reply_for_request(
             })
         }
         IpcCommand::Window(WindowCommand::Focus { surface_id }) => {
-            pending_window_requests
-                .items
-                .push(WindowServerRequest { surface_id, action: WindowServerAction::Focus });
+            windows.surface(SurfaceId(surface_id)).focus();
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued focus request for surface {surface_id}"),
@@ -817,10 +839,7 @@ fn reply_for_request(
             })
         }
         IpcCommand::Window(WindowCommand::Move { surface_id, x, y }) => {
-            pending_window_requests.items.push(WindowServerRequest {
-                surface_id,
-                action: WindowServerAction::Move { x, y },
-            });
+            windows.surface(SurfaceId(surface_id)).move_to(x, y);
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued move request for surface {surface_id}"),
@@ -828,20 +847,23 @@ fn reply_for_request(
             })
         }
         IpcCommand::Window(WindowCommand::Resize { surface_id, width, height }) => {
-            pending_window_requests.items.push(WindowServerRequest {
-                surface_id,
-                action: WindowServerAction::Resize { width, height },
-            });
+            windows.surface(SurfaceId(surface_id)).resize_to(width, height);
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued resize request for surface {surface_id}"),
                 payload: None,
             })
         }
+        IpcCommand::Window(WindowCommand::Split { surface_id, axis }) => {
+            windows.surface(SurfaceId(surface_id)).split(axis);
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: format!("queued {axis:?} split request for surface {surface_id}"),
+                payload: None,
+            })
+        }
         IpcCommand::Workspace(WorkspaceCommand::Switch { workspace }) => {
-            pending_workspace_requests.items.push(WorkspaceServerRequest {
-                action: WorkspaceServerAction::Switch { workspace: workspace.clone() },
-            });
+            workspaces.switch_or_create(WorkspaceLookup::parse(&workspace));
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued workspace switch to {workspace}"),
@@ -849,9 +871,7 @@ fn reply_for_request(
             })
         }
         IpcCommand::Workspace(WorkspaceCommand::Create { workspace }) => {
-            pending_workspace_requests.items.push(WorkspaceServerRequest {
-                action: WorkspaceServerAction::Create { workspace: workspace.clone() },
-            });
+            workspaces.create_named(WorkspaceName::from(workspace.clone()));
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued workspace create for {workspace}"),
@@ -859,9 +879,7 @@ fn reply_for_request(
             })
         }
         IpcCommand::Workspace(WorkspaceCommand::Destroy { workspace }) => {
-            pending_workspace_requests.items.push(WorkspaceServerRequest {
-                action: WorkspaceServerAction::Destroy { workspace: workspace.clone() },
-            });
+            workspaces.destroy(WorkspaceSelector::parse(&workspace));
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued workspace destroy for {workspace}"),
@@ -869,13 +887,7 @@ fn reply_for_request(
             })
         }
         IpcCommand::Output(OutputCommand::Configure { output, mode, scale }) => {
-            pending_output_requests.items.push(OutputServerRequest {
-                action: OutputServerAction::Configure {
-                    output: output.clone(),
-                    mode: mode.clone(),
-                    scale,
-                },
-            });
+            outputs.named(OutputName::from(output.clone())).configure(mode.clone(), scale);
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued output configure for {output}"),
@@ -883,9 +895,7 @@ fn reply_for_request(
             })
         }
         IpcCommand::Output(OutputCommand::Enable { output }) => {
-            pending_output_requests.items.push(OutputServerRequest {
-                action: OutputServerAction::Enable { output: output.clone() },
-            });
+            outputs.named(OutputName::from(output.clone())).enable();
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued output enable for {output}"),
@@ -893,9 +903,7 @@ fn reply_for_request(
             })
         }
         IpcCommand::Output(OutputCommand::Disable { output }) => {
-            pending_output_requests.items.push(OutputServerRequest {
-                action: OutputServerAction::Disable { output: output.clone() },
-            });
+            outputs.named(OutputName::from(output.clone())).disable();
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued output disable for {output}"),
@@ -920,8 +928,25 @@ fn remember_server_error(slot: &mut Option<String>, error: impl std::fmt::Displa
 
 #[cfg(test)]
 mod tests {
+    use bevy_ecs::hierarchy::ChildOf;
+    use bevy_ecs::schedule::Schedule;
+    use nekoland_ecs::bundles::WindowBundle;
+    use nekoland_ecs::components::{
+        BufferState, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode, WlSurfaceHandle,
+        Workspace, WorkspaceId, XdgWindow,
+    };
+    use nekoland_ecs::resources::SplitAxis;
+    use nekoland_ecs::resources::{
+        ClipboardSelectionState, CompositorClock, CompositorConfig, EntityIndex,
+        KeyboardFocusState, PendingOutputControls, PendingPopupServerRequests,
+        PendingWindowControls, PendingWorkspaceControls, PrimarySelectionState, RenderList,
+    };
+
+    use super::{RequestDisposition, refresh_query_cache_system, reply_for_request};
     use super::{event_filter_matches, subscription_matches};
+    use crate::commands::WindowCommand;
     use crate::subscribe::{IpcSubscription, IpcSubscriptionEvent, SubscriptionTopic};
+    use crate::{IpcCommand, IpcQueryCache, IpcRequest};
 
     #[test]
     fn event_filter_matches_exact_names() {
@@ -956,5 +981,83 @@ mod tests {
 
         assert!(subscription_matches(&subscription, &matching_event));
         assert!(!subscription_matches(&subscription, &filtered_event));
+    }
+
+    #[test]
+    fn refresh_query_cache_derives_workspace_from_relationship() {
+        let mut world = bevy_ecs::world::World::new();
+        world.insert_resource(RenderList::default());
+        world.insert_resource(KeyboardFocusState::default());
+        world.insert_resource(CompositorClock::default());
+        world.insert_resource(nekoland_ecs::resources::CommandHistoryState::default());
+        world.insert_resource(CompositorConfig::default());
+        world.insert_resource(ClipboardSelectionState::default());
+        world.insert_resource(PrimarySelectionState::default());
+        world.insert_resource(EntityIndex::default());
+        world.insert_resource(IpcQueryCache::default());
+
+        let workspace_entity =
+            world.spawn(Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true }).id();
+        world.spawn((
+            WindowBundle {
+                surface: WlSurfaceHandle { id: 42 },
+                geometry: SurfaceGeometry { x: 10, y: 20, width: 800, height: 600 },
+                buffer: BufferState { attached: true, scale: 1 },
+                window: XdgWindow {
+                    app_id: "test.app".to_owned(),
+                    title: "Test".to_owned(),
+                    last_acked_configure: None,
+                },
+                layout: WindowLayout::Tiled,
+                mode: WindowMode::Normal,
+                decoration: Default::default(),
+                border_theme: Default::default(),
+                animation: WindowAnimation::default(),
+            },
+            ChildOf(workspace_entity),
+        ));
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(refresh_query_cache_system);
+        schedule.run(&mut world);
+
+        let cache = world.resource::<IpcQueryCache>();
+        assert_eq!(cache.tree.windows.len(), 1, "expected one window snapshot");
+        assert_eq!(
+            cache.tree.windows[0].workspace,
+            Some(1),
+            "window snapshot should derive workspace from ChildOf",
+        );
+    }
+
+    #[test]
+    fn reply_for_request_stages_window_split_control() {
+        let mut pending_popup_requests = PendingPopupServerRequests::default();
+        let mut pending_window_controls = PendingWindowControls::default();
+        let mut pending_workspace_controls = PendingWorkspaceControls::default();
+        let mut pending_output_controls = PendingOutputControls::default();
+
+        let disposition = reply_for_request(
+            IpcRequest {
+                correlation_id: 1,
+                command: IpcCommand::Window(WindowCommand::Split {
+                    surface_id: 42,
+                    axis: SplitAxis::Vertical,
+                }),
+            },
+            &IpcQueryCache::default(),
+            &mut pending_popup_requests,
+            &mut pending_window_controls,
+            &mut pending_workspace_controls,
+            &mut pending_output_controls,
+        );
+
+        assert!(matches!(disposition, RequestDisposition::Reply(_)));
+        assert!(pending_popup_requests.is_empty());
+        assert!(pending_workspace_controls.is_empty());
+        assert!(pending_output_controls.is_empty());
+        assert_eq!(pending_window_controls.as_slice().len(), 1);
+        assert_eq!(pending_window_controls.as_slice()[0].surface_id.0, 42);
+        assert_eq!(pending_window_controls.as_slice()[0].split_axis, Some(SplitAxis::Vertical));
     }
 }

@@ -3,8 +3,8 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, RenderSchedule};
 use nekoland_ecs::resources::{
-    PendingOutputServerRequests, PendingPopupServerRequests, PendingWindowServerRequests,
-    PendingWorkspaceServerRequests,
+    PendingOutputControls, PendingPopupServerRequests, PendingWindowControls,
+    PendingWorkspaceControls,
 };
 
 use crate::{server, subscribe};
@@ -13,6 +13,8 @@ use crate::{server, subscribe};
 pub struct IpcPlugin;
 
 impl NekolandPlugin for IpcPlugin {
+    /// Register the IPC runtime plus the extract/render systems that accept
+    /// client requests, rebuild query snapshots, and emit subscription events.
     fn build(&self, app: &mut App) {
         let (runtime, server_state) = server::IpcServerRuntime::new();
 
@@ -21,9 +23,11 @@ impl NekolandPlugin for IpcPlugin {
             .insert_non_send_resource(runtime)
             .init_resource::<subscribe::PendingSubscriptionEvents>()
             .init_resource::<PendingPopupServerRequests>()
-            .init_resource::<PendingWindowServerRequests>()
-            .init_resource::<PendingWorkspaceServerRequests>()
-            .init_resource::<PendingOutputServerRequests>()
+            .init_resource::<PendingWindowControls>()
+            .init_resource::<PendingWorkspaceControls>()
+            .init_resource::<PendingOutputControls>()
+            // Accept/process IPC input during Extract, then rebuild query snapshots and emit
+            // subscription diffs after the render tree for the frame is known.
             .add_systems(ExtractSchedule, server::accept_connections_system)
             .add_systems(
                 RenderSchedule,

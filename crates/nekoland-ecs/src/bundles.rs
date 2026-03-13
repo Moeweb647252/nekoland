@@ -1,23 +1,26 @@
 use bevy_ecs::bundle::Bundle;
 
 use crate::components::{
-    BorderTheme, BufferState, LayerAnchor, LayerLevel, LayerMargins, LayerShellSurface,
-    OutputDevice, OutputProperties, ServerDecoration, SurfaceGeometry, WindowAnimation,
-    WindowState, WlSurfaceHandle, X11Window, XdgWindow,
+    BorderTheme, BufferState, DesiredOutputName, LayerAnchor, LayerLevel, LayerMargins,
+    LayerShellSurface, OutputDevice, OutputProperties, ServerDecoration, SurfaceGeometry,
+    WindowAnimation, WindowLayout, WindowMode, WlSurfaceHandle, X11Window, XdgWindow,
 };
 
+/// Canonical component set for a native XDG toplevel window entity.
 #[derive(Bundle, Clone, Debug, Default)]
 pub struct WindowBundle {
     pub surface: WlSurfaceHandle,
     pub geometry: SurfaceGeometry,
     pub buffer: BufferState,
     pub window: XdgWindow,
-    pub state: WindowState,
+    pub layout: WindowLayout,
+    pub mode: WindowMode,
     pub decoration: ServerDecoration,
     pub border_theme: BorderTheme,
     pub animation: WindowAnimation,
 }
 
+/// Canonical component set for an XWayland-managed window entity.
 #[derive(Bundle, Clone, Debug, Default)]
 pub struct X11WindowBundle {
     pub surface: WlSurfaceHandle,
@@ -25,29 +28,34 @@ pub struct X11WindowBundle {
     pub buffer: BufferState,
     pub window: XdgWindow,
     pub x11_window: X11Window,
-    pub state: WindowState,
+    pub layout: WindowLayout,
+    pub mode: WindowMode,
     pub decoration: ServerDecoration,
     pub border_theme: BorderTheme,
     pub animation: WindowAnimation,
 }
 
+/// Canonical component set for one output entity.
 #[derive(Bundle, Clone, Debug, Default)]
 pub struct OutputBundle {
     pub output: OutputDevice,
     pub properties: OutputProperties,
 }
 
+/// Canonical component set for one layer-shell surface entity.
 #[derive(Bundle, Clone, Debug, Default)]
 pub struct LayerSurfaceBundle {
     pub surface: WlSurfaceHandle,
     pub geometry: SurfaceGeometry,
     pub buffer: BufferState,
     pub layer_surface: LayerShellSurface,
+    pub desired_output_name: DesiredOutputName,
     pub anchor: LayerAnchor,
     pub animation: WindowAnimation,
 }
 
 impl LayerSurfaceBundle {
+    /// Builds a layer bundle directly from the protocol create request payload.
     pub fn new(
         surface_id: u64,
         namespace: String,
@@ -70,13 +78,13 @@ impl LayerSurfaceBundle {
             buffer: BufferState { attached: false, scale: 1 },
             layer_surface: LayerShellSurface {
                 namespace,
-                output,
                 layer,
                 desired_width,
                 desired_height,
                 exclusive_zone,
                 margins,
             },
+            desired_output_name: DesiredOutputName(output),
             anchor,
             animation: WindowAnimation::default(),
         }

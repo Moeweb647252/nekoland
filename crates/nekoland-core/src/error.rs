@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+/// Common error type used by the core app and plugin infrastructure.
 #[derive(Debug)]
 pub enum NekolandError {
     Io(std::io::Error),

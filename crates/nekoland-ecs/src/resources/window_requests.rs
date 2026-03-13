@@ -1,21 +1,22 @@
-use bevy_ecs::prelude::Resource;
+use crate::kinds::CompositorRequestQueue;
 use serde::{Deserialize, Serialize};
 
+/// Internal protocol bridge requests for windows.
+///
+/// New user-facing control flows should go through `PendingWindowControls` and `WindowOps`.
+/// This queue remains only for the final protocol close bridge after shell-side reconciliation has
+/// already decided that a close should happen.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WindowServerAction {
-    Focus,
     Close,
-    Move { x: i32, y: i32 },
-    Resize { width: u32, height: u32 },
 }
 
+/// One low-level window request targeted at a surface id.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowServerRequest {
     pub surface_id: u64,
     pub action: WindowServerAction,
 }
 
-#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PendingWindowServerRequests {
-    pub items: Vec<WindowServerRequest>,
-}
+/// Queue of pending protocol-bridge window requests.
+pub type PendingWindowServerRequests = CompositorRequestQueue<WindowServerRequest>;

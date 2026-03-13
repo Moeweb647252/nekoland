@@ -1311,6 +1311,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "libseat"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6656c69b6e0366ffb83faa232f3e4fda5fc91161722d140f2c95ce2e90b1ef31"
+dependencies = [
+ "errno",
+ "libseat-sys",
+ "log",
+]
+
+[[package]]
+name = "libseat-sys"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8a484fa48be5f62a8d3ffed767779d0ab808cfead91de98ef4362d469097dfb"
+dependencies = [
+ "pkg-config",
+]
+
+[[package]]
 name = "libudev-sys"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1484,6 +1504,7 @@ dependencies = [
  "nekoland-core",
  "nekoland-ecs",
  "nekoland-protocol",
+ "nekoland-shell",
  "tracing",
 ]
 
@@ -1549,6 +1570,7 @@ dependencies = [
  "bevy_ecs",
  "nekoland-core",
  "nekoland-ecs",
+ "nekoland-protocol",
  "tracing",
 ]
 
@@ -2297,6 +2319,7 @@ dependencies = [
  "input",
  "libc",
  "libloading",
+ "libseat",
  "pkg-config",
  "profiling",
  "rand",

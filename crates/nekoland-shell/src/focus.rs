@@ -1,11 +1,17 @@
+use std::collections::BTreeMap;
+
+use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::{Local, Query, Res, ResMut, With};
-use nekoland_ecs::components::{
-    LayoutSlot, SurfaceGeometry, WindowState, WlSurfaceHandle, Workspace, X11Window, XdgWindow,
-};
+use nekoland_ecs::components::{SurfaceGeometry, WindowMode, XdgWindow};
+use nekoland_ecs::events::PointerButton;
 use nekoland_ecs::resources::{
-    CompositorConfig, GlobalPointerPosition, KeyboardFocusState, PendingWindowServerRequests,
-    WindowServerAction,
+    CompositorConfig, GlobalPointerPosition, KeyboardFocusState, UNASSIGNED_WORKSPACE_STACK_ID,
+    WindowStackingState,
 };
+use nekoland_ecs::views::{WindowFocusRuntime, WorkspaceRuntime};
+use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
+
+use crate::interaction::ActiveWindowGrab;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FocusManager;
@@ -16,71 +22,74 @@ pub struct FocusHoverState {
     hovered_surface: Option<u64>,
 }
 
-pub fn window_focus_request_system(
-    mut pending_window_requests: ResMut<PendingWindowServerRequests>,
-    windows: Query<
-        (&WlSurfaceHandle, &WindowState, &LayoutSlot, Option<&X11Window>),
-        With<XdgWindow>,
-    >,
-    workspaces: Query<&Workspace>,
+/// Maintains keyboard focus from the current visible window stack.
+///
+/// Active grabs win first, then optional focus-follows-mouse hover, and finally a fallback to the
+/// front-most visible window if the previous focus disappeared.
+pub fn pointer_button_focus_system(
+    pointer: Res<GlobalPointerPosition>,
+    mut pointer_buttons: MessageReader<PointerButton>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
+    mut stacking: ResMut<WindowStackingState>,
+    windows: Query<WindowFocusRuntime, With<XdgWindow>>,
+    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
 ) {
-    let mut deferred = Vec::new();
-    let active_workspace = active_workspace_id(&workspaces);
-
-    for request in pending_window_requests.items.drain(..) {
-        match request.action {
-            WindowServerAction::Focus => {
-                let Some((surface, state, layout_slot, x11_window)) =
-                    windows.iter().find(|(surface, ..)| surface.id == request.surface_id)
-                else {
-                    deferred.push(request);
-                    continue;
-                };
-
-                if *state != WindowState::Hidden
-                    && x11_window.is_none_or(|window| !window.override_redirect)
-                    && active_workspace.is_none_or(|workspace| layout_slot.workspace == workspace)
-                {
-                    keyboard_focus.focused_surface = Some(surface.id);
-                } else {
-                    deferred.push(request);
-                }
-            }
-            _ => deferred.push(request),
-        }
+    if !pointer_buttons.read().any(|event| event.pressed) {
+        return;
     }
 
-    pending_window_requests.items = deferred;
+    let visible_windows = visible_window_geometries(&windows, &workspaces);
+    let ordered_surfaces = stacking.ordered_surfaces(
+        visible_windows.iter().map(|(surface_id, (_, workspace_id))| (*workspace_id, *surface_id)),
+    );
+    let focused_surface = ordered_surfaces.iter().rev().find_map(|surface_id| {
+        visible_windows
+            .get(surface_id)
+            .filter(|(geometry, _)| pointer_in_geometry(pointer.x, pointer.y, geometry))
+            .map(|_| *surface_id)
+    });
+
+    if let Some(surface_id) = focused_surface {
+        keyboard_focus.focused_surface = Some(surface_id);
+        if let Some((_, workspace_id)) = visible_windows.get(&surface_id) {
+            stacking.raise(*workspace_id, surface_id);
+        }
+    }
 }
 
 pub fn focus_management_system(
     config: Res<CompositorConfig>,
     pointer: Res<GlobalPointerPosition>,
+    active_grab: Option<Res<ActiveWindowGrab>>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
+    stacking: Res<WindowStackingState>,
     mut hover_state: Local<FocusHoverState>,
-    windows: Query<
-        (&WlSurfaceHandle, &SurfaceGeometry, &WindowState, &LayoutSlot, Option<&X11Window>),
-        With<XdgWindow>,
-    >,
-    workspaces: Query<&Workspace>,
+    windows: Query<WindowFocusRuntime, With<XdgWindow>>,
+    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
 ) {
-    let active_workspace = active_workspace_id(&workspaces);
-    let visible_windows = windows
-        .iter()
-        .filter_map(|(surface, geometry, state, layout_slot, x11_window)| {
-            (*state != WindowState::Hidden
-                && x11_window.is_none_or(|window| !window.override_redirect)
-                && active_workspace.is_none_or(|workspace| layout_slot.workspace == workspace))
-            .then_some((surface.id, geometry.clone()))
-        })
-        .collect::<Vec<_>>();
-    let visible_surfaces =
-        visible_windows.iter().map(|(surface_id, _)| *surface_id).collect::<Vec<_>>();
+    let visible_windows = visible_window_geometries(&windows, &workspaces);
+    let visible_surfaces = stacking.ordered_surfaces(
+        visible_windows.iter().map(|(surface_id, (_, workspace_id))| (*workspace_id, *surface_id)),
+    );
+
+    if let Some(grabbed_surface) =
+        active_grab.and_then(|grab| grab.state.as_ref().map(|state| state.surface_id))
+    {
+        if visible_surfaces.contains(&grabbed_surface) {
+            hover_state.initialized = true;
+            hover_state.hovered_surface = Some(grabbed_surface);
+            keyboard_focus.focused_surface = Some(grabbed_surface);
+            tracing::trace!(focused_surface = ?keyboard_focus.focused_surface, "focus management tick");
+            return;
+        }
+    }
 
     if config.focus_follows_mouse {
-        let hovered_surface = visible_windows.iter().rev().find_map(|(surface_id, geometry)| {
-            pointer_in_geometry(pointer.x, pointer.y, geometry).then_some(*surface_id)
+        let hovered_surface = visible_surfaces.iter().rev().find_map(|surface_id| {
+            visible_windows
+                .get(surface_id)
+                .filter(|(geometry, _)| pointer_in_geometry(pointer.x, pointer.y, geometry))
+                .map(|_| *surface_id)
         });
 
         if !hover_state.initialized {
@@ -107,12 +116,35 @@ pub fn focus_management_system(
     }
 
     if keyboard_focus.focused_surface.is_none() {
-        keyboard_focus.focused_surface = visible_surfaces.first().copied();
+        keyboard_focus.focused_surface = visible_surfaces.last().copied();
     }
 
     tracing::trace!(focused_surface = ?keyboard_focus.focused_surface, "focus management tick");
 }
 
+fn visible_window_geometries(
+    windows: &Query<WindowFocusRuntime, With<XdgWindow>>,
+    workspaces: &Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
+) -> BTreeMap<u64, (SurfaceGeometry, u32)> {
+    windows
+        .iter()
+        .filter_map(|window| {
+            (*window.mode != WindowMode::Hidden
+                && window.x11_window.is_none_or(|x11_window| !x11_window.override_redirect))
+            .then_some((
+                window.surface_id(),
+                (
+                    window.geometry.clone(),
+                    window_workspace_runtime_id(window.child_of, workspaces)
+                        .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID),
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// Uses inclusive-left/top and exclusive-right/bottom bounds so adjacent windows do not both
+/// claim the pointer when their edges touch.
 fn pointer_in_geometry(pointer_x: f64, pointer_y: f64, geometry: &SurfaceGeometry) -> bool {
     let left = f64::from(geometry.x);
     let top = f64::from(geometry.y);
@@ -122,8 +154,89 @@ fn pointer_in_geometry(pointer_x: f64, pointer_y: f64, geometry: &SurfaceGeometr
     pointer_x >= left && pointer_x < right && pointer_y >= top && pointer_y < bottom
 }
 
-fn active_workspace_id(workspaces: &Query<&Workspace>) -> Option<u32> {
-    workspaces.iter().find(|workspace| workspace.active).map(|workspace| workspace.id.0).or_else(
-        || workspaces.iter().min_by_key(|workspace| workspace.id).map(|workspace| workspace.id.0),
-    )
+#[cfg(test)]
+mod tests {
+    use nekoland_core::prelude::NekolandApp;
+    use nekoland_core::schedules::LayoutSchedule;
+    use nekoland_ecs::bundles::WindowBundle;
+    use nekoland_ecs::components::{SurfaceGeometry, WlSurfaceHandle};
+    use nekoland_ecs::events::PointerButton;
+    use nekoland_ecs::resources::{
+        CompositorConfig, GlobalPointerPosition, KeyboardFocusState, UNASSIGNED_WORKSPACE_STACK_ID,
+        WindowStackingState,
+    };
+
+    use super::{focus_management_system, pointer_button_focus_system};
+
+    #[test]
+    fn clicking_visible_lower_window_raises_and_focuses_it() {
+        let mut app = NekolandApp::new("focus-click-stack-test");
+        app.inner_mut()
+            .insert_resource(GlobalPointerPosition { x: 10.0, y: 10.0 })
+            .insert_resource(KeyboardFocusState::default())
+            .insert_resource(WindowStackingState {
+                workspaces: std::collections::BTreeMap::from([(
+                    UNASSIGNED_WORKSPACE_STACK_ID,
+                    vec![11, 22],
+                )]),
+            })
+            .add_message::<PointerButton>()
+            .add_systems(LayoutSchedule, pointer_button_focus_system);
+
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 11 },
+            geometry: SurfaceGeometry { x: 0, y: 0, width: 120, height: 120 },
+            ..Default::default()
+        });
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 22 },
+            geometry: SurfaceGeometry { x: 40, y: 40, width: 120, height: 120 },
+            ..Default::default()
+        });
+        app.inner_mut()
+            .world_mut()
+            .write_message(PointerButton { button_code: 0x110, pressed: true });
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        let focus = world.resource::<KeyboardFocusState>();
+        let stacking = world.resource::<WindowStackingState>();
+        assert_eq!(focus.focused_surface, Some(11));
+        assert_eq!(stacking.workspaces.get(&UNASSIGNED_WORKSPACE_STACK_ID), Some(&vec![22, 11]));
+    }
+
+    #[test]
+    fn fallback_focus_uses_topmost_visible_window() {
+        let mut app = NekolandApp::new("focus-fallback-stack-test");
+        let mut config = CompositorConfig::default();
+        config.focus_follows_mouse = false;
+        app.inner_mut()
+            .insert_resource(config)
+            .insert_resource(GlobalPointerPosition::default())
+            .insert_resource(KeyboardFocusState::default())
+            .insert_resource(WindowStackingState {
+                workspaces: std::collections::BTreeMap::from([(
+                    UNASSIGNED_WORKSPACE_STACK_ID,
+                    vec![11, 22],
+                )]),
+            })
+            .add_systems(LayoutSchedule, focus_management_system);
+
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 11 },
+            geometry: SurfaceGeometry { x: 0, y: 0, width: 120, height: 120 },
+            ..Default::default()
+        });
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 22 },
+            geometry: SurfaceGeometry { x: 0, y: 0, width: 120, height: 120 },
+            ..Default::default()
+        });
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let focus = app.inner().world().resource::<KeyboardFocusState>();
+        assert_eq!(focus.focused_surface, Some(22));
+    }
 }

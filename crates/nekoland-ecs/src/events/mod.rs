@@ -1,3 +1,5 @@
+//! ECS messages emitted during input, output, and window lifecycle processing.
+
 pub mod input_events;
 pub mod output_events;
 pub mod window_events;

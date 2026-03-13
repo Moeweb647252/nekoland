@@ -1,10 +1,13 @@
+//! In-process integration test for presentation feedback while a surface's workspace becomes
+//! inactive and then active again.
+
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use nekoland::build_app;
-use nekoland_backend::traits::SelectedBackend;
+use nekoland_backend::BackendStatus;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ipc::commands::{OutputCommand, OutputSnapshot, QueryCommand, WorkspaceCommand};
 use nekoland_ipc::{IpcCommand, IpcReply, IpcRequest, IpcServerState, send_request_to_path};
@@ -16,43 +19,72 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 mod common;
 
+/// Output mode forced through IPC so presentation timing becomes deterministic.
 const TEST_OUTPUT_MODE: &str = "1600x900@75";
+/// Width expected after the output reconfiguration.
 const TEST_OUTPUT_WIDTH: u32 = 1600;
+/// Height expected after the output reconfiguration.
 const TEST_OUTPUT_HEIGHT: u32 = 900;
+/// Refresh rate expected after the output reconfiguration.
 const TEST_OUTPUT_REFRESH_MILLIHZ: u32 = 75_000;
+/// Time the client waits with the surface inactive before reactivating the workspace.
 const INACTIVE_WORKSPACE_HOLD_MILLIS: u64 = 40;
+/// Refresh interval derived from the configured output mode, expressed in nanoseconds.
 const EXPECTED_PRESENTATION_REFRESH_NANOS: u32 =
     (1_000_000_000_000_u64 / TEST_OUTPUT_REFRESH_MILLIHZ as u64) as u32;
 
+/// Summary returned by the helper client after the presentation-feedback scenario completes.
 #[derive(Debug)]
 struct PresentationSummary {
+    /// Total number of `wp_presentation.presented` events observed.
     total_presented: usize,
+    /// Number of presentation events observed while the surface should have been inactive.
     inactive_presented: usize,
+    /// Refresh intervals reported by the backend for each presented event.
     presented_refreshes: Vec<u32>,
+    /// Presentation timestamps converted into nanoseconds.
     presented_timestamps_nanos: Vec<u64>,
+    /// Backend presentation sequence numbers.
     presented_sequences: Vec<u64>,
 }
 
+/// Helper Wayland client state for driving presentation feedback requests and workspace switches.
 #[derive(Debug)]
 struct PresentationClientState {
+    /// IPC socket used to switch workspaces and reconfigure outputs.
     ipc_socket_path: PathBuf,
+    /// Bound `wl_compositor` global.
     compositor: Option<wl_compositor::WlCompositor>,
+    /// Bound `xdg_wm_base` global.
     wm_base: Option<xdg_wm_base::XdgWmBase>,
+    /// Bound `wp_presentation` global.
     presentation: Option<wp_presentation::WpPresentation>,
+    /// Root surface of the helper client.
     base_surface: Option<wl_surface::WlSurface>,
+    /// XDG surface wrapper around the helper surface.
     xdg_surface: Option<xdg_surface::XdgSurface>,
+    /// Toplevel role object for the helper surface.
     toplevel: Option<xdg_toplevel::XdgToplevel>,
+    /// Small scenario stage machine: active -> inactive -> reactivated -> done.
     stage: u8,
+    /// Total number of presentation events observed.
     total_presented: usize,
+    /// Number of presentation events observed while inactive.
     inactive_presented: usize,
+    /// Refresh values reported by each visible presentation event.
     presented_refreshes: Vec<u32>,
+    /// Timestamps reported by each visible presentation event, in nanoseconds.
     presented_timestamps_nanos: Vec<u64>,
+    /// Sequence numbers reported by each visible presentation event.
     presented_sequences: Vec<u64>,
+    /// Timestamp of when the surface became inactive.
     inactive_since: Option<Instant>,
+    /// Deferred fatal error surfaced from IPC or protocol callbacks.
     terminal_error: Option<String>,
 }
 
 impl PresentationClientState {
+    /// Initializes the helper client state with the IPC socket used for workspace control.
     fn new(ipc_socket_path: PathBuf) -> Self {
         Self {
             ipc_socket_path,
@@ -73,6 +105,7 @@ impl PresentationClientState {
         }
     }
 
+    /// Creates the test toplevel once both `wl_compositor` and `xdg_wm_base` are available.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;
@@ -92,6 +125,7 @@ impl PresentationClientState {
         self.toplevel = Some(toplevel);
     }
 
+    /// Requests a new presentation feedback object for the test surface.
     fn request_feedback(&self, qh: &QueueHandle<Self>) {
         let presentation =
             self.presentation.as_ref().expect("presentation scenario requires wp_presentation");
@@ -101,6 +135,7 @@ impl PresentationClientState {
         surface.commit();
     }
 
+    /// Sends one workspace-switch request over IPC.
     fn switch_workspace(&self, workspace: &str) -> Result<IpcReply, std::io::Error> {
         send_ipc_request_with_retry(
             &self.ipc_socket_path,
@@ -113,6 +148,7 @@ impl PresentationClientState {
         )
     }
 
+    /// Advances the scenario after the surface has spent enough time in an inactive workspace.
     fn advance_timers(&mut self) {
         if self.stage != 2 {
             return;
@@ -141,11 +177,14 @@ impl PresentationClientState {
         }
     }
 
+    /// Indicates whether the helper client finished the scenario successfully.
     fn is_complete(&self) -> bool {
         self.stage >= 4
     }
 }
 
+/// Verifies that presentation feedback pauses while a window's workspace is inactive and resumes
+/// after reactivation.
 #[test]
 fn inactive_workspace_surfaces_delay_presentation_feedback_until_reactivated() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -212,8 +251,8 @@ fn inactive_workspace_surfaces_delay_presentation_feedback_until_reactivated() {
     let backend_description = app
         .inner()
         .world()
-        .get_resource::<SelectedBackend>()
-        .map(|backend| backend.description.clone())
+        .get_resource::<BackendStatus>()
+        .and_then(|status| status.primary_display().map(|backend| backend.description.clone()))
         .unwrap_or_default();
     if backend_description.contains("timer fallback") {
         eprintln!(
@@ -272,6 +311,8 @@ fn run_presentation_client(
     socket_path: &Path,
     ipc_socket_path: PathBuf,
 ) -> Result<PresentationSummary, common::TestControl> {
+    // Force a deterministic output mode before connecting the presentation
+    // client so timing assertions can use one known refresh cadence.
     configure_output_mode(&ipc_socket_path)?;
 
     let stream = std::os::unix::net::UnixStream::connect(socket_path)
@@ -326,6 +367,7 @@ fn run_presentation_client(
     })
 }
 
+/// Retries transient IPC failures while sending a request during the presentation scenario.
 fn send_ipc_request_with_retry(
     socket_path: &Path,
     request: &IpcRequest,
@@ -357,6 +399,7 @@ fn send_ipc_request_with_retry(
     }
 }
 
+/// Reconfigures the active output to a deterministic mode before the presentation scenario runs.
 fn configure_output_mode(socket_path: &Path) -> Result<(), common::TestControl> {
     let output_name = wait_for_outputs(socket_path, |outputs| !outputs.is_empty())?
         .into_iter()
@@ -398,6 +441,7 @@ fn configure_output_mode(socket_path: &Path) -> Result<(), common::TestControl> 
     Ok(())
 }
 
+/// Polls the output query until it satisfies the supplied predicate.
 fn wait_for_outputs(
     socket_path: &Path,
     predicate: impl Fn(&[OutputSnapshot]) -> bool,
@@ -407,6 +451,7 @@ fn wait_for_outputs(
     })
 }
 
+/// Generic polling helper for IPC queries that need to wait for a specific decoded payload state.
 fn wait_for_payload<T>(
     socket_path: &Path,
     query: QueryCommand,
@@ -439,6 +484,7 @@ where
     }
 }
 
+/// Executes one IPC query and decodes its payload into the requested type.
 fn query_payload<T>(socket_path: &Path, command: IpcCommand) -> Result<T, std::io::Error>
 where
     T: serde::de::DeserializeOwned,
@@ -455,6 +501,7 @@ where
     serde_json::from_value(payload).map_err(std::io::Error::other)
 }
 
+/// Identifies retryable transient IPC errors.
 fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -465,10 +512,12 @@ fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     )
 }
 
+/// Identifies IPC errors that should skip the test in restricted environments.
 fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
     error.kind() == ErrorKind::PermissionDenied || error.raw_os_error() == Some(1)
 }
 
+/// Returns the default config path used by this integration test.
 fn workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }
@@ -612,11 +661,13 @@ impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, ()> for Presenta
     }
 }
 
+/// Combines the presentation-time timestamp parts into one nanosecond timestamp.
 fn presentation_timestamp_nanos(tv_sec_hi: u32, tv_sec_lo: u32, tv_nsec: u32) -> u64 {
     let tv_sec = (u64::from(tv_sec_hi) << 32) | u64::from(tv_sec_lo);
     tv_sec.saturating_mul(1_000_000_000).saturating_add(u64::from(tv_nsec))
 }
 
+/// Combines the high/low sequence parts reported by `wp_presentation` into one sequence number.
 fn presentation_sequence(seq_hi: u32, seq_lo: u32) -> u64 {
     (u64::from(seq_hi) << 32) | u64::from(seq_lo)
 }

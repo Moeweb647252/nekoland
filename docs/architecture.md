@@ -9,3 +9,7 @@
 
 This repository currently implements the boundaries and placeholders required to grow into the full compositor.
 
+Additional design notes:
+
+- [`control_plane.md`](control_plane.md) documents the high-level control-plane boundary for
+  window/workspace/output actions.

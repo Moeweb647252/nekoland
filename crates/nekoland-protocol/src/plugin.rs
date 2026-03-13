@@ -1,3 +1,9 @@
+//! Smithay integration layer that turns Wayland/XWayland callbacks into `ProtocolEvent`s and
+//! synchronized compositor-side resources.
+//!
+//! The file is intentionally large because it owns the runtime glue for globals, seats, outputs,
+//! selection handling, presentation feedback, and XWayland bridging.
+
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::env;
@@ -12,7 +18,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bevy_app::App;
-use bevy_ecs::prelude::{Local, NonSendMut, Query, Res, ResMut, Resource, With};
+use bevy_ecs::entity_disabling::Disabled;
+use bevy_ecs::hierarchy::ChildOf;
+use bevy_ecs::prelude::{Entity, Has, Local, NonSendMut, Query, Res, ResMut, Resource, With};
+use bevy_ecs::query::Allow;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use calloop::generic::{FdWrapper, Generic};
 use calloop::{Interest, Mode, PostAction};
@@ -22,17 +31,19 @@ use nekoland_core::error::NekolandError;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, ProtocolSchedule, RenderSchedule};
 use nekoland_ecs::components::{
-    LayerShellSurface, LayoutSlot, OutputDevice, OutputProperties, SurfaceGeometry, WindowState,
-    WlSurfaceHandle, Workspace, XdgPopup, XdgWindow,
+    LayerShellSurface, SurfaceGeometry, WindowMode, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::resources::{
     BackendInputAction, ClipboardSelectionState, CompositorClock, CompositorConfig,
     DragAndDropState, FramePacingState, GlobalPointerPosition, KeyboardFocusState,
     OutputPresentationState, PendingLayerRequests, PendingOutputEvents,
     PendingPopupServerRequests, PendingProtocolInputEvents, PendingWindowServerRequests,
-    PendingX11Requests, PendingXdgRequests, PopupPlacement, PopupServerAction,
+    PendingX11Requests, PendingXdgRequests, PopupPlacement, PopupServerAction, ResizeEdges,
     PrimarySelectionState, RenderList, SurfaceExtent, WindowServerAction, X11WindowGeometry,
     XdgSurfaceRole,
+};
+use nekoland_ecs::views::{
+    OutputRuntime, PopupRuntime, SurfaceRuntime, WindowVisibilityRuntime, WorkspaceRuntime,
 };
 use smithay::backend::input::{Axis as InputAxis, AxisSource, ButtonState, KeyState};
 use smithay::backend::allocator::{Format as DmabufFormat, dmabuf::Dmabuf};
@@ -136,6 +147,8 @@ const DEFAULT_KEYBOARD_REPEAT_DELAY_MS: i32 = 200;
 const DEFAULT_KEYBOARD_REPEAT_RATE: u16 = 25;
 const MAX_PERSISTED_SELECTION_BYTES: usize = 1024 * 1024;
 
+/// Installs the Smithay runtime and bridges its callback-driven world into the compositor's ECS
+/// schedules.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ProtocolPlugin;
 
@@ -208,6 +221,7 @@ struct ProtocolClientState {
     compositor_state: CompositorClientState,
 }
 
+/// Public status snapshot for the compositor's Wayland protocol server socket.
 #[derive(Debug, Clone, Default, Resource)]
 pub struct ProtocolServerState {
     pub socket_name: Option<String>,
@@ -217,6 +231,7 @@ pub struct ProtocolServerState {
     pub last_dispatch_error: Option<String>,
 }
 
+/// Public status snapshot for the compositor's XWayland server integration.
 #[derive(Debug, Clone, Default, Resource)]
 pub struct XWaylandServerState {
     pub enabled: bool,
@@ -479,12 +494,9 @@ fn dispatch_window_server_requests_system(
 ) {
     let mut deferred = Vec::new();
 
-    for request in pending_window_requests.items.drain(..) {
+    for request in pending_window_requests.drain() {
         let handled = match request.action {
             WindowServerAction::Close => server.send_close(request.surface_id),
-            WindowServerAction::Focus
-            | WindowServerAction::Move { .. }
-            | WindowServerAction::Resize { .. } => false,
         };
 
         if !handled {
@@ -492,7 +504,7 @@ fn dispatch_window_server_requests_system(
         }
     }
 
-    pending_window_requests.items = deferred;
+    pending_window_requests.replace(deferred);
 }
 
 fn dispatch_popup_server_requests_system(
@@ -501,7 +513,7 @@ fn dispatch_popup_server_requests_system(
 ) {
     let mut deferred = Vec::new();
 
-    for request in pending_popup_requests.items.drain(..) {
+    for request in pending_popup_requests.drain() {
         let handled = match request.action {
             PopupServerAction::Dismiss => server.dismiss_popup(request.surface_id),
         };
@@ -511,11 +523,11 @@ fn dispatch_popup_server_requests_system(
         }
     }
 
-    pending_popup_requests.items = deferred;
+    pending_popup_requests.replace(deferred);
 }
 
 fn dispatch_surface_frame_callbacks_system(
-    outputs: Query<(&OutputDevice, &OutputProperties)>,
+    outputs: Query<OutputRuntime>,
     output_presentation: Option<Res<OutputPresentationState>>,
     frame_pacing: Res<FramePacingState>,
     mut last_output_timing: Local<Option<OutputTiming>>,
@@ -573,25 +585,33 @@ fn flush_protocol_queue_system(
 }
 
 fn sync_workspace_visibility_system(
-    workspaces: Query<&Workspace>,
-    windows: Query<(&WlSurfaceHandle, &WindowState, &LayoutSlot), With<XdgWindow>>,
-    popups: Query<(&WlSurfaceHandle, &XdgPopup), With<XdgPopup>>,
+    workspaces: Query<(Entity, WorkspaceRuntime)>,
+    windows: Query<
+        (Entity, WindowVisibilityRuntime, Has<Disabled>),
+        (With<XdgWindow>, Allow<Disabled>),
+    >,
+    popups: Query<(PopupRuntime, Has<Disabled>), (With<XdgPopup>, Allow<Disabled>)>,
     mut visibility: Local<WorkspaceVisibilityState>,
     mut server: NonSendMut<SmithayProtocolServer>,
 ) {
-    let active_workspace = active_workspace_id(&workspaces);
+    let (_, active_workspace) =
+        nekoland_ecs::workspace_membership::active_workspace_runtime_target(&workspaces);
     let visible_toplevels = windows
         .iter()
-        .filter(|(_, state, layout_slot)| {
-            **state != WindowState::Hidden
-                && active_workspace.is_none_or(|workspace| layout_slot.workspace == workspace)
-        })
-        .map(|(surface, _, _)| surface.id)
+        .filter(|(_, window, disabled)| *window.mode != WindowMode::Hidden && !disabled)
+        .map(|(_, window, _)| window.surface_id())
+        .collect::<BTreeSet<_>>();
+    let visible_toplevel_entities = windows
+        .iter()
+        .filter(|(_, window, disabled)| *window.mode != WindowMode::Hidden && !disabled)
+        .map(|(entity, _, _)| entity)
         .collect::<BTreeSet<_>>();
     let visible_popups = popups
         .iter()
-        .filter(|(_, popup)| visible_toplevels.contains(&popup.parent_surface))
-        .map(|(surface, _)| surface.id)
+        .filter(|(popup, disabled)| {
+            !disabled && popup_parent_visible(popup.child_of, &visible_toplevel_entities)
+        })
+        .map(|(popup, _)| popup.surface_id())
         .collect::<BTreeSet<_>>();
 
     if !visibility.initialized {
@@ -602,8 +622,11 @@ fn sync_workspace_visibility_system(
     }
 
     if visibility.active_workspace != active_workspace {
-        let dismissed_popups =
-            visibility.visible_popups.difference(&visible_popups).copied().collect::<Vec<_>>();
+        let dismissed_popups = popups
+            .iter()
+            .filter(|(popup, _)| !popup_parent_visible(popup.child_of, &visible_toplevel_entities))
+            .map(|(popup, _)| popup.surface_id())
+            .collect::<Vec<_>>();
         let activated_toplevels = visible_toplevels.iter().copied().collect::<Vec<_>>();
 
         if !dismissed_popups.is_empty() || !activated_toplevels.is_empty() {
@@ -615,15 +638,19 @@ fn sync_workspace_visibility_system(
     visibility.visible_popups = visible_popups;
 }
 
+fn popup_parent_visible(child_of: &ChildOf, visible_toplevel_entities: &BTreeSet<Entity>) -> bool {
+    visible_toplevel_entities.contains(&child_of.parent())
+}
+
 fn dispatch_seat_input_system(
     clock: Res<CompositorClock>,
     keyboard_focus: Option<Res<KeyboardFocusState>>,
     pointer: Option<Res<GlobalPointerPosition>>,
     render_list: Option<Res<RenderList>>,
     mut pending_protocol_input_events: ResMut<PendingProtocolInputEvents>,
-    windows: Query<(&WlSurfaceHandle, &SurfaceGeometry), With<XdgWindow>>,
-    popups: Query<(&WlSurfaceHandle, &SurfaceGeometry), With<XdgPopup>>,
-    layers: Query<(&WlSurfaceHandle, &SurfaceGeometry), With<LayerShellSurface>>,
+    windows: Query<SurfaceRuntime, With<XdgWindow>>,
+    popups: Query<SurfaceRuntime, With<XdgPopup>>,
+    layers: Query<SurfaceRuntime, With<LayerShellSurface>>,
     mut seat_sync: Local<SeatInputSyncState>,
     mut server: NonSendMut<SmithayProtocolServer>,
 ) {
@@ -637,7 +664,7 @@ fn dispatch_seat_input_system(
     let pointer = pointer.as_deref();
     let render_list = render_list.as_deref();
 
-    for event in pending_protocol_input_events.items.drain(..) {
+    for event in pending_protocol_input_events.drain() {
         sync_keyboard_focus_if_needed(&mut server, &mut seat_sync, keyboard_focus);
 
         match event.action {
@@ -849,9 +876,12 @@ impl SmithayProtocolServer {
         focus_surface_id: Option<u64>,
     ) {
         if let Some(runtime) = self.runtime.as_ref() {
-            runtime
-                .borrow_mut()
-                .dispatch_pointer_button(button_code, pressed, time, focus_surface_id);
+            runtime.borrow_mut().dispatch_pointer_button(
+                button_code,
+                pressed,
+                time,
+                focus_surface_id,
+            );
         }
     }
 
@@ -1444,9 +1474,8 @@ impl SmithayProtocolRuntime {
         };
         let serial = SERIAL_COUNTER.next_serial();
         if pressed {
-            self.state.synthetic_pointer_grab = focus_surface_id.map(|surface_id| {
-                SyntheticPointerGrab { serial: u32::from(serial), surface_id }
-            });
+            self.state.synthetic_pointer_grab = focus_surface_id
+                .map(|surface_id| SyntheticPointerGrab { serial: u32::from(serial), surface_id });
         } else {
             self.state.synthetic_pointer_grab = None;
         }
@@ -1810,14 +1839,11 @@ impl ProtocolRuntimeState {
         };
 
         if !pointer.has_grab(serial) {
-            if self
-                .synthetic_pointer_grab
-                .is_some_and(|grab| {
-                    grab.serial == u32::from(serial)
-                        && (grab.surface_id == expected_focus_surface_id
-                            || matches!(kind, InteractiveRequestKind::PopupGrab))
-                })
-            {
+            if self.synthetic_pointer_grab.is_some_and(|grab| {
+                grab.serial == u32::from(serial)
+                    && (grab.surface_id == expected_focus_surface_id
+                        || matches!(kind, InteractiveRequestKind::PopupGrab))
+            }) {
                 return true;
             }
             tracing::warn!(
@@ -1856,14 +1882,11 @@ impl ProtocolRuntimeState {
 
         let focused_surface_id = self.surface_id(&focused_surface);
         if focused_surface_id != expected_focus_surface_id {
-            if self
-                .synthetic_pointer_grab
-                .is_some_and(|grab| {
-                    grab.serial == u32::from(serial)
-                        && (grab.surface_id == expected_focus_surface_id
-                            || matches!(kind, InteractiveRequestKind::PopupGrab))
-                })
-            {
+            if self.synthetic_pointer_grab.is_some_and(|grab| {
+                grab.serial == u32::from(serial)
+                    && (grab.surface_id == expected_focus_surface_id
+                        || matches!(kind, InteractiveRequestKind::PopupGrab))
+            }) {
                 return true;
             }
             tracing::warn!(
@@ -2237,7 +2260,7 @@ impl XdgShellHandler for ProtocolRuntimeState {
 
         self.queue_event(ProtocolEvent::MoveRequested {
             surface_id,
-            seat_name: seat_name(&seat),
+            seat_name: self.seat.name().to_owned(),
             serial: serial.into(),
         });
     }
@@ -2261,9 +2284,9 @@ impl XdgShellHandler for ProtocolRuntimeState {
 
         self.queue_event(ProtocolEvent::ResizeRequested {
             surface_id,
-            seat_name: seat_name(&seat),
+            seat_name: self.seat.name().to_owned(),
             serial: serial.into(),
-            edges: format!("{edges:?}"),
+            edges: map_xdg_resize_edge(edges),
         });
     }
 
@@ -2321,7 +2344,7 @@ impl XdgShellHandler for ProtocolRuntimeState {
                 );
                 self.queue_event(ProtocolEvent::PopupGrabRequested {
                     surface_id,
-                    seat_name: seat_name(&seat),
+                    seat_name: self.seat.name().to_owned(),
                     serial: serial.into(),
                 });
                 return;
@@ -2338,7 +2361,7 @@ impl XdgShellHandler for ProtocolRuntimeState {
 
         self.queue_event(ProtocolEvent::PopupGrabRequested {
             surface_id,
-            seat_name: seat_name(&seat),
+            seat_name: self.seat.name().to_owned(),
             serial: serial.into(),
         });
     }
@@ -2827,7 +2850,7 @@ impl XwmHandler for ProtocolRuntimeState {
             self.queue_event(ProtocolEvent::X11WindowResizeRequested {
                 surface_id,
                 button,
-                edges: format!("{resize_edge:?}"),
+                edges: map_x11_resize_edge(resize_edge),
             });
         }
     }
@@ -2943,12 +2966,6 @@ fn tracked_xdg_role(surface: &WlSurface) -> Option<XdgSurfaceRole> {
     })
 }
 
-fn active_workspace_id(workspaces: &Query<&Workspace>) -> Option<u32> {
-    workspaces.iter().find(|workspace| workspace.active).map(|workspace| workspace.id.0).or_else(
-        || workspaces.iter().min_by_key(|workspace| workspace.id).map(|workspace| workspace.id.0),
-    )
-}
-
 fn compositor_time_millis(clock: &CompositorClock) -> u32 {
     clock.uptime_millis.min(u128::from(u32::MAX)) as u32
 }
@@ -2976,9 +2993,9 @@ fn sync_pointer_focus_if_needed(
     seat_sync: &mut SeatInputSyncState,
     pointer: Option<&GlobalPointerPosition>,
     render_list: Option<&RenderList>,
-    windows: &Query<(&WlSurfaceHandle, &SurfaceGeometry), With<XdgWindow>>,
-    popups: &Query<(&WlSurfaceHandle, &SurfaceGeometry), With<XdgPopup>>,
-    layers: &Query<(&WlSurfaceHandle, &SurfaceGeometry), With<LayerShellSurface>>,
+    windows: &Query<SurfaceRuntime, With<XdgWindow>>,
+    popups: &Query<SurfaceRuntime, With<XdgPopup>>,
+    layers: &Query<SurfaceRuntime, With<LayerShellSurface>>,
     time: u32,
 ) {
     let location = pointer
@@ -3006,9 +3023,9 @@ fn pointer_focus_target(
     pointer_x: f64,
     pointer_y: f64,
     render_list: Option<&RenderList>,
-    windows: &Query<(&WlSurfaceHandle, &SurfaceGeometry), With<XdgWindow>>,
-    popups: &Query<(&WlSurfaceHandle, &SurfaceGeometry), With<XdgPopup>>,
-    layers: &Query<(&WlSurfaceHandle, &SurfaceGeometry), With<LayerShellSurface>>,
+    windows: &Query<SurfaceRuntime, With<XdgWindow>>,
+    popups: &Query<SurfaceRuntime, With<XdgPopup>>,
+    layers: &Query<SurfaceRuntime, With<LayerShellSurface>>,
 ) -> Option<PointerSurfaceFocus> {
     let render_list = render_list?;
 
@@ -3041,37 +3058,34 @@ fn pointer_focus_target(
 
 fn surface_geometry_for_id<'w, F>(
     surface_id: u64,
-    surfaces: &'w Query<(&WlSurfaceHandle, &SurfaceGeometry), F>,
+    surfaces: &'w Query<SurfaceRuntime, F>,
 ) -> Option<&'w SurfaceGeometry>
 where
     F: bevy_ecs::query::QueryFilter,
 {
-    surfaces.iter().find_map(|(surface, geometry)| (surface.id == surface_id).then_some(geometry))
+    surfaces
+        .iter()
+        .find_map(|surface| (surface.surface_id() == surface_id).then_some(surface.geometry))
 }
 
-fn current_output_timing(
-    outputs: &Query<(&OutputDevice, &OutputProperties)>,
-) -> Option<OutputTiming> {
-    outputs
-        .iter()
-        .min_by(|(left_device, _), (right_device, _)| left_device.name.cmp(&right_device.name))
-        .map(|(_, properties)| OutputTiming {
-            width: properties.width.max(1),
-            height: properties.height.max(1),
-            refresh_millihz: properties.refresh_millihz,
-            scale: properties.scale.max(1),
-        })
+fn current_output_timing(outputs: &Query<OutputRuntime>) -> Option<OutputTiming> {
+    outputs.iter().min_by(|left, right| left.name().cmp(right.name())).map(|output| OutputTiming {
+        width: output.properties.width.max(1),
+        height: output.properties.height.max(1),
+        refresh_millihz: output.properties.refresh_millihz,
+        scale: output.properties.scale.max(1),
+    })
 }
 
 fn current_output_presentation(
-    outputs: &Query<(&OutputDevice, &OutputProperties)>,
+    outputs: &Query<OutputRuntime>,
     output_presentation: Option<&OutputPresentationState>,
 ) -> Option<PresentationFeedbackTiming> {
     let output_presentation = output_presentation?;
     let output_name = outputs
         .iter()
-        .min_by(|(left_device, _), (right_device, _)| left_device.name.cmp(&right_device.name))
-        .map(|(device, _)| device.name.clone())?;
+        .min_by(|left, right| left.name().cmp(right.name()))
+        .map(|output| output.name().to_owned())?;
     let timeline =
         output_presentation.outputs.iter().find(|timeline| timeline.output_name == output_name)?;
     let frame_time = Time::<Monotonic>::from(Duration::from_nanos(timeline.present_time_nanos));
@@ -3082,6 +3096,37 @@ fn current_output_presentation(
     };
 
     Some(PresentationFeedbackTiming { frame_time, refresh, sequence: Some(timeline.sequence) })
+}
+
+fn map_xdg_resize_edge(
+    edge: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
+) -> ResizeEdges {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge as XdgResizeEdge;
+
+    match edge {
+        XdgResizeEdge::Top => ResizeEdges::Top,
+        XdgResizeEdge::Bottom => ResizeEdges::Bottom,
+        XdgResizeEdge::Left => ResizeEdges::Left,
+        XdgResizeEdge::TopLeft => ResizeEdges::TopLeft,
+        XdgResizeEdge::BottomLeft => ResizeEdges::BottomLeft,
+        XdgResizeEdge::Right => ResizeEdges::Right,
+        XdgResizeEdge::TopRight => ResizeEdges::TopRight,
+        XdgResizeEdge::BottomRight => ResizeEdges::BottomRight,
+        _ => ResizeEdges::BottomRight,
+    }
+}
+
+fn map_x11_resize_edge(edge: ResizeEdge) -> ResizeEdges {
+    match edge {
+        ResizeEdge::Top => ResizeEdges::Top,
+        ResizeEdge::Bottom => ResizeEdges::Bottom,
+        ResizeEdge::Left => ResizeEdges::Left,
+        ResizeEdge::TopLeft => ResizeEdges::TopLeft,
+        ResizeEdge::BottomLeft => ResizeEdges::BottomLeft,
+        ResizeEdge::Right => ResizeEdges::Right,
+        ResizeEdge::TopRight => ResizeEdges::TopRight,
+        ResizeEdge::BottomRight => ResizeEdges::BottomRight,
+    }
 }
 
 fn refresh_from_output_timing(output_timing: OutputTiming) -> Refresh {
@@ -3280,6 +3325,7 @@ mod tests {
         LayerShellSurface, SurfaceGeometry, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{RenderElement, RenderList};
+    use nekoland_ecs::views::SurfaceRuntime;
     use smithay::reexports::wayland_server::Display;
     use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
     use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
@@ -3396,9 +3442,9 @@ mod tests {
             ],
         };
         let mut system_state: SystemState<(
-            Query<(&WlSurfaceHandle, &SurfaceGeometry), With<XdgWindow>>,
-            Query<(&WlSurfaceHandle, &SurfaceGeometry), With<nekoland_ecs::components::XdgPopup>>,
-            Query<(&WlSurfaceHandle, &SurfaceGeometry), With<LayerShellSurface>>,
+            Query<SurfaceRuntime, With<XdgWindow>>,
+            Query<SurfaceRuntime, With<nekoland_ecs::components::XdgPopup>>,
+            Query<SurfaceRuntime, With<LayerShellSurface>>,
         )> = SystemState::new(&mut world);
         let (windows, popups, layers) = system_state.get(&world);
 

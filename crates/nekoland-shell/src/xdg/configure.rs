@@ -1,290 +1,288 @@
-use bevy_ecs::message::MessageWriter;
-use bevy_ecs::prelude::{Query, Res, ResMut, With};
-use nekoland_ecs::components::{
-    OutputProperties, PopupGrab, SurfaceGeometry, WindowState, WlSurfaceHandle, XdgPopup, XdgWindow,
-};
-use nekoland_ecs::events::WindowMoved;
+use bevy_ecs::entity_disabling::Disabled;
+use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
+use bevy_ecs::query::Allow;
+use nekoland_ecs::components::{WindowLayout, WindowMode, WindowRestoreState, XdgPopup, XdgWindow};
 use nekoland_ecs::resources::{
-    GlobalPointerPosition, KeyboardFocusState, PendingWindowServerRequests, PendingXdgRequests,
-    WindowLifecycleAction, WindowServerAction, XdgSurfaceRole,
+    EntityIndex, GlobalPointerPosition, KeyboardFocusState, PendingXdgRequests,
+    WindowLifecycleAction, XdgSurfaceRole,
 };
+use nekoland_ecs::views::{OutputRuntime, PopupConfigureRuntime, WindowRuntime};
 
-pub fn window_geometry_request_system(
-    mut pending_window_requests: ResMut<PendingWindowServerRequests>,
-    mut windows: Query<(&WlSurfaceHandle, &mut SurfaceGeometry, &mut WindowState), With<XdgWindow>>,
-    mut window_moved: MessageWriter<WindowMoved>,
-) {
-    let mut deferred = Vec::new();
+use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
+use crate::window_policy::{lock_window_policy, restore_window_policy};
 
-    for request in pending_window_requests.items.drain(..) {
-        match request.action {
-            WindowServerAction::Move { x, y } => {
-                let Some((surface, mut geometry, mut state)) =
-                    windows.iter_mut().find(|(surface, _, _)| surface.id == request.surface_id)
-                else {
-                    deferred.push(request);
-                    continue;
-                };
-
-                *state = WindowState::Floating;
-                geometry.x = x;
-                geometry.y = y;
-                window_moved.write(WindowMoved { surface_id: surface.id, x, y });
-            }
-            WindowServerAction::Resize { width, height } => {
-                let Some((_, mut geometry, mut state)) =
-                    windows.iter_mut().find(|(surface, _, _)| surface.id == request.surface_id)
-                else {
-                    deferred.push(request);
-                    continue;
-                };
-
-                *state = WindowState::Floating;
-                geometry.width = width.max(64);
-                geometry.height = height.max(64);
-            }
-            _ => deferred.push(request),
-        }
-    }
-
-    pending_window_requests.items = deferred;
-}
+/// Sequences XDG configure-related requests after the toplevel entity exists.
+///
+/// This is where protocol acks, interactive move/resize grabs, and maximize/fullscreen state
+/// transitions are projected into the ECS window model.
+type XdgWindows<'w, 's> =
+    Query<'w, 's, (Entity, WindowRuntime), (With<XdgWindow>, Allow<Disabled>)>;
+type XdgPopups<'w, 's> =
+    Query<'w, 's, (Entity, PopupConfigureRuntime), (With<XdgPopup>, Allow<Disabled>)>;
 
 pub fn configure_sequence_system(
     mut pending_xdg_requests: ResMut<PendingXdgRequests>,
+    entity_index: Res<EntityIndex>,
     pointer: Res<GlobalPointerPosition>,
+    mut active_grab: ResMut<ActiveWindowGrab>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
-    mut windows: Query<
-        (&WlSurfaceHandle, &mut XdgWindow, &mut SurfaceGeometry, &mut WindowState),
-        With<XdgWindow>,
-    >,
-    outputs: Query<&OutputProperties>,
-    mut popups: Query<(&WlSurfaceHandle, &mut XdgPopup, Option<&mut PopupGrab>)>,
-    mut window_moved: MessageWriter<WindowMoved>,
+    mut windows: XdgWindows<'_, '_>,
+    outputs: Query<OutputRuntime>,
+    mut popups: XdgPopups<'_, '_>,
 ) {
     let mut deferred = Vec::new();
-    let output_geometry =
-        outputs.iter().next().map(|properties| (properties.width.max(1), properties.height.max(1)));
+    let output_geometry = outputs
+        .iter()
+        .next()
+        .map(|output| (output.properties.width.max(1), output.properties.height.max(1)));
 
-    for request in pending_xdg_requests.items.drain(..) {
+    for request in pending_xdg_requests.drain() {
         match request.action.clone() {
             WindowLifecycleAction::ConfigureRequested { role: XdgSurfaceRole::Toplevel } => {
                 tracing::trace!(surface_id = request.surface_id, "toplevel configure requested");
             }
             WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Toplevel, serial } => {
-                let mut handled = false;
-                for (surface, mut window, _, _) in &mut windows {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
-                    window.last_acked_configure = Some(serial);
-                    handled = true;
-                    break;
-                }
-
-                if !handled {
+                let Some(entity) =
+                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                else {
                     deferred.push(request);
-                }
+                    continue;
+                };
+                let Ok((_, window)) = windows.get_mut(entity) else {
+                    deferred.push(request);
+                    continue;
+                };
+
+                window
+                    .xdg_window
+                    .expect("xdg runtime should expose xdg metadata")
+                    .last_acked_configure = Some(serial);
             }
             WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Popup, serial } => {
-                let mut handled = false;
-                for (surface, mut popup, _) in &mut popups {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
-                    popup.configure_serial = Some(serial);
-                    handled = true;
-                    break;
-                }
-
-                if !handled {
+                let Some(entity) =
+                    resolve_xdg_popup_entity(request.surface_id, &entity_index, &mut popups)
+                else {
                     deferred.push(request);
-                }
+                    continue;
+                };
+                let Ok((_, mut popup)) = popups.get_mut(entity) else {
+                    deferred.push(request);
+                    continue;
+                };
+
+                popup.popup.configure_serial = Some(serial);
             }
             WindowLifecycleAction::InteractiveMove { seat_name, serial } => {
-                let mut handled = false;
-                for (surface, _, mut geometry, mut state) in &mut windows {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
-                    *state = WindowState::Floating;
-                    geometry.x = pointer.x.round() as i32 - 32;
-                    geometry.y = pointer.y.round() as i32 - 16;
-                    keyboard_focus.focused_surface = Some(surface.id);
-                    window_moved.write(WindowMoved {
-                        surface_id: surface.id,
-                        x: geometry.x,
-                        y: geometry.y,
-                    });
-                    tracing::trace!(
-                        surface_id = surface.id,
-                        seat_name,
-                        serial,
-                        x = geometry.x,
-                        y = geometry.y,
-                        "applied interactive move request"
-                    );
-                    handled = true;
-                    break;
-                }
-
-                if !handled {
+                let Some(entity) =
+                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                else {
                     deferred.push(request);
-                }
+                    continue;
+                };
+                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                    deferred.push(request);
+                    continue;
+                };
+
+                *window.layout = WindowLayout::Floating;
+                *window.mode = WindowMode::Normal;
+                lock_window_policy(*window.layout, *window.mode, &mut window.policy_state);
+                keyboard_focus.focused_surface = Some(window.surface_id());
+                begin_window_grab(
+                    &mut active_grab,
+                    window.surface_id(),
+                    WindowGrabMode::Move,
+                    &pointer,
+                    &window.geometry,
+                );
+                tracing::trace!(
+                    surface_id = window.surface_id(),
+                    seat_name,
+                    serial,
+                    x = window.geometry.x,
+                    y = window.geometry.y,
+                    "started interactive move grab"
+                );
             }
             WindowLifecycleAction::InteractiveResize { seat_name, serial, edges } => {
-                let mut handled = false;
-                for (surface, _, mut geometry, mut state) in &mut windows {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
-                    *state = WindowState::Floating;
-                    apply_interactive_resize(&mut geometry, &edges);
-                    tracing::trace!(
-                        surface_id = surface.id,
-                        seat_name,
-                        serial,
-                        edges,
-                        width = geometry.width,
-                        height = geometry.height,
-                        "applied interactive resize request"
-                    );
-                    handled = true;
-                    break;
-                }
-
-                if !handled {
+                let Some(entity) =
+                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                else {
                     deferred.push(request);
-                }
+                    continue;
+                };
+                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                    deferred.push(request);
+                    continue;
+                };
+
+                *window.layout = WindowLayout::Floating;
+                *window.mode = WindowMode::Normal;
+                lock_window_policy(*window.layout, *window.mode, &mut window.policy_state);
+                keyboard_focus.focused_surface = Some(window.surface_id());
+                begin_window_grab(
+                    &mut active_grab,
+                    window.surface_id(),
+                    WindowGrabMode::Resize { edges: edges.clone() },
+                    &pointer,
+                    &window.geometry,
+                );
+                tracing::trace!(
+                    surface_id = window.surface_id(),
+                    seat_name,
+                    serial,
+                    %edges,
+                    width = window.geometry.width,
+                    height = window.geometry.height,
+                    "started interactive resize grab"
+                );
             }
             WindowLifecycleAction::Maximize => {
-                let mut handled = false;
-                for (surface, _, _, mut state) in &mut windows {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
-                    *state = WindowState::Maximized;
-                    keyboard_focus.focused_surface = Some(surface.id);
-                    handled = true;
-                    break;
-                }
-
-                if !handled {
+                let Some(entity) =
+                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                else {
                     deferred.push(request);
-                }
+                    continue;
+                };
+                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                    deferred.push(request);
+                    continue;
+                };
+
+                window.restore.snapshot = Some(WindowRestoreState {
+                    geometry: window.geometry.clone(),
+                    layout: (*window.layout).clone(),
+                    mode: (*window.mode).clone(),
+                });
+                *window.mode = WindowMode::Maximized;
+                keyboard_focus.focused_surface = Some(window.surface_id());
             }
             WindowLifecycleAction::UnMaximize => {
-                let mut handled = false;
-                for (surface, _, _, mut state) in &mut windows {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
-                    // Restore to floating so the window falls back under the
-                    // floating layout engine and is free to be moved/resized.
-                    *state = WindowState::Floating;
-                    handled = true;
-                    break;
-                }
-
-                if !handled {
+                let Some(entity) =
+                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                else {
                     deferred.push(request);
+                    continue;
+                };
+                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                    deferred.push(request);
+                    continue;
+                };
+
+                if let Some(restored) = window.restore.snapshot.take() {
+                    *window.geometry = restored.geometry;
+                    *window.layout = restored.layout;
+                    *window.mode = restored.mode;
+                } else {
+                    restore_window_policy(
+                        &window.policy_state,
+                        &mut window.layout,
+                        &mut window.mode,
+                    );
                 }
             }
             WindowLifecycleAction::Fullscreen { output_name } => {
-                let mut handled = false;
-                for (surface, _, mut geometry, mut state) in &mut windows {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
-                    *state = WindowState::Fullscreen;
-                    if let Some((width, height)) = output_geometry {
-                        geometry.x = 0;
-                        geometry.y = 0;
-                        geometry.width = width;
-                        geometry.height = height;
-                    }
-                    keyboard_focus.focused_surface = Some(surface.id);
-                    tracing::trace!(
-                        surface_id = surface.id,
-                        output_name = ?output_name,
-                        "applied fullscreen request"
-                    );
-                    handled = true;
-                    break;
-                }
-
-                if !handled {
+                let Some(entity) =
+                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                else {
                     deferred.push(request);
+                    continue;
+                };
+                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                    deferred.push(request);
+                    continue;
+                };
+
+                window.restore.snapshot = Some(WindowRestoreState {
+                    geometry: window.geometry.clone(),
+                    layout: (*window.layout).clone(),
+                    mode: (*window.mode).clone(),
+                });
+                *window.mode = WindowMode::Fullscreen;
+                if let Some((width, height)) = output_geometry {
+                    window.geometry.x = 0;
+                    window.geometry.y = 0;
+                    window.geometry.width = width;
+                    window.geometry.height = height;
                 }
+                keyboard_focus.focused_surface = Some(window.surface_id());
+                tracing::trace!(
+                    surface_id = window.surface_id(),
+                    output_name = ?output_name,
+                    "applied fullscreen request"
+                );
             }
             WindowLifecycleAction::UnFullscreen => {
-                let mut handled = false;
-                for (surface, _, _, mut state) in &mut windows {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
-                    // Restore to floating so the window falls back under the
-                    // floating layout engine and is free to be moved/resized.
-                    *state = WindowState::Floating;
-                    handled = true;
-                    break;
-                }
-
-                if !handled {
+                let Some(entity) =
+                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                else {
                     deferred.push(request);
+                    continue;
+                };
+                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                    deferred.push(request);
+                    continue;
+                };
+
+                if let Some(restored) = window.restore.snapshot.take() {
+                    *window.geometry = restored.geometry;
+                    *window.layout = restored.layout;
+                    *window.mode = restored.mode;
+                } else {
+                    restore_window_policy(
+                        &window.policy_state,
+                        &mut window.layout,
+                        &mut window.mode,
+                    );
                 }
             }
             WindowLifecycleAction::Minimize => {
-                let mut handled = false;
-                for (surface, _, _, mut state) in &mut windows {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
-                    *state = WindowState::Hidden;
-                    if keyboard_focus.focused_surface == Some(surface.id) {
-                        keyboard_focus.focused_surface = None;
-                    }
-                    handled = true;
-                    break;
-                }
-
-                if !handled {
+                let Some(entity) =
+                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                else {
                     deferred.push(request);
+                    continue;
+                };
+                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                    deferred.push(request);
+                    continue;
+                };
+
+                *window.mode = WindowMode::Hidden;
+                if keyboard_focus.focused_surface == Some(window.surface_id()) {
+                    keyboard_focus.focused_surface = None;
                 }
             }
             _ => deferred.push(request),
         }
     }
 
-    pending_xdg_requests.items = deferred;
+    pending_xdg_requests.replace(deferred);
     tracing::trace!("xdg configure sequencing system tick");
 }
 
-fn apply_interactive_resize(geometry: &mut SurfaceGeometry, edges: &str) {
-    if edges.contains("Left") {
-        geometry.x -= 32;
-        geometry.width = geometry.width.saturating_add(32);
-    }
-    if edges.contains("Right") {
-        geometry.width = geometry.width.saturating_add(64);
-    }
-    if edges.contains("Top") {
-        geometry.y -= 24;
-        geometry.height = geometry.height.saturating_add(24);
-    }
-    if edges.contains("Bottom") {
-        geometry.height = geometry.height.saturating_add(48);
-    }
+fn resolve_xdg_window_entity(
+    surface_id: u64,
+    entity_index: &EntityIndex,
+    windows: &mut XdgWindows<'_, '_>,
+) -> Option<Entity> {
+    entity_index.entity_for_surface(surface_id).or_else(|| {
+        windows
+            .iter_mut()
+            .find(|(_, window)| window.surface_id() == surface_id)
+            .map(|(entity, _)| entity)
+    })
+}
 
-    geometry.width = geometry.width.max(64);
-    geometry.height = geometry.height.max(64);
+fn resolve_xdg_popup_entity(
+    surface_id: u64,
+    entity_index: &EntityIndex,
+    popups: &mut XdgPopups<'_, '_>,
+) -> Option<Entity> {
+    entity_index.entity_for_surface(surface_id).or_else(|| {
+        popups
+            .iter_mut()
+            .find(|(_, popup)| popup.surface_id() == surface_id)
+            .map(|(entity, _)| entity)
+    })
 }

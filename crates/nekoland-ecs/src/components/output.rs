@@ -1,6 +1,7 @@
 use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 
+/// Broad output families exposed by the compositor.
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum OutputKind {
     Physical,
@@ -9,6 +10,7 @@ pub enum OutputKind {
     Virtual,
 }
 
+/// Stable identity metadata for an output entity.
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputDevice {
     pub name: String,
@@ -17,6 +19,7 @@ pub struct OutputDevice {
     pub model: String,
 }
 
+/// Mutable output mode properties used by layout, rendering, and IPC snapshots.
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputProperties {
     pub width: u32,

@@ -1,3 +1,5 @@
+//! In-process integration test for primary-selection IPC query and subscription state.
+
 use std::io::ErrorKind;
 use std::path::Path;
 use std::thread;
@@ -30,22 +32,30 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 mod common;
 
+/// MIME type offered by the helper primary-selection client.
 const TEST_MIME_TYPE: &str = "text/plain;charset=utf-8";
+/// Frame on which the synthetic key pump starts forcing focus/input.
 const INPUT_PUMP_START_FRAME: u64 = 48;
+/// Maximum number of frames the synthetic key pump stays active.
 const INPUT_PUMP_FRAMES: u16 = 400;
+/// Extra dwell time after setting selection so IPC observers can catch up.
 const CLIENT_HOLD_AFTER_SELECTION: Duration = Duration::from_millis(250);
 
+/// Synthetic input pump that helps the client gain focus and publish primary selection.
 #[derive(Debug, Default, Resource)]
 struct PrimarySelectionInputPump {
+    /// Remaining frames during which synthetic key input will be injected.
     remaining_frames: u16,
 }
 
+/// Summary returned by the helper primary-selection client.
 #[derive(Debug)]
 struct PrimarySelectionClientSummary {
     globals: Vec<String>,
     selection_sent: bool,
 }
 
+/// Helper Wayland client state used to publish primary selection during the IPC scenario.
 #[derive(Debug, Default)]
 struct PrimarySelectionClientState {
     globals: Vec<String>,
@@ -60,11 +70,16 @@ struct PrimarySelectionClientState {
     xdg_surface: Option<xdg_surface::XdgSurface>,
     toplevel: Option<xdg_toplevel::XdgToplevel>,
     primary_selection_source: Option<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1>,
+    /// Last configure serial seen for the helper toplevel.
     configure_serial: Option<u32>,
+    /// Whether the helper toplevel currently owns keyboard focus.
     keyboard_focused: bool,
+    /// Whether the helper client already published primary selection.
     selection_sent: bool,
 }
 
+/// Verifies that primary-selection state is visible through both IPC subscription events and the
+/// IPC query snapshot.
 #[test]
 fn ipc_reports_primary_selection_query_and_subscription_updates() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -178,6 +193,7 @@ fn ipc_reports_primary_selection_query_and_subscription_updates() {
     assert_eq!(snapshot.persisted_mime_types, vec![TEST_MIME_TYPE.to_owned()]);
 }
 
+/// Injects keyboard focus/input so the client can publish primary selection.
 fn pump_keyboard_selection_input(
     clock: Res<CompositorClock>,
     mut pump: ResMut<PrimarySelectionInputPump>,
@@ -194,13 +210,14 @@ fn pump_keyboard_selection_input(
     };
 
     keyboard_focus.focused_surface = Some(surface.id);
-    pending_protocol_inputs.items.push(BackendInputEvent {
+    pending_protocol_inputs.push(BackendInputEvent {
         device: "ipc-primary-selection-test".to_owned(),
         action: BackendInputAction::Key { keycode: 36, pressed: true },
     });
     pump.remaining_frames = pump.remaining_frames.saturating_sub(1);
 }
 
+/// Runs the helper primary-selection client until it successfully publishes selection.
 fn run_primary_selection_client(
     socket_path: &Path,
 ) -> Result<PrimarySelectionClientSummary, common::TestControl> {
@@ -240,6 +257,7 @@ fn run_primary_selection_client(
     })
 }
 
+/// Performs one read/dispatch cycle for the helper primary-selection client.
 fn dispatch_client_once(
     event_queue: &mut EventQueue<PrimarySelectionClientState>,
     state: &mut PrimarySelectionClientState,
@@ -260,6 +278,7 @@ fn dispatch_client_once(
     Ok(())
 }
 
+/// Waits for the first `primary_selection_changed` event on the subscription stream.
 fn wait_for_primary_selection_changed(
     socket_path: &Path,
     subscription: IpcSubscription,
@@ -279,6 +298,8 @@ fn wait_for_primary_selection_changed(
                 let Some(payload) = event.payload.clone() else {
                     continue;
                 };
+                // The subscription can emit an initial empty snapshot before the
+                // client publishes selection, so only accept the fully populated state.
                 let snapshot = serde_json::from_value::<PrimarySelectionSnapshot>(payload)
                     .map_err(|error| {
                         common::TestControl::Fail(format!(
@@ -293,6 +314,8 @@ fn wait_for_primary_selection_changed(
             }
             Err(error) if ipc_error_is_retryable(&error) => {
                 if Instant::now() >= deadline {
+                    // Pull the current query snapshot into the timeout message to
+                    // make subscription failures easier to diagnose.
                     let snapshot = send_request_to_path(
                         socket_path,
                         &IpcRequest {
@@ -315,6 +338,7 @@ fn wait_for_primary_selection_changed(
     }
 }
 
+/// Polls the IPC primary-selection query until it returns the expected selection snapshot.
 fn wait_for_primary_selection_query(
     socket_path: &Path,
 ) -> Result<PrimarySelectionSnapshot, common::TestControl> {
@@ -351,6 +375,7 @@ fn wait_for_primary_selection_query(
     }
 }
 
+/// Decodes the primary-selection query reply payload into a snapshot.
 fn decode_primary_selection_reply(
     reply: IpcReply,
 ) -> Result<PrimarySelectionSnapshot, common::TestControl> {
@@ -369,10 +394,12 @@ fn decode_primary_selection_reply(
     })
 }
 
+/// Identifies retryable transient IPC errors.
 fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
 }
 
+/// Identifies IPC errors that should skip the test in restricted environments.
 fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -518,6 +545,7 @@ delegate_noop!(PrimarySelectionClientState: ignore zwp_primary_selection_source_
 delegate_noop!(PrimarySelectionClientState: ignore zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1);
 
 impl PrimarySelectionClientState {
+    /// Create the helper toplevel once both compositor globals are available.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;
@@ -537,6 +565,7 @@ impl PrimarySelectionClientState {
         self.toplevel = Some(toplevel);
     }
 
+    /// Bind the seat-scoped primary-selection device once both the seat and manager are known.
     fn maybe_bind_primary_selection_device(&mut self, qh: &QueueHandle<Self>) {
         if self.primary_selection_device.is_some()
             || self.primary_selection_manager.is_none()
@@ -553,6 +582,7 @@ impl PrimarySelectionClientState {
         self.primary_selection_device = Some(manager.get_device(seat, qh, ()));
     }
 
+    /// Offer one MIME type and claim compositor primary-selection ownership for the current serial.
     fn set_primary_selection(&mut self, qh: &QueueHandle<Self>, serial: u32) {
         let Some(manager) = self.primary_selection_manager.as_ref() else {
             return;

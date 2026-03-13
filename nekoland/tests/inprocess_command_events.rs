@@ -1,3 +1,5 @@
+//! In-process integration test for command-failure subscriptions and command-history queries.
+
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -17,8 +19,11 @@ use nekoland_ipc::{
 
 mod common;
 
+/// Linux keycode used for the synthetic Super press.
 const SUPER_KEYCODE: u32 = 133;
+/// Linux keycode used for the synthetic Space press.
 const SPACE_KEYCODE: u32 = 65;
+/// Minimal runtime config with a deliberately failing keybinding command.
 const TEST_CONFIG: &str = r##"
 default_layout = "tiling"
 
@@ -39,14 +44,18 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Space" = "exec /definitely-not-a-real-nekoland-command"
+"Super+Space" = ["/definitely-not-a-real-nekoland-command"]
 "##;
 
+/// One-shot resource that injects the synthetic keybinding input used by the test.
 #[derive(Debug, Default, Resource)]
 struct CommandInputPump {
+    /// Set once the synthetic key chord has been injected.
     injected: bool,
 }
 
+/// Verifies that a failed external command launch is observable through both command
+/// subscriptions and command-history queries.
 #[test]
 fn command_subscription_reports_failed_external_command_invocations() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -112,7 +121,7 @@ fn command_subscription_reports_failed_external_command_invocations() {
     let payload = event.payload.expect("command failure subscription should carry a payload");
     assert_eq!(
         payload["origin"].as_str(),
-        Some("Super+Space -> exec /definitely-not-a-real-nekoland-command")
+        Some("Super+Space -> /definitely-not-a-real-nekoland-command")
     );
     assert_eq!(
         payload["candidates"][0][0].as_str(),
@@ -130,7 +139,7 @@ fn command_subscription_reports_failed_external_command_invocations() {
         "command history query should report at least one command record"
     );
     let latest = commands.last().expect("non-empty command history should have a last entry");
-    assert_eq!(latest.origin, "Super+Space -> exec /definitely-not-a-real-nekoland-command");
+    assert_eq!(latest.origin, "Super+Space -> /definitely-not-a-real-nekoland-command");
     assert!(
         latest.command.is_none(),
         "failed command history entries should not claim a resolved argv"
@@ -146,6 +155,7 @@ fn command_subscription_reports_failed_external_command_invocations() {
     );
 }
 
+/// Injects one `Super+Space` key chord into the backend input queue.
 fn inject_command_keybinding_input(
     mut pump: ResMut<CommandInputPump>,
     mut pending_backend_inputs: ResMut<PendingBackendInputEvents>,
@@ -154,7 +164,7 @@ fn inject_command_keybinding_input(
         return;
     }
 
-    pending_backend_inputs.items.extend([
+    pending_backend_inputs.extend([
         BackendInputEvent {
             device: "command-events-test".to_owned(),
             action: BackendInputAction::Key { keycode: SUPER_KEYCODE, pressed: true },
@@ -167,6 +177,7 @@ fn inject_command_keybinding_input(
     pump.injected = true;
 }
 
+/// Waits for the first `command_failed` subscription event.
 fn collect_command_failure_event(
     socket_path: &Path,
     subscription: IpcSubscription,
@@ -185,6 +196,8 @@ fn collect_command_failure_event(
         match stream.read_event() {
             Ok(event) => return Ok(event),
             Err(error) if ipc_error_is_retryable(&error) => {
+                // The command failure may arrive a few ticks after startup, so
+                // short subscription timeouts are expected here.
                 if Instant::now() >= deadline {
                     return Err(common::TestControl::Fail(
                         "timed out waiting for a command_failed subscription event".to_owned(),
@@ -199,6 +212,7 @@ fn collect_command_failure_event(
     }
 }
 
+/// Polls the IPC command-history query until it becomes non-empty.
 fn wait_for_command_history(
     socket_path: &Path,
 ) -> Result<Vec<CommandSnapshot>, common::TestControl> {
@@ -209,6 +223,8 @@ fn wait_for_command_history(
             IpcRequest { correlation_id: 2, command: IpcCommand::Query(QueryCommand::GetCommands) };
         match send_request_to_path(socket_path, &request) {
             Ok(reply) => {
+                // The failing command can hit subscription first and history a
+                // moment later, so keep polling until the history list is populated.
                 let commands = decode_command_history_reply(reply)?;
                 if !commands.is_empty() {
                     return Ok(commands);
@@ -229,6 +245,7 @@ fn wait_for_command_history(
     }
 }
 
+/// Decodes the `get_commands` reply payload into command snapshots.
 fn decode_command_history_reply(
     reply: IpcReply,
 ) -> Result<Vec<CommandSnapshot>, common::TestControl> {
@@ -247,10 +264,12 @@ fn decode_command_history_reply(
     })
 }
 
+/// Identifies retryable transient IPC errors.
 fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
 }
 
+/// Identifies IPC errors that should skip the test in restricted environments.
 fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),

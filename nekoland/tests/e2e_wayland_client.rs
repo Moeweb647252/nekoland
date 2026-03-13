@@ -1,3 +1,6 @@
+//! End-to-end test that launches the compositor binary and performs a real Wayland client
+//! round-trip against the published socket.
+
 use std::fs;
 use std::io::ErrorKind;
 use std::io::Read;
@@ -7,14 +10,19 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Collected stderr and exit status from the spawned compositor child.
 #[derive(Debug)]
 struct ChildOutput {
+    /// Exit status collected from the compositor child process.
     status: ExitStatus,
+    /// Entire stderr stream drained after the child exited.
     stderr: String,
 }
 
 mod common;
 
+/// Verifies that the compositor binary can publish a Wayland socket and complete an initial XDG
+/// toplevel handshake with a real client.
 #[test]
 fn nekoland_binary_accepts_wayland_client_roundtrip() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -82,6 +90,7 @@ fn nekoland_binary_accepts_wayland_client_roundtrip() {
     );
 }
 
+/// Spawns the compositor binary with a short bounded runtime for end-to-end testing.
 fn spawn_nekoland(runtime_dir: &Path) -> Child {
     Command::new(env!("CARGO_BIN_EXE_nekoland"))
         .current_dir(workspace_root())
@@ -96,6 +105,7 @@ fn spawn_nekoland(runtime_dir: &Path) -> Child {
         .expect("nekoland binary should spawn")
 }
 
+/// Preflight check that the environment allows Unix-socket bind operations in the runtime dir.
 fn assert_socket_bind_supported(runtime_dir: &Path) -> Result<(), TestControl> {
     let probe_path = runtime_dir.join("socket-bind-probe.sock");
     match UnixListener::bind(&probe_path) {
@@ -111,10 +121,13 @@ fn assert_socket_bind_supported(runtime_dir: &Path) -> Result<(), TestControl> {
     }
 }
 
+/// Waits for the compositor to publish a Wayland socket or for the child process to exit.
 fn wait_for_socket(runtime_dir: &Path, child: &mut Child) -> Result<PathBuf, TestControl> {
     let deadline = Instant::now() + Duration::from_secs(2);
 
     loop {
+        // Poll the runtime dir first so the happy path does not depend on
+        // reading child output unless the process has already terminated.
         if let Some(socket_path) = discover_socket(runtime_dir)? {
             return Ok(socket_path);
         }
@@ -140,6 +153,7 @@ fn wait_for_socket(runtime_dir: &Path, child: &mut Child) -> Result<PathBuf, Tes
     }
 }
 
+/// Looks for the first published socket file in the runtime directory.
 fn discover_socket(runtime_dir: &Path) -> Result<Option<PathBuf>, TestControl> {
     let mut entries = fs::read_dir(runtime_dir).map_err(|error| {
         if error.kind() == ErrorKind::PermissionDenied {
@@ -156,10 +170,12 @@ fn discover_socket(runtime_dir: &Path) -> Result<Option<PathBuf>, TestControl> {
     Ok(Some(entry.path()))
 }
 
+/// Returns the workspace root so the spawned binary uses repository-relative assets/config.
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
+/// Runs the shared lightweight Wayland client against the compositor socket.
 fn run_client(socket_path: &Path) -> Result<common::ClientSummary, TestControl> {
     common::run_xdg_client(socket_path).map_err(|control| match control {
         common::TestControl::Skip(reason) => TestControl::Skip(reason),
@@ -167,6 +183,7 @@ fn run_client(socket_path: &Path) -> Result<common::ClientSummary, TestControl> 
     })
 }
 
+/// Tries to collect child output only if the process has already exited.
 fn try_collect_child_output(child: &mut Child) -> Result<Option<ChildOutput>, TestControl> {
     let Some(status) = child.try_wait().map_err(|error| TestControl::Fail(error.to_string()))?
     else {
@@ -176,6 +193,7 @@ fn try_collect_child_output(child: &mut Child) -> Result<Option<ChildOutput>, Te
     Ok(Some(ChildOutput { status, stderr: take_child_stderr(child) }))
 }
 
+/// Waits for the child process to exit within the supplied timeout.
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Option<ChildOutput> {
     let deadline = Instant::now() + timeout;
 
@@ -192,12 +210,14 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Option<ChildOutp
     }
 }
 
+/// Force-terminates the child process and collects any buffered stderr.
 fn terminate_child(child: &mut Child) -> ChildOutput {
     let _ = child.kill();
     let status = child.wait().expect("child wait after kill should succeed");
     ChildOutput { status, stderr: take_child_stderr(child) }
 }
 
+/// Drains the child's stderr pipe into a string for assertions and diagnostics.
 fn take_child_stderr(child: &mut Child) -> String {
     let mut stderr = String::new();
     if let Some(mut pipe) = child.stderr.take() {
@@ -206,12 +226,16 @@ fn take_child_stderr(child: &mut Child) -> String {
     stderr
 }
 
+/// Identifies common sandbox-style socket permission failures that should skip the test.
 fn is_restricted_socket_error(error: &std::io::Error) -> bool {
     error.kind() == ErrorKind::PermissionDenied || error.raw_os_error() == Some(1)
 }
 
+/// Test-level control flow for the end-to-end client round-trip helper.
 #[derive(Debug)]
 enum TestControl {
+    /// Skip the test because the environment cannot support the required primitives.
     Skip(String),
+    /// Fail the test because the compositor or helper client behaved unexpectedly.
     Fail(String),
 }

@@ -1,3 +1,6 @@
+//! In-process integration tests for clipboard data transfer and clipboard persistence after the
+//! source client exits.
+
 use std::io::{Read, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -29,16 +32,23 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 mod common;
 
+/// Payload transferred from the source clipboard client to the target client.
 const TEST_SELECTION_BYTES: &[u8] = b"nekoland clipboard roundtrip";
+/// MIME type offered for the transfer.
 const TEST_MIME_TYPE: &str = "text/plain;charset=utf-8";
+/// Frame at which the synthetic key pump begins forcing focus/input.
 const INPUT_PUMP_START_FRAME: u64 = 6;
+/// Generous frame budget for the two-client transfer scenarios.
 const MAX_TEST_FRAMES: u64 = 4096;
 
+/// Test pump that starts the transfer only after the source client published its selection.
 #[derive(Debug, Resource)]
 struct ClipboardTransferPump {
+    /// Flag set by the source client once it has claimed clipboard ownership.
     source_selection_sent: Arc<AtomicBool>,
 }
 
+/// Summary returned by the source clipboard client.
 #[derive(Debug)]
 struct SourceClientSummary {
     globals: Vec<String>,
@@ -46,12 +56,14 @@ struct SourceClientSummary {
     send_requests: usize,
 }
 
+/// Summary returned by the target clipboard client.
 #[derive(Debug)]
 struct TargetClientSummary {
     globals: Vec<String>,
     received_payload: Vec<u8>,
 }
 
+/// Source clipboard client state that publishes a selection and serves transfer reads.
 #[derive(Debug, Default)]
 struct SourceClientState {
     globals: Vec<String>,
@@ -65,12 +77,17 @@ struct SourceClientState {
     xdg_surface: Option<xdg_surface::XdgSurface>,
     toplevel: Option<xdg_toplevel::XdgToplevel>,
     data_source: Option<wl_data_source::WlDataSource>,
+    /// Last configure serial seen for the helper toplevel.
     configure_serial: Option<u32>,
+    /// Whether the helper toplevel currently owns keyboard focus.
     keyboard_focused: bool,
+    /// Whether the source client already published clipboard selection.
     selection_sent: bool,
+    /// Number of `wl_data_source.send` requests served so far.
     send_requests: usize,
 }
 
+/// Target clipboard client state that accepts the selection offer and reads the payload.
 #[derive(Debug, Default)]
 struct TargetClientState {
     globals: Vec<String>,
@@ -83,13 +100,19 @@ struct TargetClientState {
     base_surface: Option<wl_surface::WlSurface>,
     xdg_surface: Option<xdg_surface::XdgSurface>,
     toplevel: Option<xdg_toplevel::XdgToplevel>,
+    /// Last configure serial seen for the helper toplevel.
     configure_serial: Option<u32>,
+    /// Current selection offer announced by the compositor, if any.
     selection_offer: Option<wl_data_offer::WlDataOffer>,
+    /// Pipe reader used to collect bytes from `wl_data_offer.receive`.
     pending_read: Option<std::os::unix::net::UnixStream>,
+    /// Whether the target already requested a receive for the current offer.
     receive_requested: bool,
+    /// Bytes collected from the source client's offer.
     received_payload: Vec<u8>,
 }
 
+/// Verifies that clipboard data round-trips between two real clients through the compositor.
 #[test]
 fn clipboard_selection_roundtrips_between_two_real_clients() {
     let Some((source, target, selection_state)) = run_clipboard_transfer_scenario() else {
@@ -111,6 +134,7 @@ fn clipboard_selection_roundtrips_between_two_real_clients() {
     assert_eq!(selection.persisted_mime_types, vec![TEST_MIME_TYPE.to_owned()]);
 }
 
+/// Verifies that clipboard contents remain available after the source client exits.
 #[test]
 fn clipboard_selection_persists_after_source_client_exits() {
     let Some((source, target, selection_state)) = run_clipboard_persistence_scenario() else {
@@ -135,6 +159,7 @@ fn clipboard_selection_persists_after_source_client_exits() {
     assert_eq!(selection.persisted_mime_types, vec![TEST_MIME_TYPE.to_owned()]);
 }
 
+/// Runs the two-client clipboard transfer scenario.
 fn run_clipboard_transfer_scenario()
 -> Option<(SourceClientSummary, TargetClientSummary, ClipboardSelectionState)> {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -225,6 +250,7 @@ fn run_clipboard_transfer_scenario()
     Some((source_summary, target_summary, selection_state))
 }
 
+/// Runs the clipboard persistence scenario where the source exits after publishing selection data.
 fn run_clipboard_persistence_scenario()
 -> Option<(SourceClientSummary, TargetClientSummary, ClipboardSelectionState)> {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -321,6 +347,7 @@ fn run_clipboard_persistence_scenario()
     Some((source_summary, target_summary, selection_state))
 }
 
+/// Injects keyboard focus/input so the source clipboard client can publish selection.
 fn pump_clipboard_transfer_input(
     clock: Res<CompositorClock>,
     pump: Res<ClipboardTransferPump>,
@@ -343,13 +370,15 @@ fn pump_clipboard_transfer_input(
             Some(*surface_ids.get(1).unwrap_or_else(|| surface_ids.first().expect("non-empty")));
     } else {
         keyboard_focus.focused_surface = Some(surface_ids[0]);
-        pending_protocol_inputs.items.push(BackendInputEvent {
+        pending_protocol_inputs.push(BackendInputEvent {
             device: "clipboard-transfer".to_owned(),
             action: BackendInputAction::Key { keycode: 36, pressed: true },
         });
     }
 }
 
+/// Runs the source clipboard client until it has published selection and served any requested
+/// payload transfers.
 fn run_source_client(
     socket_path: &Path,
     selection_flag: Arc<AtomicBool>,
@@ -392,6 +421,7 @@ fn run_source_client(
     })
 }
 
+/// Performs one read/dispatch cycle for the source clipboard client.
 fn dispatch_source_client_once(
     event_queue: &mut EventQueue<SourceClientState>,
     state: &mut SourceClientState,
@@ -412,6 +442,7 @@ fn dispatch_source_client_once(
     Ok(())
 }
 
+/// Runs the target clipboard client until it receives the transferred payload.
 fn run_target_client(socket_path: &Path) -> Result<TargetClientSummary, common::TestControl> {
     let stream =
         std::os::unix::net::UnixStream::connect(socket_path).map_err(classify_client_io)?;
@@ -445,6 +476,7 @@ fn run_target_client(socket_path: &Path) -> Result<TargetClientSummary, common::
     Ok(TargetClientSummary { globals: state.globals, received_payload: state.received_payload })
 }
 
+/// Performs one read/dispatch cycle for the target clipboard client.
 fn dispatch_target_client_once(
     event_queue: &mut EventQueue<TargetClientState>,
     state: &mut TargetClientState,
@@ -468,6 +500,7 @@ fn dispatch_target_client_once(
     Ok(())
 }
 
+/// Maps client-side IO failures into the test's skip/fail control flow.
 fn classify_client_io(error: std::io::Error) -> common::TestControl {
     common::TestControl::Fail(error.to_string())
 }
@@ -827,6 +860,7 @@ delegate_noop!(TargetClientState: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(TargetClientState: ignore wl_data_device_manager::WlDataDeviceManager);
 
 impl SourceClientState {
+    /// Create the helper toplevel once both compositor globals are available.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;
@@ -845,6 +879,7 @@ impl SourceClientState {
         self.toplevel = Some(toplevel);
     }
 
+    /// Bind the seat-scoped data device once both the seat and manager are known.
     fn maybe_bind_data_device(&mut self, qh: &QueueHandle<Self>) {
         if self.data_device.is_some() || self.data_device_manager.is_none() || self.seat.is_none() {
             return;
@@ -858,6 +893,7 @@ impl SourceClientState {
         self.data_device = Some(manager.get_data_device(seat, qh, ()));
     }
 
+    /// Offer one MIME type and claim clipboard ownership for the current serial.
     fn set_selection(&mut self, qh: &QueueHandle<Self>, serial: u32) {
         let Some(manager) = self.data_device_manager.as_ref() else {
             return;
@@ -875,6 +911,7 @@ impl SourceClientState {
 }
 
 impl TargetClientState {
+    /// Create the helper toplevel once both compositor globals are available.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;
@@ -893,6 +930,7 @@ impl TargetClientState {
         self.toplevel = Some(toplevel);
     }
 
+    /// Bind the seat-scoped data device once both the seat and manager are known.
     fn maybe_bind_data_device(&mut self, qh: &QueueHandle<Self>) {
         if self.data_device.is_some() || self.data_device_manager.is_none() || self.seat.is_none() {
             return;
@@ -906,6 +944,8 @@ impl TargetClientState {
         self.data_device = Some(manager.get_data_device(seat, qh, ()));
     }
 
+    /// Start reading the advertised offer into a local pipe once both the
+    /// offer object and expected MIME type are available.
     fn maybe_request_receive(&mut self) -> Result<(), common::TestControl> {
         if self.receive_requested {
             return Ok(());
@@ -926,6 +966,7 @@ impl TargetClientState {
         Ok(())
     }
 
+    /// Poll the receive pipe and finalize the transfer once bytes arrive.
     fn try_read_received_payload(&mut self) -> Result<(), common::TestControl> {
         let Some(read_end) = self.pending_read.as_mut() else {
             return Ok(());

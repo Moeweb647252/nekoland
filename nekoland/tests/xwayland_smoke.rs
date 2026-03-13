@@ -1,3 +1,5 @@
+//! In-process smoke test for the XWayland bridge using a real X11 client connection.
+
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -19,12 +21,21 @@ use smithay::reexports::x11rb::wrapper::ConnectionExt as _;
 
 mod common;
 
+/// Title assigned to the smoke-test X11 window.
 const WINDOW_TITLE: &str = "Nekoland X11 Smoke";
+/// `WM_CLASS` payload assigned to the smoke-test X11 window.
 const WINDOW_CLASS: &[u8] = b"nekoland-x11-smoke\0nekoland-x11-smoke\0";
 
+/// Shared probe used to publish the discovered XWayland display name from the running app to the
+/// helper X11 client thread.
 #[derive(Debug, Clone, Resource)]
-struct XWaylandDisplayProbe(Arc<Mutex<Option<Result<String, String>>>>);
+struct XWaylandDisplayProbe(
+    /// Shared slot filled by the running app once XWayland either publishes a
+    /// display name or reports a startup error.
+    Arc<Mutex<Option<Result<String, String>>>>,
+);
 
+/// Verifies that a real X11 window mapped through XWayland appears in the compositor tree query.
 #[test]
 fn xwayland_window_appears_in_tree_snapshot() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -91,6 +102,7 @@ fn xwayland_window_appears_in_tree_snapshot() {
     );
 }
 
+/// Records the XWayland display name or startup error into the shared probe once available.
 fn record_xwayland_display_system(
     xwayland_state: Res<XWaylandServerState>,
     display_probe: Res<XWaylandDisplayProbe>,
@@ -113,6 +125,8 @@ fn record_xwayland_display_system(
     }
 }
 
+/// Waits for XWayland startup, creates a real X11 window, and then polls the compositor tree until
+/// the corresponding XWayland window appears.
 fn run_x11_smoke_client(
     display_probe: Arc<Mutex<Option<Result<String, String>>>>,
     socket_path: &Path,
@@ -177,6 +191,7 @@ fn run_x11_smoke_client(
     Ok(window)
 }
 
+/// Waits until the running compositor publishes an XWayland display name.
 fn wait_for_xwayland_display(
     display_probe: &Arc<Mutex<Option<Result<String, String>>>>,
 ) -> Result<String, common::TestControl> {
@@ -208,6 +223,8 @@ fn wait_for_xwayland_display(
     }
 }
 
+/// Retries connection to the XWayland X11 display until it becomes available or definitively
+/// fails.
 fn wait_for_x11_connection(
     display_name: &str,
 ) -> Result<(smithay::reexports::x11rb::rust_connection::RustConnection, usize), common::TestControl>
@@ -232,6 +249,7 @@ fn wait_for_x11_connection(
     }
 }
 
+/// Polls the compositor tree query until the mapped X11 window is visible through IPC.
 fn wait_for_x11_window(
     socket_path: &Path,
     expected_window_id: u32,
@@ -264,6 +282,7 @@ fn wait_for_x11_window(
     }
 }
 
+/// Queries the current tree snapshot over IPC.
 fn query_tree(socket_path: &Path) -> Result<TreeSnapshot, std::io::Error> {
     let reply = send_request_to_path(
         socket_path,
@@ -280,6 +299,7 @@ fn query_tree(socket_path: &Path) -> Result<TreeSnapshot, std::io::Error> {
     serde_json::from_value(payload).map_err(std::io::Error::other)
 }
 
+/// Maps IPC failures into the test's skip/fail control flow.
 fn classify_ipc_error(error: std::io::Error) -> common::TestControl {
     if ipc_error_is_skippable(&error) {
         return common::TestControl::Skip(error.to_string());
@@ -288,6 +308,7 @@ fn classify_ipc_error(error: std::io::Error) -> common::TestControl {
     common::TestControl::Fail(error.to_string())
 }
 
+/// Identifies retryable transient IPC errors.
 fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -298,20 +319,24 @@ fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     )
 }
 
+/// Identifies IPC errors that should skip the test in restricted environments.
 fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
     error.kind() == ErrorKind::PermissionDenied || error.raw_os_error() == Some(1)
 }
 
+/// Identifies transient X11 connection errors while XWayland is still coming up.
 fn x11_connect_error_is_retryable(error: &str) -> bool {
     error.contains("Connection refused")
         || error.contains("No such file or directory")
         || error.contains("timed out")
 }
 
+/// Identifies X11 connection errors that should skip the test in restricted environments.
 fn x11_connect_error_is_skippable(error: &str) -> bool {
     error.contains("Permission denied") || error.contains("Operation not permitted")
 }
 
+/// Identifies XWayland startup errors that should skip the test rather than fail it outright.
 fn xwayland_startup_error_is_skippable(error: &str) -> bool {
     error.contains("No such file or directory")
         || error.contains("not found")
@@ -319,6 +344,7 @@ fn xwayland_startup_error_is_skippable(error: &str) -> bool {
         || error.contains("Operation not permitted")
 }
 
+/// Returns the default config path used by this smoke test.
 fn workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }

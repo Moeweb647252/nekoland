@@ -1,6 +1,9 @@
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
+use crate::kinds::BackendEventQueue;
+
+/// Latest presentation timeline values known for one output.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputPresentationTimeline {
     pub output_name: String,
@@ -9,6 +12,7 @@ pub struct OutputPresentationTimeline {
     pub sequence: u64,
 }
 
+/// One presentation event emitted by a backend for a specific output.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputPresentationEventRecord {
     pub output_name: String,
@@ -17,12 +21,11 @@ pub struct OutputPresentationEventRecord {
     pub sequence: u64,
 }
 
+/// Current presentation timeline snapshot across all outputs.
 #[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputPresentationState {
     pub outputs: Vec<OutputPresentationTimeline>,
 }
 
-#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PendingOutputPresentationEvents {
-    pub items: Vec<OutputPresentationEventRecord>,
-}
+/// Queue of presentation events waiting to be folded into `OutputPresentationState`.
+pub type PendingOutputPresentationEvents = BackendEventQueue<OutputPresentationEventRecord>;

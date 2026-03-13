@@ -1,6 +1,11 @@
-use bevy_ecs::prelude::Resource;
+use crate::kinds::CompositorRequestQueue;
 use serde::{Deserialize, Serialize};
 
+/// Internal backend bridge actions for outputs.
+///
+/// New user-facing control flows should go through `PendingOutputControls` and `OutputOps`.
+/// This queue remains as the backend-facing contract after high-level output control updates have
+/// been folded into backend-specific request application.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum OutputServerAction {
     Configure {
@@ -17,12 +22,11 @@ pub enum OutputServerAction {
     },
 }
 
+/// One output-management request.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputServerRequest {
     pub action: OutputServerAction,
 }
 
-#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PendingOutputServerRequests {
-    pub items: Vec<OutputServerRequest>,
-}
+/// Queue of pending backend-bridge output requests.
+pub type PendingOutputServerRequests = CompositorRequestQueue<OutputServerRequest>;

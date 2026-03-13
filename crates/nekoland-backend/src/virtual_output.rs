@@ -1,132 +1,217 @@
-use std::collections::HashMap;
-
-use bevy_ecs::prelude::{Local, Query, Res, ResMut};
-use nekoland_ecs::components::{
-    LayerShellSurface, OutputDevice, SurfaceGeometry, WlSurfaceHandle, XdgPopup, XdgWindow,
-};
-use nekoland_ecs::resources::{
-    CompositorClock, CompositorConfig, GlobalPointerPosition, PendingOutputPresentationEvents,
-    VirtualOutputCaptureState, VirtualOutputElement, VirtualOutputElementKind, VirtualOutputFrame,
-};
+use bevy_app::App;
+use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
+use nekoland_ecs::resources::{VirtualOutputElement, VirtualOutputElementKind, VirtualOutputFrame};
 use smithay::utils::{Clock, Monotonic};
 
-use crate::plugin::{OutputPresentationRuntime, emit_present_completion_events};
-use crate::traits::{BackendKind, SelectedBackend};
+use crate::common::outputs::{
+    BackendOutputBlueprint, BackendOutputChange, BackendOutputEventRecord,
+};
+use crate::common::presentation::{OutputPresentationRuntime, emit_present_completion_events};
+use crate::traits::{
+    Backend, BackendApplyCtx, BackendCapabilities, BackendDescriptor, BackendExtractCtx, BackendId,
+    BackendKind, BackendPresentCtx, BackendRole, RenderSurfaceRole,
+};
 
 const DEFAULT_CURSOR_SIZE: u32 = 24;
 
-pub(crate) fn virtual_backend_system(mut selected_backend: ResMut<SelectedBackend>) {
-    if selected_backend.kind != BackendKind::Virtual {
-        return;
-    }
-
-    selected_backend.description = "offscreen virtual output backend".to_owned();
+/// Offscreen backend that mirrors the compositor render list into a synthetic
+/// capture stream and presentation timeline.
+pub(crate) struct VirtualRuntime {
+    /// Public descriptor surfaced through backend status snapshots.
+    descriptor: BackendDescriptor,
+    /// Name of the output last seeded into ECS for this backend.
+    seeded_output_name: Option<String>,
+    /// Per-output sequence/timestamp state for synthetic presentation feedback.
+    presentation_runtime: OutputPresentationRuntime,
+    /// Monotonic clock used to timestamp synthetic presentation completions.
+    monotonic_clock: Option<Clock<Monotonic>>,
 }
 
-pub(crate) fn virtual_present_completion_system(
-    selected_backend: Res<SelectedBackend>,
-    outputs: Query<(&OutputDevice, &nekoland_ecs::components::OutputProperties)>,
-    mut pending_presentation_events: ResMut<PendingOutputPresentationEvents>,
-    mut presentation_runtime: Local<OutputPresentationRuntime>,
-    mut monotonic_clock: Local<Option<Clock<Monotonic>>>,
-) {
-    emit_present_completion_events(
-        BackendKind::Virtual,
-        &selected_backend,
-        &outputs,
-        &mut pending_presentation_events,
-        &mut presentation_runtime,
-        &mut monotonic_clock,
-    );
-}
-
-pub(crate) fn virtual_output_capture_system(
-    selected_backend: Res<SelectedBackend>,
-    clock: Res<CompositorClock>,
-    config: Option<Res<CompositorConfig>>,
-    outputs: Query<(&OutputDevice, &nekoland_ecs::components::OutputProperties)>,
-    pointer: Option<Res<GlobalPointerPosition>>,
-    render_list: Res<nekoland_ecs::resources::RenderList>,
-    surfaces: Query<(
-        &WlSurfaceHandle,
-        &SurfaceGeometry,
-        Option<&XdgWindow>,
-        Option<&XdgPopup>,
-        Option<&LayerShellSurface>,
-    )>,
-    mut capture_state: ResMut<VirtualOutputCaptureState>,
-) {
-    if selected_backend.kind != BackendKind::Virtual {
-        return;
+impl VirtualRuntime {
+    /// Install one virtual backend runtime with a deterministic capture-sink descriptor.
+    pub fn install(_app: &mut App, id: BackendId) -> Self {
+        Self {
+            descriptor: BackendDescriptor {
+                id,
+                kind: BackendKind::Virtual,
+                role: BackendRole::CaptureSink,
+                label: format!("virtual-{}", id.0),
+                description: "offscreen virtual output backend".to_owned(),
+            },
+            seeded_output_name: None,
+            presentation_runtime: OutputPresentationRuntime::default(),
+            monotonic_clock: None,
+        }
     }
 
-    let Some((output, properties)) = outputs.iter().next() else {
-        return;
-    };
+    /// Pick the configured virtual-output name, falling back to `Virtual-1`.
+    fn desired_output_name(
+        &self,
+        config: Option<&nekoland_ecs::resources::CompositorConfig>,
+    ) -> String {
+        config
+            .and_then(|config| config.outputs.iter().find(|output| output.enabled))
+            .map(|output| output.name.clone())
+            .unwrap_or_else(|| "Virtual-1".to_owned())
+    }
 
-    let geometry_by_surface = surfaces
-        .iter()
-        .map(|(surface, geometry, window, popup, layer)| {
-            let kind = if window.is_some() {
-                VirtualOutputElementKind::Window
-            } else if popup.is_some() {
-                VirtualOutputElementKind::Popup
-            } else if layer.is_some() {
-                VirtualOutputElementKind::Layer
-            } else {
-                VirtualOutputElementKind::Unknown
-            };
-            (surface.id, (geometry.clone(), kind))
+    /// Iterate output snapshots currently owned by this backend runtime.
+    fn owned_outputs<'a>(
+        &'a self,
+        outputs: &'a [crate::traits::OutputSnapshot],
+    ) -> impl Iterator<Item = &'a crate::traits::OutputSnapshot> {
+        outputs.iter().filter(|output| output.backend_id == Some(self.id()))
+    }
+}
+
+impl Backend for VirtualRuntime {
+    fn id(&self) -> BackendId {
+        self.descriptor.id
+    }
+
+    fn descriptor(&self) -> BackendDescriptor {
+        self.descriptor.clone()
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::OUTPUT_DISCOVERY
+            | BackendCapabilities::OUTPUT_CONFIGURATION
+            | BackendCapabilities::PRESENT
+            | BackendCapabilities::PRESENT_TIMELINE
+            | BackendCapabilities::CAPTURE
+    }
+
+    fn seed_output(&self, output_name: &str) -> Option<BackendOutputBlueprint> {
+        Some(BackendOutputBlueprint {
+            device: OutputDevice {
+                name: output_name.to_owned(),
+                kind: OutputKind::Virtual,
+                make: "Virtual".to_owned(),
+                model: self.descriptor.description.clone(),
+            },
+            properties: OutputProperties {
+                width: 1920,
+                height: 1080,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
         })
-        .collect::<HashMap<_, _>>();
+    }
 
-    let mut elements = Vec::with_capacity(render_list.elements.len());
-    for render_element in &render_list.elements {
-        if render_element.surface_id == 0 {
-            let (x, y) = pointer
-                .as_ref()
-                .map(|pointer| (pointer.x.round() as i32, pointer.y.round() as i32))
-                .unwrap_or((0, 0));
+    fn extract(
+        &mut self,
+        cx: &mut BackendExtractCtx<'_>,
+    ) -> Result<(), nekoland_core::error::NekolandError> {
+        // Keep one virtual output materialized so the rest of the compositor can
+        // treat the backend like any other output-producing runtime.
+        let desired_output_name = self.desired_output_name(cx.config);
+        let has_output =
+            self.owned_outputs(cx.outputs).any(|output| output.device.name == desired_output_name);
+        if !has_output && self.seeded_output_name.as_deref() != Some(desired_output_name.as_str()) {
+            if let Some(blueprint) = self.seed_output(&desired_output_name) {
+                cx.output_events.push(BackendOutputEventRecord {
+                    backend_id: self.id(),
+                    output_name: desired_output_name.clone(),
+                    change: BackendOutputChange::Connected(blueprint),
+                });
+                self.seeded_output_name = Some(desired_output_name);
+            }
+        }
+
+        let owned_outputs = self.owned_outputs(cx.outputs).cloned().collect::<Vec<_>>();
+        emit_present_completion_events(
+            owned_outputs
+                .iter()
+                .map(|output| (output.device.name.clone(), output.properties.clone())),
+            cx.presentation_events,
+            &mut self.presentation_runtime,
+            &mut self.monotonic_clock,
+        );
+
+        Ok(())
+    }
+
+    fn apply(
+        &mut self,
+        _cx: &mut BackendApplyCtx<'_>,
+    ) -> Result<(), nekoland_core::error::NekolandError> {
+        Ok(())
+    }
+
+    fn present(
+        &mut self,
+        cx: &mut BackendPresentCtx<'_>,
+    ) -> Result<(), nekoland_core::error::NekolandError> {
+        let Some(capture_state) = cx.virtual_output_capture.as_deref_mut() else {
+            return Ok(());
+        };
+        let owned_outputs = self.owned_outputs(cx.outputs).cloned().collect::<Vec<_>>();
+        let Some(output) = owned_outputs.first() else {
+            return Ok(());
+        };
+        let Some(clock) = cx.clock else {
+            return Ok(());
+        };
+
+        // Serialize the current render list into a backend-agnostic capture
+        // frame so tests and tooling can inspect what would have been presented.
+        let mut elements = Vec::with_capacity(cx.render_list.elements.len());
+        for render_element in &cx.render_list.elements {
+            if render_element.surface_id == 0 {
+                let (x, y) = cx
+                    .pointer
+                    .map(|pointer| (pointer.x.round() as i32, pointer.y.round() as i32))
+                    .unwrap_or((0, 0));
+                elements.push(VirtualOutputElement {
+                    surface_id: 0,
+                    kind: VirtualOutputElementKind::Cursor,
+                    x,
+                    y,
+                    width: DEFAULT_CURSOR_SIZE,
+                    height: DEFAULT_CURSOR_SIZE,
+                    z_index: render_element.z_index,
+                    opacity: render_element.opacity,
+                });
+                continue;
+            }
+
+            let Some(surface) = cx.surfaces.get(&render_element.surface_id) else {
+                continue;
+            };
+
+            let kind = match surface.role {
+                RenderSurfaceRole::Window => VirtualOutputElementKind::Window,
+                RenderSurfaceRole::Popup => VirtualOutputElementKind::Popup,
+                RenderSurfaceRole::Layer => VirtualOutputElementKind::Layer,
+                RenderSurfaceRole::Unknown => VirtualOutputElementKind::Unknown,
+            };
+
             elements.push(VirtualOutputElement {
-                surface_id: 0,
-                kind: VirtualOutputElementKind::Cursor,
-                x,
-                y,
-                width: DEFAULT_CURSOR_SIZE,
-                height: DEFAULT_CURSOR_SIZE,
+                surface_id: render_element.surface_id,
+                kind,
+                x: surface.geometry.x,
+                y: surface.geometry.y,
+                width: surface.geometry.width,
+                height: surface.geometry.height,
                 z_index: render_element.z_index,
                 opacity: render_element.opacity,
             });
-            continue;
         }
 
-        let Some((geometry, kind)) = geometry_by_surface.get(&render_element.surface_id) else {
-            continue;
-        };
-
-        elements.push(VirtualOutputElement {
-            surface_id: render_element.surface_id,
-            kind: *kind,
-            x: geometry.x,
-            y: geometry.y,
-            width: geometry.width,
-            height: geometry.height,
-            z_index: render_element.z_index,
-            opacity: render_element.opacity,
+        capture_state.push_frame(VirtualOutputFrame {
+            output_name: output.device.name.clone(),
+            frame: clock.frame,
+            uptime_millis: clock.uptime_millis.min(u128::from(u64::MAX)) as u64,
+            width: output.properties.width,
+            height: output.properties.height,
+            scale: output.properties.scale,
+            background_color: cx
+                .config
+                .map(|config| config.background_color.clone())
+                .unwrap_or_else(|| "#000000".to_owned()),
+            elements,
         });
-    }
 
-    capture_state.push_frame(VirtualOutputFrame {
-        output_name: output.name.clone(),
-        frame: clock.frame,
-        uptime_millis: clock.uptime_millis.min(u128::from(u64::MAX)) as u64,
-        width: properties.width,
-        height: properties.height,
-        scale: properties.scale,
-        background_color: config
-            .as_deref()
-            .map(|config| config.background_color.clone())
-            .unwrap_or_else(|| "#000000".to_owned()),
-        elements,
-    });
+        Ok(())
+    }
 }

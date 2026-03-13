@@ -1,3 +1,5 @@
+//! In-process integration test for `wl_data_device` clipboard selection reaching ECS state.
+
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,16 +25,23 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 mod common;
 
+/// MIME type offered by the helper clipboard client.
 const TEST_MIME_TYPE: &str = "text/plain;charset=utf-8";
+/// Maximum number of frames the synthetic key pump will stay active.
 const INPUT_PUMP_FRAMES: u16 = 400;
+/// Frame at which the synthetic key pump begins forcing focus/input.
 const INPUT_PUMP_START_FRAME: u64 = 6;
+/// Extra dwell time after publishing selection so ECS extraction can catch up.
 const CLIENT_HOLD_AFTER_SELECTION: Duration = Duration::from_millis(250);
 
+/// Repeatedly injects keyboard input so the test client can gain focus and set selection.
 #[derive(Debug, Default, Resource)]
 struct ClipboardInputPump {
+    /// Remaining frames during which synthetic key input will be injected.
     remaining_frames: u16,
 }
 
+/// Summary returned by the helper clipboard client.
 #[derive(Debug, Default)]
 struct ClipboardClientSummary {
     globals: Vec<String>,
@@ -42,6 +51,8 @@ struct ClipboardClientSummary {
     data_device_bound: bool,
 }
 
+/// Helper Wayland client state used to create one toplevel, gain keyboard focus, and publish a
+/// clipboard selection.
 #[derive(Debug, Default)]
 struct ClipboardClientState {
     globals: Vec<String>,
@@ -55,13 +66,19 @@ struct ClipboardClientState {
     xdg_surface: Option<xdg_surface::XdgSurface>,
     toplevel: Option<xdg_toplevel::XdgToplevel>,
     data_source: Option<wl_data_source::WlDataSource>,
+    /// Last configure serial seen for the helper toplevel.
     configure_serial: Option<u32>,
+    /// Whether the helper toplevel currently owns keyboard focus.
     keyboard_focused: bool,
+    /// Whether the helper client already published clipboard selection.
     selection_sent: bool,
+    /// How many keyboard-enter events the helper observed.
     keyboard_enter_count: usize,
+    /// How many pressed key events the helper observed while running.
     key_press_count: usize,
 }
 
+/// Verifies that a clipboard selection set by a real client is mirrored into ECS state.
 #[test]
 fn clipboard_selection_reaches_ecs_state() {
     let Some((summary, selection_state)) = run_clipboard_selection_scenario() else {
@@ -84,6 +101,8 @@ fn clipboard_selection_reaches_ecs_state() {
     assert_eq!(selection.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
 }
 
+/// Runs the clipboard selection scenario and returns both the helper-client summary and the ECS
+/// clipboard selection state.
 fn run_clipboard_selection_scenario() -> Option<(ClipboardClientSummary, ClipboardSelectionState)> {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
@@ -145,6 +164,7 @@ fn run_clipboard_selection_scenario() -> Option<(ClipboardClientSummary, Clipboa
     Some((summary, selection_state))
 }
 
+/// Injects keyboard focus/input so the clipboard client can publish a selection.
 fn pump_keyboard_selection_input(
     clock: Res<CompositorClock>,
     mut pump: ResMut<ClipboardInputPump>,
@@ -161,13 +181,14 @@ fn pump_keyboard_selection_input(
     };
 
     keyboard_focus.focused_surface = Some(surface.id);
-    pending_protocol_inputs.items.push(BackendInputEvent {
+    pending_protocol_inputs.push(BackendInputEvent {
         device: "clipboard-test".to_owned(),
         action: BackendInputAction::Key { keycode: 36, pressed: true },
     });
     pump.remaining_frames = pump.remaining_frames.saturating_sub(1);
 }
 
+/// Runs the helper clipboard client until it successfully publishes a selection.
 fn run_clipboard_client(socket_path: &Path) -> Result<ClipboardClientSummary, common::TestControl> {
     let stream = std::os::unix::net::UnixStream::connect(socket_path)
         .map_err(|error| common::TestControl::Fail(error.to_string()))?;
@@ -211,6 +232,7 @@ fn run_clipboard_client(socket_path: &Path) -> Result<ClipboardClientSummary, co
     })
 }
 
+/// Performs one read/dispatch cycle for the helper clipboard client.
 fn dispatch_client_once(
     event_queue: &mut EventQueue<ClipboardClientState>,
     state: &mut ClipboardClientState,
@@ -373,6 +395,7 @@ delegate_noop!(ClipboardClientState: ignore wl_data_source::WlDataSource);
 delegate_noop!(ClipboardClientState: ignore wl_data_offer::WlDataOffer);
 
 impl ClipboardClientState {
+    /// Create the helper toplevel once both compositor globals are available.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;
@@ -392,6 +415,7 @@ impl ClipboardClientState {
         self.toplevel = Some(toplevel);
     }
 
+    /// Bind the seat-scoped data device once both the seat and manager are known.
     fn maybe_bind_data_device(&mut self, qh: &QueueHandle<Self>) {
         if self.data_device.is_some() || self.data_device_manager.is_none() || self.seat.is_none() {
             return;
@@ -405,6 +429,7 @@ impl ClipboardClientState {
         self.data_device = Some(manager.get_data_device(seat, qh, ()));
     }
 
+    /// Offer one MIME type and claim clipboard ownership for the current serial.
     fn set_clipboard_selection(&mut self, qh: &QueueHandle<Self>, serial: u32) {
         let Some(manager) = self.data_device_manager.as_ref() else {
             return;

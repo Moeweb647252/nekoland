@@ -3,13 +3,20 @@ use std::collections::BTreeSet;
 use bevy_ecs::prelude::{Commands, Entity, Query, ResMut, With};
 use nekoland_ecs::bundles::LayerSurfaceBundle;
 use nekoland_ecs::components::{
-    BufferState, LayerAnchor, LayerShellSurface, OutputProperties, SurfaceGeometry, WlSurfaceHandle,
+    BufferState, DesiredOutputName, LayerAnchor, LayerOnOutput, LayerShellSurface, OutputDevice,
+    SurfaceGeometry, WlSurfaceHandle,
 };
-use nekoland_ecs::resources::{LayerLifecycleAction, PendingLayerRequests, WorkArea};
+use nekoland_ecs::resources::{
+    EntityIndex, LayerLifecycleAction, PendingLayerRequests, PrimaryOutputState, WorkArea,
+};
+use nekoland_ecs::views::OutputRuntime;
 
+/// Materializes layer-shell lifecycle requests into ECS entities and keeps the authoritative layer
+/// geometry/buffer attachment state updated from protocol commits.
 pub fn layer_lifecycle_system(
     mut commands: Commands,
     mut pending_layer_requests: ResMut<PendingLayerRequests>,
+    entity_index: bevy_ecs::prelude::Res<EntityIndex>,
     existing_layers: Query<&WlSurfaceHandle, With<LayerShellSurface>>,
     mut layers: Query<
         (Entity, &WlSurfaceHandle, &mut SurfaceGeometry, &mut BufferState, &mut LayerShellSurface),
@@ -20,7 +27,7 @@ pub fn layer_lifecycle_system(
         existing_layers.iter().map(|surface| surface.id).collect::<BTreeSet<_>>();
     let mut deferred = Vec::new();
 
-    for request in pending_layer_requests.items.drain(..) {
+    for request in pending_layer_requests.drain() {
         match request.action {
             LayerLifecycleAction::Created { spec }
                 if known_surface_ids.insert(request.surface_id) =>
@@ -45,9 +52,16 @@ pub fn layer_lifecycle_system(
                 exclusive_zone,
                 margins,
             } => {
-                let Some((entity, _surface, mut geometry, mut buffer, mut layer_surface)) = layers
-                    .iter_mut()
-                    .find(|(_, surface, _, _, _)| surface.id == request.surface_id)
+                let mut layer = entity_index
+                    .entity_for_surface(request.surface_id)
+                    .and_then(|entity| layers.get_mut(entity).ok());
+                if layer.is_none() {
+                    layer = layers
+                        .iter_mut()
+                        .find(|(_, surface, _, _, _)| surface.id == request.surface_id);
+                }
+
+                let Some((entity, _surface, mut geometry, mut buffer, mut layer_surface)) = layer
                 else {
                     deferred.push(request);
                     continue;
@@ -65,18 +79,22 @@ pub fn layer_lifecycle_system(
                 buffer.attached = size.is_some();
             }
             LayerLifecycleAction::Destroyed => {
-                let mut handled = false;
+                let mut layer = entity_index
+                    .entity_for_surface(request.surface_id)
+                    .and_then(|entity| layers.get_mut(entity).ok());
+                if layer.is_none() {
+                    layer = layers
+                        .iter_mut()
+                        .find(|(_, surface, _, _, _)| surface.id == request.surface_id);
+                }
 
-                for (entity, surface, _, _, _) in &mut layers {
-                    if surface.id != request.surface_id {
-                        continue;
-                    }
-
+                let handled = if let Some((entity, _, _, _, _)) = layer {
                     commands.entity(entity).despawn();
                     known_surface_ids.remove(&request.surface_id);
-                    handled = true;
-                    break;
-                }
+                    true
+                } else {
+                    false
+                };
 
                 if !handled {
                     deferred.push(request);
@@ -86,20 +104,84 @@ pub fn layer_lifecycle_system(
         }
     }
 
-    pending_layer_requests.items = deferred;
+    pending_layer_requests.replace(deferred);
 }
 
-pub fn layer_arrangement_system(
-    outputs: Query<&OutputProperties>,
-    mut layers: Query<(&LayerShellSurface, &LayerAnchor, &mut SurfaceGeometry, &BufferState)>,
+/// Keeps each layer surface attached to the output entity named in its protocol state.
+pub fn sync_layer_output_relationships_system(
+    mut commands: Commands,
+    entity_index: bevy_ecs::prelude::Res<EntityIndex>,
+    outputs: Query<(Entity, &OutputDevice)>,
+    layers: Query<
+        (Entity, Option<&DesiredOutputName>, Option<&LayerOnOutput>),
+        With<LayerShellSurface>,
+    >,
 ) {
-    let Some(output) = outputs.iter().next() else {
+    for (entity, desired_output_name, layer_output) in &layers {
+        let desired_output = resolve_output_entity(
+            desired_output_name.and_then(|desired_output_name| desired_output_name.0.as_deref()),
+            &entity_index,
+            &outputs,
+        );
+        match (desired_output, layer_output.map(|layer_output| layer_output.0)) {
+            (Some(desired_output), Some(current_output)) if desired_output == current_output => {}
+            (Some(desired_output), _) => {
+                commands.entity(entity).insert(LayerOnOutput(desired_output));
+            }
+            (None, Some(_)) => {
+                commands.entity(entity).remove::<LayerOnOutput>();
+            }
+            (None, None) => {}
+        }
+    }
+}
+
+/// Resolves a protocol-level output name into an ECS entity, preferring the index when it is
+/// already up to date but falling back to a linear scan during early startup.
+fn resolve_output_entity(
+    output_name: Option<&str>,
+    entity_index: &EntityIndex,
+    outputs: &Query<(Entity, &OutputDevice)>,
+) -> Option<Entity> {
+    let output_name = output_name?;
+    entity_index.entity_for_output_name(output_name).or_else(|| {
+        outputs.iter().find(|(_, output)| output.name == output_name).map(|(entity, _)| entity)
+    })
+}
+
+/// Computes layer surface rectangles from anchors, desired size, margins, and bound output size.
+pub fn layer_arrangement_system(
+    primary_output: Option<bevy_ecs::prelude::Res<PrimaryOutputState>>,
+    outputs: Query<(Entity, OutputRuntime)>,
+    mut layers: Query<(
+        &LayerShellSurface,
+        Option<&DesiredOutputName>,
+        &LayerAnchor,
+        &mut SurfaceGeometry,
+        &BufferState,
+        Option<&LayerOnOutput>,
+    )>,
+) {
+    let output_sizes = outputs
+        .iter()
+        .map(|(entity, output)| {
+            (entity, output.properties.width.max(1) as i32, output.properties.height.max(1) as i32)
+        })
+        .collect::<Vec<_>>();
+    let Some(primary_output) =
+        primary_output_from_state_or_sizes(primary_output.as_deref(), &output_sizes, &outputs)
+    else {
         return;
     };
-    let output_width = output.width.max(1) as i32;
-    let output_height = output.height.max(1) as i32;
 
-    for (layer_surface, anchor, mut geometry, buffer) in &mut layers {
+    for (layer_surface, desired_output_name, anchor, mut geometry, buffer, layer_output) in
+        &mut layers
+    {
+        let Some((_, output_width, output_height)) =
+            output_size_for_layer(desired_output_name, layer_output, primary_output, &output_sizes)
+        else {
+            continue;
+        };
         if !buffer.attached {
             geometry.width = layer_surface.desired_width.max(1);
             geometry.height = layer_surface.desired_height.max(1);
@@ -148,22 +230,43 @@ pub fn layer_arrangement_system(
     tracing::trace!("layer arrangement system tick");
 }
 
+/// Derives the layout work area by subtracting exclusive-zone layers anchored to the primary
+/// output from the full output rectangle.
 pub fn work_area_system(
-    outputs: Query<&OutputProperties>,
-    layers: Query<(&LayerShellSurface, &LayerAnchor, &SurfaceGeometry, &BufferState)>,
+    primary_output: Option<bevy_ecs::prelude::Res<PrimaryOutputState>>,
+    outputs: Query<(Entity, OutputRuntime)>,
+    layers: Query<(
+        &LayerShellSurface,
+        Option<&DesiredOutputName>,
+        &LayerAnchor,
+        &SurfaceGeometry,
+        &BufferState,
+        Option<&LayerOnOutput>,
+    )>,
     mut work_area: ResMut<WorkArea>,
 ) {
-    let Some(output) = outputs.iter().next() else {
+    let output_sizes = outputs
+        .iter()
+        .map(|(entity, output)| {
+            (entity, output.properties.width.max(1) as i32, output.properties.height.max(1) as i32)
+        })
+        .collect::<Vec<_>>();
+    let Some((primary_output, output_width, output_height)) =
+        primary_output_from_state_or_sizes(primary_output.as_deref(), &output_sizes, &outputs)
+    else {
         return;
     };
 
     let mut left = 0_i32;
     let mut top = 0_i32;
-    let mut right = output.width.max(1) as i32;
-    let mut bottom = output.height.max(1) as i32;
+    let mut right = output_width;
+    let mut bottom = output_height;
 
-    for (layer_surface, anchor, geometry, buffer) in &layers {
+    for (layer_surface, desired_output_name, anchor, geometry, buffer, layer_output) in &layers {
         if !buffer.attached || layer_surface.exclusive_zone <= 0 {
+            continue;
+        }
+        if !layer_targets_output(desired_output_name, layer_output, primary_output) {
             continue;
         }
 
@@ -193,4 +296,580 @@ pub fn work_area_system(
         height = work_area.height,
         "updated shell work area"
     );
+}
+
+/// Chooses the target output size for one layer, defaulting to the primary output when the layer
+/// did not bind itself to a specific output.
+fn output_size_for_layer(
+    desired_output_name: Option<&DesiredOutputName>,
+    layer_output: Option<&LayerOnOutput>,
+    primary_output: (Entity, i32, i32),
+    output_sizes: &[(Entity, i32, i32)],
+) -> Option<(Entity, i32, i32)> {
+    if let Some(layer_output) = layer_output {
+        return output_sizes.iter().find(|(entity, _, _)| *entity == layer_output.0).copied();
+    }
+
+    desired_output_name
+        .and_then(|desired_output_name| desired_output_name.0.as_deref())
+        .is_none()
+        .then_some(primary_output)
+}
+
+/// Treats layers without an explicit output binding as targeting the primary output, while layers
+/// with an unresolved desired output stay detached until the relationship can be restored.
+fn layer_targets_output(
+    desired_output_name: Option<&DesiredOutputName>,
+    layer_output: Option<&LayerOnOutput>,
+    output_entity: Entity,
+) -> bool {
+    if let Some(layer_output) = layer_output {
+        return layer_output.0 == output_entity;
+    }
+
+    desired_output_name.and_then(|desired_output_name| desired_output_name.0.as_deref()).is_none()
+}
+
+/// Picks the largest output as the primary layout target, breaking ties by entity id for
+/// deterministic tests.
+fn primary_output_from_sizes(output_sizes: &[(Entity, i32, i32)]) -> Option<(Entity, i32, i32)> {
+    output_sizes
+        .iter()
+        .copied()
+        .max_by_key(|(entity, width, height)| ((i64::from(*width) * i64::from(*height)), *entity))
+}
+
+fn primary_output_from_state_or_sizes(
+    primary_output_state: Option<&PrimaryOutputState>,
+    output_sizes: &[(Entity, i32, i32)],
+    outputs: &Query<(Entity, OutputRuntime)>,
+) -> Option<(Entity, i32, i32)> {
+    let Some(primary_output_name) =
+        primary_output_state.and_then(|primary_output_state| primary_output_state.name.as_deref())
+    else {
+        return primary_output_from_sizes(output_sizes);
+    };
+
+    outputs
+        .iter()
+        .find(|(_, output)| output.name() == primary_output_name)
+        .map(|(entity, output)| {
+            (entity, output.properties.width.max(1) as i32, output.properties.height.max(1) as i32)
+        })
+        .or_else(|| primary_output_from_sizes(output_sizes))
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_ecs::prelude::Entity;
+    use bevy_ecs::schedule::IntoScheduleConfigs;
+    use nekoland_core::prelude::NekolandApp;
+    use nekoland_core::schedules::LayoutSchedule;
+    use nekoland_ecs::bundles::{LayerSurfaceBundle, OutputBundle};
+    use nekoland_ecs::components::{
+        BufferState, DesiredOutputName, LayerAnchor, LayerLevel, LayerMargins, LayerOnOutput,
+        LayerShellSurface, OutputDevice, OutputKind, OutputProperties, SurfaceGeometry,
+        WlSurfaceHandle,
+    };
+    use nekoland_ecs::resources::{
+        EntityIndex, LayerLifecycleAction, LayerSurfaceCreateSpec, PendingLayerRequests,
+        PrimaryOutputState, WorkArea, rebuild_entity_index_system,
+    };
+
+    use super::{
+        layer_arrangement_system, layer_lifecycle_system, sync_layer_output_relationships_system,
+        work_area_system,
+    };
+
+    #[test]
+    fn layer_creation_inserts_output_relationship_when_output_exists() {
+        let mut app = NekolandApp::new("layer-output-relationship-test");
+        app.insert_resource(EntityIndex::default())
+            .insert_resource(PendingLayerRequests::default());
+        app.inner_mut().add_systems(
+            LayoutSchedule,
+            (
+                rebuild_entity_index_system,
+                layer_lifecycle_system,
+                sync_layer_output_relationships_system,
+            )
+                .chain(),
+        );
+
+        let output_entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "test".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1280,
+                    height: 720,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+            })
+            .id();
+
+        app.inner_mut().world_mut().resource_mut::<PendingLayerRequests>().push(
+            nekoland_ecs::resources::LayerLifecycleRequest {
+                surface_id: 91,
+                action: LayerLifecycleAction::Created {
+                    spec: LayerSurfaceCreateSpec {
+                        namespace: "panel".to_owned(),
+                        output_name: Some("Virtual-1".to_owned()),
+                        layer: LayerLevel::Top,
+                        anchor: LayerAnchor { top: true, bottom: false, left: true, right: true },
+                        desired_width: 1280,
+                        desired_height: 32,
+                        exclusive_zone: 32,
+                        margins: LayerMargins::default(),
+                    },
+                },
+            },
+        );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner_mut().world_mut();
+        let layer_entity = world
+            .query::<(Entity, &WlSurfaceHandle, &LayerShellSurface)>()
+            .iter(world)
+            .find_map(|(entity, surface, _)| (surface.id == 91).then_some(entity))
+            .expect("layer entity should be spawned");
+        let on_output = world
+            .get::<LayerOnOutput>(layer_entity)
+            .expect("created layer should resolve the output relationship");
+
+        assert_eq!(on_output.0, output_entity, "layer should point at the resolved output entity");
+    }
+
+    #[test]
+    fn layer_arrangement_uses_target_output_dimensions() {
+        let mut app = NekolandApp::new("layer-arrangement-output-target-test");
+        app.inner_mut().add_systems(LayoutSchedule, layer_arrangement_system);
+
+        app.inner_mut().world_mut().spawn(OutputBundle {
+            output: OutputDevice {
+                name: "Virtual-1".to_owned(),
+                kind: OutputKind::Virtual,
+                make: "test".to_owned(),
+                model: "primary".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+        });
+        let secondary_output = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "HDMI-A-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "secondary".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 800,
+                    height: 600,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+            })
+            .id();
+        let layer = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                LayerShellSurface {
+                    namespace: "panel".to_owned(),
+                    layer: LayerLevel::Top,
+                    desired_width: 0,
+                    desired_height: 32,
+                    exclusive_zone: 0,
+                    margins: LayerMargins::default(),
+                },
+                DesiredOutputName(Some("HDMI-A-1".to_owned())),
+                LayerAnchor { top: true, bottom: false, left: true, right: true },
+                SurfaceGeometry { x: 0, y: 0, width: 1, height: 32 },
+                BufferState { attached: true, scale: 1 },
+                LayerOnOutput(secondary_output),
+            ))
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let geometry = app
+            .inner()
+            .world()
+            .get::<SurfaceGeometry>(layer)
+            .expect("layer should keep geometry after arrangement");
+        assert_eq!(
+            geometry.width, 800,
+            "stretch layer should size itself against the targeted output, not the primary output"
+        );
+    }
+
+    #[test]
+    fn work_area_ignores_layers_targeting_non_primary_outputs() {
+        let mut app = NekolandApp::new("layer-work-area-output-target-test");
+        app.insert_resource(WorkArea::default());
+        app.inner_mut().add_systems(LayoutSchedule, work_area_system);
+
+        app.inner_mut().world_mut().spawn(OutputBundle {
+            output: OutputDevice {
+                name: "Virtual-1".to_owned(),
+                kind: OutputKind::Virtual,
+                make: "test".to_owned(),
+                model: "primary".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+        });
+        let secondary_output = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "HDMI-A-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "secondary".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 800,
+                    height: 600,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+            })
+            .id();
+        app.inner_mut().world_mut().spawn((
+            LayerShellSurface {
+                namespace: "panel".to_owned(),
+                layer: LayerLevel::Top,
+                desired_width: 800,
+                desired_height: 32,
+                exclusive_zone: 32,
+                margins: LayerMargins::default(),
+            },
+            DesiredOutputName(Some("HDMI-A-1".to_owned())),
+            LayerAnchor { top: true, bottom: false, left: true, right: true },
+            SurfaceGeometry { x: 0, y: 0, width: 800, height: 32 },
+            BufferState { attached: true, scale: 1 },
+            LayerOnOutput(secondary_output),
+        ));
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let work_area = *app
+            .inner()
+            .world()
+            .get_resource::<WorkArea>()
+            .expect("work area resource should be present");
+        assert_eq!(
+            work_area,
+            WorkArea { x: 0, y: 0, width: 1280, height: 720 },
+            "layers targeting a non-primary output should not shrink the global work area"
+        );
+    }
+
+    #[test]
+    fn detached_named_layer_does_not_fall_back_to_primary_output() {
+        let mut app = NekolandApp::new("layer-detached-output-test");
+        app.inner_mut().add_systems(LayoutSchedule, layer_arrangement_system);
+
+        app.inner_mut().world_mut().spawn(OutputBundle {
+            output: OutputDevice {
+                name: "Virtual-1".to_owned(),
+                kind: OutputKind::Virtual,
+                make: "test".to_owned(),
+                model: "primary".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+        });
+        let layer = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                LayerShellSurface {
+                    namespace: "panel".to_owned(),
+                    layer: LayerLevel::Top,
+                    desired_width: 0,
+                    desired_height: 32,
+                    exclusive_zone: 0,
+                    margins: LayerMargins::default(),
+                },
+                DesiredOutputName(Some("Missing-1".to_owned())),
+                LayerAnchor { top: true, bottom: false, left: true, right: true },
+                SurfaceGeometry { x: 17, y: 19, width: 123, height: 32 },
+                BufferState { attached: true, scale: 1 },
+            ))
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let geometry = app
+            .inner()
+            .world()
+            .get::<SurfaceGeometry>(layer)
+            .expect("detached layer should keep geometry");
+        assert_eq!(
+            *geometry,
+            SurfaceGeometry { x: 17, y: 19, width: 123, height: 32 },
+            "a layer with a named but unresolved output should stay detached instead of falling back to the primary output"
+        );
+    }
+
+    #[test]
+    fn detached_named_layer_does_not_shrink_work_area() {
+        let mut app = NekolandApp::new("layer-detached-work-area-test");
+        app.insert_resource(WorkArea::default());
+        app.inner_mut().add_systems(LayoutSchedule, work_area_system);
+
+        app.inner_mut().world_mut().spawn(OutputBundle {
+            output: OutputDevice {
+                name: "Virtual-1".to_owned(),
+                kind: OutputKind::Virtual,
+                make: "test".to_owned(),
+                model: "primary".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+        });
+        app.inner_mut().world_mut().spawn((
+            LayerShellSurface {
+                namespace: "panel".to_owned(),
+                layer: LayerLevel::Top,
+                desired_width: 1280,
+                desired_height: 32,
+                exclusive_zone: 32,
+                margins: LayerMargins::default(),
+            },
+            DesiredOutputName(Some("Missing-1".to_owned())),
+            LayerAnchor { top: true, bottom: false, left: true, right: true },
+            SurfaceGeometry { x: 0, y: 0, width: 1280, height: 32 },
+            BufferState { attached: true, scale: 1 },
+        ));
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let work_area = *app
+            .inner()
+            .world()
+            .get_resource::<WorkArea>()
+            .expect("work area resource should be present");
+        assert_eq!(
+            work_area,
+            WorkArea { x: 0, y: 0, width: 1280, height: 720 },
+            "a detached layer should not reserve space on the primary output"
+        );
+    }
+
+    #[test]
+    fn explicit_primary_output_state_overrides_largest_output_fallback() {
+        let mut app = NekolandApp::new("layer-primary-output-state-test");
+        app.insert_resource(PrimaryOutputState { name: Some("HDMI-A-1".to_owned()) });
+        app.insert_resource(WorkArea::default());
+        app.inner_mut()
+            .add_systems(LayoutSchedule, (layer_arrangement_system, work_area_system).chain());
+
+        app.inner_mut().world_mut().spawn(OutputBundle {
+            output: OutputDevice {
+                name: "Virtual-1".to_owned(),
+                kind: OutputKind::Virtual,
+                make: "test".to_owned(),
+                model: "largest".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+        });
+        app.inner_mut().world_mut().spawn(OutputBundle {
+            output: OutputDevice {
+                name: "HDMI-A-1".to_owned(),
+                kind: OutputKind::Virtual,
+                make: "test".to_owned(),
+                model: "selected".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 800,
+                height: 600,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+        });
+        let layer = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                LayerShellSurface {
+                    namespace: "panel".to_owned(),
+                    layer: LayerLevel::Top,
+                    desired_width: 0,
+                    desired_height: 32,
+                    exclusive_zone: 32,
+                    margins: LayerMargins::default(),
+                },
+                DesiredOutputName(None),
+                LayerAnchor { top: true, bottom: false, left: true, right: true },
+                SurfaceGeometry { x: 0, y: 0, width: 1, height: 32 },
+                BufferState { attached: true, scale: 1 },
+            ))
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let geometry = app
+            .inner()
+            .world()
+            .get::<SurfaceGeometry>(layer)
+            .expect("unbound layer should be arranged against the selected primary output");
+        assert_eq!(geometry.width, 800);
+
+        let work_area = *app
+            .inner()
+            .world()
+            .get_resource::<WorkArea>()
+            .expect("work area resource should be present");
+        assert_eq!(work_area, WorkArea { x: 0, y: 32, width: 800, height: 568 });
+    }
+
+    #[test]
+    fn sync_layer_output_relationships_insert_when_output_appears_late() {
+        let mut app = NekolandApp::new("layer-output-sync-insert-test");
+        app.insert_resource(EntityIndex::default()).inner_mut().add_systems(
+            LayoutSchedule,
+            (rebuild_entity_index_system, sync_layer_output_relationships_system).chain(),
+        );
+
+        let layer = app
+            .inner_mut()
+            .world_mut()
+            .spawn(LayerSurfaceBundle::new(
+                77,
+                "panel".to_owned(),
+                Some("Virtual-1".to_owned()),
+                LayerLevel::Top,
+                LayerAnchor { top: true, bottom: false, left: true, right: true },
+                1280,
+                32,
+                32,
+                LayerMargins::default(),
+            ))
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+        assert!(
+            app.inner().world().get::<LayerOnOutput>(layer).is_none(),
+            "without a matching output entity the relationship should stay absent"
+        );
+
+        let output = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "primary".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1280,
+                    height: 720,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+            })
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let relationship = app
+            .inner()
+            .world()
+            .get::<LayerOnOutput>(layer)
+            .expect("relationship should be inserted once the output appears");
+        assert_eq!(relationship.0, output);
+    }
+
+    #[test]
+    fn sync_layer_output_relationships_remove_when_output_disappears() {
+        let mut app = NekolandApp::new("layer-output-sync-remove-test");
+        app.insert_resource(EntityIndex::default()).inner_mut().add_systems(
+            LayoutSchedule,
+            (rebuild_entity_index_system, sync_layer_output_relationships_system).chain(),
+        );
+
+        let output = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "primary".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1280,
+                    height: 720,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+            })
+            .id();
+        let layer = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                LayerSurfaceBundle::new(
+                    77,
+                    "panel".to_owned(),
+                    Some("Virtual-1".to_owned()),
+                    LayerLevel::Top,
+                    LayerAnchor { top: true, bottom: false, left: true, right: true },
+                    1280,
+                    32,
+                    32,
+                    LayerMargins::default(),
+                ),
+                LayerOnOutput(output),
+            ))
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+        app.inner_mut().world_mut().entity_mut(output).despawn();
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        assert!(
+            app.inner().world().get::<LayerOnOutput>(layer).is_none(),
+            "relationship should be removed when the named output no longer exists"
+        );
+    }
 }

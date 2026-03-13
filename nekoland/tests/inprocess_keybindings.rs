@@ -1,3 +1,5 @@
+//! In-process integration test for keybindings that should reach a real Wayland client.
+
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -8,7 +10,7 @@ use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::{Query, ResMut, Resource, With};
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use nekoland::build_app;
-use nekoland_backend::traits::SelectedBackend;
+use nekoland_backend::BackendStatus;
 use nekoland_core::app::{NekolandApp, RunLoopSettings};
 use nekoland_core::schedules::{LayoutSchedule, RenderSchedule};
 use nekoland_ecs::components::{WlSurfaceHandle, XdgWindow};
@@ -24,25 +26,33 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 mod common;
 
+/// Linux keycode used for the synthetic Super press.
 const SUPER_KEYCODE: u32 = 133;
+/// Linux keycode used for the synthetic `Q` press.
 const Q_KEYCODE: u32 = 24;
 
+/// One-shot resource that injects the close-window key chord used by the scenario.
 #[derive(Debug, Default, Resource)]
 struct KeybindingInputPump {
+    /// Set once the synthetic key chord has been injected.
     injected: bool,
 }
 
+/// Records `WindowClosed` messages emitted during the scenario.
 #[derive(Debug, Default, Resource)]
 struct ClosedWindowAudit {
+    /// Surface ids observed in emitted `WindowClosed` messages.
     surface_ids: Vec<u64>,
 }
 
+/// Summary returned by the helper client after the keybinding round-trip completes.
 #[derive(Debug, Default)]
 struct KeybindingClientSummary {
     globals: Vec<String>,
     received_close: bool,
 }
 
+/// Helper Wayland client state used to create one XDG toplevel and wait for `xdg_toplevel.close`.
 #[derive(Debug, Default)]
 struct KeybindingClientState {
     globals: Vec<String>,
@@ -51,10 +61,14 @@ struct KeybindingClientState {
     surface: Option<wl_surface::WlSurface>,
     xdg_surface: Option<xdg_surface::XdgSurface>,
     toplevel: Option<xdg_toplevel::XdgToplevel>,
+    /// Whether the helper toplevel received its initial configure.
     configured: bool,
+    /// Whether the helper client already observed `xdg_toplevel.close`.
     received_close: bool,
 }
 
+/// Verifies that the close-window keybinding closes a real client surface and propagates cleanup
+/// back into ECS.
 #[test]
 fn close_window_keybinding_reaches_real_wayland_client() {
     let Some((mut app, summary)) = run_close_window_keybinding_scenario() else {
@@ -67,8 +81,8 @@ fn close_window_keybinding_reaches_real_wayland_client() {
     let backend_description = app
         .inner()
         .world()
-        .get_resource::<SelectedBackend>()
-        .map(|backend| backend.description.clone())
+        .get_resource::<BackendStatus>()
+        .and_then(|status| status.primary_display().map(|backend| backend.description.clone()))
         .unwrap_or_default();
     if backend_description.contains("timer fallback") {
         eprintln!(
@@ -94,6 +108,7 @@ fn close_window_keybinding_reaches_real_wayland_client() {
     assert_eq!(audit.surface_ids.len(), 1, "close keybinding should emit one WindowClosed");
 }
 
+/// Runs the end-to-end keybinding scenario and returns both the app and the helper-client summary.
 fn run_close_window_keybinding_scenario() -> Option<(NekolandApp, KeybindingClientSummary)> {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-keybinding-runtime");
@@ -147,6 +162,7 @@ fn run_close_window_keybinding_scenario() -> Option<(NekolandApp, KeybindingClie
     Some((app, summary))
 }
 
+/// Injects the `Super+Q` keybinding once a window exists and focuses that window first.
 fn inject_close_keybinding_input(
     mut pump: ResMut<KeybindingInputPump>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
@@ -162,7 +178,7 @@ fn inject_close_keybinding_input(
     };
 
     keyboard_focus.focused_surface = Some(surface.id);
-    pending_backend_inputs.items.extend([
+    pending_backend_inputs.extend([
         BackendInputEvent {
             device: "keybinding-test".to_owned(),
             action: BackendInputAction::Key { keycode: SUPER_KEYCODE, pressed: true },
@@ -175,6 +191,7 @@ fn inject_close_keybinding_input(
     pump.injected = true;
 }
 
+/// Captures `WindowClosed` messages for later assertions.
 fn capture_window_closed_messages(
     mut window_closed: MessageReader<WindowClosed>,
     mut audit: ResMut<ClosedWindowAudit>,
@@ -184,6 +201,7 @@ fn capture_window_closed_messages(
     }
 }
 
+/// Runs the helper Wayland client until it receives `xdg_toplevel.close`.
 fn run_keybinding_client(
     socket_path: &Path,
 ) -> Result<KeybindingClientSummary, common::TestControl> {
@@ -226,6 +244,7 @@ fn run_keybinding_client(
     Ok(KeybindingClientSummary { globals: state.globals, received_close: state.received_close })
 }
 
+/// Performs one read/dispatch cycle for the helper Wayland client.
 fn dispatch_client_once(
     event_queue: &mut EventQueue<KeybindingClientState>,
     state: &mut KeybindingClientState,
@@ -246,6 +265,7 @@ fn dispatch_client_once(
     Ok(())
 }
 
+/// Maps backend-specific Wayland errors into the test's skip/fail control flow.
 fn classify_wayland_error(error: wayland_client::backend::WaylandError) -> common::TestControl {
     match error {
         wayland_client::backend::WaylandError::Io(error) => classify_io_error(error),
@@ -253,6 +273,7 @@ fn classify_wayland_error(error: wayland_client::backend::WaylandError) -> commo
     }
 }
 
+/// Identifies IO failures that usually mean the environment is too restricted for the test.
 fn classify_io_error(error: std::io::Error) -> common::TestControl {
     if matches!(
         error.kind(),
@@ -265,6 +286,7 @@ fn classify_io_error(error: std::io::Error) -> common::TestControl {
     common::TestControl::Fail(error.to_string())
 }
 
+/// Builds the temporary config used by the close-window keybinding scenario.
 fn test_config() -> String {
     r##"
 default_layout = "tiling"
@@ -380,6 +402,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for KeybindingClientState {
 }
 
 impl KeybindingClientState {
+    /// Create the helper toplevel once both compositor globals are available.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;

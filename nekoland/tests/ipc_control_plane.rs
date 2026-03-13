@@ -1,19 +1,27 @@
+//! In-process integration test for the IPC control plane: workspace, window, output, and query
+//! interactions against a live compositor instance.
+
 use std::io::ErrorKind;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use bevy_ecs::entity_disabling::Disabled;
+use bevy_ecs::hierarchy::ChildOf;
+use bevy_ecs::prelude::Has;
 use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    LayoutSlot, OutputDevice, OutputProperties, SurfaceGeometry, WindowState, WlSurfaceHandle,
-    Workspace, XdgWindow,
+    OutputDevice, OutputProperties, SurfaceGeometry, WindowLayout, WindowMode, WlSurfaceHandle,
+    Workspace, WorkspaceId, XdgWindow,
 };
-use nekoland_ecs::resources::{FramePacingState, KeyboardFocusState, RenderList};
+use nekoland_ecs::resources::{
+    ConfiguredKeybindingAction, FramePacingState, KeyboardFocusState, RenderList,
+};
 use nekoland_ipc::commands::{
-    ConfigSnapshot, OutputCommand, OutputSnapshot, QueryCommand, TreeSnapshot, WindowCommand,
-    WorkspaceCommand, WorkspaceSnapshot,
+    ConfigSnapshot, OutputCommand, OutputSnapshot, QueryCommand, SplitAxis, TreeSnapshot,
+    WindowCommand, WorkspaceCommand, WorkspaceSnapshot,
 };
 use nekoland_ipc::{IpcCommand, IpcReply, IpcRequest, IpcServerState, send_request_to_path};
 
@@ -21,13 +29,18 @@ mod common;
 
 const PRIMARY_SURFACE_ID: u64 = 101;
 const TARGET_SURFACE_ID: u64 = 202;
+const SPLIT_PRIMARY_SURFACE_ID: u64 = 301;
+const SPLIT_TARGET_SURFACE_ID: u64 = 302;
 
+/// Summary returned by the IPC control helper thread after the sequence completes.
 #[derive(Debug)]
 struct IpcControlSummary {
     output_name: String,
     config: ConfigSnapshot,
 }
 
+/// Verifies that IPC control commands mutate window, workspace, and output state in the expected
+/// way and that query snapshots reflect the result.
 #[test]
 fn ipc_control_commands_update_window_workspace_and_output_state() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -76,7 +89,8 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
     };
 
     let (
-        window_state,
+        window_layout,
+        window_mode,
         geometry,
         focused_surface,
         workspaces,
@@ -86,11 +100,11 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
     ) = {
         let world = app.inner_mut().world_mut();
 
-        let (window_state, geometry) = world
-            .query::<(&WlSurfaceHandle, &WindowState, &SurfaceGeometry)>()
+        let (window_layout, window_mode, geometry) = world
+            .query::<(&WlSurfaceHandle, &WindowLayout, &WindowMode, &SurfaceGeometry)>()
             .iter(world)
-            .find(|(surface, _, _)| surface.id == TARGET_SURFACE_ID)
-            .map(|(_, state, geometry)| (state.clone(), geometry.clone()))
+            .find(|(surface, _, _, _)| surface.id == TARGET_SURFACE_ID)
+            .map(|(_, layout, mode, geometry)| (layout.clone(), mode.clone(), geometry.clone()))
             .expect("target IPC window should remain present");
 
         let focused_surface = world
@@ -98,7 +112,11 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
             .expect("keyboard focus state should remain available")
             .focused_surface;
 
-        let workspaces = world.query::<&Workspace>().iter(world).cloned().collect::<Vec<_>>();
+        let workspaces = world
+            .query::<(&Workspace, Has<Disabled>)>()
+            .iter(world)
+            .map(|(workspace, _)| workspace.clone())
+            .collect::<Vec<_>>();
 
         let output_properties = world
             .query::<(&OutputDevice, &OutputProperties)>()
@@ -117,7 +135,8 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
             .clone();
 
         (
-            window_state,
+            window_layout,
+            window_mode,
             geometry,
             focused_surface,
             workspaces,
@@ -127,7 +146,8 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
         )
     };
 
-    assert_eq!(window_state, WindowState::Floating);
+    assert_eq!(window_layout, WindowLayout::Floating);
+    assert_eq!(window_mode, WindowMode::Normal);
     assert_eq!(geometry.x, 900);
     assert_eq!(geometry.y, 120);
     assert_eq!(geometry.width, 777);
@@ -144,12 +164,15 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
     assert_eq!(output_properties.width, 1600);
     assert_eq!(output_properties.height, 900);
     assert_eq!(output_properties.refresh_millihz, 75_000);
-    assert_eq!(summary.config.default_layout, "tiling");
+    assert_eq!(summary.config.default_layout, "floating");
     assert_eq!(summary.config.command_history_limit, 64);
     assert!(!summary.config.xwayland_enabled);
-    assert_eq!(summary.config.commands.terminal.as_deref(), Some("foot"));
     assert!(
-        summary.config.keybindings.contains_key("Super+Q"),
+        matches!(
+            summary.config.keybindings.get("Super+Return"),
+            Some(ConfiguredKeybindingAction::Command(argv))
+                if argv == &vec!["foot".to_owned()]
+        ),
         "runtime config query should expose active keybindings: {:?}",
         summary.config.keybindings
     );
@@ -190,7 +213,84 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
     drop(runtime_dir);
 }
 
+#[test]
+fn ipc_window_split_command_updates_tiled_geometry() {
+    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
+    let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
+    let runtime_dir = common::RuntimeDirGuard::new("nekoland-ipc-window-split-runtime");
+    let config_path =
+        common::write_default_config_with_xwayland_disabled(&runtime_dir.path, "ipc-split.toml");
+
+    let mut app = build_app(config_path);
+    app.insert_resource(RunLoopSettings {
+        frame_timeout: Duration::from_millis(1),
+        max_frames: Some(96),
+    });
+    seed_split_windows(app.inner_mut().world_mut());
+
+    let ipc_socket_path = {
+        let world = app.inner().world();
+        let server_state = world
+            .get_resource::<IpcServerState>()
+            .expect("IPC server state should be available immediately after build");
+
+        match (server_state.listening, &server_state.startup_error) {
+            (true, _) => server_state.socket_path.clone(),
+            (false, Some(error)) if error.contains("Operation not permitted") => {
+                eprintln!("skipping IPC split test in restricted environment: {error}");
+                return;
+            }
+            (false, Some(error)) => panic!("IPC startup failed before run: {error}"),
+            (false, None) => panic!("IPC startup produced neither socket nor error"),
+        }
+    };
+
+    let ipc_thread = thread::spawn(move || run_ipc_split_sequence(&ipc_socket_path));
+    app.run().expect("nekoland app should complete the configured frame budget");
+
+    let summary = match ipc_thread.join().expect("IPC split thread should exit cleanly") {
+        Ok(summary) => summary,
+        Err(common::TestControl::Skip(reason)) => {
+            eprintln!("skipping IPC split test in restricted environment: {reason}");
+            return;
+        }
+        Err(common::TestControl::Fail(reason)) => {
+            panic!("IPC split sequence failed: {reason}");
+        }
+    };
+
+    let first = summary
+        .windows
+        .iter()
+        .find(|window| window.surface_id == SPLIT_PRIMARY_SURFACE_ID)
+        .expect("primary split window should remain present");
+    let second = summary
+        .windows
+        .iter()
+        .find(|window| window.surface_id == SPLIT_TARGET_SURFACE_ID)
+        .expect("target split window should remain present");
+
+    assert_eq!(first.state, "Tiled");
+    assert_eq!(second.state, "Tiled");
+    assert_eq!(first.x, second.x);
+    assert_eq!(first.width, second.width);
+    assert_ne!(first.y, second.y);
+    assert_eq!(first.height, second.height);
+    assert!(
+        first.y < second.y,
+        "vertical split should stack the second tiled window below the first: {summary:?}"
+    );
+}
+
+/// Seeds two windows on separate workspaces so the IPC control sequence has deterministic state to
+/// mutate.
 fn seed_windows(world: &mut bevy_ecs::world::World) {
+    let primary_workspace =
+        world.spawn(Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true }).id();
+    let target_workspace =
+        world.spawn(Workspace { id: WorkspaceId(2), name: "2".to_owned(), active: false }).id();
+
     for (surface_id, title, x) in
         [(PRIMARY_SURFACE_ID, "IPC Window 1", 0), (TARGET_SURFACE_ID, "IPC Window 2", 480)]
     {
@@ -203,18 +303,46 @@ fn seed_windows(world: &mut bevy_ecs::world::World) {
                     title: title.to_owned(),
                     last_acked_configure: None,
                 },
-                state: WindowState::Tiled,
+                layout: WindowLayout::Tiled,
+                mode: WindowMode::Normal,
                 ..Default::default()
             },
-            LayoutSlot {
-                workspace: if surface_id == TARGET_SURFACE_ID { 2 } else { 1 },
-                column: 0,
-                row: 0,
-            },
+            ChildOf(if surface_id == TARGET_SURFACE_ID {
+                target_workspace
+            } else {
+                primary_workspace
+            }),
         ));
     }
 }
 
+fn seed_split_windows(world: &mut bevy_ecs::world::World) {
+    let workspace =
+        world.spawn(Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true }).id();
+
+    for (surface_id, title, x) in [
+        (SPLIT_PRIMARY_SURFACE_ID, "IPC Split 1", 0),
+        (SPLIT_TARGET_SURFACE_ID, "IPC Split 2", 640),
+    ] {
+        world.spawn((
+            WindowBundle {
+                surface: WlSurfaceHandle { id: surface_id },
+                geometry: SurfaceGeometry { x, y: 32, width: 600, height: 700 },
+                window: XdgWindow {
+                    app_id: "org.nekoland.ipc".to_owned(),
+                    title: title.to_owned(),
+                    last_acked_configure: None,
+                },
+                layout: WindowLayout::Tiled,
+                mode: WindowMode::Normal,
+                ..Default::default()
+            },
+            ChildOf(workspace),
+        ));
+    }
+}
+
+/// Runs the end-to-end IPC command sequence and waits for each observable state transition.
 fn run_ipc_control_sequence(socket_path: &Path) -> Result<IpcControlSummary, common::TestControl> {
     let tree = wait_for_tree(socket_path, |tree| {
         tree.windows.iter().any(|window| window.surface_id == PRIMARY_SURFACE_ID)
@@ -289,15 +417,65 @@ fn run_ipc_control_sequence(socket_path: &Path) -> Result<IpcControlSummary, com
     })?;
 
     let config = wait_for_config(socket_path, |config| {
-        config.default_layout == "tiling"
+        config.default_layout == "floating"
             && config.command_history_limit == 64
             && !config.xwayland_enabled
-            && config.commands.terminal.as_deref() == Some("foot")
+            && matches!(
+                config.keybindings.get("Super+Return"),
+                Some(ConfiguredKeybindingAction::Command(argv))
+                    if argv == &vec!["foot".to_owned()]
+            )
     })?;
 
     Ok(IpcControlSummary { output_name, config })
 }
 
+fn run_ipc_split_sequence(socket_path: &Path) -> Result<TreeSnapshot, common::TestControl> {
+    let initial = wait_for_tree(socket_path, |tree| {
+        tree.windows.iter().any(|window| window.surface_id == SPLIT_PRIMARY_SURFACE_ID)
+            && tree.windows.iter().any(|window| window.surface_id == SPLIT_TARGET_SURFACE_ID)
+    })?;
+    let first = initial
+        .windows
+        .iter()
+        .find(|window| window.surface_id == SPLIT_PRIMARY_SURFACE_ID)
+        .expect("first split window should exist");
+    let second = initial
+        .windows
+        .iter()
+        .find(|window| window.surface_id == SPLIT_TARGET_SURFACE_ID)
+        .expect("second split window should exist");
+    assert_ne!(first.x, second.x, "initial tiled tree should start as a horizontal split");
+    assert_eq!(first.y, second.y, "initial tiled tree should start side by side");
+
+    send_command(
+        socket_path,
+        IpcCommand::Window(WindowCommand::Split {
+            surface_id: SPLIT_TARGET_SURFACE_ID,
+            axis: SplitAxis::Vertical,
+        }),
+    )?;
+
+    wait_for_tree(socket_path, |tree| {
+        let first =
+            tree.windows.iter().find(|window| window.surface_id == SPLIT_PRIMARY_SURFACE_ID);
+        let second =
+            tree.windows.iter().find(|window| window.surface_id == SPLIT_TARGET_SURFACE_ID);
+        match (first, second) {
+            (Some(first), Some(second)) => {
+                first.state == "Tiled"
+                    && second.state == "Tiled"
+                    && first.x == second.x
+                    && first.width == second.width
+                    && first.y != second.y
+                    && first.height == second.height
+            }
+            _ => false,
+        }
+    })
+}
+
+/// Poll the tree query until the caller's predicate matches.
 fn wait_for_tree(
     socket_path: &Path,
     predicate: impl Fn(&TreeSnapshot) -> bool,
@@ -305,6 +483,7 @@ fn wait_for_tree(
     wait_for_payload(socket_path, QueryCommand::GetTree, predicate)
 }
 
+/// Poll the outputs query until the caller's predicate matches.
 fn wait_for_outputs(
     socket_path: &Path,
     predicate: impl Fn(&[OutputSnapshot]) -> bool,
@@ -314,6 +493,7 @@ fn wait_for_outputs(
     })
 }
 
+/// Poll the workspace snapshot query until the caller's predicate matches.
 fn wait_for_workspaces(
     socket_path: &Path,
     predicate: impl Fn(&[WorkspaceSnapshot]) -> bool,
@@ -325,6 +505,7 @@ fn wait_for_workspaces(
     )
 }
 
+/// Poll the runtime config query until the caller sees the expected config state.
 fn wait_for_config(
     socket_path: &Path,
     predicate: impl Fn(&ConfigSnapshot) -> bool,
@@ -332,6 +513,7 @@ fn wait_for_config(
     wait_for_payload(socket_path, QueryCommand::GetConfig, predicate)
 }
 
+/// Generic polling helper used by the control-plane test's query assertions.
 fn wait_for_payload<T>(
     socket_path: &Path,
     query: QueryCommand,
@@ -366,6 +548,8 @@ where
     }
 }
 
+/// Send one mutating IPC command and translate environment-related failures
+/// into the test harness' skip/fail control flow.
 fn send_command(socket_path: &Path, command: IpcCommand) -> Result<IpcReply, common::TestControl> {
     let reply = send_request_to_path(socket_path, &IpcRequest { correlation_id: 7, command })
         .map_err(|error| {
@@ -383,6 +567,7 @@ fn send_command(socket_path: &Path, command: IpcCommand) -> Result<IpcReply, com
     Ok(reply)
 }
 
+/// Send one IPC query command and deserialize its payload into the requested type.
 fn query_payload<T>(socket_path: &Path, command: IpcCommand) -> Result<T, std::io::Error>
 where
     T: serde::de::DeserializeOwned,
@@ -399,6 +584,7 @@ where
     serde_json::from_value(payload).map_err(std::io::Error::other)
 }
 
+/// Classify transient IPC startup errors that the polling helpers should retry through.
 fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -409,6 +595,7 @@ fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     )
 }
 
+/// Classify environment restrictions that should skip, rather than fail, the test.
 fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
     error.kind() == ErrorKind::PermissionDenied || error.raw_os_error() == Some(1)
 }

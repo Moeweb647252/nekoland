@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::time::SystemTime;
 
 use bevy_app::App;
+use bevy_ecs::error::Result as BevyResult;
 use bevy_ecs::prelude::{NonSendMut, ResMut};
 use calloop::generic::Generic;
 use calloop::{Interest, Mode, PostAction};
@@ -16,6 +17,8 @@ use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
 
 use crate::{loader, plugin::LoadedConfigSource};
 
+/// Bridges file-system notifications into ECS so config reload stays a normal scheduled system
+/// instead of mutating resources inside the watcher callback.
 #[derive(Debug, Clone)]
 pub struct ConfigHotReloadSource {
     shared: Rc<RefCell<ConfigHotReloadShared>>,
@@ -89,11 +92,14 @@ pub(crate) fn install_config_watch_source(
     app.insert_non_send_resource(source);
 }
 
+/// Reloads the config only after the watcher or polling fallback observes a file timestamp change.
+/// On parse failure the previous config stays live and the error is surfaced through Bevy's
+/// error channel.
 pub fn hot_reload_system(
     mut config: ResMut<CompositorConfig>,
     mut config_source: ResMut<LoadedConfigSource>,
     reload_source: NonSendMut<ConfigHotReloadSource>,
-) {
+) -> BevyResult {
     let current_modified = if reload_source.watcher_active() {
         let Some(current_modified) = reload_source.take_pending_modified() else {
             tracing::trace!(
@@ -102,10 +108,12 @@ pub fn hot_reload_system(
                 successful_reloads = config_source.successful_reloads,
                 "config hot reload tick"
             );
-            return;
+            return Ok(());
         };
         current_modified
     } else {
+        // Tests and unsupported environments can run without an inotify source, so keep a
+        // metadata-based fallback for correctness.
         let current_modified = observed_modified_at(&config_source.path);
         if current_modified == config_source.last_observed_modified {
             tracing::trace!(
@@ -114,7 +122,7 @@ pub fn hot_reload_system(
                 successful_reloads = config_source.successful_reloads,
                 "config hot reload tick"
             );
-            return;
+            return Ok(());
         }
 
         reload_source.sync_observed_modified(current_modified);
@@ -135,16 +143,17 @@ pub fn hot_reload_system(
                 successful_reloads = config_source.successful_reloads,
                 "reloaded compositor config from disk"
             );
+            Ok(())
         }
         Err(error) => {
-            config_source.last_reload_error = Some(error.to_string());
+            let error = error.to_string();
+            config_source.last_reload_error = Some(error.clone());
 
-            tracing::warn!(
-                path = %config_source.path.display(),
-                %error,
-                loaded_from_disk = config_source.loaded_from_disk,
-                "keeping previous compositor config after reload failure"
-            );
+            Err(NekolandError::Config(format!(
+                "keeping previous compositor config after reload failure for {}: {error}",
+                config_source.path.display()
+            ))
+            .into())
         }
     }
 }
@@ -154,6 +163,8 @@ fn install_linux_inotify_source(
     path: PathBuf,
     shared: Rc<RefCell<ConfigHotReloadShared>>,
 ) -> Result<(), NekolandError> {
+    // Watch the parent directory rather than the file itself so editor save-via-rename flows
+    // still trigger a reload.
     let watch_dir = watched_directory(&path);
     let watched_name = watched_file_name(&path)?;
     let inotify = Inotify::init(InitFlags::IN_NONBLOCK | InitFlags::IN_CLOEXEC)
@@ -255,18 +266,22 @@ fn nix_error_to_runtime(error: Errno) -> NekolandError {
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    use bevy_ecs::error::{BevyError, DefaultErrorHandler, ErrorContext};
     use calloop::EventLoop;
     use nekoland_core::calloop::CalloopSourceRegistry;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::ExtractSchedule;
-    use nekoland_ecs::resources::CompositorConfig;
+    use nekoland_ecs::resources::{CompositorConfig, ConfiguredKeybindingAction};
 
     use crate::{ConfigPlugin, LoadedConfigSource};
 
     use super::observed_modified_at;
+
+    static HOT_RELOAD_ERROR_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     const INITIAL_CONFIG: &str = r##"
 [theme]
@@ -286,7 +301,7 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Return" = "spawn-terminal"
+"Super+Return" = ["foot"]
 "Super+Q" = "close-window"
 "##;
 
@@ -308,7 +323,7 @@ scale = 2
 enabled = true
 
 [keybinds.bindings]
-"Super+P" = "show-power-menu"
+"Super+P" = ["wlogout", "--protocol", "layer-shell"]
 "##;
 
     const INVALID_CONFIG: &str = r##"
@@ -347,8 +362,8 @@ cursor_theme = "default"
             assert_eq!(config.theme, "latte");
             assert_eq!(config.cursor_theme, "breeze");
             assert_eq!(
-                config.keybindings.get("Super+Return").map(String::as_str),
-                Some("spawn-terminal")
+                config.keybindings.get("Super+Return"),
+                Some(&ConfiguredKeybindingAction::Command(vec!["foot".to_owned()]))
             );
             assert!(source.loaded_from_disk);
             assert_eq!(source.successful_reloads, 1);
@@ -370,8 +385,12 @@ cursor_theme = "default"
             assert_eq!(config.cursor_theme, "capitaine");
             assert_eq!(config.keybindings.len(), 1);
             assert_eq!(
-                config.keybindings.get("Super+P").map(String::as_str),
-                Some("show-power-menu")
+                config.keybindings.get("Super+P"),
+                Some(&ConfiguredKeybindingAction::Command(vec![
+                    "wlogout".to_owned(),
+                    "--protocol".to_owned(),
+                    "layer-shell".to_owned(),
+                ]))
             );
             assert_eq!(source.successful_reloads, 2);
             assert!(source.last_reload_error.is_none());
@@ -442,6 +461,40 @@ cursor_theme = "default"
     }
 
     #[test]
+    fn invalid_reload_reports_through_fallible_system_handler() {
+        let temp_config = TempConfigFile { path: unique_temp_path("fallible-hot-reload") };
+        write_config(&temp_config.path, INITIAL_CONFIG);
+
+        HOT_RELOAD_ERROR_COUNT.store(0, Ordering::Relaxed);
+
+        let mut app = NekolandApp::new("config-fallible-hot-reload-test");
+        app.add_plugin(ConfigPlugin::new(&temp_config.path));
+        app.inner_mut().world_mut().insert_resource(DefaultErrorHandler(count_hot_reload_error));
+
+        rewrite_config(&temp_config.path, INVALID_CONFIG);
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+
+        let source = app
+            .inner()
+            .world()
+            .get_resource::<LoadedConfigSource>()
+            .expect("config source should stay available");
+
+        assert_eq!(
+            HOT_RELOAD_ERROR_COUNT.load(Ordering::Relaxed),
+            1,
+            "invalid config reload should be surfaced through the default error handler"
+        );
+        assert!(
+            source
+                .last_reload_error
+                .as_deref()
+                .is_some_and(|message| message.contains("parse error")),
+            "invalid config should still record the last reload failure in ECS state"
+        );
+    }
+
+    #[test]
     fn linux_inotify_source_reports_changes_through_calloop() {
         let temp_config = TempConfigFile { path: unique_temp_path("inotify") };
         write_config(&temp_config.path, INITIAL_CONFIG);
@@ -503,5 +556,9 @@ cursor_theme = "default"
             }
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn count_hot_reload_error(_: BevyError, _: ErrorContext) {
+        HOT_RELOAD_ERROR_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 }

@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
 use nekoland_ecs::components::OutputKind;
+use nekoland_ecs::resources::ConfiguredKeybindingAction;
 use serde::{Deserialize, Serialize};
 
+/// Read-only IPC queries exposed by `nekoland-msg query ...`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum QueryCommand {
     GetTree,
@@ -14,6 +16,7 @@ pub enum QueryCommand {
     GetPrimarySelection,
 }
 
+/// Stable snapshot of one compositor output for IPC clients.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputSnapshot {
     pub name: String,
@@ -26,6 +29,7 @@ pub struct OutputSnapshot {
     pub scale: u32,
 }
 
+/// Workspace state published through the IPC query cache.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceSnapshot {
     pub id: u32,
@@ -33,6 +37,7 @@ pub struct WorkspaceSnapshot {
     pub active: bool,
 }
 
+/// Window tree entry returned by `get_tree`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowSnapshot {
     pub surface_id: u64,
@@ -50,6 +55,7 @@ pub struct WindowSnapshot {
     pub focused: bool,
 }
 
+/// Popup tree entry returned by `get_tree`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PopupSnapshot {
     pub surface_id: u64,
@@ -62,6 +68,7 @@ pub struct PopupSnapshot {
     pub grab_serial: Option<u32>,
 }
 
+/// Top-level snapshot used by tree queries and as the baseline for subscription diffing.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TreeSnapshot {
     pub frame: u64,
@@ -79,6 +86,7 @@ pub enum CommandStatusSnapshot {
     Failed { error: String },
 }
 
+/// Historical record of one external command request and its observed result.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CommandSnapshot {
     pub frame: u64,
@@ -89,13 +97,7 @@ pub struct CommandSnapshot {
     pub status: Option<CommandStatusSnapshot>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ConfigCommandSnapshot {
-    pub terminal: Option<String>,
-    pub launcher: Option<String>,
-    pub power_menu: Option<String>,
-}
-
+/// Config-facing output stanza published over IPC.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConfigOutputSnapshot {
     pub name: String,
@@ -104,6 +106,8 @@ pub struct ConfigOutputSnapshot {
     pub enabled: bool,
 }
 
+/// User-facing config snapshot that merges the loaded file path, runtime reload state, and the
+/// currently active normalized compositor config.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConfigSnapshot {
     pub path: Option<String>,
@@ -121,10 +125,10 @@ pub struct ConfigSnapshot {
     pub startup_commands: Vec<String>,
     pub xwayland_enabled: bool,
     pub outputs: Vec<ConfigOutputSnapshot>,
-    pub commands: ConfigCommandSnapshot,
-    pub keybindings: BTreeMap<String, String>,
+    pub keybindings: BTreeMap<String, ConfiguredKeybindingAction>,
 }
 
+/// Clipboard state exported through IPC.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClipboardSnapshot {
     pub seat_name: Option<String>,
@@ -133,6 +137,7 @@ pub struct ClipboardSnapshot {
     pub persisted_mime_types: Vec<String>,
 }
 
+/// Primary-selection state exported through IPC.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PrimarySelectionSnapshot {
     pub seat_name: Option<String>,
@@ -141,6 +146,7 @@ pub struct PrimarySelectionSnapshot {
     pub persisted_mime_types: Vec<String>,
 }
 
+/// Normalized ownership marker for clipboard-style selections.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectionOwnerSnapshot {

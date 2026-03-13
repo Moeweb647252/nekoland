@@ -1,3 +1,5 @@
+//! In-process integration test for keyboard repeat info advertised through `wl_keyboard`.
+
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,13 +13,17 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 mod common;
 
+/// Summary returned by the helper client after it observes keyboard repeat info.
 #[derive(Debug, Default)]
 struct KeyboardRepeatSummary {
     globals: Vec<String>,
+    /// Repeat rate advertised through `wl_keyboard.repeat_info`.
     repeat_rate: Option<i32>,
+    /// Repeat delay advertised through `wl_keyboard.repeat_info`.
     repeat_delay: Option<i32>,
 }
 
+/// Helper Wayland client state used to create one toplevel and wait for `wl_keyboard.repeat_info`.
 #[derive(Debug, Default)]
 struct KeyboardRepeatClientState {
     globals: Vec<String>,
@@ -28,10 +34,13 @@ struct KeyboardRepeatClientState {
     base_surface: Option<wl_surface::WlSurface>,
     xdg_surface: Option<xdg_surface::XdgSurface>,
     toplevel: Option<xdg_toplevel::XdgToplevel>,
+    /// Last configure serial seen for the helper toplevel.
     configure_serial: Option<u32>,
+    /// Cached repeat-info tuple `(rate, delay)` once advertised by the compositor.
     repeat_info: Option<(i32, i32)>,
 }
 
+/// Verifies that keyboard repeat parameters exposed to clients match the runtime config.
 #[test]
 fn keyboard_repeat_info_comes_from_config() {
     let Some(summary) = run_keyboard_repeat_scenario() else {
@@ -43,6 +52,7 @@ fn keyboard_repeat_info_comes_from_config() {
     assert_eq!(summary.repeat_delay, Some(200));
 }
 
+/// Runs the helper client scenario and returns the observed repeat parameters.
 fn run_keyboard_repeat_scenario() -> Option<KeyboardRepeatSummary> {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-keyboard-repeat-runtime");
@@ -85,6 +95,7 @@ fn run_keyboard_repeat_scenario() -> Option<KeyboardRepeatSummary> {
     Some(summary)
 }
 
+/// Runs the helper client until `wl_keyboard.repeat_info` is received.
 fn run_keyboard_repeat_client(
     socket_path: &Path,
 ) -> Result<KeyboardRepeatSummary, common::TestControl> {
@@ -122,6 +133,7 @@ fn run_keyboard_repeat_client(
     })
 }
 
+/// Performs one read/dispatch cycle for the helper Wayland client.
 fn dispatch_client_once(
     event_queue: &mut EventQueue<KeyboardRepeatClientState>,
     state: &mut KeyboardRepeatClientState,
@@ -142,6 +154,7 @@ fn dispatch_client_once(
     Ok(())
 }
 
+/// Returns the default config path used by this integration test.
 fn workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }
@@ -250,6 +263,7 @@ delegate_noop!(KeyboardRepeatClientState: ignore wl_surface::WlSurface);
 delegate_noop!(KeyboardRepeatClientState: ignore xdg_toplevel::XdgToplevel);
 
 impl KeyboardRepeatClientState {
+    /// Creates the helper toplevel once the compositor and XDG shell globals are both bound.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;
@@ -269,6 +283,7 @@ impl KeyboardRepeatClientState {
         self.toplevel = Some(toplevel);
     }
 
+    /// Indicates whether the helper client already observed the repeat-info event it needs.
     fn is_complete(&self) -> bool {
         self.configure_serial.is_some() && self.repeat_info.is_some()
     }

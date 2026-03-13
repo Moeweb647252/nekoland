@@ -1,3 +1,8 @@
+//! Client-side subscription handshake plus server-side diffing for high-level IPC topics.
+//!
+//! The server keeps a small snapshot baseline and emits semantic events only when the cached tree
+//! or config state changes in a way subscribers care about.
+
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
@@ -5,10 +10,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use bevy_ecs::message::MessageReader;
-use bevy_ecs::prelude::{Local, Res, ResMut, Resource};
+use bevy_ecs::prelude::{Local, Res, ResMut};
 use nekoland_ecs::events::{
     ExternalCommandFailed, ExternalCommandLaunched, WindowClosed, WindowCreated, WindowMoved,
 };
+use nekoland_ecs::kinds::SubscriptionEventQueue;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -136,9 +142,21 @@ pub struct IpcSubscriptionEvent {
     pub payload: Option<Value>,
 }
 
-#[derive(Debug, Clone, Default, Resource, PartialEq)]
-pub struct PendingSubscriptionEvents {
-    pub events: Vec<IpcSubscriptionEvent>,
+impl nekoland_ecs::kinds::SubscriptionEvent for IpcSubscriptionEvent {}
+
+pub type PendingSubscriptionEvents = SubscriptionEventQueue<IpcSubscriptionEvent>;
+
+#[cfg(test)]
+mod kind_tests {
+    use super::IpcSubscriptionEvent;
+    use nekoland_ecs::kinds::SubscriptionEvent;
+
+    fn assert_subscription_event<T: SubscriptionEvent>() {}
+
+    #[test]
+    fn ipc_subscription_event_implements_subscription_event_trait() {
+        assert_subscription_event::<IpcSubscriptionEvent>();
+    }
 }
 
 #[derive(Debug)]
@@ -160,6 +178,8 @@ pub fn subscribe(subscription: &IpcSubscription) -> io::Result<IpcSubscriptionSt
     subscribe_to_path(&default_socket_path(), subscription)
 }
 
+/// Performs the newline-delimited JSON handshake used by the IPC server before the returned
+/// stream starts yielding subscription events.
 pub fn subscribe_to_path(
     socket_path: &Path,
     subscription: &IpcSubscription,
@@ -195,6 +215,7 @@ pub fn subscribe_to_path(
 }
 
 impl IpcSubscriptionStream {
+    /// Reads one newline-delimited event frame from the stream.
     pub fn read_event(&mut self) -> io::Result<IpcSubscriptionEvent> {
         let mut line = String::new();
         let bytes_read = self.reader.read_line(&mut line)?;
@@ -209,6 +230,10 @@ impl IpcSubscriptionStream {
     }
 }
 
+/// Turns ECS messages plus cached query snapshots into higher-level subscription events.
+///
+/// Message-based events are emitted immediately, while tree/config/selection changes are derived
+/// by diffing the current query cache against the previous snapshot baseline.
 pub(crate) fn subscription_dispatch_system(
     query_cache: Res<IpcQueryCache>,
     mut window_created: MessageReader<WindowCreated>,
@@ -220,7 +245,7 @@ pub(crate) fn subscription_dispatch_system(
     mut snapshots: Local<SubscriptionSnapshotState>,
 ) {
     for event in window_created.read() {
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Window,
             event: "window_created".to_owned(),
             payload: serde_json::to_value(event).ok(),
@@ -228,7 +253,7 @@ pub(crate) fn subscription_dispatch_system(
     }
 
     for event in window_closed.read() {
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Window,
             event: "window_closed".to_owned(),
             payload: serde_json::to_value(event).ok(),
@@ -236,7 +261,7 @@ pub(crate) fn subscription_dispatch_system(
     }
 
     for event in window_moved.read() {
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Window,
             event: "window_moved".to_owned(),
             payload: serde_json::to_value(event).ok(),
@@ -244,7 +269,7 @@ pub(crate) fn subscription_dispatch_system(
     }
 
     for event in command_launched.read() {
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Command,
             event: "command_launched".to_owned(),
             payload: serde_json::to_value(event).ok(),
@@ -252,7 +277,7 @@ pub(crate) fn subscription_dispatch_system(
     }
 
     for event in command_failed.read() {
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Command,
             event: "command_failed".to_owned(),
             payload: serde_json::to_value(event).ok(),
@@ -275,6 +300,8 @@ pub(crate) fn subscription_dispatch_system(
         .collect::<BTreeMap<_, _>>();
 
     if !snapshots.initialized {
+        // The first tick only seeds the diff baseline. Subscribers start receiving live changes
+        // after they connect rather than a synthetic replay of the entire current tree.
         snapshots.initialized = true;
         snapshots.last_tree = Some(query_cache.tree.clone());
         snapshots.last_popups = current_popups;
@@ -289,7 +316,7 @@ pub(crate) fn subscription_dispatch_system(
             continue;
         }
 
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Popup,
             event: "popup_created".to_owned(),
             payload: serde_json::to_value(popup).ok(),
@@ -301,7 +328,7 @@ pub(crate) fn subscription_dispatch_system(
             continue;
         }
 
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Popup,
             event: "popup_dismissed".to_owned(),
             payload: serde_json::to_value(popup).ok(),
@@ -314,7 +341,7 @@ pub(crate) fn subscription_dispatch_system(
         };
 
         if popup_geometry_changed(previous, popup) {
-            pending_events.events.push(IpcSubscriptionEvent {
+            pending_events.push(IpcSubscriptionEvent {
                 topic: SubscriptionTopic::Popup,
                 event: "popup_geometry_changed".to_owned(),
                 payload: serde_json::to_value(PopupGeometryChangeSnapshot {
@@ -334,7 +361,7 @@ pub(crate) fn subscription_dispatch_system(
         }
 
         if popup_grab_changed(previous, popup) {
-            pending_events.events.push(IpcSubscriptionEvent {
+            pending_events.push(IpcSubscriptionEvent {
                 topic: SubscriptionTopic::Popup,
                 event: "popup_grab_changed".to_owned(),
                 payload: serde_json::to_value(PopupGrabChangeSnapshot {
@@ -367,7 +394,7 @@ pub(crate) fn subscription_dispatch_system(
         };
 
         if window_geometry_changed(previous, window) {
-            pending_events.events.push(IpcSubscriptionEvent {
+            pending_events.push(IpcSubscriptionEvent {
                 topic: SubscriptionTopic::Window,
                 event: "window_geometry_changed".to_owned(),
                 payload: serde_json::to_value(WindowGeometryChangeSnapshot {
@@ -386,7 +413,7 @@ pub(crate) fn subscription_dispatch_system(
         }
 
         if previous.state != window.state {
-            pending_events.events.push(IpcSubscriptionEvent {
+            pending_events.push(IpcSubscriptionEvent {
                 topic: SubscriptionTopic::Window,
                 event: "window_state_changed".to_owned(),
                 payload: serde_json::to_value(WindowStateChangeSnapshot {
@@ -400,7 +427,7 @@ pub(crate) fn subscription_dispatch_system(
     }
 
     if last_tree.outputs != query_cache.tree.outputs {
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Output,
             event: "outputs_changed".to_owned(),
             payload: serde_json::to_value(&query_cache.tree.outputs).ok(),
@@ -408,7 +435,7 @@ pub(crate) fn subscription_dispatch_system(
     }
 
     if last_tree.workspaces != query_cache.tree.workspaces {
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Workspace,
             event: "workspaces_changed".to_owned(),
             payload: serde_json::to_value(&query_cache.tree.workspaces).ok(),
@@ -416,7 +443,7 @@ pub(crate) fn subscription_dispatch_system(
     }
 
     if snapshots.last_config.as_ref() != Some(&query_cache.config) {
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Config,
             event: "config_changed".to_owned(),
             payload: serde_json::to_value(&query_cache.config).ok(),
@@ -424,7 +451,7 @@ pub(crate) fn subscription_dispatch_system(
     }
 
     if snapshots.last_clipboard.as_ref() != Some(&query_cache.clipboard) {
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Clipboard,
             event: "clipboard_changed".to_owned(),
             payload: serde_json::to_value(&query_cache.clipboard).ok(),
@@ -432,7 +459,7 @@ pub(crate) fn subscription_dispatch_system(
     }
 
     if snapshots.last_primary_selection.as_ref() != Some(&query_cache.primary_selection) {
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::PrimarySelection,
             event: "primary_selection_changed".to_owned(),
             payload: serde_json::to_value(&query_cache.primary_selection).ok(),
@@ -440,7 +467,7 @@ pub(crate) fn subscription_dispatch_system(
     }
 
     if last_tree.focused_surface != query_cache.tree.focused_surface {
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Focus,
             event: "focus_changed".to_owned(),
             payload: serde_json::to_value(FocusChangeSnapshot {
@@ -452,7 +479,7 @@ pub(crate) fn subscription_dispatch_system(
     }
 
     if tree_structure_changed(last_tree, &query_cache.tree) {
-        pending_events.events.push(IpcSubscriptionEvent {
+        pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Tree,
             event: "tree_changed".to_owned(),
             payload: serde_json::to_value(&query_cache.tree).ok(),

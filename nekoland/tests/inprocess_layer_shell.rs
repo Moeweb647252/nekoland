@@ -1,3 +1,6 @@
+//! In-process integration test for layer-shell surfaces reaching ECS state, render lists, and
+//! work-area updates.
+
 use std::io::Write;
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
@@ -25,6 +28,7 @@ const TEST_LAYER_HEIGHT: u32 = 32;
 const TEST_EXCLUSIVE_PANEL_HEIGHT: u32 = 48;
 const CLIENT_POST_ATTACH_HOLD: Duration = Duration::from_millis(250);
 
+/// Options that control the helper layer-shell client scenario.
 #[derive(Debug, Clone, Copy)]
 struct LayerClientOptions {
     namespace: &'static str,
@@ -40,6 +44,7 @@ struct LayerClientOptions {
 }
 
 impl LayerClientOptions {
+    /// Standard top-left panel with a fixed requested size.
     fn standard_panel() -> Self {
         Self {
             namespace: "nekoland-panel",
@@ -55,6 +60,7 @@ impl LayerClientOptions {
         }
     }
 
+    /// Full-width top panel that also reserves exclusive work-area space.
     fn exclusive_top_panel() -> Self {
         Self {
             namespace: "nekoland-exclusive-panel",
@@ -70,6 +76,7 @@ impl LayerClientOptions {
         }
     }
 
+    /// Converts the booleans in this helper struct into the Wayland layer-shell anchor bitflags.
     fn anchor(self) -> zwlr_layer_surface_v1::Anchor {
         let mut anchor = zwlr_layer_surface_v1::Anchor::empty();
         if self.anchor_top {
@@ -88,12 +95,14 @@ impl LayerClientOptions {
     }
 }
 
+/// Summary returned by the helper layer-shell client.
 #[derive(Debug)]
 struct LayerClientSummary {
     globals: Vec<String>,
     configure_serial: u32,
 }
 
+/// Helper Wayland client state for the layer-shell scenario.
 #[derive(Debug)]
 struct LayerClientState {
     options: LayerClientOptions,
@@ -111,6 +120,7 @@ struct LayerClientState {
 }
 
 impl LayerClientState {
+    /// Initializes helper state for one layer-shell client run.
     fn new(options: LayerClientOptions) -> Self {
         Self {
             options,
@@ -128,6 +138,7 @@ impl LayerClientState {
         }
     }
 
+    /// Creates the layer surface once both `wl_compositor` and `zwlr_layer_shell_v1` are bound.
     fn maybe_create_layer_surface(&mut self, qh: &QueueHandle<Self>) {
         if self.surface.is_some() || self.compositor.is_none() || self.layer_shell.is_none() {
             return;
@@ -158,6 +169,7 @@ impl LayerClientState {
         self.layer_surface = Some(layer_surface);
     }
 
+    /// Lazily allocates and attaches a simple SHM buffer after the first configure arrives.
     fn maybe_attach_buffer(&mut self, qh: &QueueHandle<Self>) -> Result<(), common::TestControl> {
         if self.buffer_attached || self.configure_serial.is_none() {
             return Ok(());
@@ -190,9 +202,11 @@ impl LayerClientState {
     }
 }
 
+/// Verifies that a mapped layer-shell surface appears in ECS and the render list.
 #[test]
 fn layer_shell_surface_reaches_ecs_and_render_list() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-layer-shell-runtime");
     let mut app = build_app(workspace_config_path());
     app.insert_resource(RunLoopSettings {
@@ -268,8 +282,9 @@ fn layer_shell_surface_reaches_ecs_and_render_list() {
 }
 
 #[test]
-fn exclusive_top_layer_reserves_work_area_for_tiled_windows() {
+fn exclusive_top_layer_reserves_work_area_for_new_windows() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-layer-work-area-runtime");
     let mut app = build_app(workspace_config_path());
     app.insert_resource(RunLoopSettings {
@@ -361,11 +376,13 @@ fn exclusive_top_layer_reserves_work_area_for_tiled_windows() {
     assert_eq!(work_area.y, TEST_EXCLUSIVE_PANEL_HEIGHT as i32);
     assert_eq!(work_area.width, output.width);
     assert_eq!(work_area.height, output.height.saturating_sub(TEST_EXCLUSIVE_PANEL_HEIGHT));
-    assert_eq!(window_geometry.x, work_area.x);
-    assert_eq!(window_geometry.y, work_area.y);
-    assert_eq!(window_geometry.height, work_area.height);
+    assert!(
+        window_geometry.y >= work_area.y,
+        "new windows should not be placed underneath exclusive top layers: {window_geometry:?} work_area={work_area:?}"
+    );
 }
 
+/// Resolves the protocol socket path or classifies startup failure as skip/fail for the test.
 fn protocol_socket_path(
     app: &NekolandApp,
     runtime_dir: &Path,
@@ -387,6 +404,7 @@ fn protocol_socket_path(
     }
 }
 
+/// Runs the helper layer-shell client until it receives a configure and attaches its SHM buffer.
 fn run_layer_shell_client(
     socket_path: &Path,
     options: LayerClientOptions,
@@ -431,6 +449,7 @@ fn run_layer_shell_client(
     })
 }
 
+/// Performs one read/dispatch cycle for the helper layer-shell client.
 fn dispatch_client_once(
     event_queue: &mut EventQueue<LayerClientState>,
     state: &mut LayerClientState,
@@ -451,6 +470,7 @@ fn dispatch_client_once(
     Ok(())
 }
 
+/// Creates a small SHM buffer with deterministic pixel data for the helper layer-shell client.
 fn create_test_buffer(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<LayerClientState>,
@@ -483,6 +503,7 @@ fn create_test_buffer(
     Ok((file, pool, buffer))
 }
 
+/// Returns the default config path used by this integration test.
 fn workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }

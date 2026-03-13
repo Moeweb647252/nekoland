@@ -1,11 +1,14 @@
+//! In-process integration test for the virtual backend's offscreen frame capture and presentation
+//! timeline reporting.
+
 use std::time::Duration;
 
 use nekoland::build_app;
-use nekoland_backend::traits::{BackendKind, SelectedBackend};
+use nekoland_backend::{BackendStatus, traits::BackendKind};
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    LayoutSlot, OutputDevice, OutputKind, OutputProperties, SurfaceGeometry, WindowState,
+    OutputDevice, OutputKind, OutputProperties, SurfaceGeometry, WindowLayout, WindowMode,
     WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::{
@@ -14,8 +17,11 @@ use nekoland_ecs::resources::{
 
 mod common;
 
+/// Surface id of the seeded floating window that the virtual backend should capture.
 const TEST_SURFACE_ID: u64 = 4242;
 
+/// Verifies that the virtual backend captures offscreen frames and advances the presentation
+/// timeline for its synthetic output.
 #[test]
 fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -37,10 +43,9 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
     app.run().expect("virtual-output app should complete the configured frame budget");
 
     let world = app.inner_mut().world_mut();
-    let selected_backend_kind = world
-        .get_resource::<SelectedBackend>()
-        .expect("selected backend should remain available")
-        .kind
+    let backend_status = world
+        .get_resource::<BackendStatus>()
+        .expect("backend status should remain available")
         .clone();
     let (output, properties) = world
         .query::<(&OutputDevice, &OutputProperties)>()
@@ -55,7 +60,10 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
         .get_resource::<OutputPresentationState>()
         .expect("output presentation state should be available");
 
-    assert_eq!(selected_backend_kind, BackendKind::Virtual);
+    assert!(
+        backend_status.active.iter().any(|backend| backend.kind == BackendKind::Virtual),
+        "virtual backend should remain active: {backend_status:?}"
+    );
     assert_eq!(output.kind, OutputKind::Virtual);
     assert!(!capture_state.frames.is_empty(), "virtual backend should capture at least one frame");
 
@@ -88,19 +96,18 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
     assert!(presentation.sequence > 0, "virtual output should advance presentation sequence");
 }
 
+/// Seeds one floating window so the virtual backend has a deterministic scene to capture.
 fn seed_floating_window(world: &mut bevy_ecs::world::World) {
-    world.spawn((
-        WindowBundle {
-            surface: WlSurfaceHandle { id: TEST_SURFACE_ID },
-            geometry: SurfaceGeometry { x: 64, y: 48, width: 400, height: 240 },
-            window: XdgWindow {
-                app_id: "org.nekoland.virtual-output".to_owned(),
-                title: "Virtual Output Window".to_owned(),
-                last_acked_configure: None,
-            },
-            state: WindowState::Floating,
-            ..Default::default()
+    world.spawn((WindowBundle {
+        surface: WlSurfaceHandle { id: TEST_SURFACE_ID },
+        geometry: SurfaceGeometry { x: 64, y: 48, width: 400, height: 240 },
+        window: XdgWindow {
+            app_id: "org.nekoland.virtual-output".to_owned(),
+            title: "Virtual Output Window".to_owned(),
+            last_acked_configure: None,
         },
-        LayoutSlot { workspace: 1, column: 0, row: 0 },
-    ));
+        layout: WindowLayout::Floating,
+        mode: WindowMode::Normal,
+        ..Default::default()
+    },));
 }

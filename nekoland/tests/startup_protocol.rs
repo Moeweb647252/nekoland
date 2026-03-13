@@ -1,3 +1,6 @@
+//! Startup-level integration test that verifies the compositor publishes the expected protocol
+//! globals and core runtime resources after boot.
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -12,6 +15,8 @@ use nekoland_protocol::{
 
 mod common;
 
+/// Verifies that a short compositor startup run populates the protocol registry, protocol server
+/// state, seeded outputs, and IPC server state.
 #[test]
 fn startup_registers_protocol_globals_and_runtime_state() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -67,6 +72,7 @@ fn startup_registers_protocol_globals_and_runtime_state() {
     drop(runtime_dir);
 }
 
+/// Returns the default config path used by this startup integration test.
 fn workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }

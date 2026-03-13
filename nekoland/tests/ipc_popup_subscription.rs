@@ -1,15 +1,18 @@
+//! In-process integration test for popup geometry/grab subscription events.
+
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Query, Res, ResMut, Resource, With};
 use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    LayoutSlot, PopupGrab, SurfaceGeometry, WindowState, WlSurfaceHandle, XdgPopup, XdgWindow,
+    PopupGrab, SurfaceGeometry, WindowLayout, WindowMode, WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::resources::CompositorClock;
 use nekoland_ipc::{
@@ -19,26 +22,38 @@ use nekoland_ipc::{
 
 mod common;
 
+/// Surface id of the parent toplevel window.
 const PARENT_SURFACE_ID: u64 = 101;
+/// Surface id of the popup child whose changes are observed over IPC.
 const POPUP_SURFACE_ID: u64 = 202;
 
+/// Planned popup mutation applied by the test system once the scenario starts.
 #[derive(Debug, Clone, Resource)]
 struct PopupMutationPlan {
+    /// Target x coordinate written by the mutation system.
     target_x: i32,
+    /// Target y coordinate written by the mutation system.
     target_y: i32,
+    /// Target width written by the mutation system.
     target_width: u32,
+    /// Target height written by the mutation system.
     target_height: u32,
+    /// Target popup-grab active flag written by the mutation system.
     target_grab_active: bool,
+    /// Target popup-grab serial written by the mutation system.
     target_grab_serial: Option<u32>,
+    /// Set once the mutation has been applied so it only runs once.
     applied: bool,
 }
 
+/// Pair of popup subscription events that the scenario waits for.
 #[derive(Debug)]
 struct PopupChangeEvents {
     geometry: PopupGeometryChangeSnapshot,
     grab: PopupGrabChangeSnapshot,
 }
 
+/// Verifies that popup geometry and grab mutations are surfaced through popup subscription events.
 #[test]
 fn popup_subscription_reports_geometry_and_grab_transitions() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -125,9 +140,10 @@ fn popup_subscription_reports_geometry_and_grab_transitions() {
     assert_eq!(events.grab.grab_serial, Some(77));
 }
 
+/// Seeds one parent toplevel and one popup child for the subscription scenario.
 fn seed_popup_tree(world: &mut bevy_ecs::world::World) {
-    world.spawn((
-        WindowBundle {
+    let parent = world
+        .spawn((WindowBundle {
             surface: WlSurfaceHandle { id: PARENT_SURFACE_ID },
             geometry: SurfaceGeometry { x: 0, y: 32, width: 640, height: 480 },
             window: XdgWindow {
@@ -135,29 +151,27 @@ fn seed_popup_tree(world: &mut bevy_ecs::world::World) {
                 title: "Popup Parent".to_owned(),
                 last_acked_configure: None,
             },
-            state: WindowState::Tiled,
+            layout: WindowLayout::Tiled,
+            mode: WindowMode::Normal,
             ..Default::default()
-        },
-        LayoutSlot { workspace: 1, column: 0, row: 0 },
-    ));
+        },))
+        .id();
 
     world.spawn((
         WlSurfaceHandle { id: POPUP_SURFACE_ID },
-        XdgPopup {
-            parent_surface: PARENT_SURFACE_ID,
-            configure_serial: Some(1),
-            grab_serial: None,
-            reposition_token: None,
-        },
+        XdgPopup { configure_serial: Some(1), grab_serial: None, reposition_token: None },
         SurfaceGeometry { x: 24, y: 48, width: 220, height: 120 },
         PopupGrab { active: false, seat_name: "seat-0".to_owned(), serial: None },
+        ChildOf(parent),
     ));
 }
 
+/// Returns the default config path used by this integration test.
 fn workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }
 
+/// Applies the planned popup mutation once the compositor has advanced a few frames.
 fn apply_popup_mutation_system(
     clock: Res<CompositorClock>,
     mut plan: ResMut<PopupMutationPlan>,
@@ -182,6 +196,7 @@ fn apply_popup_mutation_system(
     plan.applied = true;
 }
 
+/// Waits for both popup geometry and popup grab change events targeting the expected popup.
 fn wait_for_popup_change_events(
     socket_path: &Path,
     subscription: IpcSubscription,
@@ -199,6 +214,8 @@ fn wait_for_popup_change_events(
                     continue;
                 };
 
+                // The popup topic can interleave geometry and grab updates, so
+                // hold onto whichever side arrives first until both are present.
                 match event.event.as_str() {
                     "popup_geometry_changed" => {
                         let change = serde_json::from_value::<PopupGeometryChangeSnapshot>(payload)
@@ -241,6 +258,7 @@ fn wait_for_popup_change_events(
     }
 }
 
+/// Maps IPC failures into the test's skip/fail control flow.
 fn classify_ipc_error(error: std::io::Error) -> common::TestControl {
     if ipc_error_is_skippable(&error) {
         return common::TestControl::Skip(error.to_string());
@@ -249,6 +267,7 @@ fn classify_ipc_error(error: std::io::Error) -> common::TestControl {
     common::TestControl::Fail(error.to_string())
 }
 
+/// Identifies retryable transient IPC errors.
 fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -259,6 +278,7 @@ fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     )
 }
 
+/// Identifies IPC errors that should skip the test in restricted environments.
 fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
     error.kind() == ErrorKind::PermissionDenied || error.raw_os_error() == Some(1)
 }

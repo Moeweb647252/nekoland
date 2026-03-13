@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
+/// Element kinds that can appear in a virtual-output frame capture.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VirtualOutputElementKind {
     Window,
@@ -13,6 +14,7 @@ pub enum VirtualOutputElementKind {
     Unknown,
 }
 
+/// One renderable item captured in a virtual-output frame snapshot.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct VirtualOutputElement {
     pub surface_id: u64,
@@ -25,6 +27,7 @@ pub struct VirtualOutputElement {
     pub opacity: f32,
 }
 
+/// Captured virtual frame used by tests and tooling instead of a real renderer.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct VirtualOutputFrame {
     pub output_name: String,
@@ -37,6 +40,7 @@ pub struct VirtualOutputFrame {
     pub elements: Vec<VirtualOutputElement>,
 }
 
+/// Ring buffer of recent virtual-output frames.
 #[derive(Resource, Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct VirtualOutputCaptureState {
     pub frame_limit: usize,
@@ -50,6 +54,7 @@ impl Default for VirtualOutputCaptureState {
 }
 
 impl VirtualOutputCaptureState {
+    /// Appends a new captured frame and truncates the history to the configured frame limit.
     pub fn push_frame(&mut self, frame: VirtualOutputFrame) {
         self.frames.push_back(frame);
         while self.frames.len() > self.frame_limit.max(1) {

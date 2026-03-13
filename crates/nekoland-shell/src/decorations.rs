@@ -1,14 +1,17 @@
 use bevy_ecs::prelude::{Query, Res};
-use nekoland_ecs::components::BorderTheme;
+use nekoland_ecs::components::{BorderTheme, WindowLayout};
 use nekoland_ecs::resources::CompositorConfig;
 
+/// Sync server-side border styling from compositor config into ECS decoration components.
 pub fn server_decoration_system(
     config: Res<CompositorConfig>,
-    mut borders: Query<&mut BorderTheme>,
+    mut borders: Query<(&WindowLayout, &mut BorderTheme)>,
 ) {
-    for mut border in &mut borders {
+    for (layout, mut border) in &mut borders {
+        // The current policy is intentionally small: only the configured color
+        // and a layout-dependent width are propagated into each border theme.
         border.color = config.border_color.clone();
-        border.width = if config.default_layout == "tiling" { 2 } else { 1 };
+        border.width = layout.border_width();
     }
 
     tracing::trace!(border_color = %config.border_color, "server decoration system tick");

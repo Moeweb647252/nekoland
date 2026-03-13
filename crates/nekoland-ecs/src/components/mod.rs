@@ -1,3 +1,5 @@
+//! ECS components that describe compositor entities such as windows, outputs, layers, and seats.
+
 pub mod animation;
 pub mod decoration;
 pub mod layer;

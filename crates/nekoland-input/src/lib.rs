@@ -1,4 +1,5 @@
-pub mod commands;
+//! Input decoding, gesture/keybinding dispatch, and seat bookkeeping.
+
 pub mod gestures;
 pub mod keybindings;
 pub mod keyboard;

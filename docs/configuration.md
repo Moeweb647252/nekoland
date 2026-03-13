@@ -20,7 +20,6 @@ Important top-level fields:
 - `[input]`
 - `[ipc]`
 - `[startup]`
-- `[commands]`
 - `[xwayland]`
 - `[[outputs]]`
 - `[keybinds.bindings]`
@@ -39,14 +38,6 @@ Important top-level fields:
 `commands` is a list of shell-style command lines that are split into argv and launched once after
 the Wayland socket is ready. These commands inherit the compositor's nested Wayland environment, so
 GUI apps connect to the compositor they were started from instead of the host session.
-
-`[commands]` fields:
-
-- `terminal`
-- `launcher`
-- `power_menu`
-
-Configured commands are tried before built-in fallback candidates.
 
 `[xwayland]` fields:
 
@@ -68,6 +59,7 @@ Supported keybinding actions:
 - `close-window`
 - `window move <x> <y>`
 - `window resize <width> <height>`
+- `window split <horizontal|vertical>`
 - `workspace <name>`
 - `workspace switch <name>`
 - `workspace create <name>`
@@ -76,12 +68,16 @@ Supported keybinding actions:
 - `output disable <name>`
 - `output configure <name> <mode>`
 - `output configure <name> <mode> <scale>`
-- `spawn-terminal`
-- `launcher`
-- `show-launcher`
-- `show-power-menu`
-- `power-menu`
-- `exec <program> [args...]`
+
+External commands are configured directly as argv arrays on the right-hand side of a binding. For
+example:
+
+```toml
+[keybinds.bindings]
+"Super+Return" = ["foot"]
+"Super+Space" = ["wofi", "--show", "drun"]
+"Super+Shift+Q" = "close-window"
+```
 
 Key names use the XKB/X11-style names already used elsewhere in the project, for example:
 
@@ -89,9 +85,3 @@ Key names use the XKB/X11-style names already used elsewhere in the project, for
 - `Super+Shift+Q`
 - `Super+Return`
 - `Super+1`
-
-External launch actions use these command sources:
-
-- `spawn-terminal`: `[commands].terminal`, then common terminal fallbacks
-- `launcher` / `show-launcher`: `[commands].launcher`, then launcher fallbacks such as `fuzzel`, `wofi`, `rofi`
-- `show-power-menu` / `power-menu`: `[commands].power_menu`, then power-menu fallbacks such as `wlogout`

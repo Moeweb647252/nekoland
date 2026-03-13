@@ -13,11 +13,6 @@ repeat_rate = 40
 [ipc]
 command_history_limit = 128
 
-[commands]
-terminal = "wezterm start --always-new-process"
-launcher = "wofi --show drun"
-power_menu = "wlogout --protocol layer-shell"
-
 [xwayland]
 enabled = true
 
@@ -28,9 +23,9 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Return" = "spawn-terminal"
-"Super+Space" = "launcher"
-"Super+P" = "show-power-menu"
+"Super+Return" = ["wezterm", "start", "--always-new-process"]
+"Super+Space" = ["wofi", "--show", "drun"]
+"Super+P" = ["wlogout", "--protocol", "layer-shell"]
 "Super+Shift+Q" = "close-window"
 "Super+1" = "workspace 1"
 "Super+2" = "workspace 2"

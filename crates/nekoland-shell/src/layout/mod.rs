@@ -4,14 +4,14 @@ pub mod stacking;
 pub mod tiling;
 
 use bevy_ecs::prelude::Query;
-use nekoland_ecs::components::{SurfaceGeometry, WindowState, XdgWindow};
+use nekoland_ecs::components::{SurfaceGeometry, WindowLayout, XdgWindow};
 use nekoland_ecs::resources::WorkArea;
 
 /// Trait that all layout strategies implement.
 ///
 /// Each strategy receives the full window query and the current work area and
 /// is responsible for updating `SurfaceGeometry` for any windows whose
-/// [`WindowState`] it manages. Strategies that are not yet implemented should
+/// [`WindowLayout`] it manages. Strategies that are not yet implemented should
 /// leave the query untouched and return immediately.
 ///
 /// # Future extensibility
@@ -28,7 +28,7 @@ pub trait LayoutEngine: Send + Sync + 'static {
 
     /// Apply geometry updates for the current frame.
     ///
-    /// Implementors should only mutate windows whose state matches their
+    /// Implementors should only mutate windows whose layout matches their
     /// strategy.  Overlapping state assignments (e.g. a window set to
     /// `Fullscreen`) are handled by dedicated systems that run after the
     /// primary layout pass.
@@ -37,7 +37,7 @@ pub trait LayoutEngine: Send + Sync + 'static {
         windows: &mut Query<
             '_,
             '_,
-            (&mut SurfaceGeometry, &WindowState),
+            (&mut SurfaceGeometry, &WindowLayout),
             bevy_ecs::prelude::With<XdgWindow>,
         >,
         work_area: &WorkArea,

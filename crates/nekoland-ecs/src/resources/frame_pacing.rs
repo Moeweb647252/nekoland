@@ -1,6 +1,7 @@
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
+/// Per-frame pacing diagnostics collected from callback and presentation systems.
 #[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FramePacingState {
     pub frame_callbacks_sent: u64,

@@ -1,3 +1,6 @@
+//! IPC protocol, server runtime, query snapshots, and subscription helpers shared by the
+//! compositor and the `nekoland-msg` client.
+
 pub mod commands;
 pub mod plugin;
 pub mod protocol;

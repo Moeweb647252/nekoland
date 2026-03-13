@@ -1,3 +1,5 @@
+//! In-process integration test for the `config_changed` subscription stream.
+
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -6,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
+use nekoland_ecs::resources::ConfiguredKeybindingAction;
 use nekoland_ipc::commands::ConfigSnapshot;
 use nekoland_ipc::{
     IpcServerState, IpcSubscription, IpcSubscriptionEvent, SubscriptionTopic, subscribe_to_path,
@@ -13,6 +16,7 @@ use nekoland_ipc::{
 
 mod common;
 
+/// Baseline config served before the subscription observes a reload.
 const INITIAL_CONFIG: &str = r##"
 default_layout = "tiling"
 
@@ -29,9 +33,6 @@ repeat_rate = 30
 [ipc]
 command_history_limit = 7
 
-[commands]
-terminal = "foot"
-
 [xwayland]
 enabled = true
 
@@ -42,9 +43,10 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Return" = "spawn-terminal"
+"Super+Return" = ["foot"]
 "##;
 
+/// Replacement config written while the compositor is already serving IPC.
 const RELOADED_CONFIG: &str = r##"
 default_layout = "floating"
 
@@ -61,9 +63,6 @@ repeat_rate = 45
 [ipc]
 command_history_limit = 3
 
-[commands]
-terminal = "wezterm start --always-new-process"
-
 [xwayland]
 enabled = false
 
@@ -74,9 +73,11 @@ scale = 2
 enabled = true
 
 [keybinds.bindings]
-"Super+P" = "show-power-menu"
+"Super+P" = ["wlogout", "--protocol", "layer-shell"]
 "##;
 
+/// Verifies that the config subscription publishes the fully normalized runtime config after hot
+/// reload.
 #[test]
 fn config_subscription_reports_hot_reloaded_runtime_config() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -118,6 +119,8 @@ fn config_subscription_reports_hot_reloaded_runtime_config() {
         )
     });
     let rewrite_thread = thread::spawn(move || {
+        // Give the watcher and subscription stream a brief head start before
+        // the rewrite lands.
         thread::sleep(Duration::from_millis(50));
         fs::write(&config_path, RELOADED_CONFIG).map_err(|error| error.to_string())
     });
@@ -149,18 +152,27 @@ fn config_subscription_reports_hot_reloaded_runtime_config() {
     assert_eq!(config.default_layout, "floating");
     assert_eq!(config.command_history_limit, 3);
     assert!(!config.xwayland_enabled);
-    assert_eq!(config.commands.terminal.as_deref(), Some("wezterm start --always-new-process"));
     assert_eq!(config.outputs.len(), 1);
     assert_eq!(config.outputs[0].name, "HDMI-A-1");
     assert_eq!(config.outputs[0].mode, "2560x1440@75");
     assert_eq!(config.outputs[0].scale, 2);
     assert!(
-        config.keybindings.contains_key("Super+P"),
+        matches!(
+            config.keybindings.get("Super+P"),
+            Some(ConfiguredKeybindingAction::Command(argv))
+                if argv
+                    == &vec![
+                        "wlogout".to_owned(),
+                        "--protocol".to_owned(),
+                        "layer-shell".to_owned(),
+                    ]
+        ),
         "config_changed should expose the reloaded keybinding map: {:?}",
         config.keybindings
     );
 }
 
+/// Waits for the first `config_changed` event on the config subscription stream.
 fn wait_for_config_change(
     socket_path: &Path,
     subscription: IpcSubscription,
@@ -178,6 +190,8 @@ fn wait_for_config_change(
         match stream.read_event() {
             Ok(event) => return Ok(event),
             Err(error) if ipc_error_is_retryable(&error) => {
+                // The subscription may be established before the first reload
+                // event is flushed, so short timeouts are expected here.
                 if Instant::now() >= deadline {
                     return Err(common::TestControl::Fail(
                         "timed out waiting for config_changed".to_owned(),
@@ -192,11 +206,15 @@ fn wait_for_config_change(
     }
 }
 
+/// Identifies retryable transient IPC errors.
 fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
 }
 
+/// Identifies IPC errors that should skip the test in restricted environments.
 fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
+    // This test also runs under restricted sandboxes, where subscription setup
+    // can fail before a usable socket exists. Treat those cases as skips.
     matches!(
         error.kind(),
         ErrorKind::PermissionDenied | ErrorKind::WouldBlock | ErrorKind::TimedOut

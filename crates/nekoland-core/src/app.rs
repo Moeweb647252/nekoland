@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use bevy_app::App;
+use bevy_ecs::error::warn;
 use bevy_ecs::prelude::Resource;
 use calloop::EventLoop;
 
@@ -17,6 +18,10 @@ pub struct AppMetadata {
     pub name: String,
 }
 
+/// Runtime knobs for the outer frame loop.
+///
+/// Both fields are intentionally overridable via environment variables so integration tests can
+/// cap frame counts and shorten waits without patching application code.
 #[derive(Debug, Clone, Resource)]
 pub struct RunLoopSettings {
     pub frame_timeout: Duration,
@@ -50,6 +55,7 @@ pub struct NekolandApp {
 impl NekolandApp {
     pub fn new(name: impl Into<String>) -> Self {
         let mut app = App::new();
+        app.set_error_handler(warn);
         app.insert_resource(AppMetadata { name: name.into() });
         app.insert_resource(RunLoopSettings::default());
         install_core_schedules(&mut app);
@@ -107,6 +113,8 @@ impl NekolandApp {
                 .map_err(|error| NekolandError::Runtime(error.to_string()))?;
 
             self.app.update();
+            // Keep the frame split into explicit phases so plugins can rely on stable ordering
+            // without collapsing every subsystem into one giant Bevy schedule.
             self.app.world_mut().run_schedule(ExtractSchedule);
             self.app.world_mut().run_schedule(ProtocolSchedule);
             self.app.world_mut().run_schedule(InputSchedule);
@@ -119,5 +127,32 @@ impl NekolandApp {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_app::App;
+
+    use super::NekolandApp;
+
+    #[test]
+    fn new_app_installs_default_warn_error_handler() {
+        let app = NekolandApp::new("error-handler-test");
+
+        assert!(
+            app.inner().get_error_handler().is_some(),
+            "NekolandApp::new should install a default Bevy ECS error handler",
+        );
+    }
+
+    #[test]
+    fn raw_bevy_app_starts_without_nekoland_error_handler() {
+        let app = App::new();
+
+        assert!(
+            app.get_error_handler().is_none(),
+            "control check: plain App::new should not carry the nekoland default handler",
+        );
     }
 }

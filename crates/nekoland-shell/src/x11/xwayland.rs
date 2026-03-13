@@ -1,51 +1,67 @@
+use bevy_ecs::entity_disabling::Disabled;
+use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With};
+use bevy_ecs::query::Allow;
+use bevy_ecs::system::SystemParam;
 use nekoland_ecs::bundles::X11WindowBundle;
 use nekoland_ecs::components::{
-    BorderTheme, BufferState, LayoutSlot, OutputProperties, ServerDecoration, SurfaceGeometry,
-    WindowAnimation, WindowState, WlSurfaceHandle, Workspace, X11Window, XdgWindow,
+    BorderTheme, BufferState, FloatingPosition, ServerDecoration, SurfaceGeometry, WindowAnimation,
+    WindowLayout, WindowMode, WindowPlacement, WindowPolicyState, WindowPosition,
+    WindowRestoreState, WindowSize, WlSurfaceHandle, X11Window, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
 use nekoland_ecs::resources::{
-    CompositorConfig, GlobalPointerPosition, KeyboardFocusState, PendingX11Requests,
+    CompositorConfig, EntityIndex, GlobalPointerPosition, KeyboardFocusState,
+    PendingPopupServerRequests, PendingX11Requests, PopupServerAction, PopupServerRequest,
     X11LifecycleAction,
 };
+use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowRuntime, WorkspaceRuntime};
+use nekoland_ecs::workspace_membership::active_workspace_runtime_target_or_index;
+
+use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
+use crate::window_policy::{
+    apply_window_policy, lock_window_policy, refresh_window_policy, restore_window_policy,
+};
+
+/// Bridges XWayland lifecycle requests into the same ECS window model used by native XDG windows.
+///
+/// The system mirrors the XDG configure logic closely so X11 windows participate in the same
+/// focus, layout, restore-state, and popup-dismiss flows.
+type X11Windows<'w, 's> =
+    Query<'w, 's, (Entity, WindowRuntime), (With<X11Window>, Allow<Disabled>)>;
+
+#[derive(SystemParam)]
+pub struct X11PopupDismissals<'w, 's> {
+    popups: Query<'w, 's, PopupRuntime, (With<XdgPopup>, Allow<Disabled>)>,
+    requests: ResMut<'w, PendingPopupServerRequests>,
+}
 
 pub fn xwayland_bridge_system(
     mut commands: Commands,
     config: Res<CompositorConfig>,
     mut pending_x11_requests: ResMut<PendingX11Requests>,
+    entity_index: Res<EntityIndex>,
     pointer: Res<GlobalPointerPosition>,
+    mut active_grab: ResMut<ActiveWindowGrab>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
-    workspaces: Query<&Workspace>,
-    outputs: Query<&OutputProperties>,
-    mut windows: Query<
-        (
-            Entity,
-            &WlSurfaceHandle,
-            &mut SurfaceGeometry,
-            &mut BufferState,
-            &mut XdgWindow,
-            &X11Window,
-            &mut WindowState,
-            &mut LayoutSlot,
-        ),
-        With<X11Window>,
-    >,
+    workspaces: Query<(Entity, WorkspaceRuntime)>,
+    outputs: Query<OutputRuntime>,
+    mut windows: X11Windows<'_, '_>,
+    mut popup_dismissals: X11PopupDismissals<'_, '_>,
     mut window_created: MessageWriter<WindowCreated>,
     mut window_closed: MessageWriter<WindowClosed>,
     mut window_moved: MessageWriter<WindowMoved>,
 ) {
-    let active_workspace = workspaces
+    let active_workspace_entity =
+        active_workspace_runtime_target_or_index(&workspaces, &entity_index, 1);
+    let output_geometry = outputs
         .iter()
-        .find(|workspace| workspace.active)
-        .map(|workspace| workspace.id.0)
-        .unwrap_or(1);
-    let output_geometry =
-        outputs.iter().next().map(|properties| (properties.width.max(1), properties.height.max(1)));
+        .next()
+        .map(|output| (output.properties.width.max(1), output.properties.height.max(1)));
     let mut deferred = Vec::new();
 
-    for request in pending_x11_requests.items.drain(..) {
+    for request in pending_x11_requests.drain() {
         match request.action.clone() {
             X11LifecycleAction::Mapped {
                 window_id,
@@ -54,304 +70,507 @@ pub fn xwayland_bridge_system(
                 app_id,
                 geometry,
             } => {
-                if let Some((
-                    _,
-                    _,
-                    mut existing_geometry,
-                    mut buffer,
-                    mut window,
-                    _,
-                    mut state,
-                    mut layout_slot,
-                )) = windows.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id)
-                {
-                    let moved =
-                        existing_geometry.x != geometry.x || existing_geometry.y != geometry.y;
-                    *existing_geometry = SurfaceGeometry {
-                        x: geometry.x,
-                        y: geometry.y,
-                        width: geometry.width.max(1),
-                        height: geometry.height.max(1),
-                    };
-                    buffer.attached = true;
-                    window.title = title.clone();
-                    window.app_id = app_id.clone();
-                    *state = restored_window_state(&config, override_redirect);
-                    layout_slot.workspace = active_workspace;
-                    if moved {
-                        window_moved.write(WindowMoved {
-                            surface_id: request.surface_id,
-                            x: geometry.x,
-                            y: geometry.y,
-                        });
-                    }
-                    continue;
-                }
-
-                commands.spawn((
-                    X11WindowBundle {
-                        surface: WlSurfaceHandle { id: request.surface_id },
-                        geometry: SurfaceGeometry {
-                            x: geometry.x,
-                            y: geometry.y,
-                            width: geometry.width.max(1),
-                            height: geometry.height.max(1),
-                        },
-                        buffer: BufferState { attached: true, scale: 1 },
-                        window: XdgWindow {
-                            app_id: app_id.clone(),
-                            title: title.clone(),
-                            last_acked_configure: None,
-                        },
-                        x11_window: X11Window { window_id, override_redirect },
-                        state: restored_window_state(&config, override_redirect),
-                        decoration: ServerDecoration { enabled: true },
-                        border_theme: BorderTheme {
-                            width: border_width(&config.default_layout),
-                            color: config.border_color.clone(),
-                        },
-                        animation: WindowAnimation::default(),
-                    },
-                    LayoutSlot { workspace: active_workspace, column: 0, row: 0 },
-                ));
-                window_created.write(WindowCreated { surface_id: request.surface_id, title });
+                map_x11_window(
+                    request.surface_id,
+                    window_id,
+                    override_redirect,
+                    title,
+                    app_id,
+                    geometry,
+                    active_workspace_entity,
+                    &config,
+                    &entity_index,
+                    &mut windows,
+                    &mut commands,
+                    &mut window_created,
+                    &mut window_moved,
+                );
             }
             X11LifecycleAction::Reconfigured { title, app_id, geometry } => {
-                let Some((_, surface, mut existing_geometry, mut buffer, mut window, _, state, _)) =
-                    windows.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id)
-                else {
+                if !reconfigure_x11_window(
+                    request.surface_id,
+                    title,
+                    app_id,
+                    geometry,
+                    &config,
+                    &entity_index,
+                    &mut windows,
+                    &mut window_moved,
+                ) {
                     deferred.push(request);
-                    continue;
-                };
-
-                let moved = existing_geometry.x != geometry.x || existing_geometry.y != geometry.y;
-                let resizable = !matches!(*state, WindowState::Fullscreen | WindowState::Maximized);
-                existing_geometry.x = geometry.x;
-                existing_geometry.y = geometry.y;
-                if resizable {
-                    existing_geometry.width = geometry.width.max(1);
-                    existing_geometry.height = geometry.height.max(1);
-                }
-                buffer.attached = true;
-                window.title = title;
-                window.app_id = app_id;
-                if moved {
-                    window_moved.write(WindowMoved {
-                        surface_id: surface.id,
-                        x: existing_geometry.x,
-                        y: existing_geometry.y,
-                    });
                 }
             }
             X11LifecycleAction::Maximize => {
-                let Some((_, _, mut geometry, _, _, _, mut state, _)) =
-                    windows.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id)
-                else {
+                if !enter_x11_window_state(
+                    request.surface_id,
+                    WindowMode::Maximized,
+                    output_geometry,
+                    &entity_index,
+                    &mut windows,
+                ) {
                     deferred.push(request);
-                    continue;
-                };
-
-                *state = WindowState::Maximized;
-                if let Some((width, height)) = output_geometry {
-                    geometry.x = 0;
-                    geometry.y = 0;
-                    geometry.width = width;
-                    geometry.height = height;
                 }
             }
             X11LifecycleAction::UnMaximize => {
-                let Some((_, _, _, _, _, x11_window, mut state, _)) =
-                    windows.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id)
-                else {
+                if !restore_or_default_x11_window_state(
+                    request.surface_id,
+                    &entity_index,
+                    &mut windows,
+                ) {
                     deferred.push(request);
-                    continue;
-                };
-
-                *state = restored_window_state(&config, x11_window.override_redirect);
+                }
             }
             X11LifecycleAction::Fullscreen => {
-                let Some((_, _, mut geometry, _, _, _, mut state, _)) =
-                    windows.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id)
-                else {
+                if !enter_x11_window_state(
+                    request.surface_id,
+                    WindowMode::Fullscreen,
+                    output_geometry,
+                    &entity_index,
+                    &mut windows,
+                ) {
                     deferred.push(request);
-                    continue;
-                };
-
-                *state = WindowState::Fullscreen;
-                if let Some((width, height)) = output_geometry {
-                    geometry.x = 0;
-                    geometry.y = 0;
-                    geometry.width = width;
-                    geometry.height = height;
                 }
             }
             X11LifecycleAction::UnFullscreen => {
-                let Some((_, _, _, _, _, x11_window, mut state, _)) =
-                    windows.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id)
-                else {
+                if !restore_or_default_x11_window_state(
+                    request.surface_id,
+                    &entity_index,
+                    &mut windows,
+                ) {
                     deferred.push(request);
-                    continue;
-                };
-
-                *state = restored_window_state(&config, x11_window.override_redirect);
+                }
             }
             X11LifecycleAction::Minimize => {
-                let Some((_, _, _, _, _, _, mut state, _)) =
-                    windows.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id)
-                else {
+                if !minimize_x11_window(request.surface_id, &entity_index, &mut windows) {
                     deferred.push(request);
-                    continue;
-                };
-
-                *state = WindowState::Hidden;
+                }
             }
             X11LifecycleAction::UnMinimize => {
-                let Some((_, _, _, _, _, x11_window, mut state, _)) =
-                    windows.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id)
-                else {
+                if !restore_or_default_x11_window_state(
+                    request.surface_id,
+                    &entity_index,
+                    &mut windows,
+                ) {
                     deferred.push(request);
-                    continue;
-                };
-
-                *state = restored_window_state(&config, x11_window.override_redirect);
+                }
             }
             X11LifecycleAction::InteractiveMove { button: _button } => {
-                let Some((_, surface, mut geometry, _, _, x11_window, mut state, _)) =
-                    windows.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id)
-                else {
+                if !start_x11_window_grab(
+                    request.surface_id,
+                    WindowGrabMode::Move,
+                    &pointer,
+                    &entity_index,
+                    &mut windows,
+                    &mut active_grab,
+                    &mut keyboard_focus,
+                ) {
                     deferred.push(request);
-                    continue;
-                };
-
-                *state = restored_window_state(&config, x11_window.override_redirect);
-                if !x11_window.override_redirect {
-                    *state = WindowState::Floating;
                 }
-                geometry.x = pointer.x.round() as i32 - 32;
-                geometry.y = pointer.y.round() as i32 - 16;
-                keyboard_focus.focused_surface = Some(surface.id);
-                window_moved.write(WindowMoved {
-                    surface_id: surface.id,
-                    x: geometry.x,
-                    y: geometry.y,
-                });
             }
             X11LifecycleAction::InteractiveResize { button: _button, edges } => {
-                let Some((_, surface, mut geometry, _, _, x11_window, mut state, _)) =
-                    windows.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id)
-                else {
+                if !start_x11_window_grab(
+                    request.surface_id,
+                    WindowGrabMode::Resize { edges },
+                    &pointer,
+                    &entity_index,
+                    &mut windows,
+                    &mut active_grab,
+                    &mut keyboard_focus,
+                ) {
                     deferred.push(request);
-                    continue;
-                };
-
-                *state = restored_window_state(&config, x11_window.override_redirect);
-                if !x11_window.override_redirect {
-                    *state = WindowState::Floating;
                 }
-                apply_interactive_resize(&mut geometry, &edges);
-                keyboard_focus.focused_surface = Some(surface.id);
             }
             X11LifecycleAction::Unmapped | X11LifecycleAction::Destroyed => {
-                let Some((entity, _, _, _, _, _, _, _)) =
-                    windows.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id)
-                else {
-                    continue;
-                };
-
-                commands.entity(entity).despawn();
-                window_closed.write(WindowClosed { surface_id: request.surface_id });
+                destroy_x11_window(
+                    request.surface_id,
+                    &entity_index,
+                    &mut windows,
+                    &mut popup_dismissals,
+                    &mut commands,
+                    &mut window_closed,
+                );
             }
         }
     }
 
-    pending_x11_requests.items = deferred;
+    pending_x11_requests.replace(deferred);
 }
 
-fn restored_window_state(config: &CompositorConfig, override_redirect: bool) -> WindowState {
-    if override_redirect {
-        WindowState::Floating
-    } else {
-        match config.default_layout.as_str() {
-            "floating" => WindowState::Floating,
-            "maximized" => WindowState::Maximized,
-            "fullscreen" => WindowState::Fullscreen,
-            "tiling" | "stacking" => WindowState::Floating,
-            _ => WindowState::Floating,
+fn resolve_x11_window_entity(
+    surface_id: u64,
+    entity_index: &EntityIndex,
+    windows: &mut X11Windows<'_, '_>,
+) -> Option<Entity> {
+    entity_index.entity_for_surface(surface_id).or_else(|| {
+        windows
+            .iter_mut()
+            .find(|(_, window)| window.surface_id() == surface_id)
+            .map(|(entity, _)| entity)
+    })
+}
+
+fn map_x11_window(
+    surface_id: u64,
+    window_id: u32,
+    override_redirect: bool,
+    title: String,
+    app_id: String,
+    geometry: nekoland_ecs::resources::X11WindowGeometry,
+    active_workspace_entity: Option<Entity>,
+    config: &CompositorConfig,
+    entity_index: &EntityIndex,
+    windows: &mut X11Windows<'_, '_>,
+    commands: &mut Commands,
+    window_created: &mut MessageWriter<WindowCreated>,
+    window_moved: &mut MessageWriter<WindowMoved>,
+) {
+    let policy = config.resolve_window_policy(&app_id, &title, override_redirect);
+    if let Some(entity) = resolve_x11_window_entity(surface_id, entity_index, windows) {
+        if let Ok((entity, mut window)) = windows.get_mut(entity) {
+            let moved = window.geometry.x != geometry.x || window.geometry.y != geometry.y;
+            *window.geometry = SurfaceGeometry {
+                x: geometry.x,
+                y: geometry.y,
+                width: geometry.width.max(1),
+                height: geometry.height.max(1),
+            };
+            window.buffer.expect("x11 window should have buffer state").attached = true;
+            let xdg_window =
+                window.xdg_window.as_mut().expect("x11 runtime should expose xdg metadata");
+            xdg_window.title = title.clone();
+            xdg_window.app_id = app_id.clone();
+            apply_window_policy(
+                policy,
+                &mut window.layout,
+                &mut window.mode,
+                &mut window.policy_state,
+            );
+            if matches!(*window.layout, WindowLayout::Floating)
+                && *window.mode == WindowMode::Normal
+            {
+                window
+                    .placement
+                    .set_explicit_position(WindowPosition { x: geometry.x, y: geometry.y });
+                window.placement.floating_size = Some(WindowSize {
+                    width: geometry.width.max(1),
+                    height: geometry.height.max(1),
+                });
+            }
+            if let Some(active_workspace_entity) = active_workspace_entity {
+                commands.entity(entity).insert(ChildOf(active_workspace_entity));
+            }
+            if moved {
+                window_moved.write(WindowMoved { surface_id, x: geometry.x, y: geometry.y });
+            }
+            return;
         }
     }
+
+    let mut window_entity = commands.spawn((
+        X11WindowBundle {
+            surface: WlSurfaceHandle { id: surface_id },
+            geometry: SurfaceGeometry {
+                x: geometry.x,
+                y: geometry.y,
+                width: geometry.width.max(1),
+                height: geometry.height.max(1),
+            },
+            buffer: BufferState { attached: true, scale: 1 },
+            window: XdgWindow {
+                app_id: app_id.clone(),
+                title: title.clone(),
+                last_acked_configure: None,
+            },
+            x11_window: X11Window { window_id, override_redirect },
+            layout: policy.layout,
+            mode: policy.mode,
+            decoration: ServerDecoration { enabled: true },
+            border_theme: BorderTheme {
+                width: policy.layout.border_width(),
+                color: config.border_color.clone(),
+            },
+            animation: WindowAnimation::default(),
+        },
+        WindowPolicyState { applied: policy, locked: false },
+        WindowPlacement {
+            floating_position: Some(FloatingPosition::Explicit(WindowPosition {
+                x: geometry.x,
+                y: geometry.y,
+            })),
+            floating_size: Some(WindowSize {
+                width: geometry.width.max(1),
+                height: geometry.height.max(1),
+            }),
+        },
+    ));
+    if let Some(active_workspace_entity) = active_workspace_entity {
+        window_entity.insert(ChildOf(active_workspace_entity));
+    }
+    window_created.write(WindowCreated { surface_id, title });
 }
 
-fn apply_interactive_resize(geometry: &mut SurfaceGeometry, edges: &str) {
-    if edges.contains("Left") {
-        geometry.x -= 32;
-        geometry.width = geometry.width.saturating_add(32);
+fn reconfigure_x11_window(
+    surface_id: u64,
+    title: String,
+    app_id: String,
+    geometry: nekoland_ecs::resources::X11WindowGeometry,
+    config: &CompositorConfig,
+    entity_index: &EntityIndex,
+    windows: &mut X11Windows<'_, '_>,
+    window_moved: &mut MessageWriter<WindowMoved>,
+) -> bool {
+    let Some(entity) = resolve_x11_window_entity(surface_id, entity_index, windows) else {
+        return false;
+    };
+    let Ok((_, mut window)) = windows.get_mut(entity) else {
+        return false;
+    };
+
+    window.buffer.expect("x11 window should have buffer state").attached = true;
+    let xdg_window = window.xdg_window.as_mut().expect("x11 runtime should expose xdg metadata");
+    xdg_window.title = title;
+    xdg_window.app_id = app_id;
+    let override_redirect =
+        window.x11_window.expect("x11 runtime should expose x11 metadata").override_redirect;
+    let policy =
+        config.resolve_window_policy(&xdg_window.app_id, &xdg_window.title, override_redirect);
+    refresh_window_policy(
+        policy,
+        &mut window.layout,
+        &mut window.mode,
+        &mut window.restore,
+        &mut window.policy_state,
+    );
+
+    let moved = window.geometry.x != geometry.x || window.geometry.y != geometry.y;
+    let resizable = !matches!(*window.mode, WindowMode::Fullscreen | WindowMode::Maximized);
+    window.geometry.x = geometry.x;
+    window.geometry.y = geometry.y;
+    if resizable {
+        window.geometry.width = geometry.width.max(1);
+        window.geometry.height = geometry.height.max(1);
     }
-    if edges.contains("Right") {
-        geometry.width = geometry.width.saturating_add(64);
+    if matches!(*window.layout, WindowLayout::Floating) && *window.mode == WindowMode::Normal {
+        window.placement.set_explicit_position(WindowPosition { x: geometry.x, y: geometry.y });
+        if resizable {
+            window.placement.floating_size =
+                Some(WindowSize { width: geometry.width.max(1), height: geometry.height.max(1) });
+        }
     }
-    if edges.contains("Top") {
-        geometry.y -= 24;
-        geometry.height = geometry.height.saturating_add(24);
+    if moved {
+        window_moved.write(WindowMoved { surface_id, x: window.geometry.x, y: window.geometry.y });
     }
-    if edges.contains("Bottom") {
-        geometry.height = geometry.height.saturating_add(48);
+    true
+}
+
+fn enter_x11_window_state(
+    surface_id: u64,
+    target_mode: WindowMode,
+    output_geometry: Option<(u32, u32)>,
+    entity_index: &EntityIndex,
+    windows: &mut X11Windows<'_, '_>,
+) -> bool {
+    let Some(entity) = resolve_x11_window_entity(surface_id, entity_index, windows) else {
+        return false;
+    };
+    let Ok((_, mut window)) = windows.get_mut(entity) else {
+        return false;
+    };
+
+    window.restore.snapshot = Some(WindowRestoreState {
+        geometry: window.geometry.clone(),
+        layout: (*window.layout).clone(),
+        mode: (*window.mode).clone(),
+    });
+    *window.mode = target_mode;
+    if let Some((width, height)) = output_geometry {
+        window.geometry.x = 0;
+        window.geometry.y = 0;
+        window.geometry.width = width;
+        window.geometry.height = height;
+    }
+    true
+}
+
+fn restore_or_default_x11_window_state(
+    surface_id: u64,
+    entity_index: &EntityIndex,
+    windows: &mut X11Windows<'_, '_>,
+) -> bool {
+    let Some(entity) = resolve_x11_window_entity(surface_id, entity_index, windows) else {
+        return false;
+    };
+    let Ok((_, mut window)) = windows.get_mut(entity) else {
+        return false;
+    };
+
+    if let Some(restored) = window.restore.snapshot.take() {
+        *window.geometry = restored.geometry;
+        *window.layout = restored.layout;
+        *window.mode = restored.mode;
+    } else {
+        restore_window_policy(&window.policy_state, &mut window.layout, &mut window.mode);
+    }
+    true
+}
+
+fn minimize_x11_window(
+    surface_id: u64,
+    entity_index: &EntityIndex,
+    windows: &mut X11Windows<'_, '_>,
+) -> bool {
+    let Some(entity) = resolve_x11_window_entity(surface_id, entity_index, windows) else {
+        return false;
+    };
+    let Ok((_, mut window)) = windows.get_mut(entity) else {
+        return false;
+    };
+
+    *window.mode = WindowMode::Hidden;
+    true
+}
+
+fn start_x11_window_grab(
+    surface_id: u64,
+    mode: WindowGrabMode,
+    pointer: &GlobalPointerPosition,
+    entity_index: &EntityIndex,
+    windows: &mut X11Windows<'_, '_>,
+    active_grab: &mut ActiveWindowGrab,
+    keyboard_focus: &mut KeyboardFocusState,
+) -> bool {
+    let Some(entity) = resolve_x11_window_entity(surface_id, entity_index, windows) else {
+        return false;
+    };
+    let Ok((_, mut window)) = windows.get_mut(entity) else {
+        return false;
+    };
+
+    let override_redirect =
+        window.x11_window.expect("x11 runtime should expose x11 metadata").override_redirect;
+    restore_window_policy(&window.policy_state, &mut window.layout, &mut window.mode);
+    if !override_redirect {
+        *window.layout = WindowLayout::Floating;
+        *window.mode = WindowMode::Normal;
+        lock_window_policy(*window.layout, *window.mode, &mut window.policy_state);
+    }
+    keyboard_focus.focused_surface = Some(surface_id);
+    begin_window_grab(active_grab, surface_id, mode, pointer, &window.geometry);
+    true
+}
+
+fn destroy_x11_window(
+    surface_id: u64,
+    entity_index: &EntityIndex,
+    windows: &mut X11Windows<'_, '_>,
+    popup_dismissals: &mut X11PopupDismissals<'_, '_>,
+    commands: &mut Commands,
+    window_closed: &mut MessageWriter<WindowClosed>,
+) {
+    let Some(entity) = resolve_x11_window_entity(surface_id, entity_index, windows) else {
+        return;
+    };
+
+    let popup_surface_ids =
+        popup_dismissal_surface_ids(surface_id, entity_index, &popup_dismissals.popups);
+    for popup_surface_id in popup_surface_ids {
+        popup_dismissals.requests.push(PopupServerRequest {
+            surface_id: popup_surface_id,
+            action: PopupServerAction::Dismiss,
+        });
+    }
+    commands.entity(entity).despawn();
+    window_closed.write(WindowClosed { surface_id });
+}
+
+fn popup_dismissal_surface_ids(
+    parent_surface_id: u64,
+    entity_index: &EntityIndex,
+    popups: &Query<PopupRuntime, (With<XdgPopup>, Allow<Disabled>)>,
+) -> Vec<u64> {
+    let Some(parent_entity) = entity_index.entity_for_surface(parent_surface_id) else {
+        return Vec::new();
+    };
+    let mut dismissed = std::collections::BTreeSet::new();
+    let mut surface_ids = Vec::new();
+    for popup in popups.iter() {
+        if popup.child_of.parent() != parent_entity || !dismissed.insert(popup.surface_id()) {
+            continue;
+        }
+
+        surface_ids.push(popup.surface_id());
     }
 
-    geometry.width = geometry.width.max(64);
-    geometry.height = geometry.height.max(64);
+    surface_ids
 }
 
 #[cfg(test)]
 mod tests {
+    use bevy_ecs::hierarchy::ChildOf;
     use bevy_ecs::prelude::Entity;
+    use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::X11WindowBundle;
     use nekoland_ecs::components::{
-        BorderTheme, BufferState, LayoutSlot, ServerDecoration, SurfaceGeometry, WindowAnimation,
-        WindowState, WlSurfaceHandle, X11Window, XdgWindow,
+        BorderTheme, BufferState, ServerDecoration, SurfaceGeometry, WindowAnimation, WindowLayout,
+        WindowMode, WlSurfaceHandle, Workspace, WorkspaceId, X11Window, XdgWindow,
     };
-    use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
+    use nekoland_ecs::events::{PointerButton, WindowClosed, WindowCreated, WindowMoved};
     use nekoland_ecs::resources::{
-        CompositorConfig, GlobalPointerPosition, KeyboardFocusState, PendingX11Requests,
-        X11LifecycleAction, X11LifecycleRequest,
+        CompositorConfig, ConfiguredWindowRule, EntityIndex, GlobalPointerPosition,
+        KeyboardFocusState, PendingX11Requests, ResizeEdges, WindowStackingState,
+        X11LifecycleAction, X11LifecycleRequest, X11WindowGeometry, rebuild_entity_index_system,
     };
+
+    use crate::interaction::{self, ActiveWindowGrab};
 
     use super::xwayland_bridge_system;
 
     fn setup_app_with_window() -> (NekolandApp, Entity) {
         let mut app = NekolandApp::new("xwayland-bridge-test");
         app.insert_resource(CompositorConfig::default())
+            .insert_resource(EntityIndex::default())
             .insert_resource(GlobalPointerPosition { x: 320.0, y: 180.0 })
             .insert_resource(KeyboardFocusState::default())
-            .insert_resource(PendingX11Requests::default());
+            .insert_resource(ActiveWindowGrab::default())
+            .insert_resource(WindowStackingState::default())
+            .insert_resource(PendingX11Requests::default())
+            .insert_resource(nekoland_ecs::resources::PendingPopupServerRequests::default());
         app.inner_mut()
+            .add_message::<PointerButton>()
             .add_message::<WindowCreated>()
             .add_message::<WindowClosed>()
             .add_message::<WindowMoved>()
-            .add_systems(LayoutSchedule, xwayland_bridge_system);
+            .add_systems(
+                LayoutSchedule,
+                (
+                    rebuild_entity_index_system,
+                    xwayland_bridge_system,
+                    interaction::window_grab_system,
+                )
+                    .chain(),
+            );
 
         let entity = app
             .inner_mut()
             .world_mut()
-            .spawn((
-                X11WindowBundle {
-                    surface: WlSurfaceHandle { id: 42 },
-                    geometry: SurfaceGeometry { x: 32, y: 48, width: 640, height: 480 },
-                    buffer: BufferState { attached: true, scale: 1 },
-                    window: XdgWindow {
-                        app_id: "x11-test".to_owned(),
-                        title: "X11 Test".to_owned(),
-                        last_acked_configure: None,
-                    },
-                    x11_window: X11Window { window_id: 7, override_redirect: false },
-                    state: WindowState::Tiled,
-                    decoration: ServerDecoration { enabled: true },
-                    border_theme: BorderTheme::default(),
-                    animation: WindowAnimation::default(),
+            .spawn((X11WindowBundle {
+                surface: WlSurfaceHandle { id: 42 },
+                geometry: SurfaceGeometry { x: 32, y: 48, width: 640, height: 480 },
+                buffer: BufferState { attached: true, scale: 1 },
+                window: XdgWindow {
+                    app_id: "x11-test".to_owned(),
+                    title: "X11 Test".to_owned(),
+                    last_acked_configure: None,
                 },
-                LayoutSlot { workspace: 1, column: 0, row: 0 },
-            ))
+                x11_window: X11Window { window_id: 7, override_redirect: false },
+                layout: WindowLayout::Tiled,
+                mode: WindowMode::Normal,
+                decoration: ServerDecoration { enabled: true },
+                border_theme: BorderTheme::default(),
+                animation: WindowAnimation::default(),
+            },))
             .id();
 
         (app, entity)
@@ -360,7 +579,7 @@ mod tests {
     #[test]
     fn x11_interactive_move_request_updates_geometry_and_focus() {
         let (mut app, entity) = setup_app_with_window();
-        app.inner_mut().world_mut().resource_mut::<PendingX11Requests>().items.push(
+        app.inner_mut().world_mut().resource_mut::<PendingX11Requests>().push(
             X11LifecycleRequest {
                 surface_id: 42,
                 action: X11LifecycleAction::InteractiveMove { button: 1 },
@@ -368,51 +587,182 @@ mod tests {
         );
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+        app.inner_mut().world_mut().resource_mut::<GlobalPointerPosition>().x = 352.0;
+        app.inner_mut().world_mut().resource_mut::<GlobalPointerPosition>().y = 196.0;
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
         let geometry = world
             .get::<SurfaceGeometry>(entity)
             .expect("x11 window geometry should still exist after move");
-        let state = world.get::<WindowState>(entity).expect("x11 window state should exist");
+        let layout = world.get::<WindowLayout>(entity).expect("x11 window layout should exist");
+        let mode = world.get::<WindowMode>(entity).expect("x11 window mode should exist");
         let focus = world
             .get_resource::<KeyboardFocusState>()
             .expect("keyboard focus state should be initialized");
 
-        assert_eq!((geometry.x, geometry.y), (288, 164));
-        assert_eq!(*state, WindowState::Floating);
+        assert_eq!((geometry.x, geometry.y), (64, 64));
+        assert_eq!(*layout, WindowLayout::Floating);
+        assert_eq!(*mode, WindowMode::Normal);
         assert_eq!(focus.focused_surface, Some(42));
     }
 
     #[test]
     fn x11_interactive_resize_request_updates_geometry_and_focus() {
         let (mut app, entity) = setup_app_with_window();
-        app.inner_mut().world_mut().resource_mut::<PendingX11Requests>().items.push(
+        app.inner_mut().world_mut().resource_mut::<PendingX11Requests>().push(
             X11LifecycleRequest {
                 surface_id: 42,
                 action: X11LifecycleAction::InteractiveResize {
                     button: 1,
-                    edges: "BottomRight".to_owned(),
+                    edges: ResizeEdges::BottomRight,
                 },
             },
         );
 
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+        app.inner_mut().world_mut().resource_mut::<GlobalPointerPosition>().x = 352.0;
+        app.inner_mut().world_mut().resource_mut::<GlobalPointerPosition>().y = 196.0;
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
         let geometry = world
             .get::<SurfaceGeometry>(entity)
             .expect("x11 window geometry should still exist after resize");
-        let state = world.get::<WindowState>(entity).expect("x11 window state should exist");
+        let layout = world.get::<WindowLayout>(entity).expect("x11 window layout should exist");
+        let mode = world.get::<WindowMode>(entity).expect("x11 window mode should exist");
         let focus = world
             .get_resource::<KeyboardFocusState>()
             .expect("keyboard focus state should be initialized");
 
-        assert_eq!((geometry.width, geometry.height), (704, 528));
-        assert_eq!(*state, WindowState::Floating);
+        assert_eq!((geometry.width, geometry.height), (672, 496));
+        assert_eq!(*layout, WindowLayout::Floating);
+        assert_eq!(*mode, WindowMode::Normal);
         assert_eq!(focus.focused_surface, Some(42));
     }
-}
 
-fn border_width(default_layout: &str) -> u32 {
-    if matches!(default_layout, "tiling" | "stacking") { 2 } else { 1 }
+    #[test]
+    fn mapped_window_inserts_child_of_active_workspace() {
+        let mut app = NekolandApp::new("xwayland-workspace-test");
+        app.insert_resource(CompositorConfig::default())
+            .insert_resource(EntityIndex::default())
+            .insert_resource(GlobalPointerPosition::default())
+            .insert_resource(KeyboardFocusState::default())
+            .insert_resource(ActiveWindowGrab::default())
+            .insert_resource(WindowStackingState::default())
+            .insert_resource(PendingX11Requests::default())
+            .insert_resource(nekoland_ecs::resources::PendingPopupServerRequests::default());
+        app.inner_mut()
+            .add_message::<PointerButton>()
+            .add_message::<WindowCreated>()
+            .add_message::<WindowClosed>()
+            .add_message::<WindowMoved>()
+            .add_systems(
+                LayoutSchedule,
+                (
+                    rebuild_entity_index_system,
+                    xwayland_bridge_system,
+                    interaction::window_grab_system,
+                )
+                    .chain(),
+            );
+
+        let workspace_entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn(Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true })
+            .id();
+        app.inner_mut().world_mut().resource_mut::<PendingX11Requests>().push(
+            X11LifecycleRequest {
+                surface_id: 77,
+                action: X11LifecycleAction::Mapped {
+                    window_id: 5,
+                    override_redirect: false,
+                    title: "mapped".to_owned(),
+                    app_id: "mapped.app".to_owned(),
+                    geometry: X11WindowGeometry { x: 16, y: 24, width: 640, height: 480 },
+                },
+            },
+        );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner_mut().world_mut();
+        let mut windows = world.query::<(Entity, &WlSurfaceHandle)>();
+        let window_entity = windows
+            .iter(world)
+            .find(|(_, surface)| surface.id == 77)
+            .map(|(entity, _)| entity)
+            .expect("mapped X11 window should exist");
+        let child_of =
+            world.get::<ChildOf>(window_entity).expect("mapped X11 window should have ChildOf");
+        assert_eq!(
+            child_of.parent(),
+            workspace_entity,
+            "mapped X11 window should attach to the active workspace entity",
+        );
+    }
+
+    #[test]
+    fn mapped_window_applies_matching_window_rule() {
+        let mut app = NekolandApp::new("xwayland-policy-test");
+        let mut config = CompositorConfig::default();
+        config.window_rules.push(ConfiguredWindowRule {
+            app_id: Some("mapped.app".to_owned()),
+            title: None,
+            layout: Some(WindowLayout::Tiled),
+            mode: None,
+        });
+        app.insert_resource(config)
+            .insert_resource(EntityIndex::default())
+            .insert_resource(GlobalPointerPosition::default())
+            .insert_resource(KeyboardFocusState::default())
+            .insert_resource(ActiveWindowGrab::default())
+            .insert_resource(WindowStackingState::default())
+            .insert_resource(PendingX11Requests::default())
+            .insert_resource(nekoland_ecs::resources::PendingPopupServerRequests::default());
+        app.inner_mut()
+            .add_message::<PointerButton>()
+            .add_message::<WindowCreated>()
+            .add_message::<WindowClosed>()
+            .add_message::<WindowMoved>()
+            .add_systems(
+                LayoutSchedule,
+                (
+                    rebuild_entity_index_system,
+                    xwayland_bridge_system,
+                    interaction::window_grab_system,
+                )
+                    .chain(),
+            );
+
+        app.inner_mut().world_mut().spawn(Workspace {
+            id: WorkspaceId(1),
+            name: "1".to_owned(),
+            active: true,
+        });
+        app.inner_mut().world_mut().resource_mut::<PendingX11Requests>().push(
+            X11LifecycleRequest {
+                surface_id: 88,
+                action: X11LifecycleAction::Mapped {
+                    window_id: 9,
+                    override_redirect: false,
+                    title: "mapped".to_owned(),
+                    app_id: "mapped.app".to_owned(),
+                    geometry: X11WindowGeometry { x: 40, y: 56, width: 640, height: 480 },
+                },
+            },
+        );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner_mut().world_mut();
+        let mut windows = world.query::<(&WlSurfaceHandle, &WindowLayout, &WindowMode)>();
+        let (_, layout, mode) = windows
+            .iter(world)
+            .find(|(surface, _, _)| surface.id == 88)
+            .expect("mapped X11 window should exist");
+        assert_eq!(*layout, WindowLayout::Tiled);
+        assert_eq!(*mode, WindowMode::Normal);
+    }
 }

@@ -1,3 +1,5 @@
+//! In-process integration test for wl_shm buffer commits populating renderer surface state.
+
 use std::io::Write;
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
@@ -20,16 +22,21 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 mod common;
 
+/// Width of the wl_shm buffer committed by the helper client.
 const TEST_BUFFER_WIDTH: u32 = 96;
+/// Height of the wl_shm buffer committed by the helper client.
 const TEST_BUFFER_HEIGHT: u32 = 64;
+/// Extra dwell time after attach so renderer state extraction can catch up.
 const CLIENT_POST_ATTACH_HOLD: Duration = Duration::from_millis(300);
 
+/// Summary returned by the helper SHM client.
 #[derive(Debug)]
 struct ShmClientSummary {
     globals: Vec<String>,
     configure_serial: u32,
 }
 
+/// Helper Wayland client state used to create one toplevel and attach a wl_shm buffer.
 #[derive(Debug, Default)]
 struct ShmClientState {
     globals: Vec<String>,
@@ -41,10 +48,14 @@ struct ShmClientState {
     _pool: Option<wl_shm_pool::WlShmPool>,
     buffer: Option<wl_buffer::WlBuffer>,
     _backing_file: Option<std::fs::File>,
+    /// Last configure serial seen for the helper toplevel.
     configure_serial: Option<u32>,
+    /// Whether the wl_shm buffer has already been attached and committed.
     buffer_attached: bool,
 }
 
+/// Verifies that committing a wl_shm buffer initializes Smithay renderer surface state and the
+/// corresponding window geometry.
 #[test]
 fn shm_buffer_commit_populates_renderer_surface_state() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -60,7 +71,7 @@ fn shm_buffer_commit_populates_renderer_surface_state() {
         .world_mut()
         .get_resource_mut::<CompositorConfig>()
         .expect("runtime config should be initialized before tests mutate it")
-        .default_layout = "floating".to_owned();
+        .default_layout = nekoland_ecs::resources::DefaultLayout::Floating;
 
     let socket_path = {
         let world = app.inner().world();
@@ -152,6 +163,7 @@ fn shm_buffer_commit_populates_renderer_surface_state() {
     );
 }
 
+/// Runs the helper SHM client until a buffer has been attached.
 fn run_shm_client(socket_path: &Path) -> Result<ShmClientSummary, common::TestControl> {
     let stream = std::os::unix::net::UnixStream::connect(socket_path)
         .map_err(|error| common::TestControl::Fail(error.to_string()))?;
@@ -193,6 +205,7 @@ fn run_shm_client(socket_path: &Path) -> Result<ShmClientSummary, common::TestCo
     })
 }
 
+/// Performs one read/dispatch cycle for the helper SHM client.
 fn dispatch_client_once(
     event_queue: &mut EventQueue<ShmClientState>,
     state: &mut ShmClientState,
@@ -213,6 +226,7 @@ fn dispatch_client_once(
     Ok(())
 }
 
+/// Creates a simple SHM buffer filled with deterministic pixel data for the scenario.
 fn create_test_buffer(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<ShmClientState>,
@@ -245,11 +259,13 @@ fn create_test_buffer(
     Ok((file, pool, buffer))
 }
 
+/// Returns the default config path used by this integration test.
 fn workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }
 
 impl ShmClientState {
+    /// Creates the helper toplevel once the base surface and XDG shell are both ready.
     fn maybe_init_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_none() || self.wm_base.is_none() || self.xdg_surface.is_some() {
             return;
@@ -265,6 +281,7 @@ impl ShmClientState {
         self._toplevel = Some(toplevel);
     }
 
+    /// Create the wl_shm buffer lazily once the shm global is available.
     fn maybe_init_buffer(&mut self, qh: &QueueHandle<Self>) -> Result<(), common::TestControl> {
         if self.shm.is_none() || self.buffer.is_some() {
             return Ok(());
@@ -279,6 +296,7 @@ impl ShmClientState {
         Ok(())
     }
 
+    /// Attach the prepared buffer after the first configure so the surface becomes renderable.
     fn maybe_attach_buffer(&mut self) {
         if self.buffer_attached || self.configure_serial.is_none() {
             return;

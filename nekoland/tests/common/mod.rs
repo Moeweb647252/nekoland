@@ -1,3 +1,8 @@
+//! Shared Wayland-test helpers used by the compositor integration suite.
+//!
+//! The helpers in this module spin up lightweight Wayland clients, manage temporary runtime
+//! directories, and provide assertions for the protocol globals exported by nekoland.
+
 #![allow(dead_code)]
 
 use std::collections::BTreeSet;
@@ -13,26 +18,34 @@ use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
+/// Minimal client-side summary returned by the test Wayland client.
 #[derive(Debug)]
 pub struct ClientSummary {
+    /// Global interfaces announced by the compositor during registry discovery.
     pub globals: Vec<String>,
+    /// First configure serial observed on the helper XDG surface.
     pub configure_serial: u32,
 }
 
+/// State machine used by the lightweight test Wayland client while it discovers globals and waits
+/// for the initial XDG configure.
 #[derive(Debug, Default)]
 struct TestClientState {
     globals: Vec<String>,
     base_surface: Option<wl_surface::WlSurface>,
     wm_base: Option<xdg_wm_base::XdgWmBase>,
     xdg_surface: Option<(xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel)>,
+    /// First configure serial observed on the helper toplevel.
     configure_serial: Option<u32>,
 }
 
+/// Serializes tests that mutate process-wide environment variables.
 pub fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Temporarily sets one environment variable for the duration of a test scope.
 #[derive(Debug)]
 pub struct EnvVarGuard {
     name: &'static str,
@@ -40,6 +53,7 @@ pub struct EnvVarGuard {
 }
 
 impl EnvVarGuard {
+    /// Sets the variable immediately and remembers the previous value for restoration on drop.
     pub fn set(name: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
         let previous = std::env::var_os(name);
         unsafe {
@@ -50,6 +64,7 @@ impl EnvVarGuard {
 }
 
 impl Drop for EnvVarGuard {
+    /// Restores the previous environment-variable state when the guard leaves scope.
     fn drop(&mut self) {
         match self.previous.take() {
             Some(previous) => unsafe {
@@ -62,6 +77,7 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// Temporary override for `NEKOLAND_RUNTIME_DIR` that also owns the created directory.
 #[derive(Debug)]
 pub struct RuntimeDirGuard {
     previous: Option<OsString>,
@@ -69,6 +85,8 @@ pub struct RuntimeDirGuard {
 }
 
 impl RuntimeDirGuard {
+    /// Creates a unique temporary runtime directory and exports it through
+    /// `NEKOLAND_RUNTIME_DIR`.
     pub fn new(prefix: &str) -> Self {
         let path = temporary_runtime_dir(prefix);
         fs::create_dir_all(&path).expect("test runtime dir should be creatable");
@@ -83,6 +101,7 @@ impl RuntimeDirGuard {
 }
 
 impl Drop for RuntimeDirGuard {
+    /// Restores `NEKOLAND_RUNTIME_DIR` and removes the owned temporary directory.
     fn drop(&mut self) {
         match self.previous.take() {
             Some(previous) => unsafe {
@@ -97,10 +116,14 @@ impl Drop for RuntimeDirGuard {
     }
 }
 
+/// Runs the lightweight XDG client against the supplied compositor socket and waits for the first
+/// configure event.
 pub fn run_xdg_client(socket_path: &Path) -> Result<ClientSummary, TestControl> {
     run_xdg_client_with_hold(socket_path, Duration::ZERO)
 }
 
+/// Variant of [`run_xdg_client`] that keeps the client alive for a short hold period after the
+/// initial configure to exercise compositor behavior with a connected client.
 pub fn run_xdg_client_with_hold(
     socket_path: &Path,
     hold_after_configure: Duration,
@@ -144,6 +167,7 @@ pub fn run_xdg_client_with_hold(
     })
 }
 
+/// Verifies that a client observed the expected full nekoland global registry.
 pub fn assert_globals_present(globals: &[String]) {
     let actual = globals.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let expected = BTreeSet::from([
@@ -167,12 +191,16 @@ pub fn assert_globals_present(globals: &[String]) {
     assert_eq!(actual, expected, "client should observe the full nekoland global registry");
 }
 
+/// Test-level control flow used by helpers that may need to skip under restricted environments.
 #[derive(Debug)]
 pub enum TestControl {
+    /// Skip the test because the host environment cannot support the required primitive.
     Skip(String),
+    /// Fail the test because the helper or compositor behaved unexpectedly.
     Fail(String),
 }
 
+/// Performs one read/dispatch cycle on the helper Wayland client.
 fn client_dispatch_once(
     event_queue: &mut EventQueue<TestClientState>,
     state: &mut TestClientState,
@@ -193,6 +221,7 @@ fn client_dispatch_once(
     Ok(())
 }
 
+/// Maps Wayland backend errors into test control flow.
 fn classify_wayland_error(error: wayland_client::backend::WaylandError) -> TestControl {
     match error {
         wayland_client::backend::WaylandError::Io(error) => classify_io_error(error),
@@ -200,6 +229,8 @@ fn classify_wayland_error(error: wayland_client::backend::WaylandError) -> TestC
     }
 }
 
+/// Maps IO errors into either a skip or a hard failure depending on how restricted the
+/// environment appears to be.
 fn classify_io_error(error: std::io::Error) -> TestControl {
     if matches!(
         error.kind(),
@@ -212,6 +243,7 @@ fn classify_io_error(error: std::io::Error) -> TestControl {
     TestControl::Fail(error.to_string())
 }
 
+/// Creates a unique temporary runtime directory path without touching the filesystem yet.
 fn temporary_runtime_dir(prefix: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     let unique = SystemTime::now()
@@ -222,10 +254,13 @@ fn temporary_runtime_dir(prefix: &str) -> PathBuf {
     path
 }
 
+/// Returns the repository's default config path for tests that derive temporary configs from it.
 pub fn default_workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }
 
+/// Writes a temporary config file based on `config/default.toml` plus extra TOML appended at the
+/// end.
 pub fn write_default_config_with_extra(
     runtime_dir: &Path,
     file_name: &str,
@@ -247,6 +282,7 @@ pub fn write_default_config_with_extra(
     path
 }
 
+/// Writes a temporary config based on the default config but with XWayland explicitly disabled.
 pub fn write_default_config_with_xwayland_disabled(runtime_dir: &Path, file_name: &str) -> PathBuf {
     let source = default_workspace_config_path();
     let mut contents =
@@ -334,6 +370,7 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for TestClientState {
 }
 
 impl TestClientState {
+    /// Creates the helper XDG toplevel once both the base surface and `xdg_wm_base` are ready.
     fn maybe_init_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_none() || self.wm_base.is_none() || self.xdg_surface.is_some() {
             return;

@@ -1,48 +1,44 @@
 use std::collections::BTreeSet;
 
-use bevy_ecs::prelude::{Local, Query, ResMut, With};
+use bevy_ecs::hierarchy::ChildOf;
+use bevy_ecs::prelude::{Entity, Local, Query, ResMut, With};
 use nekoland_ecs::components::{
-    BufferState, LayerShellSurface, LayoutSlot, OutputDevice, SurfaceGeometry, WindowState,
-    Workspace, XdgPopup, XdgWindow,
+    BufferState, LayerShellSurface, OutputDevice, SurfaceGeometry, WindowMode, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::resources::{DamageRect, DamageState, OutputDamageRegions};
+use nekoland_ecs::views::{PopupSnapshotRuntime, WindowSnapshotRuntime};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DamageTracker;
 
+/// Derives coarse damage rectangles from the current visible scene graph.
+///
+/// This tracker is intentionally simple for now: any change in the number of visible elements
+/// triggers a full redraw, and every visible surface contributes its full geometry as damage.
 pub fn damage_tracking_system(
     layers: Query<(&SurfaceGeometry, &BufferState), With<LayerShellSurface>>,
-    windows: Query<
-        (&SurfaceGeometry, &WindowState, &LayoutSlot, &nekoland_ecs::components::WlSurfaceHandle),
-        With<XdgWindow>,
-    >,
-    popups: Query<(&SurfaceGeometry, &XdgPopup), With<XdgPopup>>,
+    windows: Query<(Entity, WindowSnapshotRuntime), With<XdgWindow>>,
+    popups: Query<PopupSnapshotRuntime, With<XdgPopup>>,
     outputs: Query<&OutputDevice>,
-    workspaces: Query<&Workspace>,
     mut damage_state: ResMut<DamageState>,
     mut output_damage_regions: ResMut<OutputDamageRegions>,
     mut previous_count: Local<usize>,
 ) {
-    let active_workspace = workspaces
-        .iter()
-        .find(|workspace| workspace.active)
-        .map(|workspace| workspace.id.0)
-        .or_else(|| {
-            workspaces.iter().min_by_key(|workspace| workspace.id).map(|workspace| workspace.id.0)
-        });
     let active_window_surfaces = windows
         .iter()
-        .filter(|(_, state, layout_slot, _)| {
-            **state != WindowState::Hidden
-                && active_workspace.is_none_or(|workspace| layout_slot.workspace == workspace)
-        })
-        .map(|(_, _, _, surface)| surface.id)
+        .filter(|(_, window)| *window.mode != WindowMode::Hidden)
+        .map(|(_, window)| window.surface_id())
+        .collect::<BTreeSet<_>>();
+    let active_window_entities = windows
+        .iter()
+        .filter(|(_, window)| *window.mode != WindowMode::Hidden)
+        .map(|(entity, _)| entity)
         .collect::<BTreeSet<_>>();
     let count = active_window_surfaces.len()
         + layers.iter().filter(|(_, buffer)| buffer.attached).count()
         + popups
             .iter()
-            .filter(|(_, popup)| active_window_surfaces.contains(&popup.parent_surface))
+            .filter(|popup| popup_parent_visible(popup.child_of, &active_window_entities))
             .count();
     damage_state.full_redraw = count != *previous_count;
     *previous_count = count;
@@ -59,23 +55,23 @@ pub fn damage_tracking_system(
         .chain(
             windows
                 .iter()
-                .filter(|(_, _, _, surface)| active_window_surfaces.contains(&surface.id))
-                .map(|(geometry, _, _, _)| DamageRect {
-                    x: geometry.x,
-                    y: geometry.y,
-                    width: geometry.width,
-                    height: geometry.height,
+                .filter(|(_, window)| active_window_surfaces.contains(&window.surface_id()))
+                .map(|(_, window)| DamageRect {
+                    x: window.geometry.x,
+                    y: window.geometry.y,
+                    width: window.geometry.width,
+                    height: window.geometry.height,
                 }),
         )
         .chain(
             popups
                 .iter()
-                .filter(|(_, popup)| active_window_surfaces.contains(&popup.parent_surface))
-                .map(|(geometry, _)| DamageRect {
-                    x: geometry.x,
-                    y: geometry.y,
-                    width: geometry.width,
-                    height: geometry.height,
+                .filter(|popup| popup_parent_visible(popup.child_of, &active_window_entities))
+                .map(|popup| DamageRect {
+                    x: popup.geometry.x,
+                    y: popup.geometry.y,
+                    width: popup.geometry.width,
+                    height: popup.geometry.height,
                 }),
         )
         .collect::<Vec<_>>();
@@ -90,4 +86,9 @@ pub fn damage_tracking_system(
     }
 
     tracing::trace!(count, full_redraw = damage_state.full_redraw, "damage tracking tick");
+}
+
+/// Popups only contribute damage while their parent toplevel is still visible.
+fn popup_parent_visible(child_of: &ChildOf, active_window_entities: &BTreeSet<Entity>) -> bool {
+    active_window_entities.contains(&child_of.parent())
 }

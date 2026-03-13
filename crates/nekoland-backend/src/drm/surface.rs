@@ -1,9 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use bevy_ecs::prelude::{Local, NonSend, NonSendMut, Query, Res, ResMut};
 use drm_fourcc::DrmFourcc;
-use nekoland_ecs::components::{OutputDevice, OutputProperties, SurfaceGeometry, WlSurfaceHandle};
-use nekoland_ecs::resources::{CompositorConfig, PendingOutputPresentationEvents, RenderList};
+use nekoland_ecs::resources::{CompositorConfig, RenderList};
 use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags};
 use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
@@ -17,19 +15,14 @@ use smithay::backend::renderer::element::surface::{
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::drm::control::{Device as ControlDevice, ModeTypeFlags, connector, crtc};
-use smithay::utils::{Clock, Monotonic, Size, Transform};
+use smithay::utils::{Size, Transform};
 
-use crate::plugin::{OutputPresentationRuntime, emit_present_completion_events};
-use crate::traits::{BackendKind, SelectedBackend};
+use crate::traits::{OutputSnapshot, RenderSurfaceSnapshot};
 
 use super::device::{ConnectorInfo, SharedDrmState};
 use super::gbm::{GbmState, SharedGbmState};
+use super::session::SharedDrmSessionState;
 
-/// Concrete `DrmCompositor` type:
-///   A = GbmAllocator<DrmDeviceFd>          — allocator
-///   F = GbmFramebufferExporter<DrmDeviceFd> — framebuffer exporter
-///   U = ()                                  — no per-frame user data
-///   G = DrmDeviceFd                         — GBM device fd
 pub(crate) type OurDrmCompositor =
     DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 
@@ -39,55 +32,32 @@ pub(crate) struct ConnectorState {
     pub output: Output,
 }
 
-/// All DRM render state.
-///
-/// Stored as a `NonSend` resource because `GlesRenderer` and `DrmCompositor`
-/// contain raw pointers and are `!Send`.
 #[derive(Default)]
 pub(crate) struct DrmRenderState {
     pub surfaces: HashMap<String, ConnectorState>,
     pub renderer: Option<GlesRenderer>,
 }
 
-/// Present-completion system for the DRM backend (runs in `ExtractSchedule`).
-pub(crate) fn drm_present_completion_system(
-    selected_backend: Res<SelectedBackend>,
-    outputs: Query<(&OutputDevice, &OutputProperties)>,
-    mut pending_presentation_events: ResMut<PendingOutputPresentationEvents>,
-    mut presentation_runtime: Local<OutputPresentationRuntime>,
-    mut monotonic_clock: Local<Option<Clock<Monotonic>>>,
+pub(crate) fn render_drm_outputs<'a>(
+    outputs: impl IntoIterator<Item = &'a OutputSnapshot>,
+    config: Option<&CompositorConfig>,
+    render_list: &RenderList,
+    surfaces: &HashMap<u64, RenderSurfaceSnapshot>,
+    surface_registry: Option<&ProtocolSurfaceRegistry>,
+    session_state: &SharedDrmSessionState,
+    drm_shared: &SharedDrmState,
+    gbm_shared: &SharedGbmState,
+    render_state: &mut DrmRenderState,
 ) {
-    emit_present_completion_events(
-        BackendKind::Drm,
-        &selected_backend,
-        &outputs,
-        &mut pending_presentation_events,
-        &mut presentation_runtime,
-        &mut monotonic_clock,
-    );
-}
-
-/// DRM render system (runs in `PresentSchedule`, gated by `SelectedBackend::Drm`).
-pub(crate) fn drm_render_system(
-    selected_backend: Res<SelectedBackend>,
-    config: Option<Res<CompositorConfig>>,
-    mut outputs: Query<(&OutputDevice, &mut OutputProperties)>,
-    surfaces: Query<(&WlSurfaceHandle, &SurfaceGeometry)>,
-    render_list: Res<RenderList>,
-    surface_registry: Option<NonSend<ProtocolSurfaceRegistry>>,
-    drm_shared: NonSend<SharedDrmState>,
-    gbm_shared: NonSend<SharedGbmState>,
-    mut render_state: NonSendMut<DrmRenderState>,
-) {
-    if selected_backend.kind != BackendKind::Drm {
+    if !session_state.borrow().active {
         return;
     }
 
     let Some(surface_registry) = surface_registry else { return };
-    let geometry_by_surface = surfaces
-        .iter()
-        .map(|(surface, geometry)| (surface.id, geometry.clone()))
-        .collect::<HashMap<_, _>>();
+    let outputs = outputs.into_iter().collect::<Vec<_>>();
+    if outputs.is_empty() {
+        return;
+    }
 
     let mut drm_ref = drm_shared.borrow_mut();
     let Some(drm) = drm_ref.as_mut() else { return };
@@ -95,46 +65,46 @@ pub(crate) fn drm_render_system(
     let gbm = gbm_shared.borrow();
     let Some(gbm) = gbm.as_ref() else { return };
 
-    // Ensure the GlesRenderer is initialised before iterating outputs.
     if render_state.renderer.is_none() {
         match init_gles_renderer(&gbm.device) {
             Ok(renderer) => render_state.renderer = Some(renderer),
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to initialise GlesRenderer for DRM");
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to initialise GlesRenderer for DRM");
                 return;
             }
         }
     }
 
     let mut active_connectors = HashSet::new();
-    let DrmRenderState { ref mut renderer, ref mut surfaces } = *render_state;
-    let renderer = renderer.as_mut().expect("initialised above");
+    let renderer = render_state.renderer.as_mut().expect("initialised above");
 
-    for (output_device, mut output_properties) in outputs.iter_mut() {
-        let Some(connector_info) =
-            drm.connectors.iter().find(|c| c.name == output_device.name && c.connected).cloned()
+    for output in outputs {
+        let Some(connector_info) = drm
+            .connectors
+            .iter()
+            .find(|connector| connector.name == output.device.name && connector.connected)
+            .cloned()
         else {
             continue;
         };
 
         active_connectors.insert(connector_info.name.clone());
 
-        // Create surface on first encounter, then look it up.
-        if !surfaces.contains_key(&connector_info.name) {
+        if !render_state.surfaces.contains_key(&connector_info.name) {
             match create_connector_surface(
                 &mut drm.device,
                 &drm.fd,
                 gbm,
                 &connector_info,
-                &mut output_properties,
+                &output.properties,
             ) {
                 Ok(state) => {
-                    surfaces.insert(connector_info.name.clone(), state);
+                    render_state.surfaces.insert(connector_info.name.clone(), state);
                 }
-                Err(e) => {
+                Err(error) => {
                     tracing::warn!(
                         connector = %connector_info.name,
-                        error = %e,
+                        error = %error,
                         "failed to create DRM surface"
                     );
                     continue;
@@ -142,11 +112,11 @@ pub(crate) fn drm_render_system(
             }
         }
 
-        let Some(surface) = surfaces.get_mut(&connector_info.name) else {
+        let Some(surface) = render_state.surfaces.get_mut(&connector_info.name) else {
             continue;
         };
 
-        let scale = output_properties.scale.max(1) as f64;
+        let scale = output.properties.scale.max(1) as f64;
         let mut elements = Vec::<WaylandSurfaceRenderElement<GlesRenderer>>::new();
         for render_element in &render_list.elements {
             if render_element.surface_id == 0 {
@@ -156,22 +126,21 @@ pub(crate) fn drm_render_system(
             let Some(wl_surface) = surface_registry.surface(render_element.surface_id) else {
                 continue;
             };
-            let Some(geometry) = geometry_by_surface.get(&render_element.surface_id) else {
+            let Some(geometry) = surfaces.get(&render_element.surface_id) else {
                 continue;
             };
 
             elements.extend(render_elements_from_surface_tree(
                 renderer,
                 wl_surface,
-                (geometry.x, geometry.y),
+                (geometry.geometry.x, geometry.geometry.y),
                 scale,
                 render_element.opacity,
                 Kind::Unspecified,
             ));
         }
 
-        let clear = clear_color(config.as_deref());
-
+        let clear = clear_color(config);
         match surface.compositor.render_frame::<_, _>(
             renderer,
             &elements,
@@ -183,23 +152,23 @@ pub(crate) fn drm_render_system(
                     tracing::trace!(connector = %connector_info.name, "DRM frame empty");
                     continue;
                 }
-                if let Err(e) = surface.compositor.queue_frame(()) {
-                    tracing::warn!(connector = %connector_info.name, error = %e, "DRM queue_frame failed");
+                if let Err(error) = surface.compositor.queue_frame(()) {
+                    tracing::warn!(connector = %connector_info.name, error = %error, "DRM queue_frame failed");
                     continue;
                 }
-                if let Err(e) = surface.compositor.frame_submitted() {
-                    tracing::warn!(connector = %connector_info.name, error = %e, "DRM frame_submitted failed");
+                if let Err(error) = surface.compositor.frame_submitted() {
+                    tracing::warn!(connector = %connector_info.name, error = %error, "DRM frame_submitted failed");
                     continue;
                 }
                 tracing::trace!(connector = %connector_info.name, "DRM frame queued");
             }
-            Err(e) => {
-                tracing::warn!(connector = %connector_info.name, error = %e, "DRM render_frame failed");
+            Err(error) => {
+                tracing::warn!(connector = %connector_info.name, error = %error, "DRM render_frame failed");
             }
         }
     }
 
-    surfaces.retain(|name, _| active_connectors.contains(name));
+    render_state.surfaces.retain(|name, _| active_connectors.contains(name));
 }
 
 fn init_gles_renderer(
@@ -217,7 +186,7 @@ fn create_connector_surface(
     fd: &DrmDeviceFd,
     gbm: &GbmState,
     connector_info: &ConnectorInfo,
-    output_properties: &mut OutputProperties,
+    output_properties: &nekoland_ecs::components::OutputProperties,
 ) -> Result<ConnectorState, Box<dyn std::error::Error>> {
     let resources = fd.resource_handles()?;
     let crtc_handle = pick_crtc(fd, connector_info.handle, &resources)?;
@@ -228,9 +197,6 @@ fn create_connector_surface(
 
     let (width, height) = mode.size();
     let refresh_millihz = mode_refresh_millihz(&mode);
-    output_properties.width = width.max(1) as u32;
-    output_properties.height = height.max(1) as u32;
-    output_properties.refresh_millihz = refresh_millihz;
 
     let output = Output::new(
         connector_info.name.clone(),
@@ -281,7 +247,6 @@ fn pick_crtc(
 ) -> Result<crtc::Handle, Box<dyn std::error::Error>> {
     let connector_state = fd.get_connector(connector_handle, false)?;
 
-    // Prefer the currently active CRTC.
     if let Some(crtc) = connector_state
         .current_encoder()
         .and_then(|enc| fd.get_encoder(enc).ok())
@@ -290,7 +255,6 @@ fn pick_crtc(
         return Ok(crtc);
     }
 
-    // Find first compatible CRTC via encoder bitmask.
     for &encoder_handle in connector_state.encoders() {
         let encoder = fd.get_encoder(encoder_handle)?;
         let compatible_crtcs = resources.filter_crtcs(encoder.possible_crtcs());
@@ -304,18 +268,20 @@ fn pick_crtc(
 
 fn pick_mode(
     connector_state: &connector::Info,
-    output_properties: &OutputProperties,
+    output_properties: &nekoland_ecs::components::OutputProperties,
 ) -> Result<smithay::reexports::drm::control::Mode, Box<dyn std::error::Error>> {
     let modes = connector_state.modes();
     if modes.is_empty() {
         return Err("connector has no modes".into());
     }
-    if let Some(mode) = modes.iter().find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED)) {
+    if let Some(mode) =
+        modes.iter().find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+    {
         return Ok(*mode);
     }
-    if let Some(mode) = modes.iter().find(|m| {
-        let (w, h) = m.size();
-        w as u32 == output_properties.width && h as u32 == output_properties.height
+    if let Some(mode) = modes.iter().find(|mode| {
+        let (width, height) = mode.size();
+        width as u32 == output_properties.width && height as u32 == output_properties.height
     }) {
         return Ok(*mode);
     }
@@ -323,43 +289,29 @@ fn pick_mode(
 }
 
 fn mode_refresh_millihz(mode: &smithay::reexports::drm::control::Mode) -> u32 {
-    // Approximate refresh from pixel clock and active resolution.
-    // The DRM compositor will use the precise vblank timing from the hardware.
-    let (width, height) = mode.size();
-    let clock = mode.clock() as u64 * 1_000; // Convert kHz → Hz
-    let htotal = width as u64;
-    let vtotal = height as u64;
-    if htotal == 0 || vtotal == 0 {
-        return 60_000;
-    }
-    ((clock * 1_000) / (htotal * vtotal)).min(u64::from(u32::MAX)) as u32
+    let refresh = mode.vrefresh();
+    if refresh > 0 { refresh as u32 * 1000 } else { 60_000 }
 }
 
 fn clear_color(config: Option<&CompositorConfig>) -> Color32F {
-    config.and_then(|c| parse_hex_color32f(&c.background_color)).unwrap_or(Color32F::BLACK)
-}
-
-fn parse_hex_color32f(color: &str) -> Option<Color32F> {
-    let hex = color.strip_prefix('#')?;
-    let (r, g, b, a) = match hex.len() {
-        6 => (
-            u8::from_str_radix(&hex[0..2], 16).ok()?,
-            u8::from_str_radix(&hex[2..4], 16).ok()?,
-            u8::from_str_radix(&hex[4..6], 16).ok()?,
-            u8::MAX,
-        ),
-        8 => (
-            u8::from_str_radix(&hex[0..2], 16).ok()?,
-            u8::from_str_radix(&hex[2..4], 16).ok()?,
-            u8::from_str_radix(&hex[4..6], 16).ok()?,
-            u8::from_str_radix(&hex[6..8], 16).ok()?,
-        ),
-        _ => return None,
-    };
-    Some(Color32F::new(
-        f32::from(r) / 255.0,
-        f32::from(g) / 255.0,
-        f32::from(b) / 255.0,
-        f32::from(a) / 255.0,
-    ))
+    config
+        .map(|config| config.background_color.as_str())
+        .and_then(|color| color.strip_prefix('#'))
+        .and_then(|hex| {
+            if hex.len() != 6 && hex.len() != 8 {
+                return None;
+            }
+            let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            let alpha =
+                if hex.len() == 8 { u8::from_str_radix(&hex[6..8], 16).ok()? } else { u8::MAX };
+            Some(Color32F::new(
+                f32::from(red) / 255.0,
+                f32::from(green) / 255.0,
+                f32::from(blue) / 255.0,
+                f32::from(alpha) / 255.0,
+            ))
+        })
+        .unwrap_or(Color32F::BLACK)
 }

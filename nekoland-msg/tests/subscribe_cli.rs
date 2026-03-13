@@ -1,3 +1,8 @@
+//! CLI integration tests for `nekoland-msg subscribe`.
+//!
+//! These tests spawn the CLI binary against a live in-process compositor and assert both human
+//! help output and real subscription streaming behavior.
+
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,6 +19,7 @@ use nekoland_ipc::{
 };
 use serde_json::Value;
 
+/// Verifies the human-readable help text for subscription mode.
 #[test]
 fn subscribe_help_lists_topics_and_known_event_names() {
     let output = Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
@@ -59,6 +65,7 @@ fn subscribe_help_lists_topics_and_known_event_names() {
     );
 }
 
+/// Verifies the machine-readable JSON help output for subscription mode.
 #[test]
 fn subscribe_help_supports_machine_readable_json_output() {
     let output = Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
@@ -182,6 +189,7 @@ fn subscribe_help_supports_machine_readable_json_output() {
     assert_eq!(help["patterns"]["prefix_wildcard_example"], "window_*");
 }
 
+/// Verifies that the completion subcommand still exposes the subscription entrypoints.
 #[test]
 fn completion_subcommand_generates_bash_script() {
     let output = Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
@@ -201,6 +209,8 @@ fn completion_subcommand_generates_bash_script() {
     assert!(stdout.contains("subscribe"));
 }
 
+/// End-to-end test that spawns the CLI against a live compositor and observes workspace
+/// subscription events over IPC.
 #[test]
 fn subscribe_cli_streams_workspace_events_from_ipc() {
     let _env_lock = env_lock().lock().expect("environment lock should not be poisoned");
@@ -271,6 +281,7 @@ fn subscribe_cli_streams_workspace_events_from_ipc() {
     );
 }
 
+/// Verifies the JSONL streaming mode used by scripts and tooling.
 #[test]
 fn subscribe_cli_supports_jsonl_output_for_scripts() {
     let _env_lock = env_lock().lock().expect("environment lock should not be poisoned");
@@ -362,18 +373,22 @@ fn subscribe_cli_supports_jsonl_output_for_scripts() {
     );
 }
 
+/// Serializes tests that mutate process-wide environment variables.
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Temporary override for `NEKOLAND_RUNTIME_DIR` owned by one CLI integration test.
 #[derive(Debug)]
 struct RuntimeDirGuard {
     previous: Option<OsString>,
+    /// Temporary runtime directory exported to the CLI subprocess.
     path: PathBuf,
 }
 
 impl RuntimeDirGuard {
+    /// Creates and exports a unique runtime directory for one CLI integration test.
     fn new(prefix: &str) -> Self {
         let path = temporary_runtime_dir(prefix);
         fs::create_dir_all(&path).expect("test runtime dir should be creatable");
@@ -388,6 +403,7 @@ impl RuntimeDirGuard {
 }
 
 impl Drop for RuntimeDirGuard {
+    /// Restores `NEKOLAND_RUNTIME_DIR` and removes the owned temporary directory.
     fn drop(&mut self) {
         match self.previous.take() {
             Some(previous) => unsafe {
@@ -402,10 +418,12 @@ impl Drop for RuntimeDirGuard {
     }
 }
 
+/// Returns the repository default config used by the CLI integration tests.
 fn workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }
 
+/// Creates a unique temporary runtime directory path without touching the filesystem yet.
 fn temporary_runtime_dir(prefix: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     let unique = SystemTime::now()
@@ -416,6 +434,7 @@ fn temporary_runtime_dir(prefix: &str) -> PathBuf {
     path
 }
 
+/// Repeatedly sends workspace mutations over IPC so the subscribe CLI has events to print.
 fn emit_workspace_events(socket_path: &Path) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_millis(250);
     let create_request = IpcRequest {
@@ -432,6 +451,8 @@ fn emit_workspace_events(socket_path: &Path) -> Result<(), String> {
     };
 
     while Instant::now() < deadline {
+        // The helper deliberately keeps pushing state changes so the CLI sees a
+        // short burst of subscription traffic before the compositor exits.
         let _ = send_request_to_path(socket_path, &create_request);
         let _ = send_request_to_path(socket_path, &activate_request);
         let _ = send_request_to_path(socket_path, &deactivate_request);

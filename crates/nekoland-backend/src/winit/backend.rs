@@ -1,21 +1,16 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::rc::Rc;
 use std::time::Duration;
 
 use bevy_app::App;
-use bevy_ecs::prelude::{Local, NonSend, NonSendMut, Query, Res, ResMut, Resource};
+use bevy_ecs::prelude::Resource;
 use calloop::timer::{TimeoutAction, Timer};
 use nekoland_core::calloop::CalloopSourceRegistry;
 use nekoland_core::error::NekolandError;
 use nekoland_core::prelude::AppMetadata;
-use nekoland_ecs::components::{OutputDevice, OutputProperties, SurfaceGeometry, WlSurfaceHandle};
-use nekoland_ecs::resources::{
-    BackendInputAction, BackendInputEvent, CompositorConfig, PendingBackendInputEvents,
-    PendingOutputPresentationEvents, PendingProtocolInputEvents, RenderList,
-};
-use nekoland_protocol::ProtocolSurfaceRegistry;
+use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
+use nekoland_ecs::resources::{BackendInputAction, BackendInputEvent, CompositorConfig};
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, ButtonState, InputEvent, KeyState, KeyboardKeyEvent,
     PointerAxisEvent, PointerButtonEvent,
@@ -32,22 +27,17 @@ use smithay::reexports::winit::dpi::PhysicalSize;
 use smithay::reexports::winit::window::Window as HostWindow;
 use smithay::utils::{Monotonic, Physical, Size, Transform};
 
-use crate::plugin::{
-    OutputPresentationRuntime, emit_present_completion_events_at, parse_output_mode,
+use crate::common::outputs::{
+    BackendOutputBlueprint, BackendOutputChange, BackendOutputEventRecord,
+    BackendOutputPropertyUpdate, parse_output_mode,
 };
-use crate::traits::{Backend, BackendKind};
+use crate::common::presentation::{OutputPresentationRuntime, emit_present_completion_events_at};
+use crate::traits::{
+    Backend, BackendApplyCtx, BackendCapabilities, BackendDescriptor, BackendExtractCtx, BackendId,
+    BackendKind, BackendPresentCtx, BackendRole, OutputSnapshot,
+};
 
 type WinitRendererBackend = WinitGraphicsBackend<GlesRenderer>;
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WinitBackend {
-    pub title: String,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct WinitPresentCompletionSource {
-    shared: Rc<RefCell<WinitPresentCompletionShared>>,
-}
 
 #[derive(Debug, Clone, Resource, PartialEq, Eq)]
 pub struct WinitWindowState {
@@ -142,293 +132,339 @@ struct WinitOutputMode {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct WinitRenderState {
+struct WinitRenderState {
     damage_tracker: Option<OutputDamageTracker>,
     mode: Option<WinitOutputMode>,
+}
+
+pub(crate) struct WinitRuntime {
+    descriptor: BackendDescriptor,
+    shared: Rc<RefCell<WinitPresentCompletionShared>>,
+    render_state: WinitRenderState,
+    presentation_runtime: OutputPresentationRuntime,
+    seeded_output_name: Option<String>,
 }
 
 const INACTIVE_PRESENT_POLL_INTERVAL: Duration = Duration::from_millis(16);
 const MIN_PRESENT_INTERVAL: Duration = Duration::from_micros(500);
 
-impl Backend for WinitBackend {
-    fn kind(&self) -> BackendKind {
-        BackendKind::Winit
-    }
+impl WinitRuntime {
+    pub fn install(app: &mut App, id: BackendId) -> Self {
+        if app.world().get_non_send_resource::<CalloopSourceRegistry>().is_none() {
+            app.insert_non_send_resource(CalloopSourceRegistry::default());
+        }
 
-    fn label(&self) -> &str {
-        "winit"
-    }
-}
+        let initial_window_spec = desired_window_spec(
+            app.world().get_resource::<AppMetadata>(),
+            app.world().get_resource::<CompositorConfig>(),
+            &[],
+        );
+        let shared = Rc::new(RefCell::new(WinitPresentCompletionShared::default()));
+        shared.borrow_mut().desired_window_spec = initial_window_spec.clone();
 
-pub(crate) fn install_winit_present_completion_source(app: &mut App) {
-    if app.world().get_non_send_resource::<WinitPresentCompletionSource>().is_some() {
-        return;
-    }
-
-    if app.world().get_non_send_resource::<CalloopSourceRegistry>().is_none() {
-        app.insert_non_send_resource(CalloopSourceRegistry::default());
-    }
-
-    let initial_window_spec = desired_window_spec(
-        app.world().get_resource::<AppMetadata>(),
-        app.world().get_resource::<CompositorConfig>(),
-        None,
-    );
-    let source = WinitPresentCompletionSource::default();
-    {
-        let mut shared = source.shared.borrow_mut();
-        shared.desired_window_spec = initial_window_spec.clone();
-    }
-    let shared = source.shared.clone();
-    let mut registry = app
-        .world_mut()
-        .get_non_send_resource_mut::<CalloopSourceRegistry>()
-        .expect("calloop registry inserted immediately before access");
-
-    registry.push(move |handle| {
-        if requested_backend_kind() == BackendKind::Winit {
-            match install_smithay_winit_source(handle, shared.clone()) {
+        let mut registry = app
+            .world_mut()
+            .get_non_send_resource_mut::<CalloopSourceRegistry>()
+            .expect("calloop registry inserted immediately before access");
+        let source_shared = shared.clone();
+        registry.push(move |handle| {
+            match install_smithay_winit_source(handle, source_shared.clone()) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     tracing::warn!(
                         error = %error,
                         "failed to initialize smithay winit event source; falling back to timer"
                     );
-                    install_timer_source(handle, shared.clone())
+                    install_timer_source(handle, source_shared.clone())
                 }
             }
-        } else {
-            install_timer_source(handle, shared.clone())
-        }
-    });
-    drop(registry);
+        });
+        drop(registry);
 
-    app.insert_non_send_resource(source);
-    app.insert_resource(WinitWindowState {
-        title: initial_window_spec.title,
-        requested_width: initial_window_spec.width,
-        requested_height: initial_window_spec.height,
-        ..WinitWindowState::default()
-    });
+        app.insert_resource(WinitWindowState {
+            title: initial_window_spec.title.clone(),
+            requested_width: initial_window_spec.width,
+            requested_height: initial_window_spec.height,
+            ..WinitWindowState::default()
+        });
+
+        Self {
+            descriptor: BackendDescriptor {
+                id,
+                kind: BackendKind::Winit,
+                role: BackendRole::PrimaryDisplay,
+                label: format!("winit-{}", id.0),
+                description: "nested winit development backend".to_owned(),
+            },
+            shared,
+            render_state: WinitRenderState::default(),
+            presentation_runtime: OutputPresentationRuntime::default(),
+            seeded_output_name: None,
+        }
+    }
+
+    fn owned_outputs<'a>(
+        &'a self,
+        outputs: &'a [OutputSnapshot],
+    ) -> impl Iterator<Item = &'a OutputSnapshot> {
+        outputs.iter().filter(|output| output.backend_id == Some(self.id()))
+    }
+
+    fn desired_output_name(&self, config: Option<&CompositorConfig>) -> String {
+        config
+            .and_then(|config| config.outputs.iter().find(|output| output.enabled))
+            .map(|output| output.name.clone())
+            .unwrap_or_else(|| "Winit-1".to_owned())
+    }
 }
 
-pub(crate) fn winit_backend_system(
-    mut selected_backend: ResMut<crate::traits::SelectedBackend>,
-    outputs: Query<(&OutputDevice, &mut OutputProperties)>,
-    mut pending_backend_inputs: ResMut<PendingBackendInputEvents>,
-    mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
-    mut window_state: ResMut<WinitWindowState>,
-    completion_source: NonSendMut<WinitPresentCompletionSource>,
-) {
-    if selected_backend.kind == BackendKind::Winit {
-        let mut shared = completion_source.shared.borrow_mut();
+impl Backend for WinitRuntime {
+    fn id(&self) -> BackendId {
+        self.descriptor.id
+    }
+
+    fn descriptor(&self) -> BackendDescriptor {
+        self.descriptor.clone()
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::INPUT
+            | BackendCapabilities::OUTPUT_DISCOVERY
+            | BackendCapabilities::OUTPUT_CONFIGURATION
+            | BackendCapabilities::PRESENT
+            | BackendCapabilities::PRESENT_TIMELINE
+    }
+
+    fn seed_output(&self, output_name: &str) -> Option<BackendOutputBlueprint> {
+        Some(BackendOutputBlueprint {
+            device: OutputDevice {
+                name: output_name.to_owned(),
+                kind: OutputKind::Nested,
+                make: "Winit".to_owned(),
+                model: self.descriptor.description.clone(),
+            },
+            properties: OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+        })
+    }
+
+    fn extract(&mut self, cx: &mut BackendExtractCtx<'_>) -> Result<(), NekolandError> {
+        let desired_output_name = self.desired_output_name(cx.config);
+        let owned_outputs = self.owned_outputs(cx.outputs).cloned().collect::<Vec<_>>();
+        if owned_outputs.is_empty()
+            && self.seeded_output_name.as_deref() != Some(desired_output_name.as_str())
+        {
+            if let Some(blueprint) = self.seed_output(&desired_output_name) {
+                cx.output_events.push(BackendOutputEventRecord {
+                    backend_id: self.id(),
+                    output_name: desired_output_name.clone(),
+                    change: BackendOutputChange::Connected(blueprint),
+                });
+                self.seeded_output_name = Some(desired_output_name);
+            }
+        }
+
+        let mut shared = self.shared.borrow_mut();
         if let Some(window_state) = shared.pending_window_state.take() {
-            apply_window_state_to_outputs(outputs, window_state);
+            let width = u32::try_from(window_state.size.w.max(1)).unwrap_or(1);
+            let height = u32::try_from(window_state.size.h.max(1)).unwrap_or(1);
+            let scale = window_state.scale_factor.round().clamp(1.0, u32::MAX as f64) as u32;
+            for output in &owned_outputs {
+                cx.output_updates.push(BackendOutputPropertyUpdate {
+                    backend_id: self.id(),
+                    output_name: output.device.name.clone(),
+                    properties: OutputProperties {
+                        width,
+                        height,
+                        refresh_millihz: output.properties.refresh_millihz,
+                        scale,
+                    },
+                });
+            }
         }
+
         let pending_input_events = shared.pending_input_events.drain(..).collect::<Vec<_>>();
-        pending_backend_inputs.items.extend(pending_input_events.clone());
-        pending_protocol_inputs.items.extend(pending_input_events);
+        cx.backend_input_events.extend(pending_input_events.iter().cloned());
+        cx.protocol_input_events.extend(pending_input_events);
 
-        window_state.driver = match shared.driver {
-            WinitPresentDriver::SmithayEventLoop => "smithay-event-loop".to_owned(),
-            WinitPresentDriver::TimerFallback => "timer-fallback".to_owned(),
-        };
-        window_state.closed = shared.closed;
-        if let Some(backend) = shared.backend.as_ref() {
-            let size = backend.window_size();
-            window_state.actual_width = Some(u32::try_from(size.w.max(1)).unwrap_or(1));
-            window_state.actual_height = Some(u32::try_from(size.h.max(1)).unwrap_or(1));
-            window_state.actual_scale =
-                Some(backend.window().scale_factor().round().clamp(1.0, u32::MAX as f64) as u32);
-        } else {
-            window_state.actual_width = None;
-            window_state.actual_height = None;
-            window_state.actual_scale = None;
+        if let Some(window_state) = cx.winit_window_state.as_mut() {
+            let window_state = &mut **window_state;
+            window_state.driver = match shared.driver {
+                WinitPresentDriver::SmithayEventLoop => "smithay-event-loop".to_owned(),
+                WinitPresentDriver::TimerFallback => "timer-fallback".to_owned(),
+            };
+            window_state.closed = shared.closed;
+            if let Some(backend) = shared.backend.as_ref() {
+                let size = backend.window_size();
+                window_state.actual_width = Some(u32::try_from(size.w.max(1)).unwrap_or(1));
+                window_state.actual_height = Some(u32::try_from(size.h.max(1)).unwrap_or(1));
+                window_state.actual_scale = Some(
+                    backend.window().scale_factor().round().clamp(1.0, u32::MAX as f64) as u32,
+                );
+            } else {
+                window_state.actual_width = None;
+                window_state.actual_height = None;
+                window_state.actual_scale = None;
+            }
         }
 
-        selected_backend.description = match shared.driver {
+        self.descriptor.description = match shared.driver {
             WinitPresentDriver::SmithayEventLoop => "nested winit development backend".to_owned(),
             WinitPresentDriver::TimerFallback => {
                 "nested winit development backend (timer fallback)".to_owned()
             }
         };
-    }
-}
 
-pub(crate) fn sync_winit_window_system(
-    selected_backend: Res<crate::traits::SelectedBackend>,
-    app_metadata: Res<AppMetadata>,
-    config: Option<Res<CompositorConfig>>,
-    outputs: Query<(&OutputDevice, &OutputProperties)>,
-    mut window_state: ResMut<WinitWindowState>,
-    completion_source: NonSendMut<WinitPresentCompletionSource>,
-) {
-    if selected_backend.kind != BackendKind::Winit {
-        return;
-    }
+        shared.active = !owned_outputs.is_empty() && !shared.closed;
+        if let Some(refresh_interval) = current_refresh_interval(&owned_outputs) {
+            shared.refresh_interval = refresh_interval;
+        }
+        let pending_timestamps_nanos =
+            shared.pending_timestamps_nanos.drain(..).collect::<Vec<_>>();
+        drop(shared);
 
-    let desired_spec = desired_window_spec(Some(&app_metadata), config.as_deref(), Some(&outputs));
-    window_state.title = desired_spec.title.clone();
-    window_state.requested_width = desired_spec.width;
-    window_state.requested_height = desired_spec.height;
+        for present_time_nanos in pending_timestamps_nanos {
+            emit_present_completion_events_at(
+                owned_outputs
+                    .iter()
+                    .map(|output| (output.device.name.clone(), output.properties.clone())),
+                cx.presentation_events,
+                &mut self.presentation_runtime,
+                present_time_nanos,
+            );
+        }
 
-    let mut shared = completion_source.shared.borrow_mut();
-    if shared.desired_window_spec == desired_spec {
-        return;
+        Ok(())
     }
 
-    shared.desired_window_spec = desired_spec.clone();
-    if let Some(backend) = shared.backend.as_ref() {
-        apply_window_spec(backend.window(), &desired_spec);
-    }
-}
+    fn apply(&mut self, cx: &mut BackendApplyCtx<'_>) -> Result<(), NekolandError> {
+        let owned_outputs = self.owned_outputs(cx.outputs).cloned().collect::<Vec<_>>();
+        let desired_spec = desired_window_spec(cx.app_metadata, cx.config, &owned_outputs);
+        if let Some(window_state) = cx.winit_window_state.as_mut() {
+            let window_state = &mut **window_state;
+            window_state.title = desired_spec.title.clone();
+            window_state.requested_width = desired_spec.width;
+            window_state.requested_height = desired_spec.height;
+        }
 
-pub(crate) fn winit_present_completion_system(
-    selected_backend: Res<crate::traits::SelectedBackend>,
-    outputs: Query<(&OutputDevice, &OutputProperties)>,
-    mut pending_presentation_events: bevy_ecs::prelude::ResMut<PendingOutputPresentationEvents>,
-    mut presentation_runtime: Local<OutputPresentationRuntime>,
-    completion_source: NonSendMut<WinitPresentCompletionSource>,
-) {
-    let mut shared = completion_source.shared.borrow_mut();
-    shared.active =
-        selected_backend.kind == BackendKind::Winit && !outputs.is_empty() && !shared.closed;
-    if let Some(refresh_interval) = current_refresh_interval(&outputs) {
-        shared.refresh_interval = refresh_interval;
-    }
+        let mut shared = self.shared.borrow_mut();
+        if shared.desired_window_spec == desired_spec {
+            return Ok(());
+        }
 
-    let pending_timestamps_nanos = shared.pending_timestamps_nanos.drain(..).collect::<Vec<_>>();
-    drop(shared);
-
-    for present_time_nanos in pending_timestamps_nanos {
-        emit_present_completion_events_at(
-            BackendKind::Winit,
-            &selected_backend,
-            &outputs,
-            &mut pending_presentation_events,
-            &mut presentation_runtime,
-            present_time_nanos,
-        );
-    }
-}
-
-pub(crate) fn winit_render_system(
-    selected_backend: Res<crate::traits::SelectedBackend>,
-    config: Option<Res<CompositorConfig>>,
-    outputs: Query<(&OutputDevice, &OutputProperties)>,
-    surfaces: Query<(&WlSurfaceHandle, &SurfaceGeometry)>,
-    render_list: Res<RenderList>,
-    surface_registry: Option<NonSend<ProtocolSurfaceRegistry>>,
-    completion_source: NonSendMut<WinitPresentCompletionSource>,
-    mut render_state: Local<WinitRenderState>,
-) {
-    if selected_backend.kind != BackendKind::Winit {
-        return;
+        shared.desired_window_spec = desired_spec.clone();
+        if let Some(backend) = shared.backend.as_ref() {
+            apply_window_spec(backend.window(), &desired_spec);
+        }
+        Ok(())
     }
 
-    let Some((_, output)) = outputs.iter().next() else {
-        return;
-    };
-    let Some(surface_registry) = surface_registry else {
-        return;
-    };
-
-    let mode = WinitOutputMode {
-        width: output.width.max(1),
-        height: output.height.max(1),
-        scale: output.scale.max(1),
-    };
-    if render_state.mode != Some(mode) {
-        render_state.damage_tracker = Some(OutputDamageTracker::new(
-            (mode.width as i32, mode.height as i32),
-            mode.scale as f64,
-            winit_output_transform(),
-        ));
-        render_state.mode = Some(mode);
-    }
-
-    let geometry_by_surface = surfaces
-        .iter()
-        .map(|(surface, geometry)| (surface.id, geometry.clone()))
-        .collect::<HashMap<_, _>>();
-
-    let mut shared = completion_source.shared.borrow_mut();
-    if shared.closed {
-        return;
-    }
-    let Some(backend) = shared.backend.as_mut() else {
-        return;
-    };
-
-    let damage = {
-        let Some(damage_tracker) = render_state.damage_tracker.as_mut() else {
-            return;
+    fn present(&mut self, cx: &mut BackendPresentCtx<'_>) -> Result<(), NekolandError> {
+        let owned_outputs = self.owned_outputs(cx.outputs).cloned().collect::<Vec<_>>();
+        let Some(output) = owned_outputs.first() else {
+            return Ok(());
+        };
+        let Some(surface_registry) = cx.surface_registry else {
+            return Ok(());
         };
 
-        let (renderer, mut framebuffer) = match backend.bind() {
-            Ok(bound) => bound,
-            Err(error) => {
-                tracing::warn!(error = %error, "failed to bind winit renderer framebuffer");
-                return;
-            }
+        let mode = WinitOutputMode {
+            width: output.properties.width.max(1),
+            height: output.properties.height.max(1),
+            scale: output.properties.scale.max(1),
         };
-        // Smithay's winit backend documents buffer_age as meaningful only after a successful bind.
-        // For now we trade damage-age optimization for stability and repaint the full output.
-        let age = 0;
-
-        let mut elements = Vec::<WaylandSurfaceRenderElement<GlesRenderer>>::new();
-        for render_element in &render_list.elements {
-            if render_element.surface_id == 0 {
-                continue;
-            }
-
-            let Some(surface) = surface_registry.surface(render_element.surface_id) else {
-                continue;
-            };
-            let Some(geometry) = geometry_by_surface.get(&render_element.surface_id) else {
-                continue;
-            };
-
-            elements.extend(render_elements_from_surface_tree(
-                renderer,
-                surface,
-                (geometry.x, geometry.y),
+        if self.render_state.mode != Some(mode) {
+            self.render_state.damage_tracker = Some(OutputDamageTracker::new(
+                (mode.width as i32, mode.height as i32),
                 mode.scale as f64,
-                render_element.opacity,
-                Kind::Unspecified,
+                winit_output_transform(),
             ));
+            self.render_state.mode = Some(mode);
         }
 
-        match damage_tracker.render_output(
-            renderer,
-            &mut framebuffer,
-            age,
-            &elements,
-            clear_color(config.as_deref()),
-        ) {
-            Ok(result) => result.damage.cloned(),
-            Err(error) => {
-                tracing::warn!(error = %error, "failed to render wayland surfaces into winit backend");
-                None
+        let mut shared = self.shared.borrow_mut();
+        if shared.closed {
+            return Ok(());
+        }
+        let Some(backend) = shared.backend.as_mut() else {
+            return Ok(());
+        };
+
+        let damage = {
+            let Some(damage_tracker) = self.render_state.damage_tracker.as_mut() else {
+                return Ok(());
+            };
+
+            let (renderer, mut framebuffer) = match backend.bind() {
+                Ok(bound) => bound,
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to bind winit renderer framebuffer");
+                    return Ok(());
+                }
+            };
+            let age = 0;
+
+            let mut elements = Vec::<WaylandSurfaceRenderElement<GlesRenderer>>::new();
+            for render_element in &cx.render_list.elements {
+                if render_element.surface_id == 0 {
+                    continue;
+                }
+
+                let Some(surface) = surface_registry.surface(render_element.surface_id) else {
+                    continue;
+                };
+                let Some(geometry) = cx.surfaces.get(&render_element.surface_id) else {
+                    continue;
+                };
+
+                elements.extend(render_elements_from_surface_tree(
+                    renderer,
+                    surface,
+                    (geometry.geometry.x, geometry.geometry.y),
+                    mode.scale as f64,
+                    render_element.opacity,
+                    Kind::Unspecified,
+                ));
             }
+
+            match damage_tracker.render_output(
+                renderer,
+                &mut framebuffer,
+                age,
+                &elements,
+                clear_color(cx.config),
+            ) {
+                Ok(result) => result.damage.cloned(),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "failed to render wayland surfaces into winit backend"
+                    );
+                    None
+                }
+            }
+        };
+
+        let Some(damage) = damage else {
+            return Ok(());
+        };
+
+        if let Err(error) = backend.submit(Some(damage.as_slice())) {
+            tracing::warn!(error = %error, "failed to submit winit backbuffer");
         }
-    };
 
-    let Some(damage) = damage else {
-        return;
-    };
-
-    if let Err(error) = backend.submit(Some(damage.as_slice())) {
-        tracing::warn!(error = %error, "failed to submit winit backbuffer");
+        Ok(())
     }
 }
 
-fn current_refresh_interval(
-    outputs: &Query<(&OutputDevice, &OutputProperties)>,
-) -> Option<Duration> {
+fn current_refresh_interval(outputs: &[OutputSnapshot]) -> Option<Duration> {
     outputs
         .iter()
-        .map(|(_, properties)| properties.refresh_millihz)
+        .map(|output| output.properties.refresh_millihz)
         .filter(|refresh_millihz| *refresh_millihz > 0)
         .max()
         .map(|refresh_millihz| {
@@ -436,45 +472,25 @@ fn current_refresh_interval(
         })
 }
 
-fn monotonic_now_nanos(monotonic_clock: &smithay::utils::Clock<Monotonic>) -> u64 {
-    let now = std::time::Duration::from(monotonic_clock.now());
-    now.as_nanos().min(u128::from(u64::MAX)) as u64
-}
-
-fn apply_window_state_to_outputs(
-    mut outputs: Query<(&OutputDevice, &mut OutputProperties)>,
-    window_state: PendingWinitWindowState,
-) {
-    let width = u32::try_from(window_state.size.w.max(1)).unwrap_or(1);
-    let height = u32::try_from(window_state.size.h.max(1)).unwrap_or(1);
-    let scale = window_state.scale_factor.round().clamp(1.0, u32::MAX as f64) as u32;
-
-    for (_, mut properties) in &mut outputs {
-        properties.width = width;
-        properties.height = height;
-        properties.scale = scale;
-    }
-}
-
 fn desired_window_spec(
     app_metadata: Option<&AppMetadata>,
     config: Option<&CompositorConfig>,
-    outputs: Option<&Query<(&OutputDevice, &OutputProperties)>>,
+    outputs: &[OutputSnapshot],
 ) -> WinitWindowSpec {
     let app_name = app_metadata.map(|metadata| metadata.name.as_str()).unwrap_or("nekoland");
-    if let Some(outputs) = outputs {
-        if let Some((output, properties)) =
-            outputs.iter().min_by(|(left, _), (right, _)| left.name.cmp(&right.name))
-        {
-            return WinitWindowSpec {
-                title: format!(
-                    "{app_name} [winit] - {} {}x{}",
-                    output.name, properties.width, properties.height
-                ),
-                width: properties.width.max(1),
-                height: properties.height.max(1),
-            };
-        }
+    if let Some((output, properties)) = outputs
+        .iter()
+        .min_by(|left, right| left.device.name.cmp(&right.device.name))
+        .map(|output| (&output.device, &output.properties))
+    {
+        return WinitWindowSpec {
+            title: format!(
+                "{app_name} [winit] - {} {}x{}",
+                output.name, properties.width, properties.height
+            ),
+            width: properties.width.max(1),
+            height: properties.height.max(1),
+        };
     }
 
     let configured_output = config
@@ -508,8 +524,6 @@ fn clear_color(config: Option<&CompositorConfig>) -> Color32F {
 }
 
 fn winit_output_transform() -> Transform {
-    // Smithay's nested winit path renders into an OpenGL-backed framebuffer whose native
-    // orientation is flipped relative to Wayland's top-left surface coordinates.
     Transform::Flipped180
 }
 
@@ -593,8 +607,8 @@ fn install_smithay_winit_source(
                 }
             }
             WinitEvent::Resized { size, scale_factor } => {
-                let mut shared = shared.borrow_mut();
-                shared.pending_window_state = Some(PendingWinitWindowState { size, scale_factor });
+                shared.borrow_mut().pending_window_state =
+                    Some(PendingWinitWindowState { size, scale_factor });
             }
             WinitEvent::Input(input_event) => {
                 if let Some(event) = translate_winit_input_event(input_event) {
@@ -608,8 +622,7 @@ fn install_smithay_winit_source(
                 });
             }
             WinitEvent::CloseRequested => {
-                let mut shared = shared.borrow_mut();
-                shared.closed = true;
+                shared.borrow_mut().closed = true;
             }
         })
         .map_err(|error| NekolandError::Runtime(error.error.to_string()))?;
@@ -644,13 +657,9 @@ fn install_timer_source(
     Ok(())
 }
 
-fn requested_backend_kind() -> BackendKind {
-    match std::env::var("NEKOLAND_BACKEND").unwrap_or_else(|_| "winit".to_owned()).as_str() {
-        "drm" => BackendKind::Drm,
-        "virtual" | "headless" | "offscreen" => BackendKind::Virtual,
-        "winit" | "x11" => BackendKind::Winit,
-        _ => BackendKind::Winit,
-    }
+fn monotonic_now_nanos(monotonic_clock: &smithay::utils::Clock<Monotonic>) -> u64 {
+    let now = std::time::Duration::from(monotonic_clock.now());
+    now.as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
 fn translate_winit_input_event(
@@ -687,8 +696,11 @@ fn translate_winit_input_event(
 #[cfg(test)]
 mod tests {
     use nekoland_core::prelude::AppMetadata;
+    use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
     use nekoland_ecs::resources::{CompositorConfig, ConfiguredOutput};
     use smithay::utils::Transform;
+
+    use crate::traits::{BackendId, OutputSnapshot};
 
     use super::{desired_window_spec, parse_hex_color32f, winit_output_transform};
 
@@ -712,11 +724,37 @@ mod tests {
             enabled: true,
         }];
 
-        let spec = desired_window_spec(Some(&metadata), Some(&config), None);
+        let spec = desired_window_spec(Some(&metadata), Some(&config), &[]);
 
         assert_eq!(spec.width, 1600);
         assert_eq!(spec.height, 900);
         assert_eq!(spec.title, "nekoland [winit] - HDMI-A-1 1600x900@2x");
+    }
+
+    #[test]
+    fn desired_window_spec_prefers_existing_owned_outputs() {
+        let metadata = AppMetadata { name: "nekoland".to_owned() };
+        let outputs = vec![OutputSnapshot {
+            entity: bevy_ecs::entity::Entity::PLACEHOLDER,
+            backend_id: Some(BackendId(1)),
+            device: OutputDevice {
+                name: "Winit-1".to_owned(),
+                kind: OutputKind::Nested,
+                make: "Winit".to_owned(),
+                model: "test".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 800,
+                height: 600,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+        }];
+
+        let spec = desired_window_spec(Some(&metadata), None, &outputs);
+        assert_eq!(spec.width, 800);
+        assert_eq!(spec.height, 600);
+        assert_eq!(spec.title, "nekoland [winit] - Winit-1 800x600");
     }
 
     #[test]

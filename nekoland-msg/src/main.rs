@@ -1,10 +1,15 @@
+//! CLI front-end for the compositor IPC socket.
+//!
+//! Argument parsing normalizes modern subcommands, hidden compatibility aliases, completion
+//! generation, and long-running subscription mode into a single `ParsedAction`.
+
 use std::ffi::OsString;
 use std::process::ExitCode;
 
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use clap_complete::{Shell, generate};
 use nekoland_ipc::commands::{
-    OutputCommand, PopupCommand, QueryCommand, WindowCommand, WorkspaceCommand,
+    OutputCommand, PopupCommand, QueryCommand, SplitAxis, WindowCommand, WorkspaceCommand,
 };
 use nekoland_ipc::{
     IpcCommand, IpcRequest, IpcSubscription, KNOWN_SUBSCRIPTION_EVENT_NAMES,
@@ -23,6 +28,7 @@ const SUBSCRIPTION_HELP_EXAMPLES: &[&str] = &[
     "nekoland-msg subscribe all --event window_* --event tree_* --jsonl --no-payloads",
 ];
 
+/// Top-level CLI parser.
 #[derive(Parser, Debug)]
 #[command(name = "nekoland-msg", disable_help_subcommand = true)]
 struct Cli {
@@ -30,6 +36,7 @@ struct Cli {
     command: RootCommand,
 }
 
+/// Top-level subcommands and compatibility aliases supported by the CLI.
 #[derive(Subcommand, Debug)]
 enum RootCommand {
     Query(QueryArgs),
@@ -58,12 +65,14 @@ enum RootCommand {
     Raw(Vec<String>),
 }
 
+/// Arguments for the `query` subcommand family.
 #[derive(Args, Debug)]
 struct QueryArgs {
     #[command(subcommand)]
     target: QueryTarget,
 }
 
+/// Read-only query targets supported by the CLI.
 #[derive(Subcommand, Debug)]
 enum QueryTarget {
     Tree,
@@ -75,12 +84,14 @@ enum QueryTarget {
     PrimarySelection,
 }
 
+/// Arguments for the `window` subcommand family.
 #[derive(Args, Debug)]
 struct WindowArgs {
     #[command(subcommand)]
     action: WindowAction,
 }
 
+/// Window-management actions supported by the CLI.
 #[derive(Subcommand, Debug)]
 enum WindowAction {
     Focus {
@@ -101,25 +112,48 @@ enum WindowAction {
         width: u32,
         height: u32,
     },
+    Split {
+        surface_id: u64,
+        axis: SplitAxisArg,
+    },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SplitAxisArg {
+    Horizontal,
+    Vertical,
+}
+
+impl From<SplitAxisArg> for SplitAxis {
+    fn from(value: SplitAxisArg) -> Self {
+        match value {
+            SplitAxisArg::Horizontal => Self::Horizontal,
+            SplitAxisArg::Vertical => Self::Vertical,
+        }
+    }
+}
+
+/// Arguments for the `popup` subcommand family.
 #[derive(Args, Debug)]
 struct PopupArgs {
     #[command(subcommand)]
     action: PopupAction,
 }
 
+/// Popup-management actions supported by the CLI.
 #[derive(Subcommand, Debug)]
 enum PopupAction {
     Dismiss { surface_id: u64 },
 }
 
+/// Arguments for the `workspace` subcommand family.
 #[derive(Args, Debug)]
 struct WorkspaceArgs {
     #[command(subcommand)]
     action: WorkspaceAction,
 }
 
+/// Workspace-management actions supported by the CLI.
 #[derive(Subcommand, Debug)]
 enum WorkspaceAction {
     Switch { workspace: String },
@@ -127,12 +161,14 @@ enum WorkspaceAction {
     Destroy { workspace: String },
 }
 
+/// Arguments for the `output` subcommand family.
 #[derive(Args, Debug)]
 struct OutputArgs {
     #[command(subcommand)]
     action: OutputAction,
 }
 
+/// Output-management actions supported by the CLI.
 #[derive(Subcommand, Debug)]
 enum OutputAction {
     Enable { output: String },
@@ -140,23 +176,27 @@ enum OutputAction {
     Configure { output: String, mode: String, scale: Option<u32> },
 }
 
+/// Arguments for shell-completion generation.
 #[derive(Args, Debug)]
 struct CompletionArgs {
     shell: CompletionShellArg,
 }
 
+/// Rendering mode for subscription output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SubscriptionOutputMode {
     Pretty,
     Jsonl,
 }
 
+/// Output mode for CLI help rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HelpOutputMode {
     Text,
     Json,
 }
 
+/// Arguments for the `subscribe` command.
 #[derive(Args, Debug)]
 #[command(disable_help_flag = true)]
 struct SubscribeArgs {
@@ -175,23 +215,27 @@ struct SubscribeArgs {
     events: Vec<String>,
 }
 
+/// Arguments for specialized help topics.
 #[derive(Args, Debug)]
 struct HelpArgs {
     #[command(subcommand)]
     topic: HelpTopic,
 }
 
+/// Help topics exposed as first-class subcommands.
 #[derive(Subcommand, Debug)]
 enum HelpTopic {
     Subscribe(SubscribeHelpArgs),
 }
 
+/// Arguments for `help subscribe`.
 #[derive(Args, Debug, Default)]
 struct SubscribeHelpArgs {
     #[arg(long, action = ArgAction::SetTrue)]
     json: bool,
 }
 
+/// User-facing topic names accepted by the subscribe CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum SubscriptionTopicArg {
     Window,
@@ -207,6 +251,7 @@ enum SubscriptionTopicArg {
     All,
 }
 
+/// Shells supported by completion generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum CompletionShellArg {
     Bash,
@@ -214,12 +259,14 @@ enum CompletionShellArg {
     Fish,
 }
 
+/// Normalized subscribe command after parsing CLI flags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SubscriptionCommand {
     subscription: IpcSubscription,
     output_mode: SubscriptionOutputMode,
 }
 
+/// Unified execution plan returned by CLI parsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ParsedAction {
     Request(IpcCommand),
@@ -263,6 +310,8 @@ fn main() -> ExitCode {
     }
 }
 
+/// Collapses clap's parse tree into a single execution enum so the runtime path below can stay
+/// small even though the CLI still exposes aliases and specialized help/completion flows.
 fn parse_cli_from<I, T>(args: I) -> Result<ParsedAction, clap::Error>
 where
     I: IntoIterator<Item = T>,
@@ -291,6 +340,9 @@ where
             }
             WindowAction::Resize { surface_id, width, height } => {
                 IpcCommand::Window(WindowCommand::Resize { surface_id, width, height })
+            }
+            WindowAction::Split { surface_id, axis } => {
+                IpcCommand::Window(WindowCommand::Split { surface_id, axis: axis.into() })
             }
         })),
         RootCommand::Popup(popup) => Ok(ParsedAction::Request(match popup.action {
@@ -388,6 +440,7 @@ fn parse_subscribe_args(args: SubscribeArgs) -> Result<ParsedAction, clap::Error
     }))
 }
 
+/// Removes duplicate `--event` filters while preserving the user's original order.
 fn dedupe_events(events: Vec<String>) -> Vec<String> {
     let mut deduped = Vec::with_capacity(events.len());
     for event in events {
@@ -399,6 +452,7 @@ fn dedupe_events(events: Vec<String>) -> Vec<String> {
 }
 
 impl From<SubscriptionTopicArg> for SubscriptionTopic {
+    /// Converts CLI-facing topic names into the shared IPC subscription topic enum.
     fn from(value: SubscriptionTopicArg) -> Self {
         match value {
             SubscriptionTopicArg::Window => SubscriptionTopic::Window,
@@ -417,6 +471,7 @@ impl From<SubscriptionTopicArg> for SubscriptionTopic {
 }
 
 impl From<CompletionShellArg> for Shell {
+    /// Converts CLI-facing shell names into clap-complete's shell enum.
     fn from(value: CompletionShellArg) -> Self {
         match value {
             CompletionShellArg::Bash => Shell::Bash,
@@ -426,6 +481,7 @@ impl From<CompletionShellArg> for Shell {
     }
 }
 
+/// Renders subscription help either as plain text or as machine-readable JSON.
 fn render_subscription_help(mode: HelpOutputMode) -> serde_json::Result<String> {
     match mode {
         HelpOutputMode::Text => Ok(subscription_help_text()),
@@ -433,6 +489,7 @@ fn render_subscription_help(mode: HelpOutputMode) -> serde_json::Result<String> 
     }
 }
 
+/// Generates shell completion output for the requested shell.
 fn render_completion(shell: CompletionShellArg) -> Result<String, std::string::FromUtf8Error> {
     let mut command = Cli::command();
     let mut output = Vec::new();
@@ -441,6 +498,7 @@ fn render_completion(shell: CompletionShellArg) -> Result<String, std::string::F
     String::from_utf8(output)
 }
 
+/// Builds the human-readable help text shown by `subscribe --help`.
 fn subscription_help_text() -> String {
     format!(
         "{USAGE}\n\nTopics:\n  {}\n\nKnown events:\n  {}\n\nPatterns:\n  exact match: tree_changed\n  prefix wildcard: window_*\n\nExamples:\n  {}\n  {}",
@@ -451,6 +509,7 @@ fn subscription_help_text() -> String {
     )
 }
 
+/// Builds the machine-readable JSON payload returned by `subscribe --help --json`.
 fn subscription_help_json() -> serde_json::Result<String> {
     serde_json::to_string_pretty(&serde_json::json!({
         "usage": USAGE,
@@ -464,6 +523,8 @@ fn subscription_help_json() -> serde_json::Result<String> {
     }))
 }
 
+/// Runs the long-lived subscription loop until the server disconnects or an unrecoverable error
+/// occurs.
 fn run_subscription(command: SubscriptionCommand) -> ExitCode {
     let mut stream = match subscribe(&command.subscription) {
         Ok(stream) => stream,
@@ -504,6 +565,7 @@ fn run_subscription(command: SubscriptionCommand) -> ExitCode {
     }
 }
 
+/// Formats one subscription event as either pretty JSON or one-line JSONL.
 fn format_subscription_event(
     event: &nekoland_ipc::IpcSubscriptionEvent,
     output_mode: SubscriptionOutputMode,
@@ -514,6 +576,7 @@ fn format_subscription_event(
     }
 }
 
+/// Sends one request/response IPC command and prints either the payload body or the full reply.
 fn send_ipc_command(command: IpcCommand) -> ExitCode {
     let request = IpcRequest { correlation_id: 1, command };
 
@@ -549,7 +612,7 @@ fn send_ipc_command(command: IpcCommand) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        CompletionShellArg, HelpOutputMode, ParsedAction, SubscriptionCommand,
+        CompletionShellArg, HelpOutputMode, ParsedAction, SplitAxis, SubscriptionCommand,
         SubscriptionOutputMode, parse_cli_from, render_completion, render_subscription_help,
     };
     use nekoland_ipc::commands::{PopupCommand, QueryCommand, WindowCommand};
@@ -628,6 +691,17 @@ mod tests {
                 surface_id: 7,
                 x: 12,
                 y: -4
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_window_split() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "window", "split", "7", "vertical"]),
+            ParsedAction::Request(IpcCommand::Window(WindowCommand::Split {
+                surface_id: 7,
+                axis: SplitAxis::Vertical,
             }))
         );
     }

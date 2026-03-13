@@ -1,3 +1,6 @@
+//! In-process integration test for frame-callback suppression while a window's workspace is
+//! inactive.
+
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -14,28 +17,45 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 mod common;
 
+/// Summary returned by the helper client after the frame-callback scenario completes.
 #[derive(Debug)]
 struct FrameCallbackSummary {
+    /// Total number of `wl_surface.frame` completions observed.
     total_callbacks: usize,
+    /// Number of callbacks that arrived while the window's workspace was inactive.
     inactive_callbacks: usize,
 }
 
+/// Helper client state machine used to create one XDG toplevel and drive workspace-switch IPC
+/// commands while observing frame callbacks.
 #[derive(Debug)]
 struct FrameCallbackClientState {
+    /// IPC socket used to switch workspaces during the scenario.
     ipc_socket_path: PathBuf,
+    /// Bound `wl_compositor` global.
     compositor: Option<wl_compositor::WlCompositor>,
+    /// Bound `xdg_wm_base` global.
     wm_base: Option<xdg_wm_base::XdgWmBase>,
+    /// Root surface of the helper client.
     base_surface: Option<wl_surface::WlSurface>,
+    /// XDG surface wrapper around the root surface.
     xdg_surface: Option<xdg_surface::XdgSurface>,
+    /// Toplevel role object for the helper surface.
     toplevel: Option<xdg_toplevel::XdgToplevel>,
+    /// Small scenario stage machine: active -> inactive -> reactivated -> done.
     stage: u8,
+    /// Count of all frame callbacks observed over the scenario.
     total_callbacks: usize,
+    /// Count of callbacks received while the surface should have been suppressed.
     inactive_callbacks: usize,
+    /// Timestamp of when the surface moved to the inactive workspace.
     inactive_since: Option<Instant>,
+    /// Deferred fatal error surfaced from IPC or protocol callbacks.
     terminal_error: Option<String>,
 }
 
 impl FrameCallbackClientState {
+    /// Initializes the helper client state with the IPC socket it will use for workspace control.
     fn new(ipc_socket_path: PathBuf) -> Self {
         Self {
             ipc_socket_path,
@@ -52,6 +72,7 @@ impl FrameCallbackClientState {
         }
     }
 
+    /// Creates the test toplevel once both `wl_compositor` and `xdg_wm_base` are available.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;
@@ -71,6 +92,7 @@ impl FrameCallbackClientState {
         self.toplevel = Some(toplevel);
     }
 
+    /// Requests another frame callback on the test surface.
     fn request_frame_callback(&self, qh: &QueueHandle<Self>) {
         let surface =
             self.base_surface.as_ref().expect("frame callback scenario requires a wl_surface");
@@ -78,6 +100,7 @@ impl FrameCallbackClientState {
         surface.commit();
     }
 
+    /// Sends one workspace-switch request over IPC.
     fn switch_workspace(&self, workspace: &str) -> Result<IpcReply, std::io::Error> {
         send_ipc_request_with_retry(
             &self.ipc_socket_path,
@@ -90,6 +113,7 @@ impl FrameCallbackClientState {
         )
     }
 
+    /// Advances the scenario once the surface has been inactive long enough.
     fn advance_timers(&mut self) {
         if self.stage != 2 {
             return;
@@ -118,11 +142,14 @@ impl FrameCallbackClientState {
         }
     }
 
+    /// Indicates whether the helper client finished the scenario successfully.
     fn is_complete(&self) -> bool {
         self.stage >= 4
     }
 }
 
+/// Verifies that a surface stops receiving frame callbacks while its workspace is inactive and
+/// resumes once reactivated.
 #[test]
 fn inactive_workspace_surfaces_stop_receiving_frame_done_until_reactivated() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -196,6 +223,7 @@ fn inactive_workspace_surfaces_stop_receiving_frame_done_until_reactivated() {
     drop(runtime_dir);
 }
 
+/// Runs the helper Wayland client and drives the frame-callback scenario to completion.
 fn run_frame_callback_client(
     socket_path: &Path,
     ipc_socket_path: PathBuf,
@@ -249,6 +277,7 @@ fn run_frame_callback_client(
     })
 }
 
+/// Retries transient IPC failures while sending a request during the frame-callback scenario.
 fn send_ipc_request_with_retry(
     socket_path: &Path,
     request: &IpcRequest,
@@ -280,6 +309,7 @@ fn send_ipc_request_with_retry(
     }
 }
 
+/// Returns the default config path used by this integration test.
 fn workspace_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }

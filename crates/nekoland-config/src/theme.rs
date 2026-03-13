@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+/// Theme section loaded from the config file before normalization into `CompositorConfig`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Theme {
     pub name: String,

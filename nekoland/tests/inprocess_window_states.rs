@@ -1,3 +1,6 @@
+//! In-process integration tests for a wide range of window and popup state transitions, including
+//! fullscreen, maximize, minimize, popup grabs, workspace visibility, and IPC-driven close flows.
+
 use std::io::ErrorKind;
 use std::io::Write;
 use std::os::fd::AsFd;
@@ -5,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::{Query, ResMut, Resource, With};
 use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -12,14 +16,15 @@ use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::{LayoutSchedule, RenderSchedule};
 use nekoland_ecs::components::{
-    OutputProperties, PopupGrab, SurfaceGeometry, WindowState, WlSurfaceHandle, XdgPopup, XdgWindow,
+    OutputProperties, PopupGrab, SurfaceGeometry, WindowDisplayState, WindowLayout, WindowMode,
+    WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, FramePacingState, GlobalPointerPosition,
     KeyboardFocusState, PendingPopupServerRequests, PendingProtocolInputEvents,
     PendingWindowServerRequests, PopupServerAction, PopupServerRequest, RenderList,
-    WindowServerAction, WindowServerRequest,
+    WindowServerAction, WindowServerRequest, WorkArea,
 };
 use nekoland_ipc::commands::{
     PopupCommand, QueryCommand, TreeSnapshot, WindowCommand, WorkspaceCommand,
@@ -44,6 +49,7 @@ mod common;
 const INTERACTIVE_INPUT_PUMP_FRAMES: u8 = 8;
 const CLIENT_LINGER_AFTER_COMPLETION: Duration = Duration::from_millis(400);
 
+/// Enumerates the scenario variants exercised by this test module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowScenario {
     Maximize,
@@ -66,6 +72,7 @@ enum WindowScenario {
     WorkspaceVisibility,
 }
 
+/// Summary returned by the helper client for one scenario run.
 #[derive(Debug)]
 struct ScenarioSummary {
     surface_configure_count: usize,
@@ -76,6 +83,8 @@ struct ScenarioSummary {
     interactive_request_serial: Option<u32>,
 }
 
+/// Helper Wayland client state that drives toplevel/popup scenarios and records protocol
+/// responses.
 #[derive(Debug, Default)]
 struct ScenarioClientState {
     scenario: Option<WindowScenario>,
@@ -112,21 +121,26 @@ struct ScenarioClientState {
     terminal_error: Option<String>,
 }
 
+/// Records `WindowClosed` messages emitted during scenarios that destroy/close toplevels.
 #[derive(Debug, Default, Resource)]
 struct ClosedWindowAudit {
     surface_ids: Vec<u64>,
 }
 
+/// Automatically issues a close request once a window appears in scenarios that need server-side
+/// close behavior.
 #[derive(Debug, Default, Resource)]
 struct AutoCloseOnCreate {
     issued: bool,
 }
 
+/// Automatically issues a popup dismiss request in scenarios that need it.
 #[derive(Debug, Default, Resource)]
 struct AutoDismissPopup {
     issued: bool,
 }
 
+/// Synthetic input pump used by the interactive move/resize scenarios.
 #[derive(Debug, Clone, Copy, Resource)]
 struct InteractiveSeatInputPump {
     scenario: WindowScenario,
@@ -145,7 +159,7 @@ fn maximize_request_updates_window_state_and_geometry() {
     );
 
     let (window_state, geometry, output) = snapshot_window_and_output(app);
-    assert_eq!(window_state, WindowState::Maximized);
+    assert_eq!(window_state, WindowDisplayState::Maximized);
     assert_eq!(geometry.x, 16);
     assert_eq!(geometry.y, 16);
     assert_eq!(geometry.width, output.width.saturating_sub(32).max(1));
@@ -177,15 +191,26 @@ fn fullscreen_and_popup_requests_populate_popup_entity_and_render_list() {
     ) = {
         let world = app.inner_mut().world_mut();
 
-        let mut window_query =
-            world.query::<(&WlSurfaceHandle, &WindowState, &SurfaceGeometry, &XdgWindow)>();
+        let mut window_query = world.query::<(
+            &WlSurfaceHandle,
+            &WindowLayout,
+            &WindowMode,
+            &SurfaceGeometry,
+            &XdgWindow,
+        )>();
         let windows = window_query
             .iter(world)
-            .map(|(surface, state, geometry, _)| (surface.id, state.clone(), geometry.clone()))
+            .map(|(surface, layout, mode, geometry, _)| {
+                (
+                    surface.id,
+                    WindowDisplayState::from_layout_mode(layout.clone(), mode.clone()),
+                    geometry.clone(),
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(windows.len(), 1, "scenario should create exactly one toplevel window");
         let (window_surface_id, window_state, geometry) = windows[0].clone();
-        assert_eq!(window_state, WindowState::Fullscreen);
+        assert_eq!(window_state, WindowDisplayState::Fullscreen);
 
         let output = world
             .query::<&OutputProperties>()
@@ -194,13 +219,17 @@ fn fullscreen_and_popup_requests_populate_popup_entity_and_render_list() {
             .expect("backend should create one output")
             .clone();
 
-        let mut popup_query = world.query::<(&WlSurfaceHandle, &XdgPopup, &PopupGrab)>();
+        let mut popup_query = world.query::<(&WlSurfaceHandle, &PopupGrab, &ChildOf)>();
         let popups = popup_query
             .iter(world)
-            .map(|(surface, popup, grab)| (surface.id, popup.parent_surface, grab.active))
+            .map(|(surface, grab, child_of)| (surface.id, child_of.parent(), grab.active))
             .collect::<Vec<_>>();
         assert_eq!(popups.len(), 1, "fullscreen popup scenario should create one popup entity");
-        let (popup_surface_id, popup_parent, popup_grab_active) = popups[0];
+        let (popup_surface_id, popup_parent_entity, popup_grab_active) = popups[0];
+        let popup_parent = world
+            .get::<WlSurfaceHandle>(popup_parent_entity)
+            .expect("popup parent should expose a surface handle")
+            .id;
 
         let render_elements = world
             .get_resource::<RenderList>()
@@ -248,13 +277,20 @@ fn unmaximize_request_restores_tiled_layout_geometry() {
         "restore maximize should still observe the maximize configure: {summary:?}"
     );
 
-    let (window_state, geometry, output) = snapshot_window_and_output(app);
-    assert_eq!(window_state, WindowState::Floating);
-    // Toplevel requests are 440x700 in this scenario. Center within the output.
-    assert_eq!(geometry.width, 440);
-    assert_eq!(geometry.height, 700);
-    assert_eq!(geometry.x, (output.width as i32 - 440) / 2);
-    assert_eq!(geometry.y, (output.height as i32 - 700) / 2);
+    let (window_state, geometry, output, work_area) = snapshot_window_output_and_work_area(app);
+    assert_eq!(window_state, WindowDisplayState::Floating);
+    assert_eq!(geometry.width, 32, "restore maximize should recover the committed floating width");
+    assert_eq!(
+        geometry.height, 32,
+        "restore maximize should recover the committed floating height"
+    );
+    assert_eq!(
+        (geometry.x, geometry.y),
+        centred_position(&work_area, &geometry),
+        "restored floating geometry should be centred in the work area"
+    );
+    assert!(geometry.width < output.width);
+    assert!(geometry.height < output.height);
 }
 
 #[test]
@@ -266,12 +302,17 @@ fn unfullscreen_request_restores_tiled_layout_geometry() {
         summary.surface_configure_count >= 2,
         "restore fullscreen should still observe the fullscreen configure: {summary:?}"
     );
-    let (window_state, geometry, output) = snapshot_window_and_output(app);
-    assert_eq!(window_state, WindowState::Floating);
-    assert_eq!(geometry.width, 440);
-    assert_eq!(geometry.height, 700);
-    assert_eq!(geometry.x, (output.width as i32 - 440) / 2);
-    assert_eq!(geometry.y, (output.height as i32 - 700) / 2);
+    let (window_state, geometry, output, work_area) = snapshot_window_output_and_work_area(app);
+    assert_eq!(window_state, WindowDisplayState::Floating);
+    assert_eq!(geometry.width, 32, "restore fullscreen should recover the committed width");
+    assert_eq!(geometry.height, 32, "restore fullscreen should recover the committed height");
+    assert_eq!(
+        (geometry.x, geometry.y),
+        centred_position(&work_area, &geometry),
+        "restored floating geometry should be centred in the work area"
+    );
+    assert!(geometry.width < output.width);
+    assert!(geometry.height < output.height);
 }
 
 #[test]
@@ -286,10 +327,13 @@ fn minimize_request_hides_window_clears_focus_and_removes_render_entry() {
 
     let (surface_id, state, focus, render_elements) = {
         let world = app.inner_mut().world_mut();
-        let mut window_query = world.query::<(&WlSurfaceHandle, &WindowState, &XdgWindow)>();
+        let mut window_query =
+            world.query::<(&WlSurfaceHandle, &WindowLayout, &WindowMode, &XdgWindow)>();
         let windows = window_query
             .iter(world)
-            .map(|(surface, state, _)| (surface.id, state.clone()))
+            .map(|(surface, layout, mode, _)| {
+                (surface.id, WindowDisplayState::from_layout_mode(layout.clone(), mode.clone()))
+            })
             .collect::<Vec<_>>();
         assert_eq!(windows.len(), 1, "scenario should create exactly one toplevel window");
         let (surface_id, state) = windows[0].clone();
@@ -310,7 +354,7 @@ fn minimize_request_hides_window_clears_focus_and_removes_render_entry() {
         (surface_id, state, focus, render_elements)
     };
 
-    assert_eq!(state, WindowState::Hidden);
+    assert_eq!(state, WindowDisplayState::Hidden);
     assert_eq!(focus, None, "hidden window should not retain keyboard focus");
     assert!(
         !render_elements.iter().any(|element| element.surface_id == surface_id),
@@ -319,7 +363,7 @@ fn minimize_request_hides_window_clears_focus_and_removes_render_entry() {
 }
 
 #[test]
-fn move_and_resize_requests_switch_window_to_floating_geometry() {
+fn interactive_move_request_switches_window_to_floating_geometry() {
     let Some((mut app, summary)) = run_scenario(WindowScenario::MoveResize) else {
         return;
     };
@@ -334,11 +378,22 @@ fn move_and_resize_requests_switch_window_to_floating_geometry() {
 
     let (surface_id, state, geometry, focus) = {
         let world = app.inner_mut().world_mut();
-        let mut window_query =
-            world.query::<(&WlSurfaceHandle, &WindowState, &SurfaceGeometry, &XdgWindow)>();
+        let mut window_query = world.query::<(
+            &WlSurfaceHandle,
+            &WindowLayout,
+            &WindowMode,
+            &SurfaceGeometry,
+            &XdgWindow,
+        )>();
         let windows = window_query
             .iter(world)
-            .map(|(surface, state, geometry, _)| (surface.id, state.clone(), geometry.clone()))
+            .map(|(surface, layout, mode, geometry, _)| {
+                (
+                    surface.id,
+                    WindowDisplayState::from_layout_mode(layout.clone(), mode.clone()),
+                    geometry.clone(),
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(windows.len(), 1, "scenario should create exactly one toplevel window");
         let (surface_id, state, geometry) = windows[0].clone();
@@ -349,17 +404,21 @@ fn move_and_resize_requests_switch_window_to_floating_geometry() {
         (surface_id, state, geometry, focus)
     };
 
-    assert_eq!(state, WindowState::Floating);
-    assert_eq!(geometry.x, 96);
-    assert_eq!(geometry.y, 80);
-    assert!(
-        matches!(geometry.width, 504 | 1024),
-        "resize request should expand width by the configured right-edge delta: {geometry:?}"
+    assert_eq!(state, WindowDisplayState::Floating);
+    let expected_initial = centred_position(
+        app.inner().world().get_resource::<WorkArea>().expect("work area should be initialized"),
+        &SurfaceGeometry { x: 0, y: 0, width: 32, height: 32 },
     );
     assert!(
-        matches!(geometry.height, 748 | 768),
-        "resize request should expand height by the configured bottom-edge delta: {geometry:?}"
+        geometry.x > expected_initial.0,
+        "interactive move should shift the floating window to the right: {geometry:?}"
     );
+    assert!(
+        geometry.y > expected_initial.1,
+        "interactive move should shift the floating window downward: {geometry:?}"
+    );
+    assert_eq!(geometry.width, 32, "interactive move should preserve the committed width");
+    assert_eq!(geometry.height, 32, "interactive move should preserve the committed height");
     assert_eq!(focus, Some(surface_id), "interactive move should focus the moved surface");
 }
 
@@ -376,12 +435,17 @@ fn move_and_resize_requests_with_invalid_serial_are_ignored() {
         summary.interactive_request_serial, None,
         "invalid move+resize scenario should not consume a real pointer serial"
     );
-    let (window_state, geometry, output) = snapshot_window_and_output(app);
-    assert_eq!(window_state, WindowState::Floating);
-    assert_eq!(geometry.width, 440);
-    assert_eq!(geometry.height, 700);
-    assert_eq!(geometry.x, (output.width as i32 - 440) / 2);
-    assert_eq!(geometry.y, (output.height as i32 - 700) / 2);
+    let (window_state, geometry, output, work_area) = snapshot_window_output_and_work_area(app);
+    assert_eq!(window_state, WindowDisplayState::Floating);
+    assert_eq!(geometry.width, 32, "invalid interactive requests should leave width unchanged");
+    assert_eq!(geometry.height, 32, "invalid interactive requests should leave height unchanged");
+    assert_eq!(
+        (geometry.x, geometry.y),
+        centred_position(&work_area, &geometry),
+        "invalid interactive requests should leave the window centred"
+    );
+    assert!(geometry.width < output.width);
+    assert!(geometry.height < output.height);
 }
 
 #[test]
@@ -408,15 +472,20 @@ fn popup_grab_request_marks_popup_active_and_tracks_serial() {
             .next()
             .expect("scenario should create a toplevel surface");
 
-        let mut popup_query = world.query::<(&XdgPopup, &PopupGrab)>();
+        let mut popup_query = world.query::<(&XdgPopup, &PopupGrab, &ChildOf)>();
         let popups = popup_query
             .iter(world)
-            .map(|(popup, grab)| {
-                (popup.parent_surface, popup.grab_serial, popup.configure_serial, grab.clone())
+            .map(|(popup, grab, child_of)| {
+                (child_of.parent(), popup.grab_serial, popup.configure_serial, grab.clone())
             })
             .collect::<Vec<_>>();
         assert_eq!(popups.len(), 1, "scenario should create exactly one popup");
-        let (popup_parent, popup_grab_serial, popup_configure_serial, grab) = popups[0].clone();
+        let (popup_parent_entity, popup_grab_serial, popup_configure_serial, grab) =
+            popups[0].clone();
+        let popup_parent = world
+            .get::<WlSurfaceHandle>(popup_parent_entity)
+            .expect("popup parent should expose a surface handle")
+            .id;
 
         (window_surface_id, popup_parent, popup_grab_serial, popup_configure_serial, grab)
     };
@@ -566,20 +635,26 @@ fn popup_reposition_request_updates_geometry_and_token() {
         "popup reposition scenario should observe the repositioned event: {summary:?}"
     );
 
-    let (popup, geometry) = {
+    let (parent_geometry, popup, geometry) = {
         let world = app.inner_mut().world_mut();
+        let parent_geometry = world
+            .query::<(&WlSurfaceHandle, &SurfaceGeometry, &XdgWindow)>()
+            .iter(world)
+            .map(|(_, geometry, _)| geometry.clone())
+            .next()
+            .expect("popup reposition scenario should keep the toplevel alive");
         let mut popup_query = world.query::<(&XdgPopup, &SurfaceGeometry)>();
         let popups = popup_query
             .iter(world)
             .map(|(popup, geometry)| (popup.clone(), geometry.clone()))
             .collect::<Vec<_>>();
         assert_eq!(popups.len(), 1, "scenario should keep exactly one popup after reposition");
-        popups[0].clone()
+        (parent_geometry, popups[0].0.clone(), popups[0].1.clone())
     };
 
     assert_eq!(popup.reposition_token, Some(91));
-    assert_eq!(geometry.x, 100);
-    assert_eq!(geometry.y, 96);
+    assert_eq!(geometry.x, parent_geometry.x + 100);
+    assert_eq!(geometry.y, parent_geometry.y + 64);
     assert_eq!(geometry.width, 300);
     assert_eq!(geometry.height, 140);
 }
@@ -909,6 +984,8 @@ fn workspace_switch_dismisses_popups_and_reconfigures_reactivated_toplevels() {
     );
 }
 
+/// Run one scenario end-to-end without an IPC subscription sidecar and return
+/// the finished app plus client-observed summary.
 fn run_scenario(
     scenario: WindowScenario,
 ) -> Option<(nekoland_core::prelude::NekolandApp, ScenarioSummary)> {
@@ -1038,6 +1115,8 @@ fn run_scenario(
     Some((app, summary))
 }
 
+/// Variant of [`run_scenario`] that also collects IPC subscription events while
+/// the scenario executes.
 fn run_scenario_with_subscription(
     scenario: WindowScenario,
     subscription: IpcSubscription,
@@ -1184,6 +1263,11 @@ fn run_scenario_with_subscription(
     Some((app, summary, events))
 }
 
+/// Minimal Wayland client used by the window-state scenarios.
+///
+/// It drives one toplevel plus optional popup objects, records protocol
+/// callbacks, and terminates once the selected scenario reaches its expected
+/// final state.
 fn run_scenario_client(
     socket_path: &std::path::Path,
     scenario: WindowScenario,
@@ -1245,6 +1329,8 @@ fn run_scenario_client(
     })
 }
 
+/// Inject synthetic pointer and focus events for scenarios that need a valid
+/// interactive serial or a small move/resize gesture.
 fn pump_interactive_seat_input(
     mut pump: ResMut<InteractiveSeatInputPump>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
@@ -1261,20 +1347,13 @@ fn pump_interactive_seat_input(
     };
 
     keyboard_focus.focused_surface = Some(surface.id);
-    let x_offset: f64 = if pump.tick % 2 == 0 { 24.0 } else { 40.0 };
-    let y_offset: f64 = if pump.tick % 2 == 0 { 28.0 } else { 44.0 };
-    let x = f64::from(geometry.x) + x_offset.min(f64::from(geometry.width.saturating_sub(1)));
-    let y = f64::from(geometry.y) + y_offset.min(f64::from(geometry.height.saturating_sub(1)));
-    pointer.x = x;
-    pointer.y = y;
-
     let device = match pump.scenario {
         WindowScenario::MoveResize => "move-resize-test",
         WindowScenario::PopupGrab => "popup-grab-test",
         _ => "interactive-seat-test",
     };
 
-    pending_protocol_inputs.items.extend([
+    let mut events = vec![
         BackendInputEvent {
             device: device.to_owned(),
             action: BackendInputAction::FocusChanged { focused: false },
@@ -1283,28 +1362,68 @@ fn pump_interactive_seat_input(
             device: device.to_owned(),
             action: BackendInputAction::FocusChanged { focused: true },
         },
-        BackendInputEvent {
+    ];
+
+    let (x, y, pressed) = if matches!(pump.scenario, WindowScenario::MoveResize) {
+        match pump.tick {
+            0 => (f64::from(geometry.x) + 8.0, f64::from(geometry.y) + 8.0, Some(true)),
+            1 => (f64::from(geometry.x) + 72.0, f64::from(geometry.y) + 56.0, Some(false)),
+            2 => (
+                f64::from(geometry.x) + f64::from(geometry.width.saturating_sub(1)),
+                f64::from(geometry.y) + f64::from(geometry.height.saturating_sub(1)),
+                Some(true),
+            ),
+            3 => (
+                f64::from(geometry.x) + f64::from(geometry.width) + 48.0,
+                f64::from(geometry.y) + f64::from(geometry.height) + 40.0,
+                Some(false),
+            ),
+            _ => {
+                pump.remaining_frames = 0;
+                return;
+            }
+        }
+    } else {
+        let x_offset: f64 = if pump.tick % 2 == 0 { 24.0 } else { 40.0 };
+        let y_offset: f64 = if pump.tick % 2 == 0 { 28.0 } else { 44.0 };
+        (
+            f64::from(geometry.x) + x_offset.min(f64::from(geometry.width.saturating_sub(1))),
+            f64::from(geometry.y) + y_offset.min(f64::from(geometry.height.saturating_sub(1))),
+            Some(true),
+        )
+    };
+    pointer.x = x;
+    pointer.y = y;
+
+    events.push(BackendInputEvent {
+        device: device.to_owned(),
+        action: BackendInputAction::PointerMoved { x, y },
+    });
+    if let Some(pressed) = pressed {
+        events.push(BackendInputEvent {
             device: device.to_owned(),
-            action: BackendInputAction::PointerMoved { x, y },
-        },
-        BackendInputEvent {
-            device: device.to_owned(),
-            action: BackendInputAction::PointerButton { button_code: 0x110, pressed: true },
-        },
-    ]);
+            action: BackendInputAction::PointerButton { button_code: 0x110, pressed },
+        });
+    }
+    pending_protocol_inputs.extend(events);
 
     pump.remaining_frames = pump.remaining_frames.saturating_sub(1);
     pump.tick = pump.tick.saturating_add(1);
 }
 
-fn snapshot_window_and_output(
+/// Capture the single test window, the single test output, and the current
+/// work area after a scenario completes.
+fn snapshot_window_output_and_work_area(
     mut app: nekoland_core::prelude::NekolandApp,
-) -> (WindowState, SurfaceGeometry, OutputProperties) {
+) -> (WindowDisplayState, SurfaceGeometry, OutputProperties, WorkArea) {
     let world = app.inner_mut().world_mut();
-    let mut window_query = world.query::<(&WindowState, &SurfaceGeometry, &XdgWindow)>();
+    let mut window_query =
+        world.query::<(&WindowLayout, &WindowMode, &SurfaceGeometry, &XdgWindow)>();
     let windows = window_query
         .iter(world)
-        .map(|(state, geometry, _)| (state.clone(), geometry.clone()))
+        .map(|(layout, mode, geometry, _)| {
+            (WindowDisplayState::from_layout_mode(layout.clone(), mode.clone()), geometry.clone())
+        })
         .collect::<Vec<_>>();
     assert_eq!(windows.len(), 1, "scenario should create exactly one toplevel window");
     let (state, geometry) = windows[0].clone();
@@ -1314,9 +1433,29 @@ fn snapshot_window_and_output(
         .next()
         .expect("backend should create one output")
         .clone();
+    let work_area =
+        world.get_resource::<WorkArea>().expect("work area should be initialized").clone();
+    (state, geometry, output, work_area)
+}
+
+/// Convenience wrapper for scenarios that do not need the work-area snapshot.
+fn snapshot_window_and_output(
+    app: nekoland_core::prelude::NekolandApp,
+) -> (WindowDisplayState, SurfaceGeometry, OutputProperties) {
+    let (state, geometry, output, _) = snapshot_window_output_and_work_area(app);
     (state, geometry, output)
 }
 
+/// Reconstruct the floating-layout centring rule used by the shell systems.
+fn centred_position(work_area: &WorkArea, geometry: &SurfaceGeometry) -> (i32, i32) {
+    (
+        work_area.x + ((work_area.width as i32 - geometry.width as i32) / 2).max(0),
+        work_area.y + ((work_area.height as i32 - geometry.height as i32) / 2).max(0),
+    )
+}
+
+/// Audit every `WindowClosed` message so destroy/close scenarios can assert on
+/// the final close stream after the app stops.
 fn capture_window_closed_messages(
     mut window_closed: MessageReader<WindowClosed>,
     mut audit: ResMut<ClosedWindowAudit>,
@@ -1326,6 +1465,8 @@ fn capture_window_closed_messages(
     }
 }
 
+/// Automatically issue a compositor-side close request once the scenario's
+/// toplevel has been announced.
 fn request_server_close_on_window_created(
     mut window_created: MessageReader<WindowCreated>,
     mut auto_close: ResMut<AutoCloseOnCreate>,
@@ -1339,13 +1480,15 @@ fn request_server_close_on_window_created(
         return;
     };
 
-    pending_window_requests.items.push(WindowServerRequest {
+    pending_window_requests.push(WindowServerRequest {
         surface_id: event.surface_id,
         action: WindowServerAction::Close,
     });
     auto_close.issued = true;
 }
 
+/// Automatically dismiss the first active popup grab in scenarios that need a
+/// server-initiated popup teardown.
 fn request_server_popup_dismiss(
     mut auto_dismiss: ResMut<AutoDismissPopup>,
     popups: Query<(&WlSurfaceHandle, &PopupGrab), With<XdgPopup>>,
@@ -1360,11 +1503,12 @@ fn request_server_popup_dismiss(
     };
 
     pending_popup_requests
-        .items
         .push(PopupServerRequest { surface_id: surface.id, action: PopupServerAction::Dismiss });
     auto_dismiss.issued = true;
 }
 
+/// Poll the IPC tree until the scenario exposes a toplevel, then send a close
+/// request for that surface id.
 fn request_close_over_ipc(socket_path: &std::path::Path) -> Result<u64, common::TestControl> {
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
 
@@ -1423,6 +1567,8 @@ fn request_close_over_ipc(socket_path: &std::path::Path) -> Result<u64, common::
     }
 }
 
+/// Variant of [`request_close_over_ipc`] that waits until the tree also
+/// exposes a popup before closing the parent window.
 fn request_close_over_ipc_when_popup_visible(
     socket_path: &std::path::Path,
 ) -> Result<u64, common::TestControl> {
@@ -1493,6 +1639,7 @@ fn request_close_over_ipc_when_popup_visible(
     }
 }
 
+/// Poll the IPC tree until a popup is visible, then dismiss it over IPC.
 fn request_popup_dismiss_over_ipc(
     socket_path: &std::path::Path,
 ) -> Result<u64, common::TestControl> {
@@ -1553,6 +1700,8 @@ fn request_popup_dismiss_over_ipc(
     }
 }
 
+/// Subscribe to IPC events and stop once the window-close scenario produced the
+/// expected popup dismissal plus the final empty tree snapshot.
 fn collect_subscription_events(
     socket_path: &Path,
     subscription: IpcSubscription,
@@ -1593,6 +1742,8 @@ fn collect_subscription_events(
     }
 }
 
+/// Return `true` once the subscription stream has observed the specific end
+/// state this test cares about.
 fn subscription_goal_met(events: &[IpcSubscriptionEvent]) -> bool {
     let saw_popup_dismiss = events
         .iter()
@@ -1610,6 +1761,8 @@ fn subscription_goal_met(events: &[IpcSubscriptionEvent]) -> bool {
     saw_popup_dismiss && saw_final_tree
 }
 
+/// Retry a single IPC request until the server is ready or the scenario
+/// deadline expires.
 fn send_request_with_retry(
     socket_path: &std::path::Path,
     request: &IpcRequest,
@@ -1633,6 +1786,7 @@ fn send_request_with_retry(
     }
 }
 
+/// Fetch and decode the current tree snapshot from the IPC control plane.
 fn send_tree_query(socket_path: &std::path::Path) -> Result<TreeSnapshot, std::io::Error> {
     let reply = send_request_with_retry(
         socket_path,
@@ -1650,6 +1804,7 @@ fn send_tree_query(socket_path: &std::path::Path) -> Result<TreeSnapshot, std::i
     serde_json::from_value(payload).map_err(std::io::Error::other)
 }
 
+/// Classify transient IPC startup errors that the scenario helpers should poll through.
 fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -1660,6 +1815,7 @@ fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     )
 }
 
+/// Classify environment restrictions that should skip, rather than fail, the test.
 fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
     error.kind() == ErrorKind::PermissionDenied || error.raw_os_error() == Some(1)
 }
@@ -1767,10 +1923,8 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for ScenarioClientState {
                         state.popup_buffer_attached = true;
                     }
                 }
-                if !state.defer_initial_popup_commit() {
-                    if let Some(surface) = state.popup_surface.as_ref() {
-                        surface.commit();
-                    }
+                if let Some(surface) = state.popup_surface.as_ref() {
+                    surface.commit();
                 }
                 state.apply_scenario(qh);
                 return;
@@ -1907,6 +2061,7 @@ delegate_noop!(ScenarioClientState: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(ScenarioClientState: ignore xdg_positioner::XdgPositioner);
 
 impl ScenarioClientState {
+    /// Create the scenario's root toplevel once both compositor globals are bound.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;
@@ -1926,6 +2081,8 @@ impl ScenarioClientState {
         self.toplevel = Some(toplevel);
     }
 
+    /// Advance the scenario state machine in response to protocol callbacks or
+    /// fresh input serials.
     fn apply_scenario(&mut self, qh: &QueueHandle<Self>) {
         let Some(scenario) = self.scenario else {
             return;
@@ -1957,7 +2114,7 @@ impl ScenarioClientState {
             WindowScenario::FullscreenPopup if self.scenario_stage == 0 => {
                 toplevel.set_fullscreen(None);
                 base_surface.commit();
-                self.create_popup(qh);
+                self.create_popup(qh, None);
                 self.scenario_stage = 1;
             }
             WindowScenario::RestoreFullscreen if self.scenario_stage == 0 => {
@@ -1986,7 +2143,6 @@ impl ScenarioClientState {
                     .expect("move+resize scenario requires a real wl_pointer button serial");
                 let seat = self.seat.as_ref().expect("move+resize scenario requires wl_seat");
                 toplevel._move(seat, serial);
-                toplevel.resize(seat, serial, xdg_toplevel::ResizeEdge::BottomRight);
                 self.interactive_request_serial = Some(serial);
                 self.scenario_stage = 1;
                 self.final_request_sent = true;
@@ -1998,66 +2154,35 @@ impl ScenarioClientState {
                 self.scenario_stage = 1;
                 self.final_request_sent = true;
             }
-            WindowScenario::PopupGrab if self.scenario_stage == 0 => {
-                self.create_popup(qh);
-                self.scenario_stage = 1;
-            }
-            WindowScenario::ServerDismissGrabbedPopup | WindowScenario::IpcDismissGrabbedPopup
-                if self.scenario_stage == 0 =>
-            {
-                self.create_popup(qh);
-                self.scenario_stage = 1;
-            }
             WindowScenario::PopupGrab
-                if self.scenario_stage == 1
-                    && self.popup_configure_serial.is_some()
-                    && self.latest_pointer_button_serial.is_some() =>
+                if self.scenario_stage == 0 && self.latest_pointer_button_serial.is_some() =>
             {
                 let serial = self
                     .latest_pointer_button_serial
                     .expect("popup grab scenario requires a real wl_pointer button serial");
-                let seat = self.seat.as_ref().expect("popup grab scenario requires wl_seat");
-                let popup = self.popup.as_ref().expect("popup grab scenario requires xdg_popup");
-                popup.grab(seat, serial);
-                if let Some(surface) = self.popup_surface.as_ref() {
-                    surface.commit();
-                }
+                self.create_popup(qh, Some(serial));
                 self.interactive_request_serial = Some(serial);
-                self.scenario_stage = 2;
+                self.scenario_stage = 1;
                 self.final_request_sent = true;
             }
             WindowScenario::ServerDismissGrabbedPopup | WindowScenario::IpcDismissGrabbedPopup
-                if self.scenario_stage == 1
-                    && self.popup_configure_serial.is_some()
-                    && self.latest_pointer_button_serial.is_some() =>
+                if self.scenario_stage == 0 && self.latest_pointer_button_serial.is_some() =>
             {
                 let serial = self
                     .latest_pointer_button_serial
                     .expect("popup dismiss scenario requires a real wl_pointer button serial");
-                let seat = self.seat.as_ref().expect("popup dismiss scenario requires wl_seat");
-                let popup = self.popup.as_ref().expect("popup dismiss scenario requires xdg_popup");
-                popup.grab(seat, serial);
-                if let Some(surface) = self.popup_surface.as_ref() {
-                    surface.commit();
-                }
+                self.create_popup(qh, Some(serial));
                 self.interactive_request_serial = Some(serial);
-                self.scenario_stage = 2;
+                self.scenario_stage = 1;
+                self.final_request_sent = true;
             }
             WindowScenario::PopupGrabInvalidSerial if self.scenario_stage == 0 => {
-                self.create_popup(qh);
-                self.scenario_stage = 1;
-            }
-            WindowScenario::PopupGrabInvalidSerial
-                if self.scenario_stage == 1 && self.popup_configure_serial.is_some() =>
-            {
-                let seat = self.seat.as_ref().expect("popup grab scenario requires wl_seat");
-                let popup = self.popup.as_ref().expect("popup grab scenario requires xdg_popup");
-                popup.grab(seat, 77);
+                self.create_popup(qh, Some(77));
                 self.scenario_stage = 2;
                 self.final_request_sent = true;
             }
             WindowScenario::PopupReposition if self.scenario_stage == 0 => {
-                self.create_popup(qh);
+                self.create_popup(qh, None);
                 self.scenario_stage = 1;
             }
             WindowScenario::PopupReposition
@@ -2071,7 +2196,7 @@ impl ScenarioClientState {
                 self.final_request_sent = true;
             }
             WindowScenario::PopupDestroy if self.scenario_stage == 0 => {
-                self.create_popup(qh);
+                self.create_popup(qh, None);
                 self.scenario_stage = 1;
             }
             WindowScenario::PopupDestroy
@@ -2083,11 +2208,11 @@ impl ScenarioClientState {
                 self.final_request_sent = true;
             }
             WindowScenario::WorkspaceVisibility if self.scenario_stage == 0 => {
-                self.create_popup(qh);
+                self.create_popup(qh, None);
                 self.scenario_stage = 1;
             }
             WindowScenario::IpcCloseToplevelWithPopup if self.scenario_stage == 0 => {
-                self.create_popup(qh);
+                self.create_popup(qh, None);
                 self.scenario_stage = 1;
             }
             WindowScenario::WorkspaceVisibility
@@ -2120,7 +2245,8 @@ impl ScenarioClientState {
         }
     }
 
-    fn create_popup(&mut self, qh: &QueueHandle<Self>) {
+    /// Create the scenario popup and optionally request an explicit popup grab.
+    fn create_popup(&mut self, qh: &QueueHandle<Self>, grab_serial: Option<u32>) {
         if self.popup_surface.is_some() {
             return;
         }
@@ -2136,14 +2262,19 @@ impl ScenarioClientState {
         let popup_surface = compositor.create_surface(qh, ());
         let popup_xdg_surface = wm_base.get_xdg_surface(&popup_surface, qh, ());
         let positioner = self.make_positioner(qh, 240, 120, 24, 24, 64, 32, 16, 12);
-        let _popup = popup_xdg_surface.get_popup(Some(parent), &positioner, qh, ());
+        let popup = popup_xdg_surface.get_popup(Some(parent), &positioner, qh, ());
+        if let Some(serial) = grab_serial {
+            let seat = self.seat.as_ref().expect("popup grab scenarios require wl_seat");
+            popup.grab(seat, serial);
+        }
         popup_surface.commit();
 
         self.popup_surface = Some(popup_surface);
         self.popup_xdg_surface = Some(popup_xdg_surface);
-        self.popup = Some(_popup);
+        self.popup = Some(popup);
     }
 
+    /// Destroy every popup-side Wayland object and reset the popup bookkeeping fields.
     fn destroy_popup_objects(&mut self) {
         if let Some(popup) = self.popup.take() {
             popup.destroy();
@@ -2160,18 +2291,7 @@ impl ScenarioClientState {
         self.popup_buffer_attached = false;
     }
 
-    fn defer_initial_popup_commit(&self) -> bool {
-        matches!(
-            self.scenario,
-            Some(
-                WindowScenario::PopupGrab
-                    | WindowScenario::ServerDismissGrabbedPopup
-                    | WindowScenario::IpcDismissGrabbedPopup
-                    | WindowScenario::PopupGrabInvalidSerial
-            )
-        ) && self.scenario_stage == 1
-    }
-
+    /// Ask the compositor to switch workspaces through IPC from inside the client thread.
     fn switch_workspace(&self, workspace: &str) -> Result<(), String> {
         let Some(socket_path) = self.ipc_socket_path.as_deref() else {
             return Err("workspace switch scenario requires an IPC socket path".to_owned());
@@ -2190,6 +2310,7 @@ impl ScenarioClientState {
         .map_err(|error| format!("workspace switch to {workspace} failed: {error}"))
     }
 
+    /// Create a reusable XDG positioner for popup creation or reposition requests.
     fn make_positioner(
         &self,
         qh: &QueueHandle<Self>,
@@ -2213,6 +2334,8 @@ impl ScenarioClientState {
         positioner
     }
 
+    /// Return whether the current scenario has observed enough protocol state
+    /// to stop the helper client loop.
     fn is_complete(&self) -> bool {
         match self.scenario {
             Some(WindowScenario::Maximize) => {
@@ -2264,6 +2387,8 @@ impl ScenarioClientState {
     }
 }
 
+/// Create a small shared-memory buffer so the test client can commit real
+/// toplevel and popup contents.
 fn create_test_buffer(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<ScenarioClientState>,

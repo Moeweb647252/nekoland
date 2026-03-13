@@ -1,3 +1,8 @@
+//! Protocol-facing event types and the bridge that moves them into ECS-owned pending resources.
+//!
+//! Smithay callbacks enqueue `ProtocolEvent`s here first; later, `ProtocolState::flush_into_ecs`
+//! translates them into the typed request queues consumed by shell/layout systems.
+
 pub mod compositor;
 pub mod data_device;
 pub mod dmabuf;
@@ -17,9 +22,10 @@ pub mod xdg_shell;
 use bevy_ecs::prelude::Resource;
 use nekoland_core::bridge::{EventBridge, WaylandBridge};
 use nekoland_ecs::components::{LayerAnchor, LayerLevel, LayerMargins};
+use nekoland_ecs::kinds::ProtocolEvent as ProtocolEventKind;
 use nekoland_ecs::resources::pending_events::{
-    OutputEventRecord, PendingOutputEvents, PendingXdgRequests, PopupPlacement, SurfaceExtent,
-    WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
+    OutputEventRecord, PendingOutputEvents, PendingXdgRequests, PopupPlacement, ResizeEdges,
+    SurfaceExtent, WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
 };
 use nekoland_ecs::resources::{
     ClipboardSelection, ClipboardSelectionState, DragAndDropDrop, DragAndDropSession,
@@ -32,6 +38,8 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 pub use plugin::{ProtocolPlugin, ProtocolServerState, XWaylandServerState};
 
+/// High-level protocol notifications that need to cross from callback-driven Smithay code into
+/// the compositor's scheduled ECS world.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProtocolEvent {
     SurfaceCommitted {
@@ -62,7 +70,7 @@ pub enum ProtocolEvent {
         surface_id: u64,
         seat_name: String,
         serial: u32,
-        edges: String,
+        edges: ResizeEdges,
     },
     MaximizeRequested {
         surface_id: u64,
@@ -160,7 +168,7 @@ pub enum ProtocolEvent {
     X11WindowResizeRequested {
         surface_id: u64,
         button: u32,
-        edges: String,
+        edges: ResizeEdges,
     },
     X11WindowUnmapped {
         surface_id: u64,
@@ -206,6 +214,23 @@ pub enum ProtocolEvent {
     },
 }
 
+impl ProtocolEventKind for ProtocolEvent {}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::ProtocolEvent;
+    use nekoland_ecs::kinds::ProtocolEvent as ProtocolEventKind;
+
+    fn assert_protocol_event<T: ProtocolEventKind>() {}
+
+    #[test]
+    fn protocol_event_implements_protocol_event_trait() {
+        assert_protocol_event::<ProtocolEvent>();
+    }
+}
+
+/// Aggregates per-protocol Smithay state together with the bridge that buffers protocol events
+/// until the protocol schedule flushes them into ECS resources.
 #[derive(Debug, Default, Resource)]
 pub struct ProtocolState {
     pub compositor: compositor::CompositorProtocolState,
@@ -226,6 +251,8 @@ pub struct ProtocolState {
 }
 
 impl ProtocolState {
+    /// Moves buffered protocol events into the typed ECS request/resources that downstream systems
+    /// consume during layout, focus, selection, and output handling.
     pub fn flush_into_ecs(
         &mut self,
         pending_xdg_requests: &mut PendingXdgRequests,
@@ -239,37 +266,37 @@ impl ProtocolState {
         for event in self.bridge.drain() {
             match event {
                 ProtocolEvent::SurfaceCommitted { surface_id, role, size } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::Committed { role, size },
                     });
                 }
                 ProtocolEvent::ConfigureRequested { surface_id, role } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::ConfigureRequested { role },
                     });
                 }
                 ProtocolEvent::AckConfigure { surface_id, role, serial } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::AckConfigure { role, serial },
                     });
                 }
                 ProtocolEvent::ToplevelMetadataChanged { surface_id, title, app_id } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::MetadataChanged { title, app_id },
                     });
                 }
                 ProtocolEvent::MoveRequested { surface_id, seat_name, serial } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::InteractiveMove { seat_name, serial },
                     });
                 }
                 ProtocolEvent::ResizeRequested { surface_id, seat_name, serial, edges } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::InteractiveResize {
                             seat_name,
@@ -279,37 +306,37 @@ impl ProtocolState {
                     });
                 }
                 ProtocolEvent::MaximizeRequested { surface_id } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::Maximize,
                     });
                 }
                 ProtocolEvent::UnMaximizeRequested { surface_id } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::UnMaximize,
                     });
                 }
                 ProtocolEvent::FullscreenRequested { surface_id, output_name } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::Fullscreen { output_name },
                     });
                 }
                 ProtocolEvent::UnFullscreenRequested { surface_id } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::UnFullscreen,
                     });
                 }
                 ProtocolEvent::MinimizeRequested { surface_id } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::Minimize,
                     });
                 }
                 ProtocolEvent::PopupCreated { surface_id, parent_surface_id, placement } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::PopupCreated {
                             parent_surface_id,
@@ -318,19 +345,19 @@ impl ProtocolState {
                     });
                 }
                 ProtocolEvent::PopupRepositionRequested { surface_id, placement } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::PopupRepositioned { placement },
                     });
                 }
                 ProtocolEvent::PopupGrabRequested { surface_id, seat_name, serial } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::PopupGrab { seat_name, serial },
                     });
                 }
                 ProtocolEvent::SurfaceDestroyed { surface_id, role } => {
-                    pending_xdg_requests.items.push(WindowLifecycleRequest {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::Destroyed { role },
                     });
@@ -346,7 +373,7 @@ impl ProtocolState {
                     exclusive_zone,
                     margins,
                 } => {
-                    pending_layer_requests.items.push(LayerLifecycleRequest {
+                    pending_layer_requests.push(LayerLifecycleRequest {
                         surface_id,
                         action: LayerLifecycleAction::Created {
                             spec: LayerSurfaceCreateSpec {
@@ -371,7 +398,7 @@ impl ProtocolState {
                     exclusive_zone,
                     margins,
                 } => {
-                    pending_layer_requests.items.push(LayerLifecycleRequest {
+                    pending_layer_requests.push(LayerLifecycleRequest {
                         surface_id,
                         action: LayerLifecycleAction::Committed {
                             size,
@@ -384,7 +411,7 @@ impl ProtocolState {
                     });
                 }
                 ProtocolEvent::LayerSurfaceDestroyed { surface_id } => {
-                    pending_layer_requests.items.push(LayerLifecycleRequest {
+                    pending_layer_requests.push(LayerLifecycleRequest {
                         surface_id,
                         action: LayerLifecycleAction::Destroyed,
                     });
@@ -397,7 +424,7 @@ impl ProtocolState {
                     app_id,
                     geometry,
                 } => {
-                    pending_x11_requests.items.push(X11LifecycleRequest {
+                    pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
                         action: X11LifecycleAction::Mapped {
                             window_id,
@@ -409,74 +436,73 @@ impl ProtocolState {
                     });
                 }
                 ProtocolEvent::X11WindowReconfigured { surface_id, title, app_id, geometry } => {
-                    pending_x11_requests.items.push(X11LifecycleRequest {
+                    pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
                         action: X11LifecycleAction::Reconfigured { title, app_id, geometry },
                     });
                 }
                 ProtocolEvent::X11WindowMaximizeRequested { surface_id } => {
-                    pending_x11_requests.items.push(X11LifecycleRequest {
+                    pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
                         action: X11LifecycleAction::Maximize,
                     });
                 }
                 ProtocolEvent::X11WindowUnMaximizeRequested { surface_id } => {
-                    pending_x11_requests.items.push(X11LifecycleRequest {
+                    pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
                         action: X11LifecycleAction::UnMaximize,
                     });
                 }
                 ProtocolEvent::X11WindowFullscreenRequested { surface_id } => {
-                    pending_x11_requests.items.push(X11LifecycleRequest {
+                    pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
                         action: X11LifecycleAction::Fullscreen,
                     });
                 }
                 ProtocolEvent::X11WindowUnFullscreenRequested { surface_id } => {
-                    pending_x11_requests.items.push(X11LifecycleRequest {
+                    pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
                         action: X11LifecycleAction::UnFullscreen,
                     });
                 }
                 ProtocolEvent::X11WindowMinimizeRequested { surface_id } => {
-                    pending_x11_requests.items.push(X11LifecycleRequest {
+                    pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
                         action: X11LifecycleAction::Minimize,
                     });
                 }
                 ProtocolEvent::X11WindowUnMinimizeRequested { surface_id } => {
-                    pending_x11_requests.items.push(X11LifecycleRequest {
+                    pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
                         action: X11LifecycleAction::UnMinimize,
                     });
                 }
                 ProtocolEvent::X11WindowMoveRequested { surface_id, button } => {
-                    pending_x11_requests.items.push(X11LifecycleRequest {
+                    pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
                         action: X11LifecycleAction::InteractiveMove { button },
                     });
                 }
                 ProtocolEvent::X11WindowResizeRequested { surface_id, button, edges } => {
-                    pending_x11_requests.items.push(X11LifecycleRequest {
+                    pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
                         action: X11LifecycleAction::InteractiveResize { button, edges },
                     });
                 }
                 ProtocolEvent::X11WindowUnmapped { surface_id } => {
-                    pending_x11_requests.items.push(X11LifecycleRequest {
+                    pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
                         action: X11LifecycleAction::Unmapped,
                     });
                 }
                 ProtocolEvent::X11WindowDestroyed { surface_id } => {
-                    pending_x11_requests.items.push(X11LifecycleRequest {
+                    pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
                         action: X11LifecycleAction::Destroyed,
                     });
                 }
                 ProtocolEvent::OutputAnnounced { output_name } => {
                     pending_output_events
-                        .items
                         .push(OutputEventRecord { output_name, change: "announced".to_owned() });
                 }
                 ProtocolEvent::ClipboardSelectionChanged { seat_name, mime_types } => {
@@ -598,12 +624,14 @@ pub struct ProtocolRegistry {
     pub globals: Vec<&'static str>,
 }
 
+/// One compositor-managed surface tracked by the protocol runtime.
 #[derive(Debug, Clone)]
 pub struct ProtocolSurfaceEntry {
     pub kind: ProtocolSurfaceKind,
     pub surface: WlSurface,
 }
 
+/// Surface classes the protocol runtime distinguishes when registering surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolSurfaceKind {
     Toplevel,
@@ -611,17 +639,20 @@ pub enum ProtocolSurfaceKind {
     Layer,
 }
 
+/// Lookup table from compositor surface id to live Smithay surface handle.
 #[derive(Debug, Default)]
 pub struct ProtocolSurfaceRegistry {
     pub surfaces: std::collections::HashMap<u64, ProtocolSurfaceEntry>,
 }
 
 impl ProtocolSurfaceRegistry {
+    /// Returns the live Smithay surface handle associated with a compositor surface id.
     pub fn surface(&self, surface_id: u64) -> Option<&WlSurface> {
         self.surfaces.get(&surface_id).map(|entry| &entry.surface)
     }
 }
 
+/// Static list of protocol globals the compositor currently intends to expose.
 pub fn supported_protocols() -> &'static [&'static str] {
     &[
         "wl_compositor",

@@ -1,3 +1,5 @@
+//! In-process integration test for clipboard IPC query and subscription state.
+
 use std::io::ErrorKind;
 use std::path::Path;
 use std::thread;
@@ -29,22 +31,30 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 mod common;
 
+/// MIME type offered by the helper clipboard client.
 const TEST_MIME_TYPE: &str = "text/plain;charset=utf-8";
+/// Frame on which the synthetic key pump starts forcing focus/input.
 const INPUT_PUMP_START_FRAME: u64 = 48;
+/// Maximum number of frames the synthetic key pump stays active.
 const INPUT_PUMP_FRAMES: u16 = 400;
+/// Extra dwell time after setting selection so IPC observers can catch up.
 const CLIENT_HOLD_AFTER_SELECTION: Duration = Duration::from_millis(250);
 
+/// Synthetic input pump that helps the clipboard client gain focus and publish selection.
 #[derive(Debug, Default, Resource)]
 struct ClipboardInputPump {
+    /// Remaining frames during which synthetic key input will be injected.
     remaining_frames: u16,
 }
 
+/// Summary returned by the helper clipboard client.
 #[derive(Debug)]
 struct ClipboardClientSummary {
     globals: Vec<String>,
     selection_sent: bool,
 }
 
+/// Helper Wayland client state used to publish clipboard selection during the IPC scenario.
 #[derive(Debug, Default)]
 struct ClipboardClientState {
     globals: Vec<String>,
@@ -58,11 +68,16 @@ struct ClipboardClientState {
     xdg_surface: Option<xdg_surface::XdgSurface>,
     toplevel: Option<xdg_toplevel::XdgToplevel>,
     data_source: Option<wl_data_source::WlDataSource>,
+    /// Last configure serial seen for the helper toplevel.
     configure_serial: Option<u32>,
+    /// Whether the helper toplevel currently owns keyboard focus.
     keyboard_focused: bool,
+    /// Whether the helper client already published clipboard selection.
     selection_sent: bool,
 }
 
+/// Verifies that clipboard state is visible through both IPC subscription events and the IPC query
+/// snapshot.
 #[test]
 fn ipc_reports_clipboard_query_and_subscription_updates() {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
@@ -170,6 +185,7 @@ fn ipc_reports_clipboard_query_and_subscription_updates() {
     assert_eq!(snapshot.persisted_mime_types, vec![TEST_MIME_TYPE.to_owned()]);
 }
 
+/// Injects keyboard focus/input so the clipboard client can publish selection.
 fn pump_keyboard_selection_input(
     clock: Res<CompositorClock>,
     mut pump: ResMut<ClipboardInputPump>,
@@ -186,13 +202,14 @@ fn pump_keyboard_selection_input(
     };
 
     keyboard_focus.focused_surface = Some(surface.id);
-    pending_protocol_inputs.items.push(BackendInputEvent {
+    pending_protocol_inputs.push(BackendInputEvent {
         device: "ipc-clipboard-test".to_owned(),
         action: BackendInputAction::Key { keycode: 36, pressed: true },
     });
     pump.remaining_frames = pump.remaining_frames.saturating_sub(1);
 }
 
+/// Runs the helper clipboard client until it successfully publishes a selection.
 fn run_clipboard_client(socket_path: &Path) -> Result<ClipboardClientSummary, common::TestControl> {
     let stream = std::os::unix::net::UnixStream::connect(socket_path)
         .map_err(|error| common::TestControl::Fail(error.to_string()))?;
@@ -227,6 +244,7 @@ fn run_clipboard_client(socket_path: &Path) -> Result<ClipboardClientSummary, co
     Ok(ClipboardClientSummary { globals: state.globals, selection_sent: state.selection_sent })
 }
 
+/// Performs one read/dispatch cycle for the helper clipboard client.
 fn dispatch_client_once(
     event_queue: &mut EventQueue<ClipboardClientState>,
     state: &mut ClipboardClientState,
@@ -247,6 +265,7 @@ fn dispatch_client_once(
     Ok(())
 }
 
+/// Waits for the first `clipboard_changed` event on the clipboard subscription stream.
 fn wait_for_clipboard_changed(
     socket_path: &Path,
     subscription: IpcSubscription,
@@ -266,6 +285,8 @@ fn wait_for_clipboard_changed(
                 let Some(payload) = event.payload.clone() else {
                     continue;
                 };
+                // The subscription can emit an initial empty snapshot before the
+                // client publishes selection, so only accept the fully populated state.
                 let snapshot =
                     serde_json::from_value::<ClipboardSnapshot>(payload).map_err(|error| {
                         common::TestControl::Fail(format!(
@@ -280,6 +301,8 @@ fn wait_for_clipboard_changed(
             }
             Err(error) if ipc_error_is_retryable(&error) => {
                 if Instant::now() >= deadline {
+                    // Pull the current query snapshot into the timeout message to
+                    // make subscription failures easier to diagnose.
                     let snapshot = send_request_to_path(
                         socket_path,
                         &IpcRequest {
@@ -302,6 +325,7 @@ fn wait_for_clipboard_changed(
     }
 }
 
+/// Polls the IPC clipboard query until it returns the expected selection snapshot.
 fn wait_for_clipboard_query(socket_path: &Path) -> Result<ClipboardSnapshot, common::TestControl> {
     let deadline = Instant::now() + Duration::from_secs(2);
 
@@ -336,6 +360,7 @@ fn wait_for_clipboard_query(socket_path: &Path) -> Result<ClipboardSnapshot, com
     }
 }
 
+/// Decodes the clipboard query reply payload into a clipboard snapshot.
 fn decode_clipboard_reply(reply: IpcReply) -> Result<ClipboardSnapshot, common::TestControl> {
     if !reply.ok {
         return Err(common::TestControl::Fail(format!(
@@ -352,10 +377,12 @@ fn decode_clipboard_reply(reply: IpcReply) -> Result<ClipboardSnapshot, common::
     })
 }
 
+/// Identifies retryable transient IPC errors.
 fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
     matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
 }
 
+/// Identifies IPC errors that should skip the test in restricted environments.
 fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -503,6 +530,7 @@ delegate_noop!(ClipboardClientState: ignore wl_data_source::WlDataSource);
 delegate_noop!(ClipboardClientState: ignore wl_data_offer::WlDataOffer);
 
 impl ClipboardClientState {
+    /// Create the helper toplevel once both compositor globals are available.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;
@@ -522,6 +550,7 @@ impl ClipboardClientState {
         self.toplevel = Some(toplevel);
     }
 
+    /// Bind the seat-scoped data device once both the seat and manager are known.
     fn maybe_bind_data_device(&mut self, qh: &QueueHandle<Self>) {
         if self.data_device.is_some() || self.data_device_manager.is_none() || self.seat.is_none() {
             return;
@@ -535,6 +564,7 @@ impl ClipboardClientState {
         self.data_device = Some(manager.get_data_device(seat, qh, ()));
     }
 
+    /// Offer one MIME type and claim compositor clipboard ownership for the current serial.
     fn set_clipboard_selection(&mut self, qh: &QueueHandle<Self>, serial: u32) {
         let Some(manager) = self.data_device_manager.as_ref() else {
             return;

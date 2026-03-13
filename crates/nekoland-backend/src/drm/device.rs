@@ -1,89 +1,104 @@
 use std::cell::RefCell;
-use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use bevy_ecs::prelude::{NonSendMut, Res, ResMut};
-use nekoland_ecs::resources::{OutputEventRecord, PendingOutputEvents};
+use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmDeviceNotifier, DrmNode};
+use smithay::backend::session::Session;
 use smithay::reexports::drm::control::connector::Interface;
 use smithay::reexports::drm::control::{Device as ControlDevice, connector, crtc};
+use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::DeviceFd;
 
-use crate::traits::{BackendKind, SelectedBackend};
+use crate::common::outputs::BackendOutputBlueprint;
+use crate::traits::BackendDescriptor;
 
-/// All opened DRM device state held across frames.
+use super::session::{DrmSessionStatus, SharedDrmSessionState};
+
 #[derive(Debug)]
 pub struct DrmDeviceState {
-    /// The opened DRM node.
     pub node: DrmNode,
-    /// Path of the DRM node file.
     pub path: PathBuf,
-    /// Smithay DRM device.
     pub device: DrmDevice,
-    /// DRM notifier (calloop event source for page-flip/vblank events).
     pub notifier: DrmDeviceNotifier,
-    /// DRM file descriptor — used for GBM and connector queries.
     pub fd: DrmDeviceFd,
-    /// All connectors discovered at initialisation.
     pub connectors: Vec<ConnectorInfo>,
 }
 
-/// Minimal information about a physical display connector.
 #[derive(Debug, Clone)]
 pub struct ConnectorInfo {
     pub handle: connector::Handle,
     pub name: String,
     pub connected: bool,
     pub crtc: Option<crtc::Handle>,
+    pub properties: OutputProperties,
 }
 
-/// Shared reference used between the calloop source and ECS systems.
+impl ConnectorInfo {
+    pub fn output_blueprint(&self, descriptor: &BackendDescriptor) -> BackendOutputBlueprint {
+        BackendOutputBlueprint {
+            device: OutputDevice {
+                name: self.name.clone(),
+                kind: OutputKind::Physical,
+                make: "DRM".to_owned(),
+                model: descriptor.description.clone(),
+            },
+            properties: self.properties.clone(),
+        }
+    }
+}
+
 pub type SharedDrmState = Rc<RefCell<Option<DrmDeviceState>>>;
 
-/// ECS system: open the DRM device on first frame when DRM backend is selected.
-pub fn drm_device_system(
-    selected_backend: Res<SelectedBackend>,
-    drm_state: NonSendMut<SharedDrmState>,
-    mut pending_output_events: ResMut<PendingOutputEvents>,
-) {
-    if selected_backend.kind != BackendKind::Drm {
-        return;
-    }
-
+pub fn ensure_drm_device(
+    session_state: &SharedDrmSessionState,
+    drm_state: &SharedDrmState,
+) -> Vec<ConnectorInfo> {
     if drm_state.borrow().is_some() {
-        return;
+        return Vec::new();
     }
 
-    let Some(path) = find_primary_drm_node() else {
+    let (mut session, seat_name) = {
+        let session_state = session_state.borrow();
+        if session_state.status != DrmSessionStatus::Ready || !session_state.active {
+            return Vec::new();
+        }
+
+        let Some(session) = session_state.session.clone() else {
+            tracing::warn!("drm session missing libseat handle");
+            return Vec::new();
+        };
+
+        (session, session_state.seat_name.clone())
+    };
+
+    let Some(path) = find_primary_drm_node(&seat_name) else {
         tracing::warn!("no primary DRM node found; DRM backend unavailable");
-        return;
+        return Vec::new();
     };
 
     tracing::info!(path = %path.display(), "opening DRM device");
 
-    match open_drm_device(&path) {
+    match open_drm_device(&path, &mut session) {
         Ok(state) => {
-            for connector in &state.connectors {
-                if connector.connected {
-                    tracing::info!(connector = %connector.name, "DRM connector connected");
-                    pending_output_events.items.push(OutputEventRecord {
-                        output_name: connector.name.clone(),
-                        change: "connected".to_owned(),
-                    });
-                }
-            }
+            let connected = state
+                .connectors
+                .iter()
+                .filter(|connector| connector.connected)
+                .cloned()
+                .collect::<Vec<_>>();
             *drm_state.borrow_mut() = Some(state);
+            connected
         }
         Err(error) => {
             tracing::warn!(%error, "failed to open DRM device");
+            Vec::new()
         }
     }
 }
 
-/// Scan `/dev/dri/` for a primary DRM node.
-fn find_primary_drm_node() -> Option<PathBuf> {
-    if let Some(path) = udev_primary_drm_node() {
+fn find_primary_drm_node(seat_name: &str) -> Option<PathBuf> {
+    if let Some(path) = udev_primary_drm_node(seat_name) {
         return Some(path);
     }
     for entry in std::fs::read_dir("/dev/dri").ok()?.flatten() {
@@ -94,10 +109,9 @@ fn find_primary_drm_node() -> Option<PathBuf> {
     None
 }
 
-/// Try to locate the primary GPU via udev.
-fn udev_primary_drm_node() -> Option<PathBuf> {
+fn udev_primary_drm_node(seat_name: &str) -> Option<PathBuf> {
     use smithay::backend::udev::UdevBackend;
-    let udev = UdevBackend::new("seat0").ok()?;
+    let udev = UdevBackend::new(seat_name).ok()?;
     for (_, path) in udev.device_list() {
         if let Ok(node) = DrmNode::from_path(&path) {
             if node.ty() == smithay::backend::drm::NodeType::Primary {
@@ -108,13 +122,14 @@ fn udev_primary_drm_node() -> Option<PathBuf> {
     None
 }
 
-/// Open a DRM device and enumerate connectors.
-fn open_drm_device(path: &std::path::Path) -> Result<DrmDeviceState, Box<dyn std::error::Error>> {
-    let file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
-
+fn open_drm_device(
+    path: &std::path::Path,
+    session: &mut smithay::backend::session::libseat::LibSeatSession,
+) -> Result<DrmDeviceState, Box<dyn std::error::Error>> {
+    let owned_fd = session.open(path, OFlags::RDWR | OFlags::CLOEXEC).map_err(|error| {
+        std::io::Error::other(format!("failed to open DRM node via libseat: {error}"))
+    })?;
     let node = DrmNode::from_path(path)?;
-    // SAFETY: the file was just opened and the fd is valid.
-    let owned_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(file.into_raw_fd()) };
     let device_fd = DrmDeviceFd::new(DeviceFd::from(owned_fd));
 
     let (device, notifier) = DrmDevice::new(device_fd.clone(), false)?;
@@ -132,7 +147,8 @@ fn open_drm_device(path: &std::path::Path) -> Result<DrmDeviceState, Box<dyn std
                 .current_encoder()
                 .and_then(|enc| device_fd.get_encoder(enc).ok())
                 .and_then(|enc| enc.crtc());
-            Some(ConnectorInfo { handle, name, connected, crtc })
+            let properties = preferred_output_properties(&info);
+            Some(ConnectorInfo { handle, name, connected, crtc, properties })
         })
         .collect();
 
@@ -146,7 +162,6 @@ fn open_drm_device(path: &std::path::Path) -> Result<DrmDeviceState, Box<dyn std
     })
 }
 
-/// Build a human-readable connector name (e.g. `"HDMI-A-1"`).
 fn connector_name(info: &connector::Info) -> String {
     let interface = match info.interface() {
         Interface::DVII => "DVI-I",
@@ -169,32 +184,29 @@ fn connector_name(info: &connector::Info) -> String {
     format!("{}-{}", interface, info.interface_id())
 }
 
-#[cfg(test)]
-mod tests {
-    use bevy_ecs::prelude::World;
-    use nekoland_ecs::resources::PendingOutputEvents;
+fn preferred_output_properties(info: &connector::Info) -> OutputProperties {
+    let preferred_mode = info
+        .modes()
+        .iter()
+        .find(|mode| {
+            mode.mode_type().contains(smithay::reexports::drm::control::ModeTypeFlags::PREFERRED)
+        })
+        .copied()
+        .or_else(|| info.modes().first().copied());
 
-    use crate::traits::{BackendKind, SelectedBackend};
-
-    use super::SharedDrmState;
-
-    #[test]
-    fn drm_device_system_is_noop_when_backend_is_not_drm() {
-        let mut world = World::new();
-        world.insert_resource(SelectedBackend {
-            kind: BackendKind::Winit,
-            description: String::new(),
-        });
-        world.insert_resource(PendingOutputEvents::default());
-        world.insert_non_send_resource(SharedDrmState::default());
-
-        let selected: &SelectedBackend = world.resource();
-        assert_ne!(selected.kind, BackendKind::Drm);
-
-        let events: &PendingOutputEvents = world.resource();
-        assert!(events.items.is_empty());
-
-        let drm: &SharedDrmState = world.non_send_resource();
-        assert!(drm.borrow().is_none());
+    if let Some(mode) = preferred_mode {
+        let (width, height) = mode.size();
+        return OutputProperties {
+            width: width.max(1) as u32,
+            height: height.max(1) as u32,
+            refresh_millihz: if mode.vrefresh() > 0 {
+                mode.vrefresh() as u32 * 1000
+            } else {
+                60_000
+            },
+            scale: 1,
+        };
     }
+
+    OutputProperties { width: 2560, height: 1440, refresh_millihz: 144_000, scale: 1 }
 }

@@ -1,3 +1,5 @@
+//! Render-list composition, damage tracking, frame pacing, and compositor visual effects.
+
 pub mod compositor_render;
 pub mod cursor;
 pub mod damage_tracker;

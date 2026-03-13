@@ -1,3 +1,6 @@
+//! In-process integration test for keyboard and pointer seat events reaching a real Wayland
+//! client.
+
 use std::io::Write;
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -26,17 +29,25 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 mod common;
 
+/// Linux keycode used for the synthetic keyboard press.
 const TEST_KEYCODE: u32 = 36;
+/// Pointer button code used for the synthetic click.
 const TEST_BUTTON_CODE: u32 = 0x110;
+/// Maximum number of frames the synthetic seat-input pump stays active.
 const INPUT_PUMP_FRAMES: u8 = 8;
+/// Frame at which the synthetic seat-input pump starts driving input.
 const INPUT_PUMP_START_FRAME: u64 = 6;
 
+/// Synthetic input pump that drives seat activity for the scenario.
 #[derive(Debug, Default, Resource)]
 struct SeatInputPump {
+    /// Remaining frames during which synthetic input will be injected.
     remaining_frames: u8,
+    /// Tick counter used to alternate the pointer location within the surface.
     tick: u8,
 }
 
+/// Summary returned by the helper seat-input client.
 #[derive(Debug, Default)]
 struct SeatClientSummary {
     globals: Vec<String>,
@@ -47,6 +58,8 @@ struct SeatClientSummary {
     button_press_count: usize,
 }
 
+/// Helper Wayland client state used to create one toplevel and observe seat-enter, motion, key,
+/// and button events.
 #[derive(Debug, Default)]
 struct SeatClientState {
     globals: Vec<String>,
@@ -62,15 +75,24 @@ struct SeatClientState {
     _pool: Option<wl_shm_pool::WlShmPool>,
     _buffer: Option<wl_buffer::WlBuffer>,
     _backing_file: Option<std::fs::File>,
+    /// Last configure serial seen for the helper toplevel.
     configure_serial: Option<u32>,
+    /// Whether the helper attached a real SHM buffer yet.
     buffer_attached: bool,
+    /// Number of keyboard enter events observed on the helper surface.
     keyboard_enter_count: usize,
+    /// Number of pointer enter events observed on the helper surface.
     pointer_enter_count: usize,
+    /// Number of pointer motion events observed on the helper surface.
     pointer_motion_count: usize,
+    /// Number of pressed key events observed by the helper client.
     key_press_count: usize,
+    /// Number of pressed pointer-button events observed by the helper client.
     button_press_count: usize,
 }
 
+/// Verifies that synthetic seat input propagated through the protocol pipeline reaches a real
+/// client.
 #[test]
 fn seat_input_events_reach_real_wayland_client() {
     let Some(summary) = run_seat_input_scenario() else {
@@ -85,6 +107,7 @@ fn seat_input_events_reach_real_wayland_client() {
     assert!(summary.button_press_count >= 1, "client should receive wl_pointer.button");
 }
 
+/// Runs the seat-input scenario and returns the helper-client summary.
 fn run_seat_input_scenario() -> Option<SeatClientSummary> {
     let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
@@ -137,6 +160,7 @@ fn run_seat_input_scenario() -> Option<SeatClientSummary> {
     Some(summary)
 }
 
+/// Injects alternating pointer/key/button input into the protocol input queue.
 fn pump_protocol_seat_input(
     clock: Res<CompositorClock>,
     mut pump: ResMut<SeatInputPump>,
@@ -162,7 +186,7 @@ fn pump_protocol_seat_input(
     pointer.x = x;
     pointer.y = y;
 
-    pending_protocol_inputs.items.extend([
+    pending_protocol_inputs.extend([
         BackendInputEvent {
             device: "seat-test".to_owned(),
             action: BackendInputAction::FocusChanged { focused: false },
@@ -192,6 +216,7 @@ fn pump_protocol_seat_input(
     pump.tick = pump.tick.saturating_add(1);
 }
 
+/// Runs the helper Wayland client until it has observed the expected seat events.
 fn run_seat_input_client(socket_path: &Path) -> Result<SeatClientSummary, common::TestControl> {
     let stream = std::os::unix::net::UnixStream::connect(socket_path)
         .map_err(|error| common::TestControl::Fail(error.to_string()))?;
@@ -237,6 +262,7 @@ fn run_seat_input_client(socket_path: &Path) -> Result<SeatClientSummary, common
     })
 }
 
+/// Performs one read/dispatch cycle for the helper seat-input client.
 fn dispatch_client_once(
     event_queue: &mut EventQueue<SeatClientState>,
     state: &mut SeatClientState,
@@ -432,6 +458,7 @@ delegate_noop!(SeatClientState: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(SeatClientState: ignore xdg_toplevel::XdgToplevel);
 
 impl SeatClientState {
+    /// Creates the helper toplevel once both `wl_compositor` and `xdg_wm_base` are available.
     fn maybe_create_toplevel(&mut self, qh: &QueueHandle<Self>) {
         if self.base_surface.is_some() || self.compositor.is_none() || self.wm_base.is_none() {
             return;
@@ -451,6 +478,7 @@ impl SeatClientState {
         self.toplevel = Some(toplevel);
     }
 
+    /// Indicates whether the helper client has observed the full seat-input round-trip.
     fn is_complete(&self) -> bool {
         self.configure_serial.is_some()
             && self.keyboard_enter_count > 0
@@ -461,6 +489,8 @@ impl SeatClientState {
     }
 }
 
+/// Creates a small SHM buffer so the helper client can present a real surface and receive seat
+/// focus.
 fn create_test_buffer(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<SeatClientState>,

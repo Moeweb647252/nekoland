@@ -1,3 +1,6 @@
+//! ECS resources that carry frame-to-frame compositor state, pending requests, and queryable
+//! runtime snapshots.
+
 pub mod backend_input;
 pub mod clipboard;
 pub mod clock;
@@ -6,19 +9,25 @@ pub mod command_requests;
 pub mod compositor_config;
 pub mod damage;
 pub mod dnd;
+pub mod entity_index;
 pub mod frame_pacing;
 pub mod keyboard_state;
 pub mod layer_requests;
+pub mod output_control;
 pub mod output_presentation;
 pub mod output_requests;
 pub mod pending_events;
 pub mod pointer_state;
 pub mod popup_requests;
+pub mod primary_output;
 pub mod render_list;
 pub mod virtual_output;
+pub mod window_control;
 pub mod window_requests;
+pub mod window_stacking;
 pub mod work_area;
-pub mod workspace_requests;
+pub mod workspace_control;
+pub mod workspace_tiling;
 pub mod x11_requests;
 
 pub use backend_input::*;
@@ -29,17 +38,23 @@ pub use command_requests::*;
 pub use compositor_config::*;
 pub use damage::*;
 pub use dnd::*;
+pub use entity_index::*;
 pub use frame_pacing::*;
 pub use keyboard_state::*;
 pub use layer_requests::*;
+pub use output_control::*;
 pub use output_presentation::*;
 pub use output_requests::*;
 pub use pending_events::*;
 pub use pointer_state::*;
 pub use popup_requests::*;
+pub use primary_output::*;
 pub use render_list::*;
 pub use virtual_output::*;
+pub use window_control::*;
 pub use window_requests::*;
+pub use window_stacking::*;
 pub use work_area::*;
-pub use workspace_requests::*;
+pub use workspace_control::*;
+pub use workspace_tiling::*;
 pub use x11_requests::*;
