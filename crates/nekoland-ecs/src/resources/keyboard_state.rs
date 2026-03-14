@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +16,22 @@ pub struct ModifierState {
     pub alt: bool,
     pub shift: bool,
     pub logo: bool,
+}
+
+/// Snapshot of currently-held keys plus the transitions that occurred in the current input tick.
+#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PressedKeys {
+    held: BTreeSet<u32>,
+    just_pressed: BTreeSet<u32>,
+    just_released: BTreeSet<u32>,
+    modifiers: ModifierState,
+}
+
+/// One normalized keyboard shortcut used by feature-local input systems.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KeyShortcut {
+    pub modifiers: ModifierMask,
+    pub keycode: Option<u32>,
 }
 
 /// Typed modifier mask used for config-driven gestures that only care about held modifiers.
@@ -81,6 +99,82 @@ impl ModifierMask {
         }
 
         tokens
+    }
+}
+
+impl PressedKeys {
+    pub fn clear_frame_transitions(&mut self) {
+        self.just_pressed.clear();
+        self.just_released.clear();
+    }
+
+    pub fn reset_all(&mut self) {
+        self.held.clear();
+        self.just_pressed.clear();
+        self.just_released.clear();
+        self.modifiers = ModifierState::default();
+    }
+
+    pub fn record_key(&mut self, keycode: u32, pressed: bool) {
+        if pressed {
+            if self.held.insert(keycode) {
+                self.just_pressed.insert(keycode);
+            }
+        } else if self.held.remove(&keycode) {
+            self.just_released.insert(keycode);
+        }
+
+        update_modifier_state(&mut self.modifiers, keycode, pressed);
+    }
+
+    pub fn modifiers(&self) -> &ModifierState {
+        &self.modifiers
+    }
+
+    pub fn held(&self) -> &BTreeSet<u32> {
+        &self.held
+    }
+
+    pub fn is_pressed(&self, shortcut: &KeyShortcut) -> bool {
+        shortcut.keycode.is_none_or(|keycode| self.held.contains(&keycode))
+            && modifiers_match_exact(&self.modifiers, &shortcut.modifiers)
+    }
+
+    pub fn just_pressed(&self, shortcut: &KeyShortcut) -> bool {
+        shortcut.keycode.is_some_and(|keycode| self.just_pressed.contains(&keycode))
+            && modifiers_match_exact(&self.modifiers, &shortcut.modifiers)
+    }
+
+    pub fn just_released(&self, shortcut: &KeyShortcut) -> bool {
+        shortcut.keycode.is_some_and(|keycode| self.just_released.contains(&keycode))
+            && modifiers_match_exact(&self.modifiers, &shortcut.modifiers)
+    }
+}
+
+impl KeyShortcut {
+    pub const fn new(modifiers: ModifierMask, keycode: Option<u32>) -> Self {
+        Self { modifiers, keycode }
+    }
+
+    pub const fn modifier_only(modifiers: ModifierMask) -> Self {
+        Self::new(modifiers, None)
+    }
+}
+
+fn modifiers_match_exact(current: &ModifierState, expected: &ModifierMask) -> bool {
+    current.ctrl == expected.ctrl
+        && current.alt == expected.alt
+        && current.shift == expected.shift
+        && current.logo == expected.logo
+}
+
+pub fn update_modifier_state(modifiers: &mut ModifierState, keycode: u32, pressed: bool) {
+    match keycode {
+        37 | 105 => modifiers.ctrl = pressed,
+        50 | 62 => modifiers.shift = pressed,
+        64 | 108 => modifiers.alt = pressed,
+        133 | 134 => modifiers.logo = pressed,
+        _ => {}
     }
 }
 

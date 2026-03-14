@@ -7,7 +7,7 @@ use nekoland_ecs::resources::{
     FocusedOutputState, GlobalPointerPosition, KeyboardFocusState, ModifierState,
     PendingBackendInputEvents, PendingExternalCommandRequests, PendingInputEvents,
     PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
-    ViewportPointerPanState,
+    PhysicalPointerPosition, PointerDelta, PressedKeys, ViewportPointerPanState,
 };
 
 use crate::{gestures, keybindings, keyboard, pointer, seat_manager, touch};
@@ -19,17 +19,20 @@ impl NekolandPlugin for InputPlugin {
     /// Register input resources plus the ordered input-decoding pipeline.
     fn build(&self, app: &mut App) {
         app.init_resource::<GlobalPointerPosition>()
+            .init_resource::<PhysicalPointerPosition>()
+            .init_resource::<PointerDelta>()
             .init_resource::<ViewportPointerPanState>()
             .init_resource::<FocusedOutputState>()
             .init_resource::<KeyboardFocusState>()
             .init_resource::<ModifierState>()
+            .init_resource::<PressedKeys>()
             .init_resource::<PendingBackendInputEvents>()
             .init_resource::<PendingExternalCommandRequests>()
             .init_resource::<PendingInputEvents>()
             .init_resource::<PendingOutputControls>()
             .init_resource::<PendingWindowControls>()
             .init_resource::<PendingWorkspaceControls>()
-            .init_resource::<keybindings::KeybindingEngine>()
+            .init_resource::<keybindings::CompiledKeybindings>()
             .init_resource::<seat_manager::SeatManager>()
             .add_message::<KeyPress>()
             .add_message::<PointerButton>()
@@ -42,11 +45,16 @@ impl NekolandPlugin for InputPlugin {
                 (
                     keyboard::keyboard_input_system,
                     pointer::pointer_input_system,
-                    pointer::focused_output_tracking_system,
+                    keybindings::reload_keybindings_system,
                     pointer::viewport_pointer_pan_system,
+                    pointer::cursor_motion_system,
+                    pointer::focused_output_tracking_system,
                     touch::touch_input_system,
                     gestures::gesture_recognition_system,
-                    keybindings::keybinding_dispatch_system,
+                    keybindings::window_keybinding_system,
+                    keybindings::workspace_keybinding_system,
+                    keybindings::output_keybinding_system,
+                    keybindings::command_keybinding_system,
                     seat_manager::seat_management_system,
                 )
                     .chain(),
@@ -65,6 +73,7 @@ mod tests {
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, CompositorClock, CompositorConfig,
         GlobalPointerPosition, ModifierState, PendingBackendInputEvents, PendingInputEvents,
+        PressedKeys,
     };
 
     use super::InputPlugin;
@@ -113,6 +122,8 @@ mod tests {
             .expect("pointer position should be initialized");
         let modifiers =
             world.get_resource::<ModifierState>().expect("modifier state should be initialized");
+        let pressed_keys =
+            world.get_resource::<PressedKeys>().expect("pressed keys should be initialized");
         let pending_input_events = world
             .get_resource::<PendingInputEvents>()
             .expect("pending input events should be initialized");
@@ -124,6 +135,7 @@ mod tests {
         assert_eq!(audit.pointer_events, vec![(320.5, 128.0)]);
         assert_eq!((pointer.x, pointer.y), (320.5, 128.0));
         assert!(modifiers.logo, "logo modifier should track the backend key press");
+        assert!(pressed_keys.held().contains(&133), "pressed key set should track held keys");
         assert!(
             pending_input_events.iter().any(|event| event.detail.contains("keycode 133 pressed"))
         );
