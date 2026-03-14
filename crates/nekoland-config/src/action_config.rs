@@ -2,6 +2,12 @@ use nekoland_ecs::resources::ConfiguredAction;
 use nekoland_ecs::selectors::{OutputName, WorkspaceLookup, WorkspaceSelector};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeybindEntryConfig {
+    Actions(Vec<ConfiguredAction>),
+    ViewportPanMode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ActionListConfig {
@@ -14,6 +20,31 @@ impl ActionListConfig {
         match self {
             Self::One(action) => Ok(vec![action.try_into()?]),
             Self::Many(actions) => actions.into_iter().map(TryInto::try_into).collect(),
+        }
+    }
+
+    pub fn into_keybind_entry(self) -> Result<KeybindEntryConfig, String> {
+        match self {
+            Self::One(ConfiguredActionConfig::ViewportPanMode { viewport_pan_mode }) => {
+                require_flag("viewport_pan_mode", viewport_pan_mode)
+                    .map(|()| KeybindEntryConfig::ViewportPanMode)
+            }
+            Self::One(action) => Ok(KeybindEntryConfig::Actions(vec![action.try_into()?])),
+            Self::Many(actions) => {
+                if actions
+                    .iter()
+                    .any(|action| matches!(action, ConfiguredActionConfig::ViewportPanMode { .. }))
+                {
+                    return Err(
+                        "`viewport_pan_mode` must be the only action in a binding".to_owned()
+                    );
+                }
+                actions
+                    .into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(KeybindEntryConfig::Actions)
+            }
         }
     }
 }
@@ -37,6 +68,7 @@ pub enum ConfiguredActionConfig {
     ViewportPan { viewport_pan: [isize; 2] },
     ViewportMove { viewport_move: [isize; 2] },
     ViewportCenter { viewport_center: bool },
+    ViewportPanMode { viewport_pan_mode: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -131,6 +163,9 @@ impl TryFrom<ConfiguredActionConfig> for ConfiguredAction {
                 require_flag("viewport_center", viewport_center)
                     .map(|()| Self::CenterViewportOnFocusedWindow)
             }
+            ConfiguredActionConfig::ViewportPanMode { .. } => {
+                Err("`viewport_pan_mode` is only supported inside `[keybinds.bindings]`".to_owned())
+            }
         }
     }
 }
@@ -146,7 +181,7 @@ mod tests {
     use nekoland_ecs::resources::ConfiguredAction;
     use nekoland_ecs::selectors::WorkspaceSelector;
 
-    use super::{ActionListConfig, ConfiguredActionConfig};
+    use super::{ActionListConfig, ConfiguredActionConfig, KeybindEntryConfig};
 
     #[derive(Debug, Deserialize)]
     struct OneAction {
@@ -194,6 +229,36 @@ mod tests {
         assert_eq!(
             ConfiguredAction::try_from(action).expect("destroy action should normalize"),
             ConfiguredAction::DestroyWorkspace { workspace: WorkspaceSelector::Active }
+        );
+    }
+
+    #[test]
+    fn viewport_pan_mode_is_keybind_only() {
+        let action = toml::from_str::<OneAction>("action = { viewport_pan_mode = true }")
+            .expect("viewport pan mode action should parse")
+            .action;
+
+        assert_eq!(
+            ConfiguredAction::try_from(action.clone()),
+            Err("`viewport_pan_mode` is only supported inside `[keybinds.bindings]`".to_owned())
+        );
+        assert_eq!(
+            ActionListConfig::One(action).into_keybind_entry().expect("keybind entry should parse"),
+            KeybindEntryConfig::ViewportPanMode
+        );
+    }
+
+    #[test]
+    fn viewport_pan_mode_must_be_alone_in_binding() {
+        let actions = toml::from_str::<ManyActions>(
+            "actions = [{ viewport_pan_mode = true }, { exec = [\"foot\"] }]",
+        )
+        .expect("action list should parse")
+        .actions;
+
+        assert_eq!(
+            actions.into_keybind_entry(),
+            Err("`viewport_pan_mode` must be the only action in a binding".to_owned())
         );
     }
 }

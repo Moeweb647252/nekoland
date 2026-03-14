@@ -298,7 +298,6 @@ background_color = "#f5f5f5"
 [input]
 focus_follows_mouse = true
 repeat_rate = 30
-viewport_pan_modifiers = ["Super", "Alt"]
 
 [[outputs]]
 name = "eDP-1"
@@ -307,6 +306,7 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
+"Super+Alt" = { viewport_pan_mode = true }
 "Super+Return" = { exec = ["foot"] }
 "Super+Q" = { close = true }
 "##;
@@ -321,7 +321,6 @@ background_color = "#101010"
 [input]
 focus_follows_mouse = false
 repeat_rate = 45
-viewport_pan_modifiers = ["Ctrl", "Shift"]
 
 [[outputs]]
 name = "HDMI-A-1"
@@ -330,6 +329,7 @@ scale = 2
 enabled = true
 
 [keybinds.bindings]
+"Ctrl+Shift" = { viewport_pan_mode = true }
 "Super+P" = { exec = ["wlogout", "--protocol", "layer-shell"] }
 "##;
 

@@ -7,7 +7,7 @@ use nekoland_ecs::resources::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    action_config::{ActionListConfig, ConfiguredActionConfig},
+    action_config::{ActionListConfig, ConfiguredActionConfig, KeybindEntryConfig},
     keybind_config::KeybindConfig,
     theme::Theme,
 };
@@ -45,6 +45,12 @@ impl Default for NekolandConfigFile {
         bindings.insert(
             "Super+Q".to_owned(),
             ActionListConfig::One(ConfiguredActionConfig::Close { close: true }),
+        );
+        bindings.insert(
+            "Super+Alt".to_owned(),
+            ActionListConfig::One(ConfiguredActionConfig::ViewportPanMode {
+                viewport_pan_mode: true,
+            }),
         );
 
         Self {
@@ -99,17 +105,11 @@ impl Default for XWaylandSection {
 pub struct InputConfig {
     pub focus_follows_mouse: bool,
     pub repeat_rate: u16,
-    #[serde(default = "default_viewport_pan_modifiers")]
-    pub viewport_pan_modifiers: Vec<String>,
 }
 
 impl Default for InputConfig {
     fn default() -> Self {
-        Self {
-            focus_follows_mouse: true,
-            repeat_rate: 30,
-            viewport_pan_modifiers: default_viewport_pan_modifiers(),
-        }
+        Self { focus_follows_mouse: true, repeat_rate: 30 }
     }
 }
 
@@ -133,6 +133,26 @@ impl TryFrom<NekolandConfigFile> for CompositorConfig {
     type Error = String;
 
     fn try_from(value: NekolandConfigFile) -> Result<Self, Self::Error> {
+        let mut viewport_pan_modifiers = CompositorConfig::default().viewport_pan_modifiers;
+        let mut viewport_pan_mode_binding = None::<String>;
+        let mut keybindings = BTreeMap::new();
+
+        for (binding, actions) in value.keybinds.bindings {
+            match actions.into_keybind_entry()? {
+                KeybindEntryConfig::Actions(actions) => {
+                    keybindings.insert(binding, actions);
+                }
+                KeybindEntryConfig::ViewportPanMode => {
+                    if let Some(previous) = viewport_pan_mode_binding.replace(binding.clone()) {
+                        return Err(format!(
+                            "viewport pan mode binding may only be configured once, found `{previous}` and `{binding}`"
+                        ));
+                    }
+                    viewport_pan_modifiers = parse_viewport_pan_mode_binding(&binding)?;
+                }
+            }
+        }
+
         Ok(Self {
             theme: value.theme.name,
             cursor_theme: value.theme.cursor_theme,
@@ -142,9 +162,7 @@ impl TryFrom<NekolandConfigFile> for CompositorConfig {
             window_rules: value.window_rules,
             focus_follows_mouse: value.input.focus_follows_mouse,
             repeat_rate: value.input.repeat_rate,
-            viewport_pan_modifiers: ModifierMask::from_config_tokens(
-                value.input.viewport_pan_modifiers.iter().map(String::as_str),
-            )?,
+            viewport_pan_modifiers,
             command_history_limit: value.ipc.command_history_limit,
             startup_actions: value
                 .startup
@@ -163,12 +181,7 @@ impl TryFrom<NekolandConfigFile> for CompositorConfig {
                     enabled: output.enabled,
                 })
                 .collect(),
-            keybindings: value
-                .keybinds
-                .bindings
-                .into_iter()
-                .map(|(binding, actions)| actions.into_actions().map(|actions| (binding, actions)))
-                .collect::<Result<BTreeMap<_, _>, _>>()?,
+            keybindings,
         })
     }
 }
@@ -177,8 +190,11 @@ fn default_layout_name() -> DefaultLayout {
     DefaultLayout::Floating
 }
 
-fn default_viewport_pan_modifiers() -> Vec<String> {
-    vec!["Super".to_owned(), "Alt".to_owned()]
+fn parse_viewport_pan_mode_binding(binding: &str) -> Result<ModifierMask, String> {
+    ModifierMask::from_config_tokens(
+        binding.split('+').map(str::trim).filter(|token| !token.is_empty()),
+    )
+    .map_err(|error| format!("invalid viewport pan mode binding `{binding}`: {error}"))
 }
 
 fn default_command_history_limit() -> usize {
@@ -211,7 +227,6 @@ background_color = "#ffffff"
 [input]
 focus_follows_mouse = true
 repeat_rate = 30
-viewport_pan_modifiers = ["Super", "Alt"]
 
 [[window_rules]]
 app_id = "org.nekoland.rules"
@@ -229,6 +244,7 @@ enabled = true
 
 [keybinds.bindings]
 "Super+Return" = { exec = ["foot"] }
+"Super+Alt" = { viewport_pan_mode = true }
 "##,
         )
         .expect("config should parse");
@@ -248,7 +264,7 @@ enabled = true
     }
 
     #[test]
-    fn input_viewport_pan_modifiers_normalize_into_runtime_mask() {
+    fn keybinding_viewport_pan_mode_normalizes_into_runtime_mask() {
         let config = toml::from_str::<NekolandConfigFile>(
             r##"
 [theme]
@@ -260,7 +276,6 @@ background_color = "#ffffff"
 [input]
 focus_follows_mouse = true
 repeat_rate = 30
-viewport_pan_modifiers = ["Ctrl", "Shift"]
 
 [[outputs]]
 name = "eDP-1"
@@ -270,6 +285,7 @@ enabled = true
 
 [keybinds.bindings]
 "Super+Return" = { exec = ["foot"] }
+"Ctrl+Shift" = { viewport_pan_mode = true }
 "##,
         )
         .expect("config should parse");
@@ -277,5 +293,37 @@ enabled = true
         let runtime = nekoland_ecs::resources::CompositorConfig::try_from(config)
             .expect("config should normalize");
         assert_eq!(runtime.viewport_pan_modifiers, ModifierMask::new(true, false, true, false));
+    }
+
+    #[test]
+    fn viewport_pan_mode_binding_rejects_non_modifier_keys() {
+        let config = toml::from_str::<NekolandConfigFile>(
+            r##"
+[theme]
+name = "latte"
+cursor_theme = "breeze"
+border_color = "#112233"
+background_color = "#ffffff"
+
+[input]
+focus_follows_mouse = true
+repeat_rate = 30
+
+[[outputs]]
+name = "eDP-1"
+mode = "1920x1080@60"
+scale = 1
+enabled = true
+
+[keybinds.bindings]
+"Super+H" = { viewport_pan_mode = true }
+"##,
+        )
+        .expect("config should parse");
+
+        assert_eq!(
+            nekoland_ecs::resources::CompositorConfig::try_from(config),
+            Err("invalid viewport pan mode binding `Super+H`: unsupported modifier `H`".to_owned())
+        );
     }
 }

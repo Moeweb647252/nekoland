@@ -9,7 +9,6 @@ background_color = "#e5e9f0"
 [input]
 focus_follows_mouse = false
 repeat_rate = 40
-viewport_pan_modifiers = ["Ctrl", "Shift"]
 
 [ipc]
 command_history_limit = 128
@@ -27,6 +26,7 @@ enabled = true
 "Super+Return" = { exec = ["wezterm", "start", "--always-new-process"] }
 "Super+Space" = { exec = ["wofi", "--show", "drun"] }
 "Super+P" = { exec = ["wlogout", "--protocol", "layer-shell"] }
+"Ctrl+Shift" = { viewport_pan_mode = true }
 "Super+Shift+Q" = { close = true }
 "Super+1" = { workspace = 1 }
 "Super+2" = { workspace = 2 }

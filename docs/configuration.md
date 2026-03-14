@@ -35,10 +35,6 @@ Important top-level fields:
 
 - `focus_follows_mouse`
 - `repeat_rate`
-- `viewport_pan_modifiers`
-
-`viewport_pan_modifiers` configures the modifier-only pointer gesture that pans the focused output
-viewport. The value is a string array such as `["Super", "Alt"]` or `["Ctrl", "Shift"]`.
 
 `[startup]` fields:
 
@@ -81,6 +77,7 @@ Supported keybinding actions:
 - `{ viewport_pan = [dx, dy] }`
 - `{ viewport_move = [x, y] }`
 - `{ viewport_center = true }`
+- `{ viewport_pan_mode = true }`
 
 Keybinding actions are configured as short inline tables. For example:
 
@@ -88,6 +85,7 @@ Keybinding actions are configured as short inline tables. For example:
 [keybinds.bindings]
 "Super+Return" = { exec = ["foot"] }
 "Super+Space" = { exec = ["wofi", "--show", "drun"] }
+"Super+Alt" = { viewport_pan_mode = true }
 "Super+Shift+Q" = { close = true }
 "Super+1" = { workspace = 1 }
 "Super+Alt+H" = { viewport_pan = [-200, 0] }
@@ -100,5 +98,6 @@ Key names use the XKB/X11-style names already used elsewhere in the project, for
 - `Super+Return`
 - `Super+1`
 
-When the configured `viewport_pan_modifiers` are held, pointer motion is consumed by viewport
-panning instead of being forwarded to client hover handling.
+`viewport_pan_mode` is special: the binding must contain modifiers only, for example
+`"Super+Alt"` or `"Ctrl+Shift"`. While those modifiers are held, pointer motion is consumed by
+viewport panning instead of being forwarded to client hover handling.

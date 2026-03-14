@@ -29,7 +29,6 @@ background_color = "#f5f5f5"
 [input]
 focus_follows_mouse = false
 repeat_rate = 30
-viewport_pan_modifiers = ["Super", "Alt"]
 
 [ipc]
 command_history_limit = 7
@@ -44,6 +43,7 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
+"Super+Alt" = { viewport_pan_mode = true }
 "Super+Return" = { exec = ["foot"] }
 "##;
 
@@ -60,7 +60,6 @@ background_color = "#101010"
 [input]
 focus_follows_mouse = true
 repeat_rate = 45
-viewport_pan_modifiers = ["Ctrl", "Shift"]
 
 [ipc]
 command_history_limit = 3
@@ -75,6 +74,7 @@ scale = 2
 enabled = true
 
 [keybinds.bindings]
+"Ctrl+Shift" = { viewport_pan_mode = true }
 "Super+P" = { exec = ["wlogout", "--protocol", "layer-shell"] }
 "##;
 

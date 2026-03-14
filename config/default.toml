@@ -12,8 +12,6 @@ background_color = "#f5f7ff"
 # Effective semantics are currently `never` or `tiled-only`; `true` means tiled-only.
 focus_follows_mouse = true
 repeat_rate = 30
-# Hold these modifiers while moving the pointer to pan the focused output viewport.
-viewport_pan_modifiers = ["Super", "Alt"]
 
 [ipc]
 command_history_limit = 64
@@ -47,6 +45,9 @@ enabled = true
 # External commands use argv arrays.
 "Super+Return" = { exec = ["foot"] }
 "Super+Space" = { exec = ["fuzzel"] }
+
+# Modifier-only binding: hold these keys and move the pointer to pan the focused output viewport.
+"Super+Alt" = { viewport_pan_mode = true }
 
 # Window actions target the focused window.
 "Super+Q" = { close = true }
