@@ -1,20 +1,28 @@
+# Default compositor layout policy for newly managed windows.
 default_layout = "floating"
 
 [theme]
+# Theme metadata currently exposed through IPC/state snapshots.
 name = "catppuccin-latte"
 cursor_theme = "default"
 border_color = "#5c7cfa"
 background_color = "#f5f7ff"
 
 [input]
+# Effective semantics are currently `never` or `tiled-only`; `true` means tiled-only.
 focus_follows_mouse = true
 repeat_rate = 30
+# Hold these modifiers while moving the pointer to pan the focused output viewport.
+viewport_pan_modifiers = ["Super", "Alt"]
 
 [ipc]
 command_history_limit = 64
 
 [startup]
-commands = ["qs -c noctalia-shell"]
+# Startup actions run once after the nested Wayland socket is ready.
+# Common form:
+# actions = [{ exec = ["waybar"] }]
+actions = [{ exec = ["konsole"]}]
 
 [xwayland]
 enabled = true
@@ -25,7 +33,51 @@ mode = "1920x1080@60"
 scale = 1
 enabled = true
 
+# Optional window rules. Only `app_id`/`title` matching and `layout`/`mode` policy are currently supported.
+#
+# [[window_rules]]
+# app_id = "mpv"
+# mode = "fullscreen"
+#
+# [[window_rules]]
+# title = "Picture in Picture"
+# layout = "floating"
+
 [keybinds.bindings]
-"Super+Return" = ["foot"]
-"Super+Space" = ["fuzzel"]
-"Super+Q" = "close-window"
+# External commands use argv arrays.
+"Super+Return" = { exec = ["foot"] }
+"Super+Space" = { exec = ["fuzzel"] }
+
+# Window actions target the focused window.
+"Super+Q" = { close = true }
+
+# Workspace actions are runtime-only and can be addressed by id or name.
+# "Super+1" = { workspace = 1 }
+# "Super+Shift+1" = { workspace_create = 1 }
+# "Super+Ctrl+1" = { workspace_destroy = 1 }
+# "Super+Ctrl+W" = { workspace_destroy = "active" }
+
+# Window/background helpers.
+# "Super+B" = { background = "eDP-1" }
+# "Super+Shift+B" = { clear_background = true }
+# "Super+H" = { move = [-50, 0] }
+# "Super+L" = { move = [50, 0] }
+# "Super+Shift+H" = { resize = [800, 600] }
+# "Super+S" = { split = "vertical" }
+
+# Output and viewport helpers target the focused output unless the action names one explicitly.
+# "Super+Alt+H" = { viewport_pan = [-200, 0] }
+# "Super+Alt+L" = { viewport_pan = [200, 0] }
+# "Super+Alt+J" = { viewport_pan = [0, 200] }
+# "Super+Alt+K" = { viewport_pan = [0, -200] }
+# "Super+Alt+0" = { viewport_move = [0, 0] }
+# "Super+Alt+C" = { viewport_center = true }
+# "Super+Shift+O" = { output_disable = "eDP-1" }
+# "Super+Ctrl+O" = { output_enable = "eDP-1" }
+# "Super+Alt+M" = { output_configure = { output = "eDP-1", mode = "1920x1080@60", scale = 1 } }
+#
+# Multiple actions can be chained in order.
+# "Super+Shift+Return" = [
+#   { workspace = 1 },
+#   { exec = ["foot"] },
+# ]

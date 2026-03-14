@@ -18,6 +18,6 @@ pub struct WindowClosed {
 #[derive(Message, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowMoved {
     pub surface_id: u64,
-    pub x: i32,
-    pub y: i32,
+    pub x: i64,
+    pub y: i64,
 }

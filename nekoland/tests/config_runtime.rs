@@ -16,8 +16,9 @@ use nekoland_ecs::components::{
     WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::{
-    CommandHistoryState, CompositorClock, GlobalPointerPosition, KeyboardFocusState,
-    PendingXdgRequests, WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
+    CommandHistoryState, CompositorClock, CompositorConfig, GlobalPointerPosition,
+    KeyboardFocusState, ModifierMask, PendingXdgRequests, WindowLifecycleAction,
+    WindowLifecycleRequest, XdgSurfaceRole,
 };
 use nekoland_input::InputPlugin;
 use nekoland_shell::ShellPlugin;
@@ -35,6 +36,7 @@ background_color = "#f5f5f5"
 [input]
 focus_follows_mouse = false
 repeat_rate = 30
+viewport_pan_modifiers = ["Super", "Alt"]
 
 [ipc]
 command_history_limit = 7
@@ -46,7 +48,7 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Return" = ["foot"]
+"Super+Return" = { exec = ["foot"] }
 "##;
 
 /// Replacement config written while the app is already running.
@@ -62,6 +64,7 @@ background_color = "#101010"
 [input]
 focus_follows_mouse = true
 repeat_rate = 45
+viewport_pan_modifiers = ["Ctrl", "Shift"]
 
 [ipc]
 command_history_limit = 3
@@ -73,7 +76,7 @@ scale = 2
 enabled = true
 
 [keybinds.bindings]
-"Super+P" = ["wlogout", "--protocol", "layer-shell"]
+"Super+P" = { exec = ["wlogout", "--protocol", "layer-shell"] }
 "##;
 
 /// Temporary config file owned by the test.
@@ -89,8 +92,8 @@ impl Drop for TempConfigFile {
     }
 }
 
-/// Verifies that runtime config changes affect focus behavior, output config, border theme, and
-/// the defaults used for newly created windows.
+/// Verifies that runtime config changes preserve existing focus while updating output config,
+/// border theme, and the defaults used for newly created windows.
 #[test]
 fn config_runtime_updates_focus_border_and_new_window_defaults() {
     let temp_config = TempConfigFile { path: unique_temp_path("runtime-config") };
@@ -115,7 +118,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
                 title: "Primary".to_owned(),
                 last_acked_configure: None,
             },
-            layout: WindowLayout::Floating,
+            layout: WindowLayout::Tiled,
             mode: WindowMode::Normal,
             decoration: ServerDecoration { enabled: true },
             border_theme: BorderTheme::default(),
@@ -129,7 +132,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
                 title: "Secondary".to_owned(),
                 last_acked_configure: None,
             },
-            layout: WindowLayout::Floating,
+            layout: WindowLayout::Tiled,
             mode: WindowMode::Normal,
             decoration: ServerDecoration { enabled: true },
             border_theme: BorderTheme::default(),
@@ -156,6 +159,10 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
             .get_resource::<CommandHistoryState>()
             .expect("command history state should exist")
             .limit;
+        let viewport_pan_modifiers = world
+            .get_resource::<CompositorConfig>()
+            .expect("config should exist")
+            .viewport_pan_modifiers;
         let border_colors = world
             .query::<&BorderTheme>()
             .iter(world)
@@ -170,6 +177,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
         assert_eq!(outputs[0].1.refresh_millihz, 60_000);
         assert_eq!(outputs[0].1.scale, 1);
         assert_eq!(history_limit, 7);
+        assert_eq!(viewport_pan_modifiers, ModifierMask::new(false, true, false, true));
         assert!(
             border_colors.iter().all(|color| color == "#112233"),
             "initial config border color should be applied to all existing windows: {border_colors:?}"
@@ -200,13 +208,17 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
             .get_resource::<CommandHistoryState>()
             .expect("command history state should exist")
             .limit;
+        let viewport_pan_modifiers = world
+            .get_resource::<CompositorConfig>()
+            .expect("config should exist")
+            .viewport_pan_modifiers;
         let border_colors = world
             .query::<&BorderTheme>()
             .iter(world)
             .map(|border| border.color.clone())
             .collect::<Vec<_>>();
 
-        assert_eq!(focused_surface, Some(202));
+        assert_eq!(focused_surface, Some(101));
         assert_eq!(outputs.len(), 1, "reloaded config should converge to one configured output");
         assert_eq!(outputs[0].0, "HDMI-A-1");
         assert_eq!(outputs[0].1.width, 2560);
@@ -214,6 +226,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
         assert_eq!(outputs[0].1.refresh_millihz, 75_000);
         assert_eq!(outputs[0].1.scale, 2);
         assert_eq!(history_limit, 3);
+        assert_eq!(viewport_pan_modifiers, ModifierMask::new(true, false, true, false));
         assert!(
             border_colors.iter().all(|color| color == "#445566"),
             "hot-reloaded border color should be applied to all existing windows: {border_colors:?}"

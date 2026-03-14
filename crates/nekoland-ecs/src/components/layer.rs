@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[require(
     crate::components::SurfaceGeometry,
     crate::components::BufferState,
+    crate::components::SurfaceContentVersion,
     LayerAnchor,
     crate::components::WindowAnimation
 )]

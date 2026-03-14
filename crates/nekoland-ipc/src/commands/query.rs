@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use nekoland_ecs::components::OutputKind;
-use nekoland_ecs::resources::ConfiguredKeybindingAction;
+use nekoland_ecs::resources::ConfiguredAction;
 use serde::{Deserialize, Serialize};
 
 /// Read-only IPC queries exposed by `nekoland-msg query ...`.
@@ -27,6 +27,9 @@ pub struct OutputSnapshot {
     pub height: u32,
     pub refresh_millihz: u32,
     pub scale: u32,
+    pub viewport_origin_x: i64,
+    pub viewport_origin_y: i64,
+    pub current_workspace: Option<u32>,
 }
 
 /// Workspace state published through the IPC query cache.
@@ -48,11 +51,17 @@ pub struct WindowSnapshot {
     pub override_redirect: bool,
     pub x: i32,
     pub y: i32,
+    pub scene_x: i64,
+    pub scene_y: i64,
+    pub screen_x: i32,
+    pub screen_y: i32,
     pub width: u32,
     pub height: u32,
     pub state: String,
     pub workspace: Option<u32>,
+    pub output: Option<String>,
     pub focused: bool,
+    pub visible_in_viewport: bool,
 }
 
 /// Popup tree entry returned by `get_tree`.
@@ -121,11 +130,12 @@ pub struct ConfigSnapshot {
     pub default_layout: String,
     pub focus_follows_mouse: bool,
     pub repeat_rate: u16,
+    pub viewport_pan_modifiers: Vec<String>,
     pub command_history_limit: usize,
-    pub startup_commands: Vec<String>,
+    pub startup_actions: Vec<ConfiguredAction>,
     pub xwayland_enabled: bool,
     pub outputs: Vec<ConfigOutputSnapshot>,
-    pub keybindings: BTreeMap<String, ConfiguredKeybindingAction>,
+    pub keybindings: BTreeMap<String, Vec<ConfiguredAction>>,
 }
 
 /// Clipboard state exported through IPC.

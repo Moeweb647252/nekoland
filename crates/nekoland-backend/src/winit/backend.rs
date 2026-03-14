@@ -10,7 +10,9 @@ use nekoland_core::calloop::CalloopSourceRegistry;
 use nekoland_core::error::NekolandError;
 use nekoland_core::prelude::AppMetadata;
 use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
-use nekoland_ecs::resources::{BackendInputAction, BackendInputEvent, CompositorConfig};
+use nekoland_ecs::resources::{
+    BackendInputAction, BackendInputEvent, CompositorConfig, DamageRect, OutputDamageRegions,
+};
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, ButtonState, InputEvent, KeyState, KeyboardKeyEvent,
     PointerAxisEvent, PointerButtonEvent,
@@ -18,26 +20,36 @@ use smithay::backend::input::{
 use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{self as smithay_winit, WinitEvent, WinitGraphicsBackend};
 use smithay::reexports::winit::dpi::PhysicalSize;
-use smithay::reexports::winit::window::Window as HostWindow;
-use smithay::utils::{Monotonic, Physical, Size, Transform};
+use smithay::reexports::winit::window::{CursorGrabMode, Window as HostWindow};
+use smithay::render_elements;
+use smithay::utils::{Monotonic, Physical, Rectangle, Size, Transform};
 
+use crate::common::cursor::{SoftwareCursorCache, cursor_position_on_output, cursor_render_source};
 use crate::common::outputs::{
     BackendOutputBlueprint, BackendOutputChange, BackendOutputEventRecord,
     BackendOutputPropertyUpdate, parse_output_mode,
 };
 use crate::common::presentation::{OutputPresentationRuntime, emit_present_completion_events_at};
+use crate::common::render_order::output_surfaces_in_presentation_order;
 use crate::traits::{
     Backend, BackendApplyCtx, BackendCapabilities, BackendDescriptor, BackendExtractCtx, BackendId,
     BackendKind, BackendPresentCtx, BackendRole, OutputSnapshot,
 };
 
 type WinitRendererBackend = WinitGraphicsBackend<GlesRenderer>;
+
+render_elements! {
+    WinitRenderElement<=GlesRenderer>;
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
+}
 
 #[derive(Debug, Clone, Resource, PartialEq, Eq)]
 pub struct WinitWindowState {
@@ -135,6 +147,7 @@ struct WinitOutputMode {
 struct WinitRenderState {
     damage_tracker: Option<OutputDamageTracker>,
     mode: Option<WinitOutputMode>,
+    cursor: SoftwareCursorCache,
 }
 
 pub(crate) struct WinitRuntime {
@@ -398,6 +411,7 @@ impl Backend for WinitRuntime {
             let Some(damage_tracker) = self.render_state.damage_tracker.as_mut() else {
                 return Ok(());
             };
+            let cursor_cache = &mut self.render_state.cursor;
 
             let (renderer, mut framebuffer) = match backend.bind() {
                 Ok(bound) => bound,
@@ -408,19 +422,61 @@ impl Backend for WinitRuntime {
             };
             let age = 0;
 
-            let mut elements = Vec::<WaylandSurfaceRenderElement<GlesRenderer>>::new();
-            for render_element in &cx.render_list.elements {
-                if render_element.surface_id == 0 {
-                    continue;
-                }
+            let mut cursor_elements = Vec::<WinitRenderElement>::new();
 
+            if let Some((cursor_x, cursor_y)) =
+                cursor_position_on_output(cx.cursor_render, &output.device.name)
+            {
+                match cursor_render_source(cx.cursor_image) {
+                    crate::common::cursor::CursorRenderSource::Hidden => {}
+                    crate::common::cursor::CursorRenderSource::Surface {
+                        surface,
+                        hotspot_x,
+                        hotspot_y,
+                    } => {
+                        cursor_elements.extend(render_elements_from_surface_tree(
+                            renderer,
+                            surface,
+                            (
+                                cursor_x.round() as i32 - hotspot_x,
+                                cursor_y.round() as i32 - hotspot_y,
+                            ),
+                            mode.scale as f64,
+                            1.0,
+                            Kind::Cursor,
+                        ));
+                    }
+                    crate::common::cursor::CursorRenderSource::Named(icon) => {
+                        let theme = cx
+                            .config
+                            .map(|config| config.cursor_theme.as_str())
+                            .unwrap_or("default");
+                        match cursor_cache.render_element(
+                            renderer,
+                            theme,
+                            icon,
+                            mode.scale.max(1),
+                            cursor_x,
+                            cursor_y,
+                        ) {
+                            Ok(element) => cursor_elements.push(element.into()),
+                            Err(error) => {
+                                tracing::warn!(error = %error, "failed to upload software cursor");
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut elements = cursor_elements;
+            for (render_element, geometry) in output_surfaces_in_presentation_order(
+                cx.render_list,
+                cx.surfaces,
+                &output.device.name,
+            ) {
                 let Some(surface) = surface_registry.surface(render_element.surface_id) else {
                     continue;
                 };
-                let Some(geometry) = cx.surfaces.get(&render_element.surface_id) else {
-                    continue;
-                };
-
                 elements.extend(render_elements_from_surface_tree(
                     renderer,
                     surface,
@@ -431,7 +487,7 @@ impl Backend for WinitRuntime {
                 ));
             }
 
-            match damage_tracker.render_output(
+            let smithay_damage = match damage_tracker.render_output(
                 renderer,
                 &mut framebuffer,
                 age,
@@ -446,7 +502,15 @@ impl Backend for WinitRuntime {
                     );
                     None
                 }
-            }
+            };
+            merge_submit_damage(
+                smithay_damage,
+                output_damage_regions_physical(
+                    cx.output_damage_regions,
+                    &output.device.name,
+                    mode.scale,
+                ),
+            )
         };
 
         let Some(damage) = damage else {
@@ -470,6 +534,55 @@ fn current_refresh_interval(outputs: &[OutputSnapshot]) -> Option<Duration> {
         .map(|refresh_millihz| {
             Duration::from_nanos((1_000_000_000_000_u64 / u64::from(refresh_millihz)).max(1))
         })
+}
+
+fn output_damage_regions_physical(
+    output_damage_regions: &OutputDamageRegions,
+    output_name: &str,
+    scale: u32,
+) -> Vec<Rectangle<i32, Physical>> {
+    output_damage_regions
+        .regions
+        .get(output_name)
+        .into_iter()
+        .flatten()
+        .filter_map(|rect| damage_rect_to_physical(rect, scale))
+        .collect()
+}
+
+fn damage_rect_to_physical(rect: &DamageRect, scale: u32) -> Option<Rectangle<i32, Physical>> {
+    if rect.width == 0 || rect.height == 0 {
+        return None;
+    }
+
+    let scale = i64::from(scale.max(1));
+    let x = (i64::from(rect.x) * scale).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let y = (i64::from(rect.y) * scale).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let width =
+        (u64::from(rect.width) * u64::try_from(scale).ok()?).min(u64::from(i32::MAX as u32)) as i32;
+    let height = (u64::from(rect.height) * u64::try_from(scale).ok()?)
+        .min(u64::from(i32::MAX as u32)) as i32;
+
+    Some(Rectangle::new((x, y).into(), (width, height).into()))
+}
+
+fn merge_submit_damage(
+    smithay_damage: Option<Vec<Rectangle<i32, Physical>>>,
+    ecs_damage: Vec<Rectangle<i32, Physical>>,
+) -> Option<Vec<Rectangle<i32, Physical>>> {
+    match (smithay_damage, ecs_damage.is_empty()) {
+        (None, true) => None,
+        (Some(damage), true) => Some(damage),
+        (None, false) => Some(ecs_damage),
+        (Some(mut damage), false) => {
+            for rect in ecs_damage {
+                if !damage.contains(&rect) {
+                    damage.push(rect);
+                }
+            }
+            Some(damage)
+        }
+    }
 }
 
 fn desired_window_spec(
@@ -515,6 +628,33 @@ fn apply_window_spec(window: &HostWindow, spec: &WinitWindowSpec) {
     window.set_title(&spec.title);
     let _ = window.request_inner_size(PhysicalSize::new(spec.width, spec.height));
     window.request_redraw();
+}
+
+fn set_host_cursor_capture(window: &HostWindow, capture: bool) {
+    if capture {
+        let grab_result = preferred_cursor_grab_modes()
+            .into_iter()
+            .find_map(|mode| window.set_cursor_grab(mode).ok().map(|()| mode));
+        match grab_result {
+            Some(mode) => {
+                window.set_cursor_visible(false);
+                tracing::debug!(?mode, "captured winit host cursor");
+            }
+            None => {
+                window.set_cursor_visible(true);
+                tracing::warn!("failed to capture winit host cursor");
+            }
+        }
+    } else {
+        if let Err(error) = window.set_cursor_grab(CursorGrabMode::None) {
+            tracing::debug!(error = %error, "failed to release winit host cursor grab");
+        }
+        window.set_cursor_visible(true);
+    }
+}
+
+fn preferred_cursor_grab_modes() -> [CursorGrabMode; 2] {
+    [CursorGrabMode::Confined, CursorGrabMode::Locked]
 }
 
 fn clear_color(config: Option<&CompositorConfig>) -> Color32F {
@@ -590,6 +730,7 @@ fn install_smithay_winit_source(
         let shared = shared.borrow();
         if let Some(backend) = shared.backend.as_ref() {
             apply_window_spec(backend.window(), &shared.desired_window_spec);
+            set_host_cursor_capture(backend.window(), true);
         }
     }
 
@@ -616,7 +757,11 @@ fn install_smithay_winit_source(
                 }
             }
             WinitEvent::Focus(focused) => {
-                shared.borrow_mut().pending_input_events.push(BackendInputEvent {
+                let mut shared = shared.borrow_mut();
+                if let Some(backend) = shared.backend.as_ref() {
+                    set_host_cursor_capture(backend.window(), focused);
+                }
+                shared.pending_input_events.push(BackendInputEvent {
                     device: "winit".to_owned(),
                     action: BackendInputAction::FocusChanged { focused },
                 });
@@ -697,12 +842,18 @@ fn translate_winit_input_event(
 mod tests {
     use nekoland_core::prelude::AppMetadata;
     use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
-    use nekoland_ecs::resources::{CompositorConfig, ConfiguredOutput};
+    use nekoland_ecs::resources::{
+        CompositorConfig, ConfiguredOutput, DamageRect, OutputDamageRegions,
+    };
+    use smithay::reexports::winit::window::CursorGrabMode;
     use smithay::utils::Transform;
 
     use crate::traits::{BackendId, OutputSnapshot};
 
-    use super::{desired_window_spec, parse_hex_color32f, winit_output_transform};
+    use super::{
+        desired_window_spec, merge_submit_damage, output_damage_regions_physical,
+        parse_hex_color32f, preferred_cursor_grab_modes, winit_output_transform,
+    };
 
     #[test]
     fn parses_hex_clear_color() {
@@ -760,5 +911,47 @@ mod tests {
     #[test]
     fn nested_winit_rendering_uses_flipped_transform() {
         assert_eq!(winit_output_transform(), Transform::Flipped180);
+    }
+
+    #[test]
+    fn winit_cursor_grab_prefers_confined_before_locked() {
+        assert_eq!(
+            preferred_cursor_grab_modes(),
+            [CursorGrabMode::Confined, CursorGrabMode::Locked]
+        );
+    }
+
+    #[test]
+    fn output_damage_regions_are_converted_to_physical_submit_damage() {
+        let damage = OutputDamageRegions {
+            regions: std::collections::BTreeMap::from([(
+                "Virtual-1".to_owned(),
+                vec![DamageRect { x: 10, y: -5, width: 30, height: 20 }],
+            )]),
+        };
+
+        let physical = output_damage_regions_physical(&damage, "Virtual-1", 2);
+
+        assert_eq!(physical.len(), 1);
+        assert_eq!(physical[0].loc.x, 20);
+        assert_eq!(physical[0].loc.y, -10);
+        assert_eq!(physical[0].size.w, 60);
+        assert_eq!(physical[0].size.h, 40);
+    }
+
+    #[test]
+    fn merge_submit_damage_unions_ecs_and_smithay_damage() {
+        let smithay_damage = vec![smithay::utils::Rectangle::new((0, 0).into(), (10, 10).into())];
+        let ecs_damage = vec![
+            smithay::utils::Rectangle::new((0, 0).into(), (10, 10).into()),
+            smithay::utils::Rectangle::new((40, 20).into(), (5, 6).into()),
+        ];
+
+        let merged = merge_submit_damage(Some(smithay_damage), ecs_damage)
+            .expect("merged damage should remain present");
+
+        assert_eq!(merged.len(), 2);
+        assert!(merged.contains(&smithay::utils::Rectangle::new((0, 0).into(), (10, 10).into())));
+        assert!(merged.contains(&smithay::utils::Rectangle::new((40, 20).into(), (5, 6).into())));
     }
 }

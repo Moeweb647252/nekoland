@@ -1,22 +1,30 @@
 use std::collections::{HashMap, HashSet};
 
 use drm_fourcc::DrmFourcc;
-use nekoland_ecs::resources::{CompositorConfig, RenderList};
-use nekoland_protocol::ProtocolSurfaceRegistry;
+use nekoland_ecs::resources::{
+    CompositorConfig, CursorRenderState, DamageRect, OutputDamageRegions, RenderList,
+};
+use nekoland_protocol::{ProtocolCursorState, ProtocolSurfaceRegistry};
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags};
 use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::renderer::Color32F;
-use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
+use smithay::backend::renderer::element::{Id, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::utils::CommitCounter;
 use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::drm::control::{Device as ControlDevice, ModeTypeFlags, connector, crtc};
-use smithay::utils::{Size, Transform};
+use smithay::render_elements;
+use smithay::utils::{Physical, Rectangle, Size, Transform};
 
+use crate::common::cursor::{SoftwareCursorCache, cursor_position_on_output, cursor_render_source};
+use crate::common::render_order::output_surfaces_in_presentation_order;
 use crate::traits::{OutputSnapshot, RenderSurfaceSnapshot};
 
 use super::device::{ConnectorInfo, SharedDrmState};
@@ -36,11 +44,22 @@ pub(crate) struct ConnectorState {
 pub(crate) struct DrmRenderState {
     pub surfaces: HashMap<String, ConnectorState>,
     pub renderer: Option<GlesRenderer>,
+    pub cursor: SoftwareCursorCache,
+}
+
+render_elements! {
+    pub(crate) BackendDrmRenderElement<=GlesRenderer>;
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    Damage=SolidColorRenderElement,
+    Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
 pub(crate) fn render_drm_outputs<'a>(
     outputs: impl IntoIterator<Item = &'a OutputSnapshot>,
     config: Option<&CompositorConfig>,
+    cursor_render: Option<&CursorRenderState>,
+    cursor_image: Option<&ProtocolCursorState>,
+    output_damage_regions: &OutputDamageRegions,
     render_list: &RenderList,
     surfaces: &HashMap<u64, RenderSurfaceSnapshot>,
     surface_registry: Option<&ProtocolSurfaceRegistry>,
@@ -77,6 +96,7 @@ pub(crate) fn render_drm_outputs<'a>(
 
     let mut active_connectors = HashSet::new();
     let renderer = render_state.renderer.as_mut().expect("initialised above");
+    let cursor_cache = &mut render_state.cursor;
 
     for output in outputs {
         let Some(connector_info) = drm
@@ -117,20 +137,56 @@ pub(crate) fn render_drm_outputs<'a>(
         };
 
         let scale = output.properties.scale.max(1) as f64;
-        let mut elements = Vec::<WaylandSurfaceRenderElement<GlesRenderer>>::new();
-        for render_element in &render_list.elements {
-            if render_element.surface_id == 0 {
-                continue;
+        let mut cursor_elements = Vec::<BackendDrmRenderElement>::new();
+        if let Some((cursor_x, cursor_y)) =
+            cursor_position_on_output(cursor_render, &output.device.name)
+        {
+            match cursor_render_source(cursor_image) {
+                crate::common::cursor::CursorRenderSource::Hidden => {}
+                crate::common::cursor::CursorRenderSource::Surface {
+                    surface,
+                    hotspot_x,
+                    hotspot_y,
+                } => {
+                    cursor_elements.extend(render_elements_from_surface_tree::<
+                        _,
+                        BackendDrmRenderElement,
+                    >(
+                        renderer,
+                        surface,
+                        (cursor_x.round() as i32 - hotspot_x, cursor_y.round() as i32 - hotspot_y),
+                        scale,
+                        1.0,
+                        Kind::Cursor,
+                    ));
+                }
+                crate::common::cursor::CursorRenderSource::Named(icon) => {
+                    let theme =
+                        config.map(|config| config.cursor_theme.as_str()).unwrap_or("default");
+                    match cursor_cache.render_element(
+                        renderer,
+                        theme,
+                        icon,
+                        output.properties.scale.max(1),
+                        cursor_x,
+                        cursor_y,
+                    ) {
+                        Ok(element) => cursor_elements.push(element.into()),
+                        Err(error) => {
+                            tracing::warn!(error = %error, "failed to upload software cursor");
+                        }
+                    }
+                }
             }
-
+        }
+        let mut elements = cursor_elements;
+        for (render_element, geometry) in
+            output_surfaces_in_presentation_order(render_list, surfaces, &output.device.name)
+        {
             let Some(wl_surface) = surface_registry.surface(render_element.surface_id) else {
                 continue;
             };
-            let Some(geometry) = surfaces.get(&render_element.surface_id) else {
-                continue;
-            };
-
-            elements.extend(render_elements_from_surface_tree(
+            elements.extend(render_elements_from_surface_tree::<_, BackendDrmRenderElement>(
                 renderer,
                 wl_surface,
                 (geometry.geometry.x, geometry.geometry.y),
@@ -138,6 +194,20 @@ pub(crate) fn render_drm_outputs<'a>(
                 render_element.opacity,
                 Kind::Unspecified,
             ));
+        }
+        elements.extend(
+            ecs_damage_render_elements(
+                output_damage_regions,
+                &output.device.name,
+                output.properties.scale.max(1),
+            )
+            .into_iter()
+            .map(BackendDrmRenderElement::from),
+        );
+
+        if elements.is_empty() {
+            tracing::trace!(connector = %connector_info.name, "DRM frame empty");
+            continue;
         }
 
         let clear = clear_color(config);
@@ -169,6 +239,45 @@ pub(crate) fn render_drm_outputs<'a>(
     }
 
     render_state.surfaces.retain(|name, _| active_connectors.contains(name));
+}
+
+fn ecs_damage_render_elements(
+    output_damage_regions: &OutputDamageRegions,
+    output_name: &str,
+    scale: u32,
+) -> Vec<SolidColorRenderElement> {
+    output_damage_regions
+        .regions
+        .get(output_name)
+        .into_iter()
+        .flatten()
+        .filter_map(|rect| damage_rect_to_physical(rect, scale))
+        .map(|geometry| {
+            SolidColorRenderElement::new(
+                Id::new(),
+                geometry,
+                CommitCounter::default(),
+                Color32F::TRANSPARENT,
+                Kind::Unspecified,
+            )
+        })
+        .collect()
+}
+
+fn damage_rect_to_physical(rect: &DamageRect, scale: u32) -> Option<Rectangle<i32, Physical>> {
+    if rect.width == 0 || rect.height == 0 {
+        return None;
+    }
+
+    let scale = i64::from(scale.max(1));
+    let x = (i64::from(rect.x) * scale).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let y = (i64::from(rect.y) * scale).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let width =
+        (u64::from(rect.width) * u64::try_from(scale).ok()?).min(u64::from(i32::MAX as u32)) as i32;
+    let height = (u64::from(rect.height) * u64::try_from(scale).ok()?)
+        .min(u64::from(i32::MAX as u32)) as i32;
+
+    Some(Rectangle::new((x, y).into(), (width, height).into()))
 }
 
 fn init_gles_renderer(
@@ -314,4 +423,42 @@ fn clear_color(config: Option<&CompositorConfig>) -> Color32F {
             ))
         })
         .unwrap_or(Color32F::BLACK)
+}
+
+#[cfg(test)]
+mod tests {
+    use nekoland_ecs::resources::{DamageRect, OutputDamageRegions};
+    use smithay::backend::renderer::element::Element;
+    use smithay::utils::Scale;
+
+    use super::{damage_rect_to_physical, ecs_damage_render_elements};
+
+    #[test]
+    fn damage_rects_convert_to_physical_coordinates() {
+        let rect = damage_rect_to_physical(&DamageRect { x: 10, y: -4, width: 30, height: 20 }, 2)
+            .expect("damage rect should convert to physical coordinates");
+        assert_eq!(rect.loc.x, 20);
+        assert_eq!(rect.loc.y, -8);
+        assert_eq!(rect.size.w, 60);
+        assert_eq!(rect.size.h, 40);
+    }
+
+    #[test]
+    fn ecs_damage_render_elements_follow_output_routing() {
+        let output_damage_regions = OutputDamageRegions {
+            regions: std::collections::BTreeMap::from([
+                ("Virtual-1".to_owned(), vec![DamageRect { x: 5, y: 6, width: 20, height: 10 }]),
+                ("HDMI-A-1".to_owned(), vec![DamageRect { x: 100, y: 200, width: 40, height: 30 }]),
+            ]),
+        };
+
+        let elements = ecs_damage_render_elements(&output_damage_regions, "HDMI-A-1", 1);
+
+        assert_eq!(elements.len(), 1);
+        let geometry = elements[0].geometry(Scale::from(1.0));
+        assert_eq!(geometry.loc.x, 100);
+        assert_eq!(geometry.loc.y, 200);
+        assert_eq!(geometry.size.w, 40);
+        assert_eq!(geometry.size.h, 30);
+    }
 }

@@ -8,6 +8,7 @@ pub mod interaction;
 pub mod layer;
 pub mod layout;
 pub mod plugin;
+pub mod viewport;
 pub mod window_control;
 mod window_policy;
 pub mod workspace;

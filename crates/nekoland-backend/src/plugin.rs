@@ -1,30 +1,34 @@
+use bevy_ecs::hierarchy::ChildOf;
 use std::collections::HashMap;
 
 use bevy_app::App;
 use bevy_ecs::error::Result as BevyResult;
 use bevy_ecs::prelude::{Entity, NonSend, NonSendMut, Query, Res, ResMut};
-use bevy_ecs::schedule::IntoScheduleConfigs;
+use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::prelude::AppMetadata;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule};
 use nekoland_ecs::components::{
-    LayerShellSurface, SurfaceGeometry, WlSurfaceHandle, XdgPopup, XdgWindow,
+    DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow, SurfaceGeometry,
+    WindowViewportVisibility, WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::resources::{
-    CompositorClock, CompositorConfig, GlobalPointerPosition, OutputPresentationState,
-    PendingBackendInputEvents, PendingOutputControls, PendingOutputPresentationEvents,
-    PendingOutputServerRequests, PendingProtocolInputEvents, PrimaryOutputState, RenderList,
-    VirtualOutputCaptureState,
+    CompositorClock, CompositorConfig, CursorRenderState, FocusedOutputState,
+    GlobalPointerPosition, OutputDamageRegions, OutputPresentationState, PendingBackendInputEvents,
+    PendingOutputControls, PendingOutputPresentationEvents, PendingOutputServerRequests,
+    PendingProtocolInputEvents, PrimaryOutputState, RenderList, VirtualOutputCaptureState,
 };
 use nekoland_ecs::views::OutputRuntime;
-use nekoland_protocol::ProtocolSurfaceRegistry;
+use nekoland_protocol::{ProtocolCursorState, ProtocolSeatDispatchSet, ProtocolSurfaceRegistry};
 
 use crate::common::outputs::{
     BackendOutputRegistry, PendingBackendOutputEvents, PendingBackendOutputUpdates,
-    apply_backend_output_updates_system, apply_output_control_requests_system,
-    apply_output_server_requests_system, collect_output_snapshots, sync_configured_outputs_system,
-    sync_primary_output_state_system, synchronize_backend_outputs_system,
+    RememberedOutputViewportState, apply_backend_output_updates_system,
+    apply_output_control_requests_system, apply_output_server_requests_system,
+    collect_output_snapshots, remember_output_viewports_system, sync_configured_outputs_system,
+    sync_output_layout_state_system, sync_primary_output_state_system,
+    synchronize_backend_outputs_system,
 };
 use crate::common::presentation::apply_output_presentation_events_system;
 use crate::components::OutputBackend;
@@ -36,6 +40,9 @@ use crate::traits::{
 #[derive(Debug, Default, Clone, Copy)]
 pub struct BackendPlugin;
 
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct BackendPresentSet;
+
 impl NekolandPlugin for BackendPlugin {
     /// Register backend resources plus the extract/apply/present pipeline that
     /// keeps runtime backends in sync with ECS state.
@@ -44,6 +51,7 @@ impl NekolandPlugin for BackendPlugin {
 
         app.insert_resource(BackendStatus::default())
             .insert_resource(BackendOutputRegistry::default())
+            .insert_resource(RememberedOutputViewportState::default())
             .init_resource::<VirtualOutputCaptureState>()
             .init_resource::<PendingBackendInputEvents>()
             .init_resource::<PendingProtocolInputEvents>()
@@ -52,6 +60,7 @@ impl NekolandPlugin for BackendPlugin {
             .init_resource::<PendingOutputPresentationEvents>()
             .init_resource::<OutputPresentationState>()
             .init_resource::<PrimaryOutputState>()
+            .init_resource::<FocusedOutputState>()
             .init_resource::<PendingBackendOutputEvents>()
             .init_resource::<PendingBackendOutputUpdates>()
             .insert_non_send_resource(manager)
@@ -66,6 +75,8 @@ impl NekolandPlugin for BackendPlugin {
                     apply_backend_output_updates_system,
                     apply_output_control_requests_system,
                     apply_output_server_requests_system,
+                    sync_output_layout_state_system,
+                    remember_output_viewports_system,
                     sync_primary_output_state_system,
                     backend_apply_system,
                     sync_backend_status_system,
@@ -73,7 +84,8 @@ impl NekolandPlugin for BackendPlugin {
                 )
                     .chain(),
             )
-            .add_systems(PresentSchedule, backend_present_system);
+            .configure_sets(PresentSchedule, BackendPresentSet.after(ProtocolSeatDispatchSet))
+            .add_systems(PresentSchedule, backend_present_system.in_set(BackendPresentSet));
     }
 }
 
@@ -133,39 +145,119 @@ fn backend_present_system(
     config: Option<Res<CompositorConfig>>,
     clock: Option<Res<CompositorClock>>,
     pointer: Option<Res<GlobalPointerPosition>>,
+    cursor_render: Option<Res<CursorRenderState>>,
+    primary_output: Option<Res<PrimaryOutputState>>,
+    output_damage_regions: Res<OutputDamageRegions>,
     outputs: Query<(Entity, OutputRuntime, Option<&OutputBackend>)>,
     surfaces: Query<(
+        Entity,
         &WlSurfaceHandle,
         &SurfaceGeometry,
         Option<&XdgWindow>,
         Option<&XdgPopup>,
         Option<&LayerShellSurface>,
+        Option<&WindowViewportVisibility>,
+        Option<&OutputBackgroundWindow>,
+        Option<&ChildOf>,
+        Option<&LayerOnOutput>,
+        Option<&DesiredOutputName>,
     )>,
     render_list: Res<RenderList>,
+    protocol_cursor: Option<NonSend<ProtocolCursorState>>,
     surface_registry: Option<NonSend<ProtocolSurfaceRegistry>>,
     mut virtual_output_capture: ResMut<VirtualOutputCaptureState>,
 ) -> BevyResult {
     let output_snapshots = collect_output_snapshots(&outputs);
+    let output_names = outputs
+        .iter()
+        .map(|(entity, output, _)| (entity, output.name().to_owned()))
+        .collect::<HashMap<_, _>>();
+    let primary_output_name = primary_output.and_then(|primary_output| primary_output.name.clone());
+    let window_target_outputs = surfaces
+        .iter()
+        .filter_map(
+            |(entity, surface, _, window, _, _, viewport_visibility, background, _, _, _)| {
+                window.map(|_| {
+                    (
+                        entity,
+                        background.map(|background| background.output.clone()).or_else(|| {
+                            viewport_visibility
+                                .and_then(|viewport_visibility| viewport_visibility.output.clone())
+                        }),
+                        surface.id,
+                    )
+                })
+            },
+        )
+        .collect::<Vec<_>>();
+    let window_entity_target_outputs = window_target_outputs
+        .iter()
+        .map(|(entity, target_output, _)| (*entity, target_output.clone()))
+        .collect::<HashMap<_, _>>();
+    let window_surface_target_outputs = window_target_outputs
+        .iter()
+        .map(|(_, target_output, surface_id)| (*surface_id, target_output.clone()))
+        .collect::<HashMap<_, _>>();
     let surface_snapshots = surfaces
         .iter()
-        .map(|(surface, geometry, window, popup, layer)| {
-            let role = if window.is_some() {
-                RenderSurfaceRole::Window
-            } else if popup.is_some() {
-                RenderSurfaceRole::Popup
-            } else if layer.is_some() {
-                RenderSurfaceRole::Layer
-            } else {
-                RenderSurfaceRole::Unknown
-            };
-            (surface.id, RenderSurfaceSnapshot { geometry: geometry.clone(), role })
-        })
+        .map(
+            |(
+                _entity,
+                surface,
+                geometry,
+                window,
+                popup,
+                layer,
+                viewport_visibility,
+                background,
+                child_of,
+                layer_output,
+                desired_output_name,
+            )| {
+                let role = if window.is_some() {
+                    RenderSurfaceRole::Window
+                } else if popup.is_some() {
+                    RenderSurfaceRole::Popup
+                } else if layer.is_some() {
+                    RenderSurfaceRole::Layer
+                } else {
+                    RenderSurfaceRole::Unknown
+                };
+                let target_output = if window.is_some() {
+                    background.map(|background| background.output.clone()).or_else(|| {
+                        viewport_visibility
+                            .and_then(|viewport_visibility| viewport_visibility.output.clone())
+                    })
+                } else if popup.is_some() {
+                    child_of.and_then(|child_of| {
+                        window_entity_target_outputs.get(&child_of.parent()).cloned().flatten()
+                    })
+                } else if layer.is_some() {
+                    layer_output
+                        .and_then(|layer_output| output_names.get(&layer_output.0).cloned())
+                        .or_else(|| {
+                            desired_output_name
+                                .and_then(|desired_output_name| desired_output_name.0.clone())
+                        })
+                        .or_else(|| primary_output_name.clone())
+                } else {
+                    window_surface_target_outputs.get(&surface.id).cloned().flatten()
+                };
+                (
+                    surface.id,
+                    RenderSurfaceSnapshot { geometry: geometry.clone(), role, target_output },
+                )
+            },
+        )
         .collect::<HashMap<_, _>>();
 
     let mut ctx = BackendPresentCtx {
         config: config.as_deref(),
         clock: clock.as_deref(),
         pointer: pointer.as_deref(),
+        cursor_render: cursor_render.as_deref(),
+        cursor_image: protocol_cursor.as_deref(),
+        output_damage_regions: &output_damage_regions,
         outputs: &output_snapshots,
         render_list: &render_list,
         surfaces: &surface_snapshots,
@@ -174,6 +266,47 @@ fn backend_present_system(
     };
 
     manager.present_all(&mut ctx).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_app::App;
+    use bevy_ecs::prelude::{ResMut, Resource};
+    use bevy_ecs::schedule::IntoScheduleConfigs;
+
+    use nekoland_core::schedules::{PresentSchedule, install_core_schedules};
+    use nekoland_protocol::ProtocolSeatDispatchSet;
+
+    use super::BackendPresentSet;
+
+    #[derive(Debug, Default, Resource)]
+    struct PresentOrderAudit(Vec<&'static str>);
+
+    fn record_protocol_present(mut audit: ResMut<PresentOrderAudit>) {
+        audit.0.push("protocol");
+    }
+
+    fn record_backend_present(mut audit: ResMut<PresentOrderAudit>) {
+        audit.0.push("backend");
+    }
+
+    #[test]
+    fn backend_present_set_runs_after_protocol_seat_dispatch_set() {
+        let mut app = App::new();
+        install_core_schedules(&mut app);
+        app.init_resource::<PresentOrderAudit>()
+            .configure_sets(PresentSchedule, BackendPresentSet.after(ProtocolSeatDispatchSet))
+            .add_systems(PresentSchedule, record_protocol_present.in_set(ProtocolSeatDispatchSet))
+            .add_systems(PresentSchedule, record_backend_present.in_set(BackendPresentSet));
+
+        app.world_mut().run_schedule(PresentSchedule);
+
+        let audit = app
+            .world()
+            .get_resource::<PresentOrderAudit>()
+            .expect("present order audit should exist");
+        assert_eq!(audit.0, vec!["protocol", "backend"]);
+    }
 }
 
 /// Refresh the public backend-status resource from the installed backend manager.

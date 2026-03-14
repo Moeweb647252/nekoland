@@ -18,7 +18,7 @@ pub struct CommandExecutionRecord {
     pub frame: u64,
     /// Uptime snapshot captured when the command attempt was recorded.
     pub uptime_millis: u128,
-    /// Human-readable origin such as a keybinding or startup command.
+    /// Human-readable origin such as a keybinding or startup action.
     pub origin: String,
     /// Resolved argv actually executed, if command resolution succeeded.
     pub command: Option<Vec<String>>,

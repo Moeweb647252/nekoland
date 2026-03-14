@@ -5,7 +5,8 @@ use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Commands, Entity, Query, ResMut, With, Without};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{
-    BufferState, PopupGrab, SurfaceGeometry, WindowAnimation, WlSurfaceHandle, XdgPopup, XdgWindow,
+    BufferState, PopupGrab, SurfaceContentVersion, SurfaceGeometry, WindowAnimation,
+    WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::resources::{
     EntityIndex, PendingXdgRequests, PopupPlacement, WindowLifecycleAction, XdgSurfaceRole,
@@ -32,6 +33,7 @@ pub fn popup_management_system(
             &WlSurfaceHandle,
             &mut SurfaceGeometry,
             &mut BufferState,
+            &mut SurfaceContentVersion,
             &mut XdgPopup,
             &mut PopupGrab,
             &ChildOf,
@@ -40,7 +42,7 @@ pub fn popup_management_system(
     >,
 ) {
     let mut known_popups =
-        popups.iter_mut().map(|(_, surface, _, _, _, _, _)| surface.id).collect::<BTreeSet<_>>();
+        popups.iter_mut().map(|(_, surface, _, _, _, _, _, _)| surface.id).collect::<BTreeSet<_>>();
     let mut deferred = Vec::new();
 
     for request in pending_xdg_requests.drain() {
@@ -93,7 +95,7 @@ pub fn popup_management_system(
                     popup =
                         popups.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id);
                 }
-                let Some((_, _, mut geometry, _, mut popup, _, child_of)) = popup else {
+                let Some((_, _, mut geometry, _, _, mut popup, _, child_of)) = popup else {
                     deferred.push(request);
                     continue;
                 };
@@ -113,7 +115,8 @@ pub fn popup_management_system(
                     popup =
                         popups.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id);
                 }
-                let Some((_, _, mut geometry, mut buffer, _, _, _)) = popup else {
+                let Some((_, _, mut geometry, mut buffer, mut content_version, _, _, _)) = popup
+                else {
                     deferred.push(request);
                     continue;
                 };
@@ -125,6 +128,7 @@ pub fn popup_management_system(
                     geometry.height = size.height.max(1);
                 }
                 buffer.attached = size.is_some();
+                content_version.bump();
             }
             WindowLifecycleAction::ConfigureRequested { role: XdgSurfaceRole::Popup } => {
                 tracing::trace!(surface_id = request.surface_id, "popup configure requested");
@@ -137,7 +141,7 @@ pub fn popup_management_system(
                     popup =
                         popups.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id);
                 }
-                let Some((_, _, _, _, mut popup, mut grab, _)) = popup else {
+                let Some((_, _, _, _, _, mut popup, mut grab, _)) = popup else {
                     deferred.push(request);
                     continue;
                 };
@@ -156,7 +160,7 @@ pub fn popup_management_system(
                         popups.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id);
                 }
 
-                if let Some((entity, _, _, _, _, _, _)) = popup {
+                if let Some((entity, _, _, _, _, _, _, _)) = popup {
                     commands.entity(entity).despawn();
                     known_popups.remove(&request.surface_id);
                 } else if known_popups.contains(&request.surface_id) {

@@ -7,17 +7,18 @@ use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    BorderTheme, BufferState, ServerDecoration, SurfaceGeometry, WindowAnimation, WindowLayout,
-    WindowMode, WindowPolicyState, WlSurfaceHandle, XdgPopup, XdgWindow,
+    BorderTheme, BufferState, ServerDecoration, SurfaceContentVersion, SurfaceGeometry,
+    WindowAnimation, WindowLayout, WindowMode, WindowPolicyState, WindowSceneGeometry,
+    WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
-    CompositorConfig, EntityIndex, PendingPopupServerRequests, PendingXdgRequests,
-    PopupServerAction, PopupServerRequest, WindowLifecycleAction, WindowLifecycleRequest, WorkArea,
-    XdgSurfaceRole,
+    CompositorConfig, EntityIndex, FocusedOutputState, PendingPopupServerRequests,
+    PendingXdgRequests, PopupServerAction, PopupServerRequest, PrimaryOutputState,
+    WindowLifecycleAction, WindowLifecycleRequest, WorkArea, XdgSurfaceRole,
 };
 use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowRuntime, WorkspaceRuntime};
-use nekoland_ecs::workspace_membership::active_workspace_runtime_target_or_index;
+use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_target;
 
 use crate::layout::floating::{
     centre_x, centre_y, placement_work_area, should_auto_place_floating_window,
@@ -39,10 +40,12 @@ pub fn toplevel_lifecycle_system(
     mut pending_popup_requests: ResMut<PendingPopupServerRequests>,
     entity_index: Res<EntityIndex>,
     existing_surfaces: Query<&WlSurfaceHandle, (With<XdgWindow>, Allow<Disabled>)>,
-    outputs: Query<OutputRuntime>,
+    outputs: Query<(Entity, OutputRuntime)>,
+    primary_output: Option<Res<PrimaryOutputState>>,
+    focused_output: Option<Res<FocusedOutputState>>,
     mut windows: Query<(Entity, WindowRuntime), (With<XdgWindow>, Allow<Disabled>)>,
     popups: Query<PopupRuntime, (With<XdgPopup>, Allow<Disabled>)>,
-    workspaces: Query<(Entity, WorkspaceRuntime)>,
+    _workspaces: Query<(Entity, WorkspaceRuntime)>,
     mut window_created: MessageWriter<WindowCreated>,
     mut window_closed: MessageWriter<WindowClosed>,
 ) {
@@ -50,15 +53,20 @@ pub fn toplevel_lifecycle_system(
         existing_surfaces.iter().map(|surface| surface.id).collect::<BTreeSet<_>>();
     let mut deferred = Vec::new();
     let placement_area =
-        placement_work_area(&work_area, outputs.iter().next().map(|output| output.properties));
+        placement_work_area(&work_area, outputs.iter().next().map(|(_, output)| output.properties));
 
     for request in pending_xdg_requests.drain() {
         match request.action.clone() {
             WindowLifecycleAction::Committed { role: XdgSurfaceRole::Toplevel, size }
                 if known_surfaces.insert(request.surface_id) =>
             {
-                let workspace_entity =
-                    active_workspace_runtime_target_or_index(&workspaces, &entity_index, 1);
+                let workspace_entity = focused_or_primary_workspace_runtime_target(
+                    &outputs,
+                    focused_output.as_deref(),
+                    primary_output.as_deref(),
+                    &entity_index,
+                    1,
+                );
                 let geometry = size
                     .unwrap_or(nekoland_ecs::resources::SurfaceExtent { width: 960, height: 720 });
                 let title = format!("Window {}", request.surface_id);
@@ -72,7 +80,15 @@ pub fn toplevel_lifecycle_system(
                             width: geometry.width.max(1),
                             height: geometry.height.max(1),
                         },
+                        scene_geometry: WindowSceneGeometry {
+                            x: 0,
+                            y: 0,
+                            width: geometry.width.max(1),
+                            height: geometry.height.max(1),
+                        },
+                        viewport_visibility: Default::default(),
                         buffer: BufferState { attached: size.is_some(), scale: 1 },
+                        content_version: SurfaceContentVersion { value: 1 },
                         window: XdgWindow {
                             app_id: "org.nekoland.demo".to_owned(),
                             title: title.clone(),
@@ -113,26 +129,41 @@ pub fn toplevel_lifecycle_system(
                 };
 
                 window.buffer.expect("xdg toplevel should have buffer state").attached = true;
+                window.content_version.bump();
                 if !matches!(
                     *window.mode,
                     WindowMode::Maximized | WindowMode::Fullscreen | WindowMode::Hidden
                 ) {
-                    window.geometry.width = size.width.max(1);
-                    window.geometry.height = size.height.max(1);
+                    window.scene_geometry.width = size.width.max(1);
+                    window.scene_geometry.height = size.height.max(1);
                 } else if let Some(restored) = window.restore.snapshot.as_mut() {
                     restored.geometry.width = size.width.max(1);
                     restored.geometry.height = size.height.max(1);
                     if restored.layout == WindowLayout::Floating
                         && should_auto_place_floating_window(&window.placement, &restored.geometry)
                     {
-                        restored.geometry.x = centre_x(&placement_area, restored.geometry.width);
-                        restored.geometry.y = centre_y(&placement_area, restored.geometry.height);
+                        restored.geometry.x = centre_x(&placement_area, 0, restored.geometry.width);
+                        restored.geometry.y =
+                            centre_y(&placement_area, 0, restored.geometry.height);
                     }
                 }
             }
             WindowLifecycleAction::Committed { role: XdgSurfaceRole::Toplevel, size: None } => {
                 if !known_surfaces.contains(&request.surface_id) {
                     deferred.push(request);
+                    continue;
+                }
+
+                let mut window = entity_index
+                    .entity_for_surface(request.surface_id)
+                    .and_then(|entity| windows.get_mut(entity).ok());
+                if window.is_none() {
+                    window = windows
+                        .iter_mut()
+                        .find(|(_, window)| window.surface_id() == request.surface_id);
+                }
+                if let Some((_, mut window)) = window {
+                    window.content_version.bump();
                 }
             }
             WindowLifecycleAction::ConfigureRequested { role: XdgSurfaceRole::Toplevel } => {
@@ -326,8 +357,8 @@ mod tests {
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::WindowBundle;
     use nekoland_ecs::components::{
-        BufferState, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode, WlSurfaceHandle,
-        Workspace, WorkspaceId, XdgPopup, XdgWindow,
+        BufferState, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode,
+        WindowSceneGeometry, WlSurfaceHandle, Workspace, WorkspaceId, XdgPopup, XdgWindow,
     };
     use nekoland_ecs::events::{WindowClosed, WindowCreated};
     use nekoland_ecs::resources::{
@@ -408,7 +439,10 @@ mod tests {
             .spawn((WindowBundle {
                 surface: WlSurfaceHandle { id: 11 },
                 geometry: SurfaceGeometry { x: 0, y: 0, width: 800, height: 600 },
+                scene_geometry: WindowSceneGeometry { x: 0, y: 0, width: 800, height: 600 },
+                viewport_visibility: Default::default(),
                 buffer: BufferState { attached: true, scale: 1 },
+                content_version: Default::default(),
                 window: XdgWindow::default(),
                 layout: WindowLayout::Tiled,
                 mode: WindowMode::Normal,

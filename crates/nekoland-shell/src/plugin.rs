@@ -16,7 +16,7 @@ use nekoland_ecs::resources::{EntityIndex, rebuild_entity_index_system};
 use crate::{
     commands, decorations, focus,
     interaction::{self, ActiveWindowGrab},
-    layer, layout, window_control, workspace, x11, xdg,
+    layer, layout, viewport, window_control, workspace, x11, xdg,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -38,8 +38,9 @@ impl NekolandPlugin for ShellPlugin {
             .init_resource::<ActiveWindowGrab>()
             .init_resource::<WindowStackingState>()
             .init_resource::<WorkspaceTilingState>()
+            .init_resource::<workspace::RememberedOutputWorkspaceState>()
             .init_resource::<CommandHistoryState>()
-            .init_resource::<commands::StartupCommandState>()
+            .init_resource::<commands::StartupActionState>()
             .init_resource::<PendingExternalCommandRequests>()
             .add_message::<WindowCreated>()
             .add_message::<WindowClosed>()
@@ -53,11 +54,13 @@ impl NekolandPlugin for ShellPlugin {
                 (
                     (
                         rebuild_entity_index_system,
-                        commands::startup_command_queue_system,
+                        commands::startup_action_queue_system,
                         commands::external_command_launch_system,
                         commands::command_history_system,
                         workspace::workspace_switch_system,
                         workspace::workspace_command_system,
+                        workspace::output_workspace_housekeeping_system,
+                        workspace::remember_output_workspace_routes_system,
                         workspace::sync_active_workspace_marker_system,
                         workspace::sync_workspace_disabled_state_system,
                         layer::arrange::layer_lifecycle_system,
@@ -73,10 +76,11 @@ impl NekolandPlugin for ShellPlugin {
                         layer::arrange::work_area_system,
                         x11::xwayland::xwayland_bridge_system,
                         layout::tiling::tiling_layout_system,
-                        focus::pointer_button_focus_system,
-                        interaction::window_grab_system,
                         layout::floating::floating_layout_system,
                         layout::fullscreen::fullscreen_layout_system,
+                        viewport::window_viewport_projection_system,
+                        focus::pointer_button_focus_system,
+                        interaction::window_grab_system,
                         layout::stacking::stacking_layout_system,
                         focus::focus_management_system,
                         decorations::server_decoration_system,

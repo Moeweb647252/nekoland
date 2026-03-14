@@ -1,13 +1,16 @@
 use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 
-use crate::components::SurfaceGeometry;
+use crate::components::WorkspaceCoord;
 
 /// Metadata tracked for a mapped XDG toplevel surface.
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[require(
     crate::components::SurfaceGeometry,
     crate::components::BufferState,
+    crate::components::SurfaceContentVersion,
+    WindowSceneGeometry,
+    WindowViewportVisibility,
     WindowLayout,
     WindowMode,
     WindowPolicyState,
@@ -19,6 +22,28 @@ pub struct XdgWindow {
     pub app_id: String,
     pub title: String,
     pub last_acked_configure: Option<u32>,
+}
+
+/// Authoritative window geometry in workspace-scene coordinates.
+#[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowSceneGeometry {
+    pub x: WorkspaceCoord,
+    pub y: WorkspaceCoord,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Whether the current window scene geometry intersects the active output viewport.
+#[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowViewportVisibility {
+    pub visible: bool,
+    pub output: Option<String>,
+}
+
+impl Default for WindowViewportVisibility {
+    fn default() -> Self {
+        Self { visible: true, output: None }
+    }
 }
 
 /// User-facing floating placement hints for a window.
@@ -62,8 +87,8 @@ impl WindowLayout {
 /// Desired top-left origin for a floating window.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowPosition {
-    pub x: i32,
-    pub y: i32,
+    pub x: WorkspaceCoord,
+    pub y: WorkspaceCoord,
 }
 
 /// Desired size for a floating window.
@@ -91,7 +116,7 @@ impl WindowPlacement {
             || self.floating_size.is_some()
     }
 
-    pub fn should_auto_place(&self, geometry: &crate::components::SurfaceGeometry) -> bool {
+    pub fn should_auto_place(&self, geometry: &WindowSceneGeometry) -> bool {
         self.floating_size.is_none()
             && self.floating_position.is_none()
             && geometry.x == 0
@@ -100,7 +125,7 @@ impl WindowPlacement {
 
     pub fn should_reposition_auto(
         &self,
-        geometry: &crate::components::SurfaceGeometry,
+        geometry: &WindowSceneGeometry,
         work_area_changed: bool,
     ) -> bool {
         if self.floating_size.is_some() {
@@ -131,7 +156,7 @@ impl FloatingPosition {
 /// maximize or fullscreen.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowRestoreState {
-    pub geometry: SurfaceGeometry,
+    pub geometry: WindowSceneGeometry,
     pub layout: WindowLayout,
     pub mode: WindowMode,
 }
@@ -140,6 +165,13 @@ pub struct WindowRestoreState {
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowRestoreSnapshot {
     pub snapshot: Option<WindowRestoreState>,
+}
+
+/// Output-scoped background role that removes a window from the normal workspace scene.
+#[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutputBackgroundWindow {
+    pub output: String,
+    pub restore: WindowRestoreState,
 }
 
 /// Typed window policy resolved from config defaults plus matching window rules.
@@ -226,7 +258,7 @@ mod tests {
     use super::XdgWindow;
     use crate::components::{
         BufferState, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode, WindowPlacement,
-        WindowPolicyState, WindowRestoreSnapshot,
+        WindowPolicyState, WindowRestoreSnapshot, WindowSceneGeometry, WindowViewportVisibility,
     };
 
     #[test]
@@ -235,6 +267,8 @@ mod tests {
         let entity = world.spawn(XdgWindow::default()).id();
 
         assert!(world.get::<SurfaceGeometry>(entity).is_some());
+        assert!(world.get::<WindowSceneGeometry>(entity).is_some());
+        assert!(world.get::<WindowViewportVisibility>(entity).is_some());
         assert!(world.get::<BufferState>(entity).is_some());
         assert!(world.get::<WindowMode>(entity).is_some());
         assert!(world.get::<WindowLayout>(entity).is_some());

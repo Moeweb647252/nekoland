@@ -15,4 +15,18 @@ pub enum OutputCommand {
     Disable {
         output: String,
     },
+    ViewportMove {
+        output: String,
+        x: i64,
+        y: i64,
+    },
+    ViewportPan {
+        output: String,
+        dx: i64,
+        dy: i64,
+    },
+    CenterViewportOnWindow {
+        output: String,
+        surface_id: u64,
+    },
 }

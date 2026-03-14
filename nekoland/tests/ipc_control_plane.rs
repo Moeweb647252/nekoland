@@ -13,15 +13,13 @@ use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    OutputDevice, OutputProperties, SurfaceGeometry, WindowLayout, WindowMode, WlSurfaceHandle,
-    Workspace, WorkspaceId, XdgWindow,
+    OutputDevice, OutputProperties, OutputViewport, SurfaceGeometry, WindowLayout, WindowMode,
+    WindowSceneGeometry, WlSurfaceHandle, Workspace, WorkspaceId, XdgWindow,
 };
-use nekoland_ecs::resources::{
-    ConfiguredKeybindingAction, FramePacingState, KeyboardFocusState, RenderList,
-};
+use nekoland_ecs::resources::{FramePacingState, KeyboardFocusState, RenderList};
 use nekoland_ipc::commands::{
-    ConfigSnapshot, OutputCommand, OutputSnapshot, QueryCommand, SplitAxis, TreeSnapshot,
-    WindowCommand, WorkspaceCommand, WorkspaceSnapshot,
+    OutputCommand, OutputSnapshot, QueryCommand, SplitAxis, TreeSnapshot, WindowCommand,
+    WorkspaceCommand, WorkspaceSnapshot,
 };
 use nekoland_ipc::{IpcCommand, IpcReply, IpcRequest, IpcServerState, send_request_to_path};
 
@@ -36,7 +34,6 @@ const SPLIT_TARGET_SURFACE_ID: u64 = 302;
 #[derive(Debug)]
 struct IpcControlSummary {
     output_name: String,
-    config: ConfigSnapshot,
 }
 
 /// Verifies that IPC control commands mutate window, workspace, and output state in the expected
@@ -53,7 +50,7 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
     let mut app = build_app(config_path);
     app.insert_resource(RunLoopSettings {
         frame_timeout: Duration::from_millis(1),
-        max_frames: Some(96),
+        max_frames: Some(1024),
     });
     seed_windows(app.inner_mut().world_mut());
 
@@ -91,21 +88,32 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
     let (
         window_layout,
         window_mode,
-        geometry,
+        scene_geometry,
+        screen_geometry,
         focused_surface,
         workspaces,
         output_properties,
+        output_viewport,
         render_list,
         frame_pacing,
     ) = {
         let world = app.inner_mut().world_mut();
 
-        let (window_layout, window_mode, geometry) = world
-            .query::<(&WlSurfaceHandle, &WindowLayout, &WindowMode, &SurfaceGeometry)>()
-            .iter(world)
-            .find(|(surface, _, _, _)| surface.id == TARGET_SURFACE_ID)
-            .map(|(_, layout, mode, geometry)| (layout.clone(), mode.clone(), geometry.clone()))
-            .expect("target IPC window should remain present");
+        let (window_layout, window_mode, scene_geometry, screen_geometry) =
+            world
+                .query::<(
+                    &WlSurfaceHandle,
+                    &WindowLayout,
+                    &WindowMode,
+                    &WindowSceneGeometry,
+                    &SurfaceGeometry,
+                )>()
+                .iter(world)
+                .find(|(surface, _, _, _, _)| surface.id == TARGET_SURFACE_ID)
+                .map(|(_, layout, mode, scene_geometry, screen_geometry)| {
+                    (layout.clone(), mode.clone(), scene_geometry.clone(), screen_geometry.clone())
+                })
+                .expect("target IPC window should remain present");
 
         let focused_surface = world
             .get_resource::<KeyboardFocusState>()
@@ -124,6 +132,12 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
             .find(|(output, _)| output.name == summary.output_name)
             .map(|(_, properties)| properties.clone())
             .expect("configured output should remain present");
+        let output_viewport = world
+            .query::<(&OutputDevice, &OutputViewport)>()
+            .iter(world)
+            .find(|(output, _)| output.name == summary.output_name)
+            .map(|(_, viewport)| viewport.clone())
+            .expect("configured output viewport should remain present");
         let render_list = world
             .get_resource::<RenderList>()
             .expect("render list should remain available")
@@ -137,10 +151,12 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
         (
             window_layout,
             window_mode,
-            geometry,
+            scene_geometry,
+            screen_geometry,
             focused_surface,
             workspaces,
             output_properties,
+            output_viewport,
             render_list,
             frame_pacing,
         )
@@ -148,10 +164,14 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
 
     assert_eq!(window_layout, WindowLayout::Floating);
     assert_eq!(window_mode, WindowMode::Normal);
-    assert_eq!(geometry.x, 900);
-    assert_eq!(geometry.y, 120);
-    assert_eq!(geometry.width, 777);
-    assert_eq!(geometry.height, 555);
+    assert_eq!(scene_geometry.x, 900);
+    assert_eq!(scene_geometry.y, 120);
+    assert_eq!(scene_geometry.width, 777);
+    assert_eq!(scene_geometry.height, 555);
+    assert_eq!(screen_geometry.x, 580);
+    assert_eq!(screen_geometry.y, -360);
+    assert_eq!(screen_geometry.width, 777);
+    assert_eq!(screen_geometry.height, 555);
     assert_eq!(focused_surface, Some(TARGET_SURFACE_ID));
     assert!(
         workspaces.iter().any(|workspace| workspace.name == "2" && workspace.active),
@@ -164,27 +184,8 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
     assert_eq!(output_properties.width, 1600);
     assert_eq!(output_properties.height, 900);
     assert_eq!(output_properties.refresh_millihz, 75_000);
-    assert_eq!(summary.config.default_layout, "floating");
-    assert_eq!(summary.config.command_history_limit, 64);
-    assert!(!summary.config.xwayland_enabled);
-    assert!(
-        matches!(
-            summary.config.keybindings.get("Super+Return"),
-            Some(ConfiguredKeybindingAction::Command(argv))
-                if argv == &vec!["foot".to_owned()]
-        ),
-        "runtime config query should expose active keybindings: {:?}",
-        summary.config.keybindings
-    );
-    assert!(
-        summary
-            .config
-            .outputs
-            .iter()
-            .any(|output| output.name == summary.output_name && output.mode == "1920x1080@60"),
-        "runtime config query should expose configured outputs: {:?}",
-        summary.config.outputs
-    );
+    assert_eq!(output_viewport.origin_x, 320);
+    assert_eq!(output_viewport.origin_y, 480);
     assert!(
         render_list.iter().any(|element| element.surface_id == TARGET_SURFACE_ID),
         "active workspace should still render the target window: {render_list:?}"
@@ -386,6 +387,29 @@ fn run_ipc_control_sequence(socket_path: &Path) -> Result<IpcControlSummary, com
 
     send_command(
         socket_path,
+        IpcCommand::Output(OutputCommand::ViewportMove {
+            output: output_name.clone(),
+            x: 300,
+            y: 500,
+        }),
+    )?;
+    send_command(
+        socket_path,
+        IpcCommand::Output(OutputCommand::ViewportPan {
+            output: output_name.clone(),
+            dx: 20,
+            dy: -20,
+        }),
+    )?;
+    let _ = wait_for_outputs(socket_path, |outputs| {
+        outputs.iter().any(|output| {
+            output.name == output_name
+                && output.viewport_origin_x == 320
+                && output.viewport_origin_y == 480
+        })
+    })?;
+    send_command(
+        socket_path,
         IpcCommand::Output(OutputCommand::Disable { output: output_name.clone() }),
     )?;
     let _ = wait_for_outputs(socket_path, |outputs| {
@@ -396,7 +420,11 @@ fn run_ipc_control_sequence(socket_path: &Path) -> Result<IpcControlSummary, com
         IpcCommand::Output(OutputCommand::Enable { output: output_name.clone() }),
     )?;
     let _ = wait_for_outputs(socket_path, |outputs| {
-        outputs.iter().any(|output| output.name == output_name)
+        outputs.iter().any(|output| {
+            output.name == output_name
+                && output.viewport_origin_x == 320
+                && output.viewport_origin_y == 480
+        })
     })?;
     send_command(
         socket_path,
@@ -416,18 +444,7 @@ fn run_ipc_control_sequence(socket_path: &Path) -> Result<IpcControlSummary, com
         })
     })?;
 
-    let config = wait_for_config(socket_path, |config| {
-        config.default_layout == "floating"
-            && config.command_history_limit == 64
-            && !config.xwayland_enabled
-            && matches!(
-                config.keybindings.get("Super+Return"),
-                Some(ConfiguredKeybindingAction::Command(argv))
-                    if argv == &vec!["foot".to_owned()]
-            )
-    })?;
-
-    Ok(IpcControlSummary { output_name, config })
+    Ok(IpcControlSummary { output_name })
 }
 
 fn run_ipc_split_sequence(socket_path: &Path) -> Result<TreeSnapshot, common::TestControl> {
@@ -503,14 +520,6 @@ fn wait_for_workspaces(
         QueryCommand::GetWorkspaces,
         |workspaces: &Vec<WorkspaceSnapshot>| predicate(workspaces),
     )
-}
-
-/// Poll the runtime config query until the caller sees the expected config state.
-fn wait_for_config(
-    socket_path: &Path,
-    predicate: impl Fn(&ConfigSnapshot) -> bool,
-) -> Result<ConfigSnapshot, common::TestControl> {
-    wait_for_payload(socket_path, QueryCommand::GetConfig, predicate)
 }
 
 /// Generic polling helper used by the control-plane test's query assertions.

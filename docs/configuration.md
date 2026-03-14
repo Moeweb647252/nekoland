@@ -31,13 +31,23 @@ Important top-level fields:
 `command_history_limit` controls how many external command launch/failure records are retained for
 `query commands` / `get_commands`. Setting it to `0` disables command history retention.
 
+`[input]` fields:
+
+- `focus_follows_mouse`
+- `repeat_rate`
+- `viewport_pan_modifiers`
+
+`viewport_pan_modifiers` configures the modifier-only pointer gesture that pans the focused output
+viewport. The value is a string array such as `["Super", "Alt"]` or `["Ctrl", "Shift"]`.
+
 `[startup]` fields:
 
-- `commands`
+- `actions`
 
-`commands` is a list of shell-style command lines that are split into argv and launched once after
-the Wayland socket is ready. These commands inherit the compositor's nested Wayland environment, so
-GUI apps connect to the compositor they were started from instead of the host session.
+`actions` is a list of startup actions applied once after the Wayland socket is ready. External
+commands use argv arrays via `{ exec = [...] }` and inherit the compositor's nested Wayland
+environment, so GUI apps connect to the compositor they were started from instead of the host
+session.
 
 `[xwayland]` fields:
 
@@ -56,27 +66,31 @@ Configured outputs are applied at startup and re-applied when the config file ch
 
 Supported keybinding actions:
 
-- `close-window`
-- `window move <x> <y>`
-- `window resize <width> <height>`
-- `window split <horizontal|vertical>`
-- `workspace <name>`
-- `workspace switch <name>`
-- `workspace create <name>`
-- `workspace destroy <name>`
-- `output enable <name>`
-- `output disable <name>`
-- `output configure <name> <mode>`
-- `output configure <name> <mode> <scale>`
+- `{ close = true }`
+- `{ move = [x, y] }`
+- `{ resize = [width, height] }`
+- `{ split = "horizontal" | "vertical" }`
+- `{ background = "OUTPUT" }`
+- `{ clear_background = true }`
+- `{ workspace = 1 | "name" }`
+- `{ workspace_create = 1 | "name" }`
+- `{ workspace_destroy = 1 | "name" | "active" }`
+- `{ output_enable = "OUTPUT" }`
+- `{ output_disable = "OUTPUT" }`
+- `{ output_configure = { output = "OUTPUT", mode = "1920x1080@60", scale = 2 } }`
+- `{ viewport_pan = [dx, dy] }`
+- `{ viewport_move = [x, y] }`
+- `{ viewport_center = true }`
 
-External commands are configured directly as argv arrays on the right-hand side of a binding. For
-example:
+Keybinding actions are configured as short inline tables. For example:
 
 ```toml
 [keybinds.bindings]
-"Super+Return" = ["foot"]
-"Super+Space" = ["wofi", "--show", "drun"]
-"Super+Shift+Q" = "close-window"
+"Super+Return" = { exec = ["foot"] }
+"Super+Space" = { exec = ["wofi", "--show", "drun"] }
+"Super+Shift+Q" = { close = true }
+"Super+1" = { workspace = 1 }
+"Super+Alt+H" = { viewport_pan = [-200, 0] }
 ```
 
 Key names use the XKB/X11-style names already used elsewhere in the project, for example:
@@ -85,3 +99,6 @@ Key names use the XKB/X11-style names already used elsewhere in the project, for
 - `Super+Shift+Q`
 - `Super+Return`
 - `Super+1`
+
+When the configured `viewport_pan_modifiers` are held, pointer motion is consumed by viewport
+panning instead of being forwarded to client hover handling.

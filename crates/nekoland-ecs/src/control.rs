@@ -37,6 +37,10 @@ impl<'a> WindowControlApi<'a> {
     pub fn focused(&mut self) -> Option<WindowControlHandle<'_>> {
         self.pending.focused(self.keyboard_focus)
     }
+
+    pub fn focused_surface_id(&self) -> Option<SurfaceId> {
+        self.keyboard_focus.focused_surface.map(SurfaceId)
+    }
 }
 
 /// Lightweight high-level API for staging workspace control updates from plain Rust helpers.
@@ -63,6 +67,10 @@ impl<'a> WorkspaceControlApi<'a> {
 
     pub fn create_named(&mut self, workspace: impl Into<WorkspaceName>) {
         self.pending.create_named(workspace);
+    }
+
+    pub fn create(&mut self, target: WorkspaceLookup) {
+        self.pending.create(target);
     }
 
     pub fn create_id(&mut self, workspace: crate::components::WorkspaceId) {
@@ -107,6 +115,10 @@ impl<'a> OutputControlApi<'a> {
     pub fn primary(&mut self) -> OutputControlHandle<'_> {
         self.pending.primary()
     }
+
+    pub fn focused(&mut self) -> OutputControlHandle<'_> {
+        self.pending.select(OutputSelector::Focused)
+    }
 }
 
 /// SystemParam façade over high-level window controls.
@@ -133,6 +145,10 @@ impl<'w, 's> WindowOps<'w, 's> {
 
     pub fn focused(&mut self) -> Option<WindowControlHandle<'_>> {
         self.pending.focused(&self.keyboard_focus)
+    }
+
+    pub fn focused_surface_id(&self) -> Option<SurfaceId> {
+        self.keyboard_focus.focused_surface.map(SurfaceId)
     }
 
     pub fn entity(&mut self, entity: Entity) -> Option<WindowControlHandle<'_>> {
@@ -168,6 +184,10 @@ impl<'w, 's> WorkspaceOps<'w, 's> {
 
     pub fn create_named(&mut self, workspace: impl Into<WorkspaceName>) {
         self.pending.create_named(workspace);
+    }
+
+    pub fn create(&mut self, target: WorkspaceLookup) {
+        self.pending.create(target);
     }
 
     pub fn create_id(&mut self, workspace: crate::components::WorkspaceId) {
@@ -222,6 +242,10 @@ impl<'w, 's> OutputOps<'w, 's> {
 
     pub fn primary(&mut self) -> OutputControlHandle<'_> {
         self.pending.primary()
+    }
+
+    pub fn focused(&mut self) -> OutputControlHandle<'_> {
+        self.pending.select(OutputSelector::Focused)
     }
 
     pub fn entity_named(&self, output: &OutputName) -> Option<Entity> {

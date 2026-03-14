@@ -10,7 +10,7 @@ use nekoland_core::app::RunLoopSettings;
 use nekoland_ecs::components::{
     WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
 };
-use nekoland_ecs::resources::{KeyboardFocusState, RenderList};
+use nekoland_ecs::resources::{CursorRenderState, KeyboardFocusState, RenderList};
 use nekoland_protocol::ProtocolServerState;
 
 mod common;
@@ -69,7 +69,7 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
         }
     }
 
-    let (window_rows, render_elements, focused_surface) = {
+    let (window_rows, render_elements, cursor_state, focused_surface) = {
         let world = app.inner_mut().world_mut();
         let mut windows =
             world.query::<(&WlSurfaceHandle, &XdgWindow, &WindowLayout, &WindowMode)>();
@@ -88,11 +88,15 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
             .expect("render list should be initialized by RenderPlugin")
             .elements
             .clone();
+        let cursor_state = world
+            .get_resource::<CursorRenderState>()
+            .expect("cursor render state should be initialized by RenderPlugin")
+            .clone();
         let focused_surface = world
             .get_resource::<KeyboardFocusState>()
             .expect("keyboard focus state should be initialized by InputPlugin")
             .focused_surface;
-        (window_rows, render_elements, focused_surface)
+        (window_rows, render_elements, cursor_state, focused_surface)
     };
 
     assert!(
@@ -111,10 +115,7 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
         render_elements.iter().any(|element| element.surface_id == surface_id),
         "render list should include the client window surface: {render_elements:?}"
     );
-    assert!(
-        render_elements.iter().any(|element| element.surface_id == 0),
-        "render list should still include the cursor element: {render_elements:?}"
-    );
+    assert!(cursor_state.visible, "cursor render state should stay visible: {cursor_state:?}");
     assert_eq!(
         focused_surface,
         Some(surface_id),

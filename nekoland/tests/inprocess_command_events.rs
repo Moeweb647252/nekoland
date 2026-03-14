@@ -44,7 +44,7 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Space" = ["/definitely-not-a-real-nekoland-command"]
+"Super+Space" = { exec = ["/definitely-not-a-real-nekoland-command"] }
 "##;
 
 /// One-shot resource that injects the synthetic keybinding input used by the test.

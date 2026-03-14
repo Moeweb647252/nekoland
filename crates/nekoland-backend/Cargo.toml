@@ -17,3 +17,4 @@ nekoland-protocol = { path = "../nekoland-protocol" }
 serde.workspace = true
 smithay.workspace = true
 tracing.workspace = true
+xcursor = "0.3"

@@ -1,12 +1,16 @@
 use std::collections::BTreeMap;
 
 use nekoland_ecs::resources::{
-    CompositorConfig, ConfiguredKeybindingAction, ConfiguredOutput, ConfiguredWindowRule,
-    DEFAULT_COMMAND_HISTORY_LIMIT, DefaultLayout, XWaylandConfig,
+    CompositorConfig, ConfiguredAction, ConfiguredOutput, ConfiguredWindowRule,
+    DEFAULT_COMMAND_HISTORY_LIMIT, DefaultLayout, ModifierMask, XWaylandConfig,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{keybind_config::KeybindConfig, theme::Theme};
+use crate::{
+    action_config::{ActionListConfig, ConfiguredActionConfig},
+    keybind_config::KeybindConfig,
+    theme::Theme,
+};
 
 /// TOML-facing config schema loaded from disk before normalization into `CompositorConfig`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -32,11 +36,15 @@ impl Default for NekolandConfigFile {
         let mut bindings = BTreeMap::new();
         bindings.insert(
             "Super+Return".to_owned(),
-            ConfiguredKeybindingAction::Command(vec!["foot".to_owned()]),
+            ActionListConfig::One(ConfiguredActionConfig::Exec { exec: vec!["foot".to_owned()] }),
         );
         bindings.insert(
             "Super+Space".to_owned(),
-            ConfiguredKeybindingAction::Command(vec!["fuzzel".to_owned()]),
+            ActionListConfig::One(ConfiguredActionConfig::Exec { exec: vec!["fuzzel".to_owned()] }),
+        );
+        bindings.insert(
+            "Super+Q".to_owned(),
+            ActionListConfig::One(ConfiguredActionConfig::Close { close: true }),
         );
 
         Self {
@@ -53,11 +61,11 @@ impl Default for NekolandConfigFile {
     }
 }
 
-/// Startup commands launched after the compositor finishes initialization.
+/// Startup actions applied after the compositor finishes initialization.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StartupConfig {
     #[serde(default)]
-    pub commands: Vec<String>,
+    pub actions: Vec<ConfiguredActionConfig>,
 }
 
 /// IPC-specific settings that affect command history and related tooling.
@@ -91,11 +99,17 @@ impl Default for XWaylandSection {
 pub struct InputConfig {
     pub focus_follows_mouse: bool,
     pub repeat_rate: u16,
+    #[serde(default = "default_viewport_pan_modifiers")]
+    pub viewport_pan_modifiers: Vec<String>,
 }
 
 impl Default for InputConfig {
     fn default() -> Self {
-        Self { focus_follows_mouse: true, repeat_rate: 30 }
+        Self {
+            focus_follows_mouse: true,
+            repeat_rate: 30,
+            viewport_pan_modifiers: default_viewport_pan_modifiers(),
+        }
     }
 }
 
@@ -115,9 +129,11 @@ impl Default for OutputConfig {
 }
 
 /// Converts the deserialized config file into the normalized runtime config used throughout ECS.
-impl From<NekolandConfigFile> for CompositorConfig {
-    fn from(value: NekolandConfigFile) -> Self {
-        Self {
+impl TryFrom<NekolandConfigFile> for CompositorConfig {
+    type Error = String;
+
+    fn try_from(value: NekolandConfigFile) -> Result<Self, Self::Error> {
+        Ok(Self {
             theme: value.theme.name,
             cursor_theme: value.theme.cursor_theme,
             border_color: value.theme.border_color,
@@ -126,8 +142,16 @@ impl From<NekolandConfigFile> for CompositorConfig {
             window_rules: value.window_rules,
             focus_follows_mouse: value.input.focus_follows_mouse,
             repeat_rate: value.input.repeat_rate,
+            viewport_pan_modifiers: ModifierMask::from_config_tokens(
+                value.input.viewport_pan_modifiers.iter().map(String::as_str),
+            )?,
             command_history_limit: value.ipc.command_history_limit,
-            startup_commands: value.startup.commands,
+            startup_actions: value
+                .startup
+                .actions
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<Vec<ConfiguredAction>, _>>()?,
             xwayland: XWaylandConfig { enabled: value.xwayland.enabled },
             outputs: value
                 .outputs
@@ -139,13 +163,22 @@ impl From<NekolandConfigFile> for CompositorConfig {
                     enabled: output.enabled,
                 })
                 .collect(),
-            keybindings: value.keybinds.bindings,
-        }
+            keybindings: value
+                .keybinds
+                .bindings
+                .into_iter()
+                .map(|(binding, actions)| actions.into_actions().map(|actions| (binding, actions)))
+                .collect::<Result<BTreeMap<_, _>, _>>()?,
+        })
     }
 }
 
 fn default_layout_name() -> DefaultLayout {
     DefaultLayout::Floating
+}
+
+fn default_viewport_pan_modifiers() -> Vec<String> {
+    vec!["Super".to_owned(), "Alt".to_owned()]
 }
 
 fn default_command_history_limit() -> usize {
@@ -159,6 +192,7 @@ fn default_xwayland_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use nekoland_ecs::components::{WindowLayout, WindowMode, WindowPolicy};
+    use nekoland_ecs::resources::ModifierMask;
 
     use super::NekolandConfigFile;
 
@@ -177,6 +211,7 @@ background_color = "#ffffff"
 [input]
 focus_follows_mouse = true
 repeat_rate = 30
+viewport_pan_modifiers = ["Super", "Alt"]
 
 [[window_rules]]
 app_id = "org.nekoland.rules"
@@ -193,12 +228,13 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Return" = ["foot"]
+"Super+Return" = { exec = ["foot"] }
 "##,
         )
         .expect("config should parse");
 
-        let runtime = nekoland_ecs::resources::CompositorConfig::from(config);
+        let runtime = nekoland_ecs::resources::CompositorConfig::try_from(config)
+            .expect("config should normalize");
         assert_eq!(runtime.window_rules.len(), 2);
         assert_eq!(
             runtime.resolve_window_policy("org.nekoland.rules", "Notes", false),
@@ -208,5 +244,38 @@ enabled = true
             runtime.resolve_window_policy("org.other.app", "Video", false),
             WindowPolicy::new(WindowLayout::Floating, WindowMode::Fullscreen)
         );
+        assert_eq!(runtime.viewport_pan_modifiers, ModifierMask::new(false, true, false, true));
+    }
+
+    #[test]
+    fn input_viewport_pan_modifiers_normalize_into_runtime_mask() {
+        let config = toml::from_str::<NekolandConfigFile>(
+            r##"
+[theme]
+name = "latte"
+cursor_theme = "breeze"
+border_color = "#112233"
+background_color = "#ffffff"
+
+[input]
+focus_follows_mouse = true
+repeat_rate = 30
+viewport_pan_modifiers = ["Ctrl", "Shift"]
+
+[[outputs]]
+name = "eDP-1"
+mode = "1920x1080@60"
+scale = 1
+enabled = true
+
+[keybinds.bindings]
+"Super+Return" = { exec = ["foot"] }
+"##,
+        )
+        .expect("config should parse");
+
+        let runtime = nekoland_ecs::resources::CompositorConfig::try_from(config)
+            .expect("config should normalize");
+        assert_eq!(runtime.viewport_pan_modifiers, ModifierMask::new(true, false, true, false));
     }
 }

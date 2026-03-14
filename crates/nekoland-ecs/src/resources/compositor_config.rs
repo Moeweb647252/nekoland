@@ -4,7 +4,11 @@ use std::fmt;
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
+use super::SplitAxis;
 use crate::components::{WindowLayout, WindowMode, WindowPolicy};
+use crate::selectors::{OutputName, WorkspaceLookup, WorkspaceSelector};
+
+use super::ModifierMask;
 
 /// Output configuration after normalization from the on-disk config schema.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -21,21 +25,92 @@ impl Default for ConfiguredOutput {
     }
 }
 
-/// Keybinding action after normalization from the config schema.
+/// Configured action after normalization from the config schema.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum ConfiguredKeybindingAction {
-    Action(String),
-    Command(Vec<String>),
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum ConfiguredAction {
+    Exec { argv: Vec<String> },
+    CloseFocusedWindow,
+    MoveFocusedWindow { x: isize, y: isize },
+    ResizeFocusedWindow { width: u32, height: u32 },
+    SplitFocusedWindow { axis: SplitAxis },
+    BackgroundFocusedWindow { output: OutputName },
+    ClearFocusedWindowBackground,
+    SwitchWorkspace { workspace: WorkspaceLookup },
+    CreateWorkspace { workspace: WorkspaceLookup },
+    DestroyWorkspace { workspace: WorkspaceSelector },
+    EnableOutput { output: OutputName },
+    DisableOutput { output: OutputName },
+    ConfigureOutput { output: OutputName, mode: String, scale: Option<u32> },
+    PanViewport { delta_x: isize, delta_y: isize },
+    MoveViewport { x: isize, y: isize },
+    CenterViewportOnFocusedWindow,
 }
 
-impl ConfiguredKeybindingAction {
+impl ConfiguredAction {
     /// Produces a human-readable label for diagnostics and command-history records.
     pub fn describe(&self) -> String {
         match self {
-            Self::Action(action) => action.clone(),
-            Self::Command(argv) => argv.join(" "),
+            Self::Exec { argv } => argv.join(" "),
+            Self::CloseFocusedWindow => "close-focused-window".to_owned(),
+            Self::MoveFocusedWindow { x, y } => format!("move-focused-window {x} {y}"),
+            Self::ResizeFocusedWindow { width, height } => {
+                format!("resize-focused-window {width} {height}")
+            }
+            Self::SplitFocusedWindow { axis } => {
+                format!("split-focused-window {}", split_axis_label(*axis))
+            }
+            Self::BackgroundFocusedWindow { output } => {
+                format!("background-focused-window {}", output.as_str())
+            }
+            Self::ClearFocusedWindowBackground => "clear-focused-window-background".to_owned(),
+            Self::SwitchWorkspace { workspace } => {
+                format!("switch-workspace {}", workspace_lookup_label(workspace))
+            }
+            Self::CreateWorkspace { workspace } => {
+                format!("create-workspace {}", workspace_lookup_label(workspace))
+            }
+            Self::DestroyWorkspace { workspace } => {
+                format!("destroy-workspace {}", workspace_selector_label(workspace))
+            }
+            Self::EnableOutput { output } => format!("enable-output {}", output.as_str()),
+            Self::DisableOutput { output } => format!("disable-output {}", output.as_str()),
+            Self::ConfigureOutput { output, mode, scale } => match scale {
+                Some(scale) => format!("configure-output {} {mode} {scale}", output.as_str()),
+                None => format!("configure-output {} {mode}", output.as_str()),
+            },
+            Self::PanViewport { delta_x, delta_y } => {
+                format!("pan-viewport {delta_x} {delta_y}")
+            }
+            Self::MoveViewport { x, y } => format!("move-viewport {x} {y}"),
+            Self::CenterViewportOnFocusedWindow => "center-viewport-on-focused-window".to_owned(),
         }
+    }
+}
+
+pub fn describe_action_sequence(actions: &[ConfiguredAction]) -> String {
+    actions.iter().map(ConfiguredAction::describe).collect::<Vec<_>>().join(" ; ")
+}
+
+fn split_axis_label(axis: SplitAxis) -> &'static str {
+    match axis {
+        SplitAxis::Horizontal => "horizontal",
+        SplitAxis::Vertical => "vertical",
+    }
+}
+
+fn workspace_lookup_label(workspace: &WorkspaceLookup) -> String {
+    match workspace {
+        WorkspaceLookup::Id(id) => id.0.to_string(),
+        WorkspaceLookup::Name(name) => name.as_str().to_owned(),
+    }
+}
+
+fn workspace_selector_label(workspace: &WorkspaceSelector) -> String {
+    match workspace {
+        WorkspaceSelector::Active => "active".to_owned(),
+        WorkspaceSelector::Id(id) => id.0.to_string(),
+        WorkspaceSelector::Name(name) => name.as_str().to_owned(),
     }
 }
 
@@ -128,11 +203,12 @@ pub struct CompositorConfig {
     pub window_rules: Vec<ConfiguredWindowRule>,
     pub focus_follows_mouse: bool,
     pub repeat_rate: u16,
+    pub viewport_pan_modifiers: ModifierMask,
     pub command_history_limit: usize,
-    pub startup_commands: Vec<String>,
+    pub startup_actions: Vec<ConfiguredAction>,
     pub outputs: Vec<ConfiguredOutput>,
     pub xwayland: XWaylandConfig,
-    pub keybindings: BTreeMap<String, ConfiguredKeybindingAction>,
+    pub keybindings: BTreeMap<String, Vec<ConfiguredAction>>,
 }
 
 impl Default for CompositorConfig {
@@ -140,16 +216,13 @@ impl Default for CompositorConfig {
         let mut keybindings = BTreeMap::new();
         keybindings.insert(
             "Super+Return".to_owned(),
-            ConfiguredKeybindingAction::Command(vec!["foot".to_owned()]),
+            vec![ConfiguredAction::Exec { argv: vec!["foot".to_owned()] }],
         );
         keybindings.insert(
             "Super+Space".to_owned(),
-            ConfiguredKeybindingAction::Command(vec!["fuzzel".to_owned()]),
+            vec![ConfiguredAction::Exec { argv: vec!["fuzzel".to_owned()] }],
         );
-        keybindings.insert(
-            "Super+Q".to_owned(),
-            ConfiguredKeybindingAction::Action("close-window".to_owned()),
-        );
+        keybindings.insert("Super+Q".to_owned(), vec![ConfiguredAction::CloseFocusedWindow]);
 
         Self {
             theme: "catppuccin-latte".to_owned(),
@@ -160,8 +233,9 @@ impl Default for CompositorConfig {
             window_rules: Vec::new(),
             focus_follows_mouse: true,
             repeat_rate: 30,
+            viewport_pan_modifiers: ModifierMask::new(false, true, false, true),
             command_history_limit: DEFAULT_COMMAND_HISTORY_LIMIT,
-            startup_commands: Vec::new(),
+            startup_actions: Vec::new(),
             outputs: vec![ConfiguredOutput::default()],
             xwayland: XWaylandConfig::default(),
             keybindings,

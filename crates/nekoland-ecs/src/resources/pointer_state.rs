@@ -7,3 +7,9 @@ pub struct GlobalPointerPosition {
     pub x: f64,
     pub y: f64,
 }
+
+/// Tracks whether the pointer is currently driving interactive viewport panning.
+#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ViewportPointerPanState {
+    pub active: bool,
+}

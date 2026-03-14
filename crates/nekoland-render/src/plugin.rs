@@ -2,7 +2,9 @@ use bevy_app::App;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::RenderSchedule;
-use nekoland_ecs::resources::{DamageState, FramePacingState, OutputDamageRegions, RenderList};
+use nekoland_ecs::resources::{
+    CursorRenderState, DamageState, FramePacingState, OutputDamageRegions, RenderList,
+};
 
 use crate::{
     compositor_render, cursor, damage_tracker, effects, frame_callback, presentation_feedback,
@@ -17,6 +19,7 @@ impl NekolandPlugin for RenderPlugin {
     /// that derives damage, render lists, callbacks, and post-processing.
     fn build(&self, app: &mut App) {
         app.init_resource::<RenderList>()
+            .init_resource::<CursorRenderState>()
             .init_resource::<DamageState>()
             .init_resource::<FramePacingState>()
             .init_resource::<OutputDamageRegions>()

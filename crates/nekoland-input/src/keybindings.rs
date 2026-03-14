@@ -7,17 +7,16 @@ use nekoland_ecs::control::{
 };
 use nekoland_ecs::events::KeyPress;
 use nekoland_ecs::resources::{
-    CompositorConfig, ConfiguredKeybindingAction, ModifierState, PendingExternalCommandRequests,
-    PendingInputEvents, SplitAxis,
+    CompositorConfig, ConfiguredAction, ModifierState, PendingExternalCommandRequests,
+    PendingInputEvents,
 };
-use nekoland_ecs::selectors::{OutputName, WorkspaceLookup, WorkspaceName, WorkspaceSelector};
 use nekoland_shell::commands;
 
 /// Holds the compiled keybinding table derived from the latest compositor config.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
 pub struct KeybindingEngine {
     pub bindings_loaded: usize,
-    loaded_bindings: BTreeMap<String, ConfiguredKeybindingAction>,
+    loaded_bindings: BTreeMap<String, Vec<ConfiguredAction>>,
     compiled_bindings: Vec<CompiledKeybinding>,
 }
 
@@ -70,9 +69,8 @@ pub fn keybinding_dispatch_system(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompiledKeybinding {
     chord: KeyChord,
-    action: KeybindingAction,
+    actions: Vec<ConfiguredAction>,
     binding: String,
-    action_label: String,
 }
 
 /// Modifier/keycode tuple used for exact binding matching.
@@ -85,38 +83,23 @@ struct KeyChord {
     keycode: u32,
 }
 
-/// Normalized action space for keybindings after parsing config syntax.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum KeybindingAction {
-    CloseFocusedWindow,
-    MoveFocusedWindow { x: i32, y: i32 },
-    ResizeFocusedWindow { width: u32, height: u32 },
-    SplitFocusedWindow { axis: SplitAxis },
-    SwitchWorkspace(String),
-    CreateWorkspace(String),
-    DestroyWorkspace(String),
-    EnableOutput(String),
-    DisableOutput(String),
-    ConfigureOutput { output: String, mode: String, scale: Option<u32> },
-    Exec(Vec<String>),
-}
-
 impl KeybindingEngine {
     /// Rebuilds the compiled table from config and records invalid bindings in the input event log
     /// instead of failing the whole reload.
     fn reload_bindings(
         &mut self,
-        bindings: &BTreeMap<String, ConfiguredKeybindingAction>,
+        bindings: &BTreeMap<String, Vec<ConfiguredAction>>,
         pending_input_events: &mut PendingInputEvents,
     ) {
         self.loaded_bindings = bindings.clone();
         self.compiled_bindings.clear();
 
-        for (binding, configured_action) in bindings {
-            match compile_keybinding(binding, configured_action) {
+        for (binding, configured_actions) in bindings {
+            match compile_keybinding(binding, configured_actions) {
                 Ok(compiled) => self.compiled_bindings.push(compiled),
                 Err(error) => {
-                    let action = configured_action.describe();
+                    let action =
+                        nekoland_ecs::resources::describe_action_sequence(configured_actions);
                     tracing::warn!(binding, action, error, "ignoring invalid keybinding");
                     pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
                         source: "keybinding".to_owned(),
@@ -154,13 +137,13 @@ impl KeyChord {
 /// Parses and compiles one config keybinding entry.
 fn compile_keybinding(
     binding: &str,
-    configured_action: &ConfiguredKeybindingAction,
+    configured_actions: &[ConfiguredAction],
 ) -> Result<CompiledKeybinding, String> {
+    commands::validate_action_sequence(configured_actions)?;
     Ok(CompiledKeybinding {
         chord: parse_key_chord(binding)?,
-        action: parse_keybinding_action(configured_action)?,
+        actions: configured_actions.to_vec(),
         binding: binding.to_owned(),
-        action_label: configured_action.describe(),
     })
 }
 
@@ -189,73 +172,6 @@ fn parse_key_chord(binding: &str) -> Result<KeyChord, String> {
     Ok(chord)
 }
 
-/// Normalizes config actions into the runtime action enum used by the dispatcher.
-fn parse_keybinding_action(
-    configured_action: &ConfiguredKeybindingAction,
-) -> Result<KeybindingAction, String> {
-    match configured_action {
-        ConfiguredKeybindingAction::Action(command) => parse_builtin_keybinding_action(command),
-        ConfiguredKeybindingAction::Command(argv) => {
-            let Some(program) = argv.first() else {
-                return Err("command binding must include at least one argv element".to_owned());
-            };
-            if program.trim().is_empty() {
-                return Err("command binding must not start with an empty program".to_owned());
-            }
-            Ok(KeybindingAction::Exec(argv.clone()))
-        }
-    }
-}
-
-/// Parses the string form used by legacy built-in actions.
-fn parse_builtin_keybinding_action(command: &str) -> Result<KeybindingAction, String> {
-    let tokens = command.split_whitespace().collect::<Vec<_>>();
-    match tokens.as_slice() {
-        ["close-window"] | ["window", "close"] => Ok(KeybindingAction::CloseFocusedWindow),
-        ["window", "move", x, y] => Ok(KeybindingAction::MoveFocusedWindow {
-            x: parse_i32("window move x", x)?,
-            y: parse_i32("window move y", y)?,
-        }),
-        ["window", "resize", width, height] => Ok(KeybindingAction::ResizeFocusedWindow {
-            width: parse_u32("window resize width", width)?,
-            height: parse_u32("window resize height", height)?,
-        }),
-        ["window", "split", axis] => {
-            Ok(KeybindingAction::SplitFocusedWindow { axis: parse_split_axis(axis)? })
-        }
-        ["workspace", workspace] => Ok(KeybindingAction::SwitchWorkspace((*workspace).to_owned())),
-        ["workspace", "switch", workspace] | ["workspace-switch", workspace] => {
-            Ok(KeybindingAction::SwitchWorkspace((*workspace).to_owned()))
-        }
-        ["workspace", "create", workspace] | ["workspace-create", workspace] => {
-            Ok(KeybindingAction::CreateWorkspace((*workspace).to_owned()))
-        }
-        ["workspace", "destroy", workspace] | ["workspace-destroy", workspace] => {
-            Ok(KeybindingAction::DestroyWorkspace((*workspace).to_owned()))
-        }
-        ["output", "enable", output] | ["output-enable", output] => {
-            Ok(KeybindingAction::EnableOutput((*output).to_owned()))
-        }
-        ["output", "disable", output] | ["output-disable", output] => {
-            Ok(KeybindingAction::DisableOutput((*output).to_owned()))
-        }
-        ["output", "configure", output, mode] | ["output-configure", output, mode] => {
-            Ok(KeybindingAction::ConfigureOutput {
-                output: (*output).to_owned(),
-                mode: (*mode).to_owned(),
-                scale: None,
-            })
-        }
-        ["output", "configure", output, mode, scale]
-        | ["output-configure", output, mode, scale] => Ok(KeybindingAction::ConfigureOutput {
-            output: (*output).to_owned(),
-            mode: (*mode).to_owned(),
-            scale: Some(parse_u32("output scale", scale)?),
-        }),
-        _ => Err(format!("unsupported action `{command}`")),
-    }
-}
-
 /// Emits the concrete side effect associated with one compiled binding.
 fn dispatch_keybinding_action(
     binding: &CompiledKeybinding,
@@ -265,85 +181,16 @@ fn dispatch_keybinding_action(
     workspaces: &mut WorkspaceControlApi<'_>,
     outputs: &mut OutputControlApi<'_>,
 ) {
-    match &binding.action {
-        KeybindingAction::CloseFocusedWindow => {
-            let Some(mut window) = focused_window(binding, pending_input_events, windows) else {
-                return;
-            };
-
-            window.close();
-        }
-        KeybindingAction::MoveFocusedWindow { x, y } => {
-            let Some(mut window) = focused_window(binding, pending_input_events, windows) else {
-                return;
-            };
-
-            window.move_to(*x, *y);
-        }
-        KeybindingAction::ResizeFocusedWindow { width, height } => {
-            let Some(mut window) = focused_window(binding, pending_input_events, windows) else {
-                return;
-            };
-
-            window.resize_to(*width, *height);
-        }
-        KeybindingAction::SplitFocusedWindow { axis } => {
-            let Some(mut window) = focused_window(binding, pending_input_events, windows) else {
-                return;
-            };
-
-            window.split(*axis);
-        }
-        KeybindingAction::SwitchWorkspace(workspace) => {
-            workspaces.switch_or_create(WorkspaceLookup::parse(workspace));
-        }
-        KeybindingAction::CreateWorkspace(workspace) => {
-            workspaces.create_named(WorkspaceName::from(workspace.clone()));
-        }
-        KeybindingAction::DestroyWorkspace(workspace) => {
-            workspaces.destroy(WorkspaceSelector::parse(workspace));
-        }
-        KeybindingAction::EnableOutput(output) => {
-            outputs.named(OutputName::from(output.clone())).enable();
-        }
-        KeybindingAction::DisableOutput(output) => {
-            outputs.named(OutputName::from(output.clone())).disable();
-        }
-        KeybindingAction::ConfigureOutput { output, mode, scale } => {
-            outputs.named(OutputName::from(output.clone())).configure(mode.clone(), *scale);
-        }
-        KeybindingAction::Exec(argv) => {
-            commands::queue_exec_command(
-                format!("{} -> {}", binding.binding, binding.action_label),
-                argv.clone(),
-                pending_external_commands,
-            );
-        }
-    }
-
-    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
-        source: "keybinding".to_owned(),
-        detail: format!("{} -> {}", binding.binding, binding.action_label),
-    });
-}
-
-fn focused_window<'a>(
-    binding: &CompiledKeybinding,
-    pending_input_events: &mut PendingInputEvents,
-    windows: &'a mut WindowControlApi<'_>,
-) -> Option<nekoland_ecs::resources::WindowControlHandle<'a>> {
-    if let Some(window) = windows.focused() {
-        return Some(window);
-    }
-
-    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
-        source: "keybinding".to_owned(),
-        detail: format!(
-            "{} -> {} ignored: no focused surface",
-            binding.binding, binding.action_label
-        ),
-    });
-    None
+    let _ = commands::dispatch_action_sequence(
+        "keybinding",
+        &binding.binding,
+        &binding.actions,
+        pending_input_events,
+        pending_external_commands,
+        windows,
+        workspaces,
+        outputs,
+    );
 }
 
 fn normalize_modifier_name(token: &str) -> Option<&'static str> {
@@ -421,22 +268,6 @@ fn parse_keycode(token: &str) -> Result<u32, String> {
     }
 }
 
-fn parse_split_axis(token: &str) -> Result<SplitAxis, String> {
-    match token.to_ascii_lowercase().as_str() {
-        "horizontal" | "h" | "x" => Ok(SplitAxis::Horizontal),
-        "vertical" | "v" | "y" => Ok(SplitAxis::Vertical),
-        _ => Err(format!("unsupported split axis `{token}`")),
-    }
-}
-
-fn parse_i32(label: &str, value: &str) -> Result<i32, String> {
-    value.parse::<i32>().map_err(|error| format!("invalid {label}: {error}"))
-}
-
-fn parse_u32(label: &str, value: &str) -> Result<u32, String> {
-    value.parse::<u32>().map_err(|error| format!("invalid {label}: {error}"))
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -458,24 +289,25 @@ mod tests {
     use nekoland_ecs::resources::SplitAxis;
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, CommandExecutionStatus, CommandHistoryState,
-        CompositorClock, CompositorConfig, ConfiguredKeybindingAction, ExternalCommandRequest,
+        CompositorClock, CompositorConfig, ConfiguredAction, ExternalCommandRequest,
         KeyboardFocusState, PendingBackendInputEvents, PendingExternalCommandRequests,
         PendingInputEvents, PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
         WorkspaceControl,
     };
-    use nekoland_ecs::selectors::{SurfaceId, WorkspaceLookup};
+    use nekoland_ecs::selectors::{OutputName, SurfaceId, WorkspaceLookup};
     use nekoland_protocol::{ProtocolServerState, XWaylandServerState};
     use nekoland_shell::commands;
 
     use crate::InputPlugin;
 
     use super::{
-        CompiledKeybinding, KeybindingAction, KeybindingEngine, compile_keybinding,
-        dispatch_keybinding_action, parse_keybinding_action,
+        CompiledKeybinding, KeybindingEngine, compile_keybinding, dispatch_keybinding_action,
     };
 
     const SUPER_KEYCODE: u32 = 133;
     const Q_KEYCODE: u32 = 24;
+    const H_KEYCODE: u32 = 43;
+    const B_KEYCODE: u32 = 56;
     const S_KEYCODE: u32 = 39;
     const W_KEYCODE: u32 = 25;
     const TWO_KEYCODE: u32 = 11;
@@ -492,9 +324,9 @@ mod tests {
     #[test]
     fn configured_keybindings_queue_control_plane_requests() {
         let mut app = test_app(config_with_bindings([
-            ("Super+Q", builtin("close-window")),
-            ("Super+S", builtin("window split vertical")),
-            ("Super+2", builtin("workspace 2")),
+            ("Super+Q", close_focused_window()),
+            ("Super+S", split_focused_window(SplitAxis::Vertical)),
+            ("Super+2", switch_workspace("2")),
         ]));
 
         app.inner_mut().world_mut().resource_mut::<KeyboardFocusState>().focused_surface = Some(77);
@@ -530,6 +362,7 @@ mod tests {
                 position: None,
                 size: None,
                 split_axis: Some(SplitAxis::Vertical),
+                background: None,
                 focus: false,
                 close: true,
             }]
@@ -547,8 +380,59 @@ mod tests {
     }
 
     #[test]
+    fn viewport_keybinding_queues_focused_output_controls() {
+        let mut app = test_app(config_with_bindings([("Super+H", pan_viewport(-40, 25))]));
+
+        app.inner_mut().insert_resource(PendingBackendInputEvents::from_items(vec![
+            key_event(SUPER_KEYCODE, true),
+            key_event(H_KEYCODE, true),
+        ]));
+
+        app.inner_mut().world_mut().run_schedule(InputSchedule);
+
+        let output_controls =
+            app.inner().world().get_resource::<PendingOutputControls>().expect("output controls");
+        assert_eq!(
+            output_controls.as_slice(),
+            &[nekoland_ecs::resources::PendingOutputControl {
+                selector: nekoland_ecs::selectors::OutputSelector::Focused,
+                enabled: None,
+                configuration: None,
+                viewport_origin: None,
+                viewport_pan: Some(nekoland_ecs::resources::OutputViewportPan {
+                    delta_x: -40,
+                    delta_y: 25,
+                }),
+                center_viewport_on: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn background_keybinding_queues_window_background_control() {
+        let mut app =
+            test_app(config_with_bindings([("Super+B", background_focused_window("Virtual-1"))]));
+        app.inner_mut().world_mut().resource_mut::<KeyboardFocusState>().focused_surface = Some(77);
+        app.inner_mut().insert_resource(PendingBackendInputEvents::from_items(vec![
+            key_event(SUPER_KEYCODE, true),
+            key_event(B_KEYCODE, true),
+        ]));
+
+        app.inner_mut().world_mut().run_schedule(InputSchedule);
+
+        let window_controls =
+            app.inner().world().get_resource::<PendingWindowControls>().expect("window controls");
+        assert_eq!(window_controls.as_slice().len(), 1);
+        assert!(matches!(
+            window_controls.as_slice()[0].background,
+            Some(nekoland_ecs::resources::WindowBackgroundControl::Set { ref output })
+                if output.as_str() == "Virtual-1"
+        ));
+    }
+
+    #[test]
     fn keybinding_engine_reloads_when_bindings_change_without_length_change() {
-        let mut app = test_app(config_with_bindings([("Super+Q", builtin("close-window"))]));
+        let mut app = test_app(config_with_bindings([("Super+Q", close_focused_window())]));
 
         app.inner_mut().world_mut().resource_mut::<KeyboardFocusState>().focused_surface = Some(42);
         app.inner_mut().insert_resource(PendingBackendInputEvents::from_items(vec![
@@ -561,7 +445,7 @@ mod tests {
             let world = app.inner_mut().world_mut();
             world.resource_mut::<PendingWindowControls>().clear();
             world.resource_mut::<CompositorConfig>().keybindings =
-                config_with_bindings([("Super+W", builtin("workspace switch 3"))]).keybindings;
+                config_with_bindings([("Super+W", switch_workspace("3"))]).keybindings;
             world.insert_resource(PendingBackendInputEvents::from_items(vec![
                 key_event(SUPER_KEYCODE, true),
                 key_event(Q_KEYCODE, true),
@@ -590,40 +474,42 @@ mod tests {
     }
 
     #[test]
-    fn parser_supports_workspace_actions_and_command_argv() {
-        assert_eq!(
-            parse_keybinding_action(&builtin("workspace 9")),
-            Ok(KeybindingAction::SwitchWorkspace("9".to_owned()))
-        );
-        assert_eq!(
-            parse_keybinding_action(&builtin("window split vertical")),
-            Ok(KeybindingAction::SplitFocusedWindow { axis: SplitAxis::Vertical })
-        );
-        assert_eq!(
-            parse_keybinding_action(&argv(["foot", "--server"])),
-            Ok(KeybindingAction::Exec(vec!["foot".to_owned(), "--server".to_owned()]))
-        );
-    }
+    fn compile_keybinding_preserves_typed_actions_and_validates_exec_argv() {
+        let workspace_binding = compile_keybinding("Super+2", &[switch_workspace("9")])
+            .expect("binding should compile");
+        let split_binding =
+            compile_keybinding("Super+S", &[split_focused_window(SplitAxis::Vertical)])
+                .expect("binding should compile");
+        let exec_binding = compile_keybinding("Super+Return", &[exec(["foot", "--server"])])
+            .expect("binding should compile");
 
-    #[test]
-    fn split_command_line_respects_quotes_and_escapes() {
         assert_eq!(
-            commands::split_command_line("wofi --prompt 'Pick one' --style=\"dark mode.css\""),
-            vec![
-                "wofi".to_owned(),
-                "--prompt".to_owned(),
-                "Pick one".to_owned(),
-                "--style=dark mode.css".to_owned(),
-            ]
+            workspace_binding.actions,
+            vec![ConfiguredAction::SwitchWorkspace {
+                workspace: WorkspaceLookup::Id(WorkspaceId(9)),
+            }]
+        );
+        assert_eq!(
+            split_binding.actions,
+            vec![ConfiguredAction::SplitFocusedWindow { axis: SplitAxis::Vertical }]
+        );
+        assert_eq!(
+            exec_binding.actions,
+            vec![ConfiguredAction::Exec { argv: vec!["foot".to_owned(), "--server".to_owned()] }]
+        );
+        assert_eq!(
+            compile_keybinding("Super+Return", &[ConfiguredAction::Exec { argv: vec![] }]),
+            Err("command action must include at least one argv element".to_owned())
         );
     }
 
     #[test]
     fn command_argv_bindings_queue_external_commands() {
-        let launcher_binding = compile_keybinding("Super+Space", &argv(["rofi", "-show", "drun"]))
-            .expect("launcher binding should compile");
+        let launcher_binding =
+            compile_keybinding("Super+Space", &[exec(["rofi", "-show", "drun"])])
+                .expect("launcher binding should compile");
         let power_binding =
-            compile_keybinding("Super+P", &argv(["wlogout", "--protocol", "layer-shell"]))
+            compile_keybinding("Super+P", &[exec(["wlogout", "--protocol", "layer-shell"])])
                 .expect("power menu binding should compile");
 
         let mut pending_input_events = PendingInputEvents::default();
@@ -736,11 +622,11 @@ mod tests {
     }
 
     #[test]
-    fn startup_commands_queue_once_after_wayland_socket_is_ready() {
+    fn startup_actions_queue_once_after_wayland_socket_is_ready() {
         let mut config = CompositorConfig::default();
-        config.startup_commands = vec!["true".to_owned()];
+        config.startup_actions = vec![exec(["true"])];
         let mut app = test_app_with_commands(config);
-        app.inner_mut().init_resource::<commands::StartupCommandState>().insert_resource(
+        app.inner_mut().init_resource::<commands::StartupActionState>().insert_resource(
             ProtocolServerState {
                 socket_name: Some("wayland-77".to_owned()),
                 runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
@@ -755,11 +641,11 @@ mod tests {
         let history =
             world.get_resource::<CommandHistoryState>().expect("command history should exist");
         let startup_state = world
-            .get_resource::<commands::StartupCommandState>()
+            .get_resource::<commands::StartupActionState>()
             .expect("startup state should exist");
 
-        assert!(startup_state.queued, "startup commands should be marked as queued");
-        assert_eq!(history.items.len(), 1, "startup commands should only run once");
+        assert!(startup_state.queued, "startup actions should be marked as queued");
+        assert_eq!(history.items.len(), 1, "startup actions should only run once");
         assert_eq!(history.items[0].origin, "startup -> true");
         assert!(matches!(
             history.items[0].status.as_ref(),
@@ -768,12 +654,12 @@ mod tests {
     }
 
     #[test]
-    fn startup_commands_wait_for_xwayland_ready_when_enabled() {
+    fn startup_actions_wait_for_xwayland_ready_when_enabled() {
         let mut config = CompositorConfig::default();
-        config.startup_commands = vec!["true".to_owned()];
+        config.startup_actions = vec![exec(["true"])];
         let mut app = test_app_with_commands(config);
         app.inner_mut()
-            .init_resource::<commands::StartupCommandState>()
+            .init_resource::<commands::StartupActionState>()
             .insert_resource(ProtocolServerState {
                 socket_name: Some("wayland-77".to_owned()),
                 runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
@@ -791,11 +677,11 @@ mod tests {
         let history =
             world.get_resource::<CommandHistoryState>().expect("command history should exist");
         let startup_state = world
-            .get_resource::<commands::StartupCommandState>()
+            .get_resource::<commands::StartupActionState>()
             .expect("startup state should exist");
 
-        assert!(!startup_state.queued, "startup commands should wait for xwayland ready");
-        assert!(history.items.is_empty(), "no commands should have been launched yet");
+        assert!(!startup_state.queued, "startup actions should wait for xwayland ready");
+        assert!(history.items.is_empty(), "no actions should have been launched yet");
 
         app.inner_mut().world_mut().resource_mut::<XWaylandServerState>().ready = true;
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
@@ -804,20 +690,20 @@ mod tests {
         let history =
             world.get_resource::<CommandHistoryState>().expect("command history should exist");
         let startup_state = world
-            .get_resource::<commands::StartupCommandState>()
+            .get_resource::<commands::StartupActionState>()
             .expect("startup state should exist");
 
-        assert!(startup_state.queued, "startup commands should be queued after xwayland ready");
-        assert_eq!(history.items.len(), 1, "startup commands should run after xwayland ready");
+        assert!(startup_state.queued, "startup actions should be queued after xwayland ready");
+        assert_eq!(history.items.len(), 1, "startup actions should run after xwayland ready");
     }
 
     #[test]
-    fn startup_commands_run_immediately_when_xwayland_disabled() {
+    fn startup_actions_run_immediately_when_xwayland_disabled() {
         let mut config = CompositorConfig::default();
-        config.startup_commands = vec!["true".to_owned()];
+        config.startup_actions = vec![exec(["true"])];
         let mut app = test_app_with_commands(config);
         app.inner_mut()
-            .init_resource::<commands::StartupCommandState>()
+            .init_resource::<commands::StartupActionState>()
             .insert_resource(ProtocolServerState {
                 socket_name: Some("wayland-77".to_owned()),
                 runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
@@ -835,15 +721,15 @@ mod tests {
         let history =
             world.get_resource::<CommandHistoryState>().expect("command history should exist");
         let startup_state = world
-            .get_resource::<commands::StartupCommandState>()
+            .get_resource::<commands::StartupActionState>()
             .expect("startup state should exist");
 
-        assert!(startup_state.queued, "startup commands should run when xwayland is disabled");
-        assert_eq!(history.items.len(), 1, "startup commands should have been launched");
+        assert!(startup_state.queued, "startup actions should run when xwayland is disabled");
+        assert_eq!(history.items.len(), 1, "startup actions should have been launched");
     }
 
     #[test]
-    fn startup_commands_can_be_disabled_via_env() {
+    fn startup_actions_can_be_disabled_via_env() {
         let _env_lock = env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = std::env::var_os("NEKOLAND_DISABLE_STARTUP_COMMANDS");
         unsafe {
@@ -851,9 +737,9 @@ mod tests {
         }
 
         let mut config = CompositorConfig::default();
-        config.startup_commands = vec!["true".to_owned()];
+        config.startup_actions = vec![exec(["true"])];
         let mut app = test_app_with_commands(config);
-        app.inner_mut().init_resource::<commands::StartupCommandState>().insert_resource(
+        app.inner_mut().init_resource::<commands::StartupActionState>().insert_resource(
             ProtocolServerState {
                 socket_name: Some("wayland-77".to_owned()),
                 runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
@@ -867,11 +753,11 @@ mod tests {
         let history =
             world.get_resource::<CommandHistoryState>().expect("command history should exist");
         let startup_state = world
-            .get_resource::<commands::StartupCommandState>()
+            .get_resource::<commands::StartupActionState>()
             .expect("startup state should exist");
 
-        assert!(startup_state.queued, "startup commands should still mark the queue as settled");
-        assert!(history.items.is_empty(), "disabled startup commands should not execute");
+        assert!(startup_state.queued, "startup actions should still mark the queue as settled");
+        assert!(history.items.is_empty(), "disabled startup actions should not execute");
 
         match previous {
             Some(previous) => unsafe {
@@ -1052,7 +938,7 @@ mod tests {
             .insert_resource(config)
             .add_plugin(InputPlugin);
         app.inner_mut()
-            .init_resource::<commands::StartupCommandState>()
+            .init_resource::<commands::StartupActionState>()
             .init_resource::<CommandHistoryState>()
             .init_resource::<PendingExternalCommandRequests>()
             .init_resource::<PendingInputEvents>()
@@ -1061,7 +947,7 @@ mod tests {
             .add_systems(
                 LayoutSchedule,
                 (
-                    commands::startup_command_queue_system,
+                    commands::startup_action_queue_system,
                     commands::external_command_launch_system,
                     commands::command_history_system,
                 )
@@ -1072,24 +958,38 @@ mod tests {
     }
 
     fn config_with_bindings<const N: usize>(
-        bindings: [(&str, ConfiguredKeybindingAction); N],
+        bindings: [(&str, ConfiguredAction); N],
     ) -> CompositorConfig {
         let mut config = CompositorConfig::default();
         config.keybindings = bindings
             .into_iter()
-            .map(|(binding, action)| (binding.to_owned(), action))
+            .map(|(binding, action)| (binding.to_owned(), vec![action]))
             .collect::<BTreeMap<_, _>>();
         config
     }
 
-    fn builtin(action: &str) -> ConfiguredKeybindingAction {
-        ConfiguredKeybindingAction::Action(action.to_owned())
+    fn close_focused_window() -> ConfiguredAction {
+        ConfiguredAction::CloseFocusedWindow
     }
 
-    fn argv<const N: usize>(parts: [&str; N]) -> ConfiguredKeybindingAction {
-        ConfiguredKeybindingAction::Command(
-            parts.into_iter().map(str::to_owned).collect::<Vec<_>>(),
-        )
+    fn split_focused_window(axis: SplitAxis) -> ConfiguredAction {
+        ConfiguredAction::SplitFocusedWindow { axis }
+    }
+
+    fn switch_workspace(workspace: &str) -> ConfiguredAction {
+        ConfiguredAction::SwitchWorkspace { workspace: WorkspaceLookup::parse(workspace) }
+    }
+
+    fn pan_viewport(delta_x: isize, delta_y: isize) -> ConfiguredAction {
+        ConfiguredAction::PanViewport { delta_x, delta_y }
+    }
+
+    fn background_focused_window(output: &str) -> ConfiguredAction {
+        ConfiguredAction::BackgroundFocusedWindow { output: OutputName::from(output) }
+    }
+
+    fn exec<const N: usize>(parts: [&str; N]) -> ConfiguredAction {
+        ConfiguredAction::Exec { argv: parts.into_iter().map(str::to_owned).collect::<Vec<_>>() }
     }
 
     fn key_event(keycode: u32, pressed: bool) -> BackendInputEvent {

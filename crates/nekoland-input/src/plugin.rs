@@ -4,9 +4,10 @@ use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::InputSchedule;
 use nekoland_ecs::events::{GestureSwipe, KeyPress, PointerButton, PointerMotion};
 use nekoland_ecs::resources::{
-    GlobalPointerPosition, KeyboardFocusState, ModifierState, PendingBackendInputEvents,
-    PendingExternalCommandRequests, PendingInputEvents, PendingOutputControls,
-    PendingWindowControls, PendingWorkspaceControls,
+    FocusedOutputState, GlobalPointerPosition, KeyboardFocusState, ModifierState,
+    PendingBackendInputEvents, PendingExternalCommandRequests, PendingInputEvents,
+    PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
+    ViewportPointerPanState,
 };
 
 use crate::{gestures, keybindings, keyboard, pointer, seat_manager, touch};
@@ -18,6 +19,8 @@ impl NekolandPlugin for InputPlugin {
     /// Register input resources plus the ordered input-decoding pipeline.
     fn build(&self, app: &mut App) {
         app.init_resource::<GlobalPointerPosition>()
+            .init_resource::<ViewportPointerPanState>()
+            .init_resource::<FocusedOutputState>()
             .init_resource::<KeyboardFocusState>()
             .init_resource::<ModifierState>()
             .init_resource::<PendingBackendInputEvents>()
@@ -39,6 +42,8 @@ impl NekolandPlugin for InputPlugin {
                 (
                     keyboard::keyboard_input_system,
                     pointer::pointer_input_system,
+                    pointer::focused_output_tracking_system,
+                    pointer::viewport_pointer_pan_system,
                     touch::touch_input_system,
                     gestures::gesture_recognition_system,
                     keybindings::keybinding_dispatch_system,

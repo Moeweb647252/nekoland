@@ -151,6 +151,9 @@ impl Backend for DrmRuntime {
         surface::render_drm_outputs(
             owned_outputs.iter(),
             cx.config,
+            cx.cursor_render,
+            cx.cursor_image,
+            cx.output_damage_regions,
             cx.render_list,
             cx.surfaces,
             cx.surface_registry,

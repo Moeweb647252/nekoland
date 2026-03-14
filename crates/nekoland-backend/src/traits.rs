@@ -5,10 +5,11 @@ use nekoland_core::error::NekolandError;
 use nekoland_core::prelude::AppMetadata;
 use nekoland_ecs::components::{OutputDevice, OutputProperties, SurfaceGeometry};
 use nekoland_ecs::resources::{
-    CompositorClock, CompositorConfig, GlobalPointerPosition, PendingBackendInputEvents,
-    PendingOutputPresentationEvents, PendingProtocolInputEvents, RenderList,
-    VirtualOutputCaptureState,
+    CompositorClock, CompositorConfig, CursorRenderState, GlobalPointerPosition,
+    OutputDamageRegions, PendingBackendInputEvents, PendingOutputPresentationEvents,
+    PendingProtocolInputEvents, RenderList, VirtualOutputCaptureState,
 };
+use nekoland_protocol::ProtocolCursorState;
 use nekoland_protocol::ProtocolSurfaceRegistry;
 
 use crate::common::outputs::{
@@ -109,6 +110,7 @@ pub enum RenderSurfaceRole {
 pub struct RenderSurfaceSnapshot {
     pub geometry: SurfaceGeometry,
     pub role: RenderSurfaceRole,
+    pub target_output: Option<String>,
 }
 
 /// Constrained extract context that keeps backend runtimes ECS-native without handing them an
@@ -138,6 +140,9 @@ pub struct BackendPresentCtx<'a> {
     pub config: Option<&'a CompositorConfig>,
     pub clock: Option<&'a CompositorClock>,
     pub pointer: Option<&'a GlobalPointerPosition>,
+    pub cursor_render: Option<&'a CursorRenderState>,
+    pub cursor_image: Option<&'a ProtocolCursorState>,
+    pub output_damage_regions: &'a OutputDamageRegions,
     pub outputs: &'a [OutputSnapshot],
     pub render_list: &'a RenderList,
     pub surfaces: &'a std::collections::HashMap<u64, RenderSurfaceSnapshot>,

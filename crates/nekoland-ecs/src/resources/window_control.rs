@@ -1,7 +1,8 @@
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
-use crate::selectors::{SurfaceId, WindowSelector};
+use crate::components::WorkspaceCoord;
+use crate::selectors::{OutputName, SurfaceId, WindowSelector};
 
 use super::{KeyboardFocusState, SplitAxis};
 
@@ -21,6 +22,7 @@ pub struct PendingWindowControl {
     pub position: Option<WindowControlPosition>,
     pub size: Option<WindowControlSize>,
     pub split_axis: Option<SplitAxis>,
+    pub background: Option<WindowBackgroundControl>,
     pub focus: bool,
     pub close: bool,
 }
@@ -28,8 +30,8 @@ pub struct PendingWindowControl {
 /// Desired top-left origin to apply to the target window.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowControlPosition {
-    pub x: i32,
-    pub y: i32,
+    pub x: WorkspaceCoord,
+    pub y: WorkspaceCoord,
 }
 
 /// Desired size to apply to the target window.
@@ -37,6 +39,13 @@ pub struct WindowControlPosition {
 pub struct WindowControlSize {
     pub width: u32,
     pub height: u32,
+}
+
+/// Output background role transition for one window.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WindowBackgroundControl {
+    Set { output: OutputName },
+    Clear,
 }
 
 /// Mutable façade over one staged control entry.
@@ -107,7 +116,7 @@ impl PendingWindowControls {
 
 impl WindowControlHandle<'_> {
     /// Stage a floating move for the target window.
-    pub fn move_to(&mut self, x: i32, y: i32) -> &mut Self {
+    pub fn move_to(&mut self, x: WorkspaceCoord, y: WorkspaceCoord) -> &mut Self {
         self.control.position = Some(WindowControlPosition { x, y });
         self
     }
@@ -140,6 +149,18 @@ impl WindowControlHandle<'_> {
         self
     }
 
+    /// Stage assigning the window as the background of one output.
+    pub fn background_on(&mut self, output: impl Into<OutputName>) -> &mut Self {
+        self.control.background = Some(WindowBackgroundControl::Set { output: output.into() });
+        self
+    }
+
+    /// Stage clearing the window's output background role.
+    pub fn clear_background(&mut self) -> &mut Self {
+        self.control.background = Some(WindowBackgroundControl::Clear);
+        self
+    }
+
     /// Stage close for the target window.
     pub fn close(&mut self) -> &mut Self {
         self.control.close = true;
@@ -151,9 +172,9 @@ impl WindowControlHandle<'_> {
 mod tests {
     use crate::resources::KeyboardFocusState;
     use crate::resources::SplitAxis;
-    use crate::selectors::SurfaceId;
+    use crate::selectors::{OutputName, SurfaceId};
 
-    use super::PendingWindowControls;
+    use super::{PendingWindowControls, WindowBackgroundControl};
 
     #[test]
     fn surface_controls_merge_move_resize_focus_and_close() {
@@ -163,6 +184,7 @@ mod tests {
             .move_to(10, 20)
             .resize_to(800, 600)
             .split_vertical()
+            .background_on("Virtual-1")
             .focus()
             .close();
 
@@ -174,6 +196,11 @@ mod tests {
         assert_eq!(control.size.expect("size").width, 800);
         assert_eq!(control.size.expect("size").height, 600);
         assert_eq!(control.split_axis, Some(SplitAxis::Vertical));
+        assert!(matches!(
+            control.background,
+            Some(WindowBackgroundControl::Set { output: OutputName(ref output) })
+                if output == "Virtual-1"
+        ));
         assert!(control.focus);
         assert!(control.close);
     }

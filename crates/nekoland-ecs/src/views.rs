@@ -2,9 +2,11 @@ use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::query::QueryData;
 
 use crate::components::{
-    BufferState, LayerShellSurface, OutputDevice, OutputProperties, PopupGrab, SurfaceGeometry,
-    WindowAnimation, WindowLayout, WindowMode, WindowPlacement, WindowPolicyState,
-    WindowRestoreSnapshot, WlSurfaceHandle, Workspace, X11Window, XdgPopup, XdgWindow,
+    BufferState, LayerShellSurface, OutputBackgroundWindow, OutputCurrentWorkspace, OutputDevice,
+    OutputPlacement, OutputProperties, OutputViewport, OutputWorkArea, PopupGrab,
+    SurfaceContentVersion, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode,
+    WindowPlacement, WindowPolicyState, WindowRestoreSnapshot, WindowSceneGeometry,
+    WindowViewportVisibility, WlSurfaceHandle, Workspace, X11Window, XdgPopup, XdgWindow,
 };
 
 /// Common read-only runtime view over one surface-backed entity with committed geometry.
@@ -12,6 +14,7 @@ use crate::components::{
 pub struct SurfaceRuntime {
     pub surface: &'static WlSurfaceHandle,
     pub geometry: &'static SurfaceGeometry,
+    pub content_version: &'static SurfaceContentVersion,
 }
 
 impl<'w, 's> SurfaceRuntimeItem<'w, 's> {
@@ -25,6 +28,9 @@ impl<'w, 's> SurfaceRuntimeItem<'w, 's> {
 pub struct WindowFocusRuntime {
     pub surface: &'static WlSurfaceHandle,
     pub geometry: &'static SurfaceGeometry,
+    pub viewport_visibility: &'static WindowViewportVisibility,
+    pub background: Option<&'static OutputBackgroundWindow>,
+    pub layout: &'static WindowLayout,
     pub mode: &'static WindowMode,
     pub child_of: Option<&'static ChildOf>,
     pub x11_window: Option<&'static X11Window>,
@@ -45,6 +51,10 @@ impl<'w, 's> WindowFocusRuntimeItem<'w, 's> {
 pub struct WindowRuntime {
     pub surface: &'static WlSurfaceHandle,
     pub geometry: &'static mut SurfaceGeometry,
+    pub scene_geometry: &'static mut WindowSceneGeometry,
+    pub content_version: &'static mut SurfaceContentVersion,
+    pub viewport_visibility: &'static mut WindowViewportVisibility,
+    pub background: Option<&'static mut OutputBackgroundWindow>,
     pub placement: &'static mut WindowPlacement,
     pub restore: &'static mut WindowRestoreSnapshot,
     pub policy_state: &'static mut WindowPolicyState,
@@ -80,6 +90,8 @@ impl<'w, 's> WindowRuntimeReadOnlyItem<'w, 's> {
 #[derive(QueryData)]
 pub struct WindowVisibilityRuntime {
     pub surface: &'static WlSurfaceHandle,
+    pub viewport_visibility: &'static WindowViewportVisibility,
+    pub background: Option<&'static OutputBackgroundWindow>,
     pub mode: &'static WindowMode,
 }
 
@@ -124,6 +136,10 @@ pub struct WindowSnapshotRuntime {
     pub window: &'static XdgWindow,
     pub x11_window: Option<&'static X11Window>,
     pub geometry: &'static SurfaceGeometry,
+    pub scene_geometry: &'static WindowSceneGeometry,
+    pub content_version: &'static SurfaceContentVersion,
+    pub viewport_visibility: &'static WindowViewportVisibility,
+    pub background: Option<&'static OutputBackgroundWindow>,
     pub mode: &'static WindowMode,
     pub layout: &'static WindowLayout,
     pub child_of: Option<&'static ChildOf>,
@@ -141,6 +157,7 @@ pub struct PopupSnapshotRuntime {
     pub surface: &'static WlSurfaceHandle,
     pub child_of: &'static ChildOf,
     pub geometry: &'static SurfaceGeometry,
+    pub content_version: &'static SurfaceContentVersion,
     pub grab: Option<&'static PopupGrab>,
 }
 
@@ -155,6 +172,8 @@ impl<'w, 's> PopupSnapshotRuntimeItem<'w, 's> {
 pub struct WindowRenderRuntime {
     pub surface: &'static WlSurfaceHandle,
     pub animation: &'static WindowAnimation,
+    pub viewport_visibility: &'static WindowViewportVisibility,
+    pub background: Option<&'static OutputBackgroundWindow>,
     pub mode: &'static WindowMode,
     pub child_of: Option<&'static ChildOf>,
 }
@@ -186,6 +205,7 @@ pub struct LayerRenderRuntime {
     pub animation: &'static WindowAnimation,
     pub layer_surface: &'static LayerShellSurface,
     pub buffer: &'static BufferState,
+    pub content_version: &'static SurfaceContentVersion,
 }
 
 impl<'w, 's> LayerRenderRuntimeItem<'w, 's> {
@@ -235,6 +255,10 @@ impl<'w, 's> WorkspaceRuntimeReadOnlyItem<'w, 's> {
 pub struct OutputRuntime {
     pub device: &'static OutputDevice,
     pub properties: &'static mut OutputProperties,
+    pub placement: &'static mut OutputPlacement,
+    pub viewport: &'static mut OutputViewport,
+    pub work_area: &'static mut OutputWorkArea,
+    pub current_workspace: Option<&'static mut OutputCurrentWorkspace>,
 }
 
 impl<'w, 's> OutputRuntimeItem<'w, 's> {

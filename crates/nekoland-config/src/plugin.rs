@@ -48,10 +48,26 @@ impl NekolandPlugin for ConfigPlugin {
         // missing or malformed; the failure is still preserved in `LoadedConfigSource`.
         let (config, loaded_from_disk, successful_reloads, last_reload_error) =
             match loader::load_from_path(&self.path) {
-                Ok(config) => {
-                    tracing::info!(path = %self.path.display(), "loaded compositor config");
-                    (config.into(), true, 1, None)
-                }
+                Ok(config) => match CompositorConfig::try_from(config) {
+                    Ok(config) => {
+                        tracing::info!(path = %self.path.display(), "loaded compositor config");
+                        (config, true, 1, None)
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            path = %self.path.display(),
+                            %error,
+                            "falling back to built-in default config"
+                        );
+                        (
+                            CompositorConfig::try_from(NekolandConfigFile::default())
+                                .expect("built-in default config should normalize"),
+                            false,
+                            0,
+                            Some(error),
+                        )
+                    }
+                },
                 Err(error) => {
                     tracing::warn!(
                         path = %self.path.display(),
@@ -59,7 +75,8 @@ impl NekolandPlugin for ConfigPlugin {
                         "falling back to built-in default config"
                     );
                     (
-                        CompositorConfig::from(NekolandConfigFile::default()),
+                        CompositorConfig::try_from(NekolandConfigFile::default())
+                            .expect("built-in default config should normalize"),
                         false,
                         0,
                         Some(error.to_string()),

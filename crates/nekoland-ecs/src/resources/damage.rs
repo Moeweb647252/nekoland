@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
-/// One damaged rectangle in output-global coordinates.
+/// One damaged rectangle in output-local coordinates.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DamageRect {
     pub x: i32,

@@ -26,9 +26,22 @@ pub fn compose_frame_system(
     workspaces: Query<(Entity, WorkspaceRuntime)>,
     mut render_list: ResMut<RenderList>,
 ) {
+    let background_windows = windows
+        .iter()
+        .filter(|(_, window)| {
+            *window.mode != WindowMode::Hidden
+                && window.viewport_visibility.visible
+                && window.background.is_some()
+        })
+        .map(|(_, window)| (window.surface_id(), opacity_for_animation(window.animation.progress)))
+        .collect::<Vec<_>>();
     let visible_windows = windows
         .iter()
-        .filter(|(_, window)| *window.mode != WindowMode::Hidden)
+        .filter(|(_, window)| {
+            *window.mode != WindowMode::Hidden
+                && window.viewport_visibility.visible
+                && window.background.is_none()
+        })
         .map(|(entity, window)| {
             (
                 entity,
@@ -55,6 +68,7 @@ pub fn compose_frame_system(
             matches!(layer.layer_surface.layer, LayerLevel::Background | LayerLevel::Bottom)
         })
         .map(|layer| (layer.surface_id(), opacity_for_animation(layer.animation.progress)))
+        .chain(background_windows.into_iter())
         .chain(ordered_window_surfaces.into_iter().filter_map(|surface_id| {
             active_window_opacity.get(&surface_id).copied().map(|opacity| (surface_id, opacity))
         }))
@@ -103,7 +117,7 @@ mod tests {
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::bundles::WindowBundle;
-    use nekoland_ecs::components::{WlSurfaceHandle, XdgWindow};
+    use nekoland_ecs::components::{OutputBackgroundWindow, WlSurfaceHandle, XdgWindow};
     use nekoland_ecs::resources::{RenderList, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState};
 
     use super::compose_frame_system;
@@ -149,5 +163,61 @@ mod tests {
             .map(|element| element.surface_id)
             .collect::<Vec<_>>();
         assert_eq!(render_order, vec![22, 11]);
+    }
+
+    #[test]
+    fn background_windows_render_below_normal_windows() {
+        let mut app = NekolandApp::new("render-background-order-test");
+        app.inner_mut()
+            .init_resource::<RenderList>()
+            .insert_resource(WindowStackingState {
+                workspaces: std::collections::BTreeMap::from([(
+                    UNASSIGNED_WORKSPACE_STACK_ID,
+                    vec![22],
+                )]),
+            })
+            .add_systems(RenderSchedule, compose_frame_system);
+
+        app.inner_mut().world_mut().spawn((
+            WindowBundle {
+                surface: WlSurfaceHandle { id: 11 },
+                window: XdgWindow {
+                    app_id: "org.nekoland.test".to_owned(),
+                    title: "background".to_owned(),
+                    last_acked_configure: None,
+                },
+                ..Default::default()
+            },
+            OutputBackgroundWindow {
+                output: "Virtual-1".to_owned(),
+                restore: nekoland_ecs::components::WindowRestoreState {
+                    geometry: Default::default(),
+                    layout: nekoland_ecs::components::WindowLayout::Floating,
+                    mode: nekoland_ecs::components::WindowMode::Normal,
+                },
+            },
+        ));
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 22 },
+            window: XdgWindow {
+                app_id: "org.nekoland.test".to_owned(),
+                title: "front".to_owned(),
+                last_acked_configure: None,
+            },
+            ..Default::default()
+        });
+
+        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+
+        let render_order = app
+            .inner()
+            .world()
+            .resource::<RenderList>()
+            .elements
+            .iter()
+            .filter(|element| element.surface_id != 0)
+            .map(|element| element.surface_id)
+            .collect::<Vec<_>>();
+        assert_eq!(render_order, vec![11, 22]);
     }
 }

@@ -1,15 +1,17 @@
 use bevy_ecs::message::{MessageReader, MessageWriter};
 use bevy_ecs::prelude::{Query, Res, ResMut, Resource, With};
 use nekoland_ecs::components::{
-    SurfaceGeometry, WindowLayout, WindowPosition, WindowSize, XdgWindow,
+    WindowLayout, WindowPosition, WindowSceneGeometry, WindowSize, XdgWindow,
 };
 use nekoland_ecs::events::{PointerButton, WindowMoved};
 use nekoland_ecs::resources::{
-    EntityIndex, GlobalPointerPosition, KeyboardFocusState, ResizeEdges,
+    EntityIndex, GlobalPointerPosition, KeyboardFocusState, PrimaryOutputState, ResizeEdges,
     UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
 };
-use nekoland_ecs::views::{WindowRuntime, WorkspaceRuntime};
+use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
+
+use crate::viewport::{project_scene_geometry, resolve_output_state_for_workspace};
 
 const MIN_WINDOW_SIZE: i32 = 64;
 
@@ -27,7 +29,7 @@ pub struct WindowGrabState {
     pub mode: WindowGrabMode,
     pub start_pointer_x: f64,
     pub start_pointer_y: f64,
-    pub start_geometry: SurfaceGeometry,
+    pub start_scene_geometry: WindowSceneGeometry,
 }
 
 /// Current interactive window grab, if any.
@@ -46,6 +48,8 @@ pub fn window_grab_system(
     mut keyboard_focus: ResMut<KeyboardFocusState>,
     mut stacking: ResMut<WindowStackingState>,
     mut windows: Query<WindowRuntime, With<XdgWindow>>,
+    outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
+    primary_output: Option<Res<PrimaryOutputState>>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
     mut window_moved: MessageWriter<WindowMoved>,
 ) {
@@ -68,20 +72,35 @@ pub fn window_grab_system(
     }
 
     let next_geometry = geometry_for_pointer(&grab_state, &pointer);
-    let moved = window.geometry.x != next_geometry.x || window.geometry.y != next_geometry.y;
-    let resized = window.geometry.width != next_geometry.width
-        || window.geometry.height != next_geometry.height;
+    let moved =
+        window.scene_geometry.x != next_geometry.x || window.scene_geometry.y != next_geometry.y;
+    let resized = window.scene_geometry.width != next_geometry.width
+        || window.scene_geometry.height != next_geometry.height;
 
     if moved || resized {
-        *window.geometry = next_geometry.clone();
+        *window.scene_geometry = next_geometry.clone();
+        let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces)
+            .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID);
+        if let Some((_, _, viewport, _)) = resolve_output_state_for_workspace(
+            &outputs,
+            Some(workspace_id),
+            primary_output.as_deref(),
+        ) {
+            *window.geometry = project_scene_geometry(&next_geometry, viewport);
+        } else {
+            window.geometry.x = next_geometry.x.clamp(i32::MIN as isize, i32::MAX as isize) as i32;
+            window.geometry.y = next_geometry.y.clamp(i32::MIN as isize, i32::MAX as isize) as i32;
+            window.geometry.width = next_geometry.width;
+            window.geometry.height = next_geometry.height;
+        }
         if moved {
             window
                 .placement
                 .set_explicit_position(WindowPosition { x: next_geometry.x, y: next_geometry.y });
             window_moved.write(WindowMoved {
                 surface_id: grab_state.surface_id,
-                x: next_geometry.x,
-                y: next_geometry.y,
+                x: next_geometry.x as i64,
+                y: next_geometry.y as i64,
             });
         }
         if resized {
@@ -115,14 +134,14 @@ pub(crate) fn begin_window_grab(
     surface_id: u64,
     mode: WindowGrabMode,
     pointer: &GlobalPointerPosition,
-    geometry: &SurfaceGeometry,
+    geometry: &WindowSceneGeometry,
 ) {
     active_grab.state = Some(WindowGrabState {
         surface_id,
         mode,
         start_pointer_x: pointer.x,
         start_pointer_y: pointer.y,
-        start_geometry: geometry.clone(),
+        start_scene_geometry: geometry.clone(),
     });
 }
 
@@ -130,29 +149,29 @@ pub(crate) fn begin_window_grab(
 fn geometry_for_pointer(
     grab_state: &WindowGrabState,
     pointer: &GlobalPointerPosition,
-) -> SurfaceGeometry {
+) -> WindowSceneGeometry {
     let delta_x = (pointer.x - grab_state.start_pointer_x).round() as i32;
     let delta_y = (pointer.y - grab_state.start_pointer_y).round() as i32;
 
     match &grab_state.mode {
-        WindowGrabMode::Move => SurfaceGeometry {
-            x: grab_state.start_geometry.x + delta_x,
-            y: grab_state.start_geometry.y + delta_y,
-            ..grab_state.start_geometry.clone()
+        WindowGrabMode::Move => WindowSceneGeometry {
+            x: grab_state.start_scene_geometry.x.saturating_add(delta_x as isize),
+            y: grab_state.start_scene_geometry.y.saturating_add(delta_y as isize),
+            ..grab_state.start_scene_geometry.clone()
         },
         WindowGrabMode::Resize { edges } => {
-            resize_geometry(&grab_state.start_geometry, *edges, delta_x, delta_y)
+            resize_geometry(&grab_state.start_scene_geometry, *edges, delta_x, delta_y)
         }
     }
 }
 
 /// Applies edge-specific resize semantics while enforcing a minimum window size.
 fn resize_geometry(
-    start_geometry: &SurfaceGeometry,
+    start_geometry: &WindowSceneGeometry,
     edges: ResizeEdges,
     delta_x: i32,
     delta_y: i32,
-) -> SurfaceGeometry {
+) -> WindowSceneGeometry {
     let mut x = start_geometry.x;
     let mut y = start_geometry.y;
     let mut width = start_geometry.width as i32;
@@ -161,10 +180,10 @@ fn resize_geometry(
     if edges.has_left() {
         let desired_width = width - delta_x;
         if desired_width < MIN_WINDOW_SIZE {
-            x += width - MIN_WINDOW_SIZE;
+            x = x.saturating_add((width - MIN_WINDOW_SIZE) as isize);
             width = MIN_WINDOW_SIZE;
         } else {
-            x += delta_x;
+            x = x.saturating_add(delta_x as isize);
             width = desired_width;
         }
     }
@@ -174,10 +193,10 @@ fn resize_geometry(
     if edges.has_top() {
         let desired_height = height - delta_y;
         if desired_height < MIN_WINDOW_SIZE {
-            y += height - MIN_WINDOW_SIZE;
+            y = y.saturating_add((height - MIN_WINDOW_SIZE) as isize);
             height = MIN_WINDOW_SIZE;
         } else {
-            y += delta_y;
+            y = y.saturating_add(delta_y as isize);
             height = desired_height;
         }
     }
@@ -185,7 +204,7 @@ fn resize_geometry(
         height = (height + delta_y).max(MIN_WINDOW_SIZE);
     }
 
-    SurfaceGeometry {
+    WindowSceneGeometry {
         x,
         y,
         width: width.max(MIN_WINDOW_SIZE) as u32,
@@ -195,7 +214,7 @@ fn resize_geometry(
 
 #[cfg(test)]
 mod tests {
-    use nekoland_ecs::components::SurfaceGeometry;
+    use nekoland_ecs::components::WindowSceneGeometry;
     use nekoland_ecs::resources::{GlobalPointerPosition, ResizeEdges};
 
     use super::{WindowGrabMode, WindowGrabState, geometry_for_pointer};
@@ -206,7 +225,7 @@ mod tests {
             mode,
             start_pointer_x: 100.0,
             start_pointer_y: 200.0,
-            start_geometry: SurfaceGeometry { x: 40, y: 60, width: 800, height: 600 },
+            start_scene_geometry: WindowSceneGeometry { x: 40, y: 60, width: 800, height: 600 },
         }
     }
 

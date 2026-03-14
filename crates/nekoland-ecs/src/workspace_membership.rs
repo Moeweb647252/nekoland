@@ -3,8 +3,8 @@ use bevy_ecs::prelude::{Entity, Query};
 use bevy_ecs::query::QueryFilter;
 
 use crate::components::Workspace;
-use crate::resources::EntityIndex;
-use crate::views::WorkspaceRuntime;
+use crate::resources::{EntityIndex, FocusedOutputState, PrimaryOutputState};
+use crate::views::{OutputRuntime, WorkspaceRuntime};
 
 /// Returns the active workspace entity and id, falling back to the lowest workspace id when no
 /// workspace is currently marked active.
@@ -88,4 +88,74 @@ pub fn window_workspace_runtime_id(
     child_of.and_then(|child_of| {
         workspaces.get(child_of.parent()).ok().map(|(_, workspace)| workspace.id().0)
     })
+}
+
+pub fn output_name_for_workspace_runtime_id(
+    workspace_id: Option<u32>,
+    outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
+) -> Option<String> {
+    let workspace_id = workspace_id?;
+    outputs.iter().find_map(|(_, output)| {
+        output
+            .current_workspace
+            .as_ref()
+            .is_some_and(|current_workspace| current_workspace.workspace.0 == workspace_id)
+            .then(|| output.name().to_owned())
+    })
+}
+
+pub fn focused_or_primary_output_name(
+    outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
+    focused_output: Option<&FocusedOutputState>,
+    primary_output: Option<&PrimaryOutputState>,
+) -> Option<String> {
+    if let Some(output_name) = focused_output.and_then(|focused| focused.name.as_deref())
+        && outputs.iter().any(|(_, output)| output.name() == output_name)
+    {
+        return Some(output_name.to_owned());
+    }
+
+    if let Some(output_name) = primary_output.and_then(|primary| primary.name.as_deref())
+        && outputs.iter().any(|(_, output)| output.name() == output_name)
+    {
+        return Some(output_name.to_owned());
+    }
+
+    outputs.iter().next().map(|(_, output)| output.name().to_owned())
+}
+
+pub fn current_workspace_runtime_target_for_output_name(
+    output_name: &str,
+    outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
+    entity_index: &EntityIndex,
+    fallback_workspace_id: u32,
+) -> Option<Entity> {
+    outputs
+        .iter()
+        .find(|(_, output)| output.name() == output_name)
+        .and_then(|(_, output)| {
+            output.current_workspace.as_ref().and_then(|current_workspace| {
+                entity_index.entity_for_workspace_id(current_workspace.workspace.0)
+            })
+        })
+        .or_else(|| entity_index.entity_for_workspace_id(fallback_workspace_id))
+}
+
+pub fn focused_or_primary_workspace_runtime_target(
+    outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
+    focused_output: Option<&FocusedOutputState>,
+    primary_output: Option<&PrimaryOutputState>,
+    entity_index: &EntityIndex,
+    fallback_workspace_id: u32,
+) -> Option<Entity> {
+    focused_or_primary_output_name(outputs, focused_output, primary_output)
+        .and_then(|output_name| {
+            current_workspace_runtime_target_for_output_name(
+                &output_name,
+                outputs,
+                entity_index,
+                fallback_workspace_id,
+            )
+        })
+        .or_else(|| entity_index.entity_for_workspace_id(fallback_workspace_id))
 }

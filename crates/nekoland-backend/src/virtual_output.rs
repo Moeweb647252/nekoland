@@ -3,6 +3,7 @@ use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
 use nekoland_ecs::resources::{VirtualOutputElement, VirtualOutputElementKind, VirtualOutputFrame};
 use smithay::utils::{Clock, Monotonic};
 
+use crate::common::cursor::{SoftwareCursorCache, cursor_position_on_output, cursor_render_source};
 use crate::common::outputs::{
     BackendOutputBlueprint, BackendOutputChange, BackendOutputEventRecord,
 };
@@ -25,6 +26,8 @@ pub(crate) struct VirtualRuntime {
     presentation_runtime: OutputPresentationRuntime,
     /// Monotonic clock used to timestamp synthetic presentation completions.
     monotonic_clock: Option<Clock<Monotonic>>,
+    /// Theme-backed fallback cache for cursor capture geometry.
+    cursor: SoftwareCursorCache,
 }
 
 impl VirtualRuntime {
@@ -41,6 +44,7 @@ impl VirtualRuntime {
             seeded_output_name: None,
             presentation_runtime: OutputPresentationRuntime::default(),
             monotonic_clock: None,
+            cursor: SoftwareCursorCache::default(),
         }
     }
 
@@ -155,29 +159,18 @@ impl Backend for VirtualRuntime {
 
         // Serialize the current render list into a backend-agnostic capture
         // frame so tests and tooling can inspect what would have been presented.
-        let mut elements = Vec::with_capacity(cx.render_list.elements.len());
+        let mut elements = Vec::with_capacity(cx.render_list.elements.len().saturating_add(1));
         for render_element in &cx.render_list.elements {
-            if render_element.surface_id == 0 {
-                let (x, y) = cx
-                    .pointer
-                    .map(|pointer| (pointer.x.round() as i32, pointer.y.round() as i32))
-                    .unwrap_or((0, 0));
-                elements.push(VirtualOutputElement {
-                    surface_id: 0,
-                    kind: VirtualOutputElementKind::Cursor,
-                    x,
-                    y,
-                    width: DEFAULT_CURSOR_SIZE,
-                    height: DEFAULT_CURSOR_SIZE,
-                    z_index: render_element.z_index,
-                    opacity: render_element.opacity,
-                });
-                continue;
-            }
-
             let Some(surface) = cx.surfaces.get(&render_element.surface_id) else {
                 continue;
             };
+            if surface
+                .target_output
+                .as_ref()
+                .is_some_and(|target_output| target_output != &output.device.name)
+            {
+                continue;
+            }
 
             let kind = match surface.role {
                 RenderSurfaceRole::Window => VirtualOutputElementKind::Window,
@@ -196,6 +189,49 @@ impl Backend for VirtualRuntime {
                 z_index: render_element.z_index,
                 opacity: render_element.opacity,
             });
+        }
+
+        if let Some((cursor_x, cursor_y)) =
+            cursor_position_on_output(cx.cursor_render, &output.device.name)
+        {
+            match cursor_render_source(cx.cursor_image) {
+                crate::common::cursor::CursorRenderSource::Hidden => {}
+                crate::common::cursor::CursorRenderSource::Surface {
+                    hotspot_x, hotspot_y, ..
+                } => {
+                    elements.push(VirtualOutputElement {
+                        surface_id: 0,
+                        kind: VirtualOutputElementKind::Cursor,
+                        x: cursor_x.round() as i32 - hotspot_x,
+                        y: cursor_y.round() as i32 - hotspot_y,
+                        width: DEFAULT_CURSOR_SIZE.saturating_mul(output.properties.scale.max(1)),
+                        height: DEFAULT_CURSOR_SIZE.saturating_mul(output.properties.scale.max(1)),
+                        z_index: i32::MAX,
+                        opacity: 1.0,
+                    });
+                }
+                crate::common::cursor::CursorRenderSource::Named(icon) => {
+                    let theme =
+                        cx.config.map(|config| config.cursor_theme.as_str()).unwrap_or("default");
+                    let geometry = self.cursor.capture_geometry(
+                        theme,
+                        icon,
+                        output.properties.scale.max(1),
+                        cursor_x,
+                        cursor_y,
+                    );
+                    elements.push(VirtualOutputElement {
+                        surface_id: 0,
+                        kind: VirtualOutputElementKind::Cursor,
+                        x: geometry.x,
+                        y: geometry.y,
+                        width: geometry.width,
+                        height: geometry.height,
+                        z_index: i32::MAX,
+                        opacity: 1.0,
+                    });
+                }
+            }
         }
 
         capture_state.push_frame(VirtualOutputFrame {

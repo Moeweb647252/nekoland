@@ -2,8 +2,10 @@ use bevy_ecs::bundle::Bundle;
 
 use crate::components::{
     BorderTheme, BufferState, DesiredOutputName, LayerAnchor, LayerLevel, LayerMargins,
-    LayerShellSurface, OutputDevice, OutputProperties, ServerDecoration, SurfaceGeometry,
-    WindowAnimation, WindowLayout, WindowMode, WlSurfaceHandle, X11Window, XdgWindow,
+    LayerShellSurface, OutputDevice, OutputPlacement, OutputProperties, OutputViewport,
+    OutputWorkArea, ServerDecoration, SurfaceContentVersion, SurfaceGeometry, WindowAnimation,
+    WindowLayout, WindowMode, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle,
+    X11Window, XdgWindow,
 };
 
 /// Canonical component set for a native XDG toplevel window entity.
@@ -11,7 +13,10 @@ use crate::components::{
 pub struct WindowBundle {
     pub surface: WlSurfaceHandle,
     pub geometry: SurfaceGeometry,
+    pub scene_geometry: WindowSceneGeometry,
+    pub viewport_visibility: WindowViewportVisibility,
     pub buffer: BufferState,
+    pub content_version: SurfaceContentVersion,
     pub window: XdgWindow,
     pub layout: WindowLayout,
     pub mode: WindowMode,
@@ -25,7 +30,10 @@ pub struct WindowBundle {
 pub struct X11WindowBundle {
     pub surface: WlSurfaceHandle,
     pub geometry: SurfaceGeometry,
+    pub scene_geometry: WindowSceneGeometry,
+    pub viewport_visibility: WindowViewportVisibility,
     pub buffer: BufferState,
+    pub content_version: SurfaceContentVersion,
     pub window: XdgWindow,
     pub x11_window: X11Window,
     pub layout: WindowLayout,
@@ -40,6 +48,9 @@ pub struct X11WindowBundle {
 pub struct OutputBundle {
     pub output: OutputDevice,
     pub properties: OutputProperties,
+    pub placement: OutputPlacement,
+    pub viewport: OutputViewport,
+    pub work_area: OutputWorkArea,
 }
 
 /// Canonical component set for one layer-shell surface entity.
@@ -48,6 +59,7 @@ pub struct LayerSurfaceBundle {
     pub surface: WlSurfaceHandle,
     pub geometry: SurfaceGeometry,
     pub buffer: BufferState,
+    pub content_version: SurfaceContentVersion,
     pub layer_surface: LayerShellSurface,
     pub desired_output_name: DesiredOutputName,
     pub anchor: LayerAnchor,
@@ -76,6 +88,7 @@ impl LayerSurfaceBundle {
                 height: desired_height.max(1),
             },
             buffer: BufferState { attached: false, scale: 1 },
+            content_version: SurfaceContentVersion::default(),
             layer_surface: LayerShellSurface {
                 namespace,
                 layer,

@@ -8,16 +8,17 @@ use nekoland_ecs::bundles::X11WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, FloatingPosition, ServerDecoration, SurfaceGeometry, WindowAnimation,
     WindowLayout, WindowMode, WindowPlacement, WindowPolicyState, WindowPosition,
-    WindowRestoreState, WindowSize, WlSurfaceHandle, X11Window, XdgPopup, XdgWindow,
+    WindowRestoreState, WindowSceneGeometry, WindowSize, WlSurfaceHandle, X11Window, XdgPopup,
+    XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
 use nekoland_ecs::resources::{
-    CompositorConfig, EntityIndex, GlobalPointerPosition, KeyboardFocusState,
+    CompositorConfig, EntityIndex, FocusedOutputState, GlobalPointerPosition, KeyboardFocusState,
     PendingPopupServerRequests, PendingX11Requests, PopupServerAction, PopupServerRequest,
-    X11LifecycleAction,
+    PrimaryOutputState, X11LifecycleAction,
 };
 use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowRuntime, WorkspaceRuntime};
-use nekoland_ecs::workspace_membership::active_workspace_runtime_target_or_index;
+use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_target;
 
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
 use crate::window_policy::{
@@ -45,20 +46,27 @@ pub fn xwayland_bridge_system(
     pointer: Res<GlobalPointerPosition>,
     mut active_grab: ResMut<ActiveWindowGrab>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
-    workspaces: Query<(Entity, WorkspaceRuntime)>,
-    outputs: Query<OutputRuntime>,
+    _workspaces: Query<(Entity, WorkspaceRuntime)>,
+    outputs: Query<(Entity, OutputRuntime)>,
+    primary_output: Option<Res<PrimaryOutputState>>,
+    focused_output: Option<Res<FocusedOutputState>>,
     mut windows: X11Windows<'_, '_>,
     mut popup_dismissals: X11PopupDismissals<'_, '_>,
     mut window_created: MessageWriter<WindowCreated>,
     mut window_closed: MessageWriter<WindowClosed>,
     mut window_moved: MessageWriter<WindowMoved>,
 ) {
-    let active_workspace_entity =
-        active_workspace_runtime_target_or_index(&workspaces, &entity_index, 1);
+    let active_workspace_entity = focused_or_primary_workspace_runtime_target(
+        &outputs,
+        focused_output.as_deref(),
+        primary_output.as_deref(),
+        &entity_index,
+        1,
+    );
     let output_geometry = outputs
         .iter()
         .next()
-        .map(|output| (output.properties.width.max(1), output.properties.height.max(1)));
+        .map(|(_, output)| (output.properties.width.max(1), output.properties.height.max(1)));
     let mut deferred = Vec::new();
 
     for request in pending_x11_requests.drain() {
@@ -234,6 +242,12 @@ fn map_x11_window(
                 width: geometry.width.max(1),
                 height: geometry.height.max(1),
             };
+            *window.scene_geometry = WindowSceneGeometry {
+                x: geometry.x as isize,
+                y: geometry.y as isize,
+                width: geometry.width.max(1),
+                height: geometry.height.max(1),
+            };
             window.buffer.expect("x11 window should have buffer state").attached = true;
             let xdg_window =
                 window.xdg_window.as_mut().expect("x11 runtime should expose xdg metadata");
@@ -248,9 +262,10 @@ fn map_x11_window(
             if matches!(*window.layout, WindowLayout::Floating)
                 && *window.mode == WindowMode::Normal
             {
-                window
-                    .placement
-                    .set_explicit_position(WindowPosition { x: geometry.x, y: geometry.y });
+                window.placement.set_explicit_position(WindowPosition {
+                    x: geometry.x as isize,
+                    y: geometry.y as isize,
+                });
                 window.placement.floating_size = Some(WindowSize {
                     width: geometry.width.max(1),
                     height: geometry.height.max(1),
@@ -260,7 +275,11 @@ fn map_x11_window(
                 commands.entity(entity).insert(ChildOf(active_workspace_entity));
             }
             if moved {
-                window_moved.write(WindowMoved { surface_id, x: geometry.x, y: geometry.y });
+                window_moved.write(WindowMoved {
+                    surface_id,
+                    x: geometry.x as i64,
+                    y: geometry.y as i64,
+                });
             }
             return;
         }
@@ -275,7 +294,15 @@ fn map_x11_window(
                 width: geometry.width.max(1),
                 height: geometry.height.max(1),
             },
+            scene_geometry: WindowSceneGeometry {
+                x: geometry.x as isize,
+                y: geometry.y as isize,
+                width: geometry.width.max(1),
+                height: geometry.height.max(1),
+            },
+            viewport_visibility: Default::default(),
             buffer: BufferState { attached: true, scale: 1 },
+            content_version: Default::default(),
             window: XdgWindow {
                 app_id: app_id.clone(),
                 title: title.clone(),
@@ -294,8 +321,8 @@ fn map_x11_window(
         WindowPolicyState { applied: policy, locked: false },
         WindowPlacement {
             floating_position: Some(FloatingPosition::Explicit(WindowPosition {
-                x: geometry.x,
-                y: geometry.y,
+                x: geometry.x as isize,
+                y: geometry.y as isize,
             })),
             floating_size: Some(WindowSize {
                 width: geometry.width.max(1),
@@ -346,19 +373,30 @@ fn reconfigure_x11_window(
     let resizable = !matches!(*window.mode, WindowMode::Fullscreen | WindowMode::Maximized);
     window.geometry.x = geometry.x;
     window.geometry.y = geometry.y;
+    window.scene_geometry.x = geometry.x as isize;
+    window.scene_geometry.y = geometry.y as isize;
     if resizable {
         window.geometry.width = geometry.width.max(1);
         window.geometry.height = geometry.height.max(1);
+        window.scene_geometry.width = geometry.width.max(1);
+        window.scene_geometry.height = geometry.height.max(1);
     }
     if matches!(*window.layout, WindowLayout::Floating) && *window.mode == WindowMode::Normal {
-        window.placement.set_explicit_position(WindowPosition { x: geometry.x, y: geometry.y });
+        window.placement.set_explicit_position(WindowPosition {
+            x: geometry.x as isize,
+            y: geometry.y as isize,
+        });
         if resizable {
             window.placement.floating_size =
                 Some(WindowSize { width: geometry.width.max(1), height: geometry.height.max(1) });
         }
     }
     if moved {
-        window_moved.write(WindowMoved { surface_id, x: window.geometry.x, y: window.geometry.y });
+        window_moved.write(WindowMoved {
+            surface_id,
+            x: window.scene_geometry.x as i64,
+            y: window.scene_geometry.y as i64,
+        });
     }
     true
 }
@@ -378,7 +416,7 @@ fn enter_x11_window_state(
     };
 
     window.restore.snapshot = Some(WindowRestoreState {
-        geometry: window.geometry.clone(),
+        geometry: window.scene_geometry.clone(),
         layout: (*window.layout).clone(),
         mode: (*window.mode).clone(),
     });
@@ -405,7 +443,7 @@ fn restore_or_default_x11_window_state(
     };
 
     if let Some(restored) = window.restore.snapshot.take() {
-        *window.geometry = restored.geometry;
+        *window.scene_geometry = restored.geometry;
         *window.layout = restored.layout;
         *window.mode = restored.mode;
     } else {
@@ -455,7 +493,7 @@ fn start_x11_window_grab(
         lock_window_policy(*window.layout, *window.mode, &mut window.policy_state);
     }
     keyboard_focus.focused_surface = Some(surface_id);
-    begin_window_grab(active_grab, surface_id, mode, pointer, &window.geometry);
+    begin_window_grab(active_grab, surface_id, mode, pointer, &window.scene_geometry);
     true
 }
 
@@ -514,7 +552,8 @@ mod tests {
     use nekoland_ecs::bundles::X11WindowBundle;
     use nekoland_ecs::components::{
         BorderTheme, BufferState, ServerDecoration, SurfaceGeometry, WindowAnimation, WindowLayout,
-        WindowMode, WlSurfaceHandle, Workspace, WorkspaceId, X11Window, XdgWindow,
+        WindowMode, WindowSceneGeometry, WlSurfaceHandle, Workspace, WorkspaceId, X11Window,
+        XdgWindow,
     };
     use nekoland_ecs::events::{PointerButton, WindowClosed, WindowCreated, WindowMoved};
     use nekoland_ecs::resources::{
@@ -558,7 +597,10 @@ mod tests {
             .spawn((X11WindowBundle {
                 surface: WlSurfaceHandle { id: 42 },
                 geometry: SurfaceGeometry { x: 32, y: 48, width: 640, height: 480 },
+                scene_geometry: WindowSceneGeometry { x: 32, y: 48, width: 640, height: 480 },
+                viewport_visibility: Default::default(),
                 buffer: BufferState { attached: true, scale: 1 },
+                content_version: Default::default(),
                 window: XdgWindow {
                     app_id: "x11-test".to_owned(),
                     title: "X11 Test".to_owned(),

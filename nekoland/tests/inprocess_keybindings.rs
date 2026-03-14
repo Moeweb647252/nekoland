@@ -308,7 +308,7 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Q" = "close-window"
+"Super+Q" = { close = true }
 "##
     .trim_start()
     .to_owned()

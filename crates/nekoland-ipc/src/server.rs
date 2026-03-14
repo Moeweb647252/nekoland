@@ -534,6 +534,12 @@ pub fn refresh_query_cache_system(
             height: output.properties.height,
             refresh_millihz: output.properties.refresh_millihz,
             scale: output.properties.scale,
+            viewport_origin_x: output.viewport.origin_x as i64,
+            viewport_origin_y: output.viewport.origin_y as i64,
+            current_workspace: output
+                .current_workspace
+                .as_ref()
+                .map(|current_workspace| current_workspace.workspace.0),
         })
         .collect();
 
@@ -577,8 +583,9 @@ pub fn refresh_query_cache_system(
         default_layout: config.default_layout.to_string(),
         focus_follows_mouse: config.focus_follows_mouse,
         repeat_rate: config.repeat_rate,
+        viewport_pan_modifiers: config.viewport_pan_modifiers.config_tokens(),
         command_history_limit: config.command_history_limit,
-        startup_commands: config.startup_commands.clone(),
+        startup_actions: config.startup_actions.clone(),
         xwayland_enabled: config.xwayland.enabled,
         outputs: config
             .outputs
@@ -648,11 +655,17 @@ pub fn refresh_query_cache_system(
                 .is_some_and(|x11_window| x11_window.override_redirect),
             x: window.geometry.x,
             y: window.geometry.y,
+            scene_x: window.scene_geometry.x as i64,
+            scene_y: window.scene_geometry.y as i64,
+            screen_x: window.geometry.x,
+            screen_y: window.geometry.y,
             width: window.geometry.width,
             height: window.geometry.height,
             state: window_state_label(window.layout.clone(), window.mode.clone()),
             workspace: window_workspace_runtime_id(window.child_of, &workspaces),
+            output: window.viewport_visibility.output.clone(),
             focused: keyboard_focus.focused_surface == Some(window.surface_id()),
+            visible_in_viewport: window.viewport_visibility.visible,
         })
         .collect::<Vec<_>>();
     let popups = popups
@@ -839,7 +852,7 @@ fn reply_for_request(
             })
         }
         IpcCommand::Window(WindowCommand::Move { surface_id, x, y }) => {
-            windows.surface(SurfaceId(surface_id)).move_to(x, y);
+            windows.surface(SurfaceId(surface_id)).move_to(x as isize, y as isize);
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued move request for surface {surface_id}"),
@@ -859,6 +872,22 @@ fn reply_for_request(
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued {axis:?} split request for surface {surface_id}"),
+                payload: None,
+            })
+        }
+        IpcCommand::Window(WindowCommand::Background { surface_id, output }) => {
+            windows.surface(SurfaceId(surface_id)).background_on(OutputName::from(output.clone()));
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: format!("queued background role for surface {surface_id} on {output}"),
+                payload: None,
+            })
+        }
+        IpcCommand::Window(WindowCommand::ClearBackground { surface_id }) => {
+            windows.surface(SurfaceId(surface_id)).clear_background();
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: format!("queued background clear for surface {surface_id}"),
                 payload: None,
             })
         }
@@ -887,7 +916,9 @@ fn reply_for_request(
             })
         }
         IpcCommand::Output(OutputCommand::Configure { output, mode, scale }) => {
-            outputs.named(OutputName::from(output.clone())).configure(mode.clone(), scale);
+            outputs
+                .select(nekoland_ecs::selectors::OutputSelector::parse(&output))
+                .configure(mode.clone(), scale);
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued output configure for {output}"),
@@ -895,7 +926,7 @@ fn reply_for_request(
             })
         }
         IpcCommand::Output(OutputCommand::Enable { output }) => {
-            outputs.named(OutputName::from(output.clone())).enable();
+            outputs.select(nekoland_ecs::selectors::OutputSelector::parse(&output)).enable();
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued output enable for {output}"),
@@ -903,10 +934,40 @@ fn reply_for_request(
             })
         }
         IpcCommand::Output(OutputCommand::Disable { output }) => {
-            outputs.named(OutputName::from(output.clone())).disable();
+            outputs.select(nekoland_ecs::selectors::OutputSelector::parse(&output)).disable();
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued output disable for {output}"),
+                payload: None,
+            })
+        }
+        IpcCommand::Output(OutputCommand::ViewportMove { output, x, y }) => {
+            outputs
+                .select(nekoland_ecs::selectors::OutputSelector::parse(&output))
+                .move_viewport_to(x as isize, y as isize);
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: format!("queued viewport move for {output}"),
+                payload: None,
+            })
+        }
+        IpcCommand::Output(OutputCommand::ViewportPan { output, dx, dy }) => {
+            outputs
+                .select(nekoland_ecs::selectors::OutputSelector::parse(&output))
+                .pan_viewport_by(dx as isize, dy as isize);
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: format!("queued viewport pan for {output}"),
+                payload: None,
+            })
+        }
+        IpcCommand::Output(OutputCommand::CenterViewportOnWindow { output, surface_id }) => {
+            outputs
+                .select(nekoland_ecs::selectors::OutputSelector::parse(&output))
+                .center_viewport_on_window(SurfaceId(surface_id));
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: format!("queued viewport centering for {output} on window {surface_id}"),
                 payload: None,
             })
         }
@@ -999,9 +1060,31 @@ mod tests {
         let workspace_entity =
             world.spawn(Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true }).id();
         world.spawn((
+            nekoland_ecs::components::OutputDevice {
+                name: "Virtual-1".to_owned(),
+                kind: nekoland_ecs::components::OutputKind::Virtual,
+                make: "test".to_owned(),
+                model: "output".to_owned(),
+            },
+            nekoland_ecs::components::OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+            nekoland_ecs::components::OutputCurrentWorkspace { workspace: WorkspaceId(1) },
+        ));
+        world.spawn((
             WindowBundle {
                 surface: WlSurfaceHandle { id: 42 },
                 geometry: SurfaceGeometry { x: 10, y: 20, width: 800, height: 600 },
+                scene_geometry: nekoland_ecs::components::WindowSceneGeometry {
+                    x: 10,
+                    y: 20,
+                    width: 800,
+                    height: 600,
+                },
+                viewport_visibility: Default::default(),
                 buffer: BufferState { attached: true, scale: 1 },
                 window: XdgWindow {
                     app_id: "test.app".to_owned(),
@@ -1028,6 +1111,8 @@ mod tests {
             Some(1),
             "window snapshot should derive workspace from ChildOf",
         );
+        assert_eq!(cache.outputs.len(), 1, "expected one output snapshot");
+        assert_eq!(cache.outputs[0].current_workspace, Some(1));
     }
 
     #[test]
@@ -1059,5 +1144,39 @@ mod tests {
         assert_eq!(pending_window_controls.as_slice().len(), 1);
         assert_eq!(pending_window_controls.as_slice()[0].surface_id.0, 42);
         assert_eq!(pending_window_controls.as_slice()[0].split_axis, Some(SplitAxis::Vertical));
+    }
+
+    #[test]
+    fn reply_for_request_stages_window_background_control() {
+        let mut pending_popup_requests = PendingPopupServerRequests::default();
+        let mut pending_window_controls = PendingWindowControls::default();
+        let mut pending_workspace_controls = PendingWorkspaceControls::default();
+        let mut pending_output_controls = PendingOutputControls::default();
+
+        let disposition = reply_for_request(
+            IpcRequest {
+                correlation_id: 2,
+                command: IpcCommand::Window(WindowCommand::Background {
+                    surface_id: 77,
+                    output: "Virtual-1".to_owned(),
+                }),
+            },
+            &IpcQueryCache::default(),
+            &mut pending_popup_requests,
+            &mut pending_window_controls,
+            &mut pending_workspace_controls,
+            &mut pending_output_controls,
+        );
+
+        assert!(matches!(disposition, RequestDisposition::Reply(_)));
+        assert!(pending_popup_requests.is_empty());
+        assert!(pending_workspace_controls.is_empty());
+        assert!(pending_output_controls.is_empty());
+        assert_eq!(pending_window_controls.as_slice().len(), 1);
+        assert!(matches!(
+            pending_window_controls.as_slice()[0].background,
+            Some(nekoland_ecs::resources::WindowBackgroundControl::Set { ref output })
+                if output.as_str() == "Virtual-1"
+        ));
     }
 }

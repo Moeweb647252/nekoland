@@ -93,7 +93,7 @@ pub fn configure_sequence_system(
                     window.surface_id(),
                     WindowGrabMode::Move,
                     &pointer,
-                    &window.geometry,
+                    &window.scene_geometry,
                 );
                 tracing::trace!(
                     surface_id = window.surface_id(),
@@ -125,7 +125,7 @@ pub fn configure_sequence_system(
                     window.surface_id(),
                     WindowGrabMode::Resize { edges: edges.clone() },
                     &pointer,
-                    &window.geometry,
+                    &window.scene_geometry,
                 );
                 tracing::trace!(
                     surface_id = window.surface_id(),
@@ -150,7 +150,7 @@ pub fn configure_sequence_system(
                 };
 
                 window.restore.snapshot = Some(WindowRestoreState {
-                    geometry: window.geometry.clone(),
+                    geometry: window.scene_geometry.clone(),
                     layout: (*window.layout).clone(),
                     mode: (*window.mode).clone(),
                 });
@@ -170,7 +170,7 @@ pub fn configure_sequence_system(
                 };
 
                 if let Some(restored) = window.restore.snapshot.take() {
-                    *window.geometry = restored.geometry;
+                    *window.scene_geometry = restored.geometry;
                     *window.layout = restored.layout;
                     *window.mode = restored.mode;
                 } else {
@@ -194,7 +194,7 @@ pub fn configure_sequence_system(
                 };
 
                 window.restore.snapshot = Some(WindowRestoreState {
-                    geometry: window.geometry.clone(),
+                    geometry: window.scene_geometry.clone(),
                     layout: (*window.layout).clone(),
                     mode: (*window.mode).clone(),
                 });
@@ -225,7 +225,7 @@ pub fn configure_sequence_system(
                 };
 
                 if let Some(restored) = window.restore.snapshot.take() {
-                    *window.geometry = restored.geometry;
+                    *window.scene_geometry = restored.geometry;
                     *window.layout = restored.layout;
                     *window.mode = restored.mode;
                 } else {

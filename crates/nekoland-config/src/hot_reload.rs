@@ -133,7 +133,12 @@ pub fn hot_reload_system(
 
     match loader::load_from_path(&config_source.path) {
         Ok(next_config) => {
-            *config = next_config.into();
+            *config = CompositorConfig::try_from(next_config).map_err(|error| {
+                NekolandError::Config(format!(
+                    "keeping previous compositor config after reload failure for {}: {error}",
+                    config_source.path.display()
+                ))
+            })?;
             config_source.loaded_from_disk = true;
             config_source.successful_reloads += 1;
             config_source.last_reload_error = None;
@@ -275,7 +280,7 @@ mod tests {
     use nekoland_core::calloop::CalloopSourceRegistry;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::ExtractSchedule;
-    use nekoland_ecs::resources::{CompositorConfig, ConfiguredKeybindingAction};
+    use nekoland_ecs::resources::{CompositorConfig, ConfiguredAction};
 
     use crate::{ConfigPlugin, LoadedConfigSource};
 
@@ -293,6 +298,7 @@ background_color = "#f5f5f5"
 [input]
 focus_follows_mouse = true
 repeat_rate = 30
+viewport_pan_modifiers = ["Super", "Alt"]
 
 [[outputs]]
 name = "eDP-1"
@@ -301,8 +307,8 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Return" = ["foot"]
-"Super+Q" = "close-window"
+"Super+Return" = { exec = ["foot"] }
+"Super+Q" = { close = true }
 "##;
 
     const RELOADED_CONFIG: &str = r##"
@@ -315,6 +321,7 @@ background_color = "#101010"
 [input]
 focus_follows_mouse = false
 repeat_rate = 45
+viewport_pan_modifiers = ["Ctrl", "Shift"]
 
 [[outputs]]
 name = "HDMI-A-1"
@@ -323,7 +330,7 @@ scale = 2
 enabled = true
 
 [keybinds.bindings]
-"Super+P" = ["wlogout", "--protocol", "layer-shell"]
+"Super+P" = { exec = ["wlogout", "--protocol", "layer-shell"] }
 "##;
 
     const INVALID_CONFIG: &str = r##"
@@ -362,8 +369,12 @@ cursor_theme = "default"
             assert_eq!(config.theme, "latte");
             assert_eq!(config.cursor_theme, "breeze");
             assert_eq!(
+                config.viewport_pan_modifiers,
+                nekoland_ecs::resources::ModifierMask::new(false, true, false, true)
+            );
+            assert_eq!(
                 config.keybindings.get("Super+Return"),
-                Some(&ConfiguredKeybindingAction::Command(vec!["foot".to_owned()]))
+                Some(&vec![ConfiguredAction::Exec { argv: vec!["foot".to_owned()] }])
             );
             assert!(source.loaded_from_disk);
             assert_eq!(source.successful_reloads, 1);
@@ -383,14 +394,20 @@ cursor_theme = "default"
 
             assert_eq!(config.theme, "frappe");
             assert_eq!(config.cursor_theme, "capitaine");
+            assert_eq!(
+                config.viewport_pan_modifiers,
+                nekoland_ecs::resources::ModifierMask::new(true, false, true, false)
+            );
             assert_eq!(config.keybindings.len(), 1);
             assert_eq!(
                 config.keybindings.get("Super+P"),
-                Some(&ConfiguredKeybindingAction::Command(vec![
-                    "wlogout".to_owned(),
-                    "--protocol".to_owned(),
-                    "layer-shell".to_owned(),
-                ]))
+                Some(&vec![ConfiguredAction::Exec {
+                    argv: vec![
+                        "wlogout".to_owned(),
+                        "--protocol".to_owned(),
+                        "layer-shell".to_owned(),
+                    ],
+                }])
             );
             assert_eq!(source.successful_reloads, 2);
             assert!(source.last_reload_error.is_none());

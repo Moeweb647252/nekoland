@@ -11,6 +11,7 @@ pub const UNASSIGNED_WORKSPACE_TILING_ID: u32 = 0;
 
 /// Split axis for one internal tiling-tree node.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 pub enum SplitAxis {
     #[default]
     Horizontal,

@@ -103,9 +103,9 @@ enum WindowAction {
     Move {
         surface_id: u64,
         #[arg(allow_hyphen_values = true)]
-        x: i32,
+        x: i64,
         #[arg(allow_hyphen_values = true)]
-        y: i32,
+        y: i64,
     },
     Resize {
         surface_id: u64,
@@ -115,6 +115,13 @@ enum WindowAction {
     Split {
         surface_id: u64,
         axis: SplitAxisArg,
+    },
+    Background {
+        surface_id: u64,
+        output: String,
+    },
+    ClearBackground {
+        surface_id: u64,
     },
 }
 
@@ -171,9 +178,35 @@ struct OutputArgs {
 /// Output-management actions supported by the CLI.
 #[derive(Subcommand, Debug)]
 enum OutputAction {
-    Enable { output: String },
-    Disable { output: String },
-    Configure { output: String, mode: String, scale: Option<u32> },
+    Enable {
+        output: String,
+    },
+    Disable {
+        output: String,
+    },
+    Configure {
+        output: String,
+        mode: String,
+        scale: Option<u32>,
+    },
+    ViewportMove {
+        output: String,
+        #[arg(allow_hyphen_values = true)]
+        x: i64,
+        #[arg(allow_hyphen_values = true)]
+        y: i64,
+    },
+    ViewportPan {
+        output: String,
+        #[arg(allow_hyphen_values = true)]
+        dx: i64,
+        #[arg(allow_hyphen_values = true)]
+        dy: i64,
+    },
+    CenterViewportOnWindow {
+        output: String,
+        surface_id: u64,
+    },
 }
 
 /// Arguments for shell-completion generation.
@@ -344,6 +377,12 @@ where
             WindowAction::Split { surface_id, axis } => {
                 IpcCommand::Window(WindowCommand::Split { surface_id, axis: axis.into() })
             }
+            WindowAction::Background { surface_id, output } => {
+                IpcCommand::Window(WindowCommand::Background { surface_id, output })
+            }
+            WindowAction::ClearBackground { surface_id } => {
+                IpcCommand::Window(WindowCommand::ClearBackground { surface_id })
+            }
         })),
         RootCommand::Popup(popup) => Ok(ParsedAction::Request(match popup.action {
             PopupAction::Dismiss { surface_id } => {
@@ -368,6 +407,15 @@ where
             }
             OutputAction::Configure { output, mode, scale } => {
                 IpcCommand::Output(OutputCommand::Configure { output, mode, scale })
+            }
+            OutputAction::ViewportMove { output, x, y } => {
+                IpcCommand::Output(OutputCommand::ViewportMove { output, x, y })
+            }
+            OutputAction::ViewportPan { output, dx, dy } => {
+                IpcCommand::Output(OutputCommand::ViewportPan { output, dx, dy })
+            }
+            OutputAction::CenterViewportOnWindow { output, surface_id } => {
+                IpcCommand::Output(OutputCommand::CenterViewportOnWindow { output, surface_id })
             }
         })),
         RootCommand::Completion(completion) => Ok(ParsedAction::Completion(completion.shell)),
@@ -615,7 +663,7 @@ mod tests {
         CompletionShellArg, HelpOutputMode, ParsedAction, SplitAxis, SubscriptionCommand,
         SubscriptionOutputMode, parse_cli_from, render_completion, render_subscription_help,
     };
-    use nekoland_ipc::commands::{PopupCommand, QueryCommand, WindowCommand};
+    use nekoland_ipc::commands::{OutputCommand, PopupCommand, QueryCommand, WindowCommand};
     use nekoland_ipc::{IpcCommand, IpcSubscription, SubscriptionTopic};
     use serde_json::Value;
 
@@ -691,6 +739,40 @@ mod tests {
                 surface_id: 7,
                 x: 12,
                 y: -4
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_window_background() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "window", "background", "7", "Virtual-1"]),
+            ParsedAction::Request(IpcCommand::Window(WindowCommand::Background {
+                surface_id: 7,
+                output: "Virtual-1".to_owned(),
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_output_viewport_pan() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "output", "viewport-pan", "Virtual-1", "-40", "25"]),
+            ParsedAction::Request(IpcCommand::Output(OutputCommand::ViewportPan {
+                output: "Virtual-1".to_owned(),
+                dx: -40,
+                dy: 25,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_output_center_viewport_on_window() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "output", "center-viewport-on-window", "Virtual-1", "77"]),
+            ParsedAction::Request(IpcCommand::Output(OutputCommand::CenterViewportOnWindow {
+                output: "Virtual-1".to_owned(),
+                surface_id: 77,
             }))
         );
     }

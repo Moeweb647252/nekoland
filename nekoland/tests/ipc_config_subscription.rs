@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
-use nekoland_ecs::resources::ConfiguredKeybindingAction;
+use nekoland_ecs::resources::ConfiguredAction;
 use nekoland_ipc::commands::ConfigSnapshot;
 use nekoland_ipc::{
     IpcServerState, IpcSubscription, IpcSubscriptionEvent, SubscriptionTopic, subscribe_to_path,
@@ -29,6 +29,7 @@ background_color = "#f5f5f5"
 [input]
 focus_follows_mouse = false
 repeat_rate = 30
+viewport_pan_modifiers = ["Super", "Alt"]
 
 [ipc]
 command_history_limit = 7
@@ -43,7 +44,7 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Return" = ["foot"]
+"Super+Return" = { exec = ["foot"] }
 "##;
 
 /// Replacement config written while the compositor is already serving IPC.
@@ -59,6 +60,7 @@ background_color = "#101010"
 [input]
 focus_follows_mouse = true
 repeat_rate = 45
+viewport_pan_modifiers = ["Ctrl", "Shift"]
 
 [ipc]
 command_history_limit = 3
@@ -73,7 +75,7 @@ scale = 2
 enabled = true
 
 [keybinds.bindings]
-"Super+P" = ["wlogout", "--protocol", "layer-shell"]
+"Super+P" = { exec = ["wlogout", "--protocol", "layer-shell"] }
 "##;
 
 /// Verifies that the config subscription publishes the fully normalized runtime config after hot
@@ -152,6 +154,7 @@ fn config_subscription_reports_hot_reloaded_runtime_config() {
     assert_eq!(config.default_layout, "floating");
     assert_eq!(config.command_history_limit, 3);
     assert!(!config.xwayland_enabled);
+    assert_eq!(config.viewport_pan_modifiers, vec!["Ctrl".to_owned(), "Shift".to_owned()]);
     assert_eq!(config.outputs.len(), 1);
     assert_eq!(config.outputs[0].name, "HDMI-A-1");
     assert_eq!(config.outputs[0].mode, "2560x1440@75");
@@ -159,13 +162,15 @@ fn config_subscription_reports_hot_reloaded_runtime_config() {
     assert!(
         matches!(
             config.keybindings.get("Super+P"),
-            Some(ConfiguredKeybindingAction::Command(argv))
-                if argv
-                    == &vec![
-                        "wlogout".to_owned(),
-                        "--protocol".to_owned(),
-                        "layer-shell".to_owned(),
-                    ]
+            Some(actions)
+                if actions
+                    == &vec![ConfiguredAction::Exec {
+                        argv: vec![
+                            "wlogout".to_owned(),
+                            "--protocol".to_owned(),
+                            "layer-shell".to_owned(),
+                        ],
+                    }]
         ),
         "config_changed should expose the reloaded keybinding map: {:?}",
         config.keybindings

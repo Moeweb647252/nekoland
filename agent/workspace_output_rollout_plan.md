@@ -108,6 +108,24 @@ Date: 2026-03-14
   - IPC viewport command roundtrip
   - virtual output capture reflects viewport movement
 
+### 需要新增的测试
+
+- ECS / shell 单测
+  - scene 坐标到 presentation 坐标的投影边界：
+    - 完全可见
+    - 部分相交
+    - 完全在 viewport 外
+    - scene 坐标接近 `isize` 极值时不溢出
+  - floating move / resize / interactive grab 更新 scene 坐标，而不是直接写 screen 坐标
+  - viewport 平移后，窗口 scene 坐标不变，但 `SurfaceGeometry` 改变
+- IPC / query 测试
+  - output snapshot 包含 viewport origin
+  - window snapshot 区分 `scene_x/scene_y` 和 `screen_x/screen_y`
+  - viewport 控制命令可以正确入队并生效
+- render / backend 测试
+  - virtual output capture 反映 viewport 平移后的 screen 几何
+  - viewport 外窗口不会出现在 render order / capture frame 中
+
 ## Phase 2: Per-Output Active Workspace
 
 对应设计稿：
@@ -166,6 +184,20 @@ Date: 2026-03-14
   - new window placement on focused output
   - focus routing across outputs
 
+### 需要新增的测试
+
+- workspace / output 路由单测
+  - output 切换 workspace 时只影响目标 output
+  - focused output 缺失时正确 fallback 到 primary output
+  - workspace 不会被同时绑定到多个 output
+- shell / lifecycle 集成测试
+  - 新窗口默认进入 focused output 的 current workspace
+  - pointer focus 与 keyboard fallback 只在目标 output 当前 workspace 内工作
+  - per-output work area 变化不会污染其它 output
+- IPC / query 测试
+  - output snapshot 暴露 current workspace
+  - workspace 查询不再依赖全局 active 字段解释可见性
+
 ## Phase 3: Output Background Window
 
 对应设计稿：
@@ -222,6 +254,41 @@ Date: 2026-03-14
 - 重点集成测试：
   - virtual output capture shows background only on target output
   - IPC / keybinding can set and clear background role
+
+### 需要新增的测试
+
+- role / restore 单测
+  - 设置背景前后的 restore state 保存与恢复
+  - background role 不进入普通 stacking / focus 候选
+- render / backend 集成测试
+  - 多 output 下背景只出现在目标 output
+  - 清除 background role 后窗口重新回到普通 scene 渲染路径
+- IPC / keybinding 测试
+  - output background 的设置/清除命令可被 CLI 和 keybinding 驱动
+
+## 总体测试计划
+
+每个阶段都必须同时补三类测试，不能只做一种：
+
+1. 单测
+   - 落在 `nekoland-ecs`、`nekoland-shell`、`nekoland-render`、`nekoland-backend`
+   - 覆盖纯数据变换、投影、控制面入队、状态恢复
+2. 集成测试
+   - 优先放在 `nekoland/tests/` 与 `tests/integration/`
+   - 覆盖 IPC、focus、workspace/output 路由、virtual output capture
+3. 回归测试
+   - 每阶段都要补至少一个“旧行为不被打坏”的测试
+   - 例如：
+     - fullscreen / maximized 继续保持 output-local
+     - layer-shell exclusive zone 不受 viewport scene 影响
+     - popup 跟随 parent 的 presentation geometry
+
+建议每阶段结束时至少跑：
+
+- `cargo check --workspace`
+- `cargo test -p nekoland-ecs -p nekoland-shell -p nekoland-render -p nekoland-backend`
+- `cargo test -p nekoland --test ipc_control_plane`
+- 与该阶段强相关的 in-process / integration 测试子集
 
 ## 跨阶段规则
 

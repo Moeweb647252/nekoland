@@ -82,6 +82,7 @@ impl From<SurfaceId> for WindowSelector {
 
 /// Boundary-facing workspace lookup by stable id or display name.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged, rename_all = "lowercase")]
 pub enum WorkspaceLookup {
     Id(WorkspaceId),
     Name(WorkspaceName),
@@ -111,6 +112,7 @@ impl From<WorkspaceName> for WorkspaceLookup {
 
 /// Runtime-facing workspace selection.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged, rename_all = "lowercase")]
 pub enum WorkspaceSelector {
     Active,
     Id(WorkspaceId),
@@ -142,7 +144,20 @@ impl From<WorkspaceName> for WorkspaceSelector {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum OutputSelector {
     Primary,
+    Focused,
     Name(OutputName),
+}
+
+impl OutputSelector {
+    pub fn parse(boundary: &str) -> Self {
+        if boundary.eq_ignore_ascii_case("primary") {
+            Self::Primary
+        } else if boundary.eq_ignore_ascii_case("focused") {
+            Self::Focused
+        } else {
+            Self::Name(OutputName::from(boundary))
+        }
+    }
 }
 
 impl From<OutputName> for OutputSelector {

@@ -18,11 +18,8 @@ pub fn frame_callback_system(
     mut damage_state: ResMut<DamageState>,
     mut frame_pacing: ResMut<FramePacingState>,
 ) {
-    let callback_surface_ids = render_list
-        .elements
-        .iter()
-        .filter_map(|element| (element.surface_id != 0).then_some(element.surface_id))
-        .collect::<BTreeSet<_>>();
+    let callback_surface_ids =
+        render_list.elements.iter().map(|element| element.surface_id).collect::<BTreeSet<_>>();
     let known_surface_ids =
         surfaces.iter().chain(popups.iter()).map(|surface| surface.id).collect::<BTreeSet<_>>();
 

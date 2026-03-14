@@ -42,6 +42,12 @@ Next up:
 
 - Active plan: execute the ordered rollout described in
   [`agent/workspace_output_rollout_plan.md`](/home/misaka/Code/nekoland/agent/workspace_output_rollout_plan.md).
+- Future optional follow-up: external shell mode, where `nekoland` acts as compositor/session
+  host for an external shell such as QuickShell instead of embedding shell UI responsibilities.
+  Design entry:
+  [`agent/external_shell_mode_design.md`](/home/misaka/Code/nekoland/agent/external_shell_mode_design.md)
+  This follow-up must stay aligned with the viewport/output model, especially the distinction
+  between output-local shell UI surfaces and viewport-projected workspace windows.
 - Future optional follow-up: add richer tiling-tree controls such as sibling swap, subtree rotate,
   and explicit attach/detach targeting on top of the existing split-axis controls once the
   viewport/scene split stops moving the geometry foundations underneath them.
@@ -72,6 +78,8 @@ Next up:
 - no phase should bypass the high-level control plane by introducing fresh low-level request
   queues for user-facing actions.
 - each phase must leave behind clear query/IPC semantics instead of temporary ambiguous fields.
+- each phase must land the unit/integration/regression tests needed to hold its new semantics in
+  place before the next phase starts.
 
 ### Migration Phases
 

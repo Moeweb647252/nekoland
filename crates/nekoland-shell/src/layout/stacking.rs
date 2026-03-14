@@ -17,10 +17,11 @@ pub struct StackingLayout;
 pub fn stacking_layout_system(
     mut stacking: ResMut<WindowStackingState>,
     windows: Query<WindowFocusRuntime, (With<XdgWindow>, Allow<Disabled>)>,
-    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
+    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime), Allow<Disabled>>,
 ) {
     let known_surfaces = windows
         .iter()
+        .filter(|window| window.background.is_none())
         .map(|window| {
             (
                 window.surface_id(),
@@ -32,6 +33,9 @@ pub fn stacking_layout_system(
     stacking.retain_known(&known_surfaces);
 
     for window in &windows {
+        if window.background.is_some() {
+            continue;
+        }
         stacking.ensure(
             window_workspace_runtime_id(window.child_of, &workspaces)
                 .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID),
@@ -40,4 +44,55 @@ pub fn stacking_layout_system(
     }
 
     tracing::trace!(workspaces = stacking.workspaces.len(), "stacking layout system tick");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use bevy_ecs::entity_disabling::Disabled;
+    use bevy_ecs::hierarchy::ChildOf;
+    use nekoland_core::prelude::NekolandApp;
+    use nekoland_core::schedules::LayoutSchedule;
+    use nekoland_ecs::bundles::WindowBundle;
+    use nekoland_ecs::components::{WlSurfaceHandle, Workspace, WorkspaceId};
+    use nekoland_ecs::resources::{UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState};
+
+    use super::stacking_layout_system;
+
+    #[test]
+    fn stacking_preserves_workspace_bucket_for_disabled_workspace_windows() {
+        let mut app = NekolandApp::new("stacking-disabled-workspace-test");
+        app.insert_resource(WindowStackingState {
+            workspaces: BTreeMap::from([(2, vec![11, 22])]),
+        })
+        .inner_mut()
+        .add_systems(LayoutSchedule, stacking_layout_system);
+
+        let workspace = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                Workspace { id: WorkspaceId(2), name: "2".to_owned(), active: false },
+                Disabled,
+            ))
+            .id();
+        app.inner_mut().world_mut().spawn((
+            WindowBundle { surface: WlSurfaceHandle { id: 11 }, ..Default::default() },
+            ChildOf(workspace),
+        ));
+        app.inner_mut().world_mut().spawn((
+            WindowBundle { surface: WlSurfaceHandle { id: 22 }, ..Default::default() },
+            ChildOf(workspace),
+        ));
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let stacking = app.inner().world().resource::<WindowStackingState>();
+        assert_eq!(stacking.workspaces.get(&2), Some(&vec![11, 22]));
+        assert!(
+            !stacking.workspaces.contains_key(&UNASSIGNED_WORKSPACE_STACK_ID),
+            "disabled workspace windows should not be remapped into the unassigned stack: {stacking:?}"
+        );
+    }
 }

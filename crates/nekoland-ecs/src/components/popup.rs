@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[require(
     crate::components::SurfaceGeometry,
     crate::components::BufferState,
+    crate::components::SurfaceContentVersion,
     PopupGrab,
     crate::components::WindowAnimation
 )]

@@ -66,7 +66,7 @@ pub fn restore_window_policy(
 
 #[cfg(test)]
 mod tests {
-    use nekoland_ecs::components::{SurfaceGeometry, WindowRestoreState};
+    use nekoland_ecs::components::{WindowRestoreState, WindowSceneGeometry};
 
     use super::{
         WindowLayout, WindowMode, WindowPolicy, WindowPolicyState, WindowRestoreSnapshot,
@@ -108,7 +108,7 @@ mod tests {
         let mut mode = WindowMode::Fullscreen;
         let mut restore = WindowRestoreSnapshot {
             snapshot: Some(WindowRestoreState {
-                geometry: SurfaceGeometry { x: 10, y: 20, width: 800, height: 600 },
+                geometry: WindowSceneGeometry { x: 10, y: 20, width: 800, height: 600 },
                 layout: WindowLayout::Floating,
                 mode: WindowMode::Normal,
             }),

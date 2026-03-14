@@ -1,17 +1,21 @@
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::message::MessageWriter;
-use bevy_ecs::prelude::{Query, ResMut, With};
+use bevy_ecs::prelude::{Commands, Query, ResMut, With};
 use bevy_ecs::query::Allow;
-use nekoland_ecs::components::{WindowLayout, WindowMode, WindowPosition, WindowSize, XdgWindow};
+use nekoland_ecs::components::{
+    OutputBackgroundWindow, WindowLayout, WindowMode, WindowPosition, WindowRestoreState,
+    WindowSize, XdgWindow,
+};
 use nekoland_ecs::events::WindowMoved;
 use nekoland_ecs::resources::{
     EntityIndex, KeyboardFocusState, PendingWindowControls, PendingWindowServerRequests,
-    UNASSIGNED_WORKSPACE_STACK_ID, UNASSIGNED_WORKSPACE_TILING_ID, WindowServerAction,
-    WindowServerRequest, WindowStackingState, WorkspaceTilingState,
+    PrimaryOutputState, UNASSIGNED_WORKSPACE_STACK_ID, UNASSIGNED_WORKSPACE_TILING_ID,
+    WindowServerAction, WindowServerRequest, WindowStackingState, WorkspaceTilingState,
 };
-use nekoland_ecs::views::{WindowRuntime, WorkspaceRuntime};
+use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
+use crate::viewport::{project_scene_geometry, resolve_output_state_for_workspace};
 use crate::window_policy::lock_window_policy;
 
 /// Applies high-level staged window controls to the current window set.
@@ -19,6 +23,7 @@ use crate::window_policy::lock_window_policy;
 /// Geometry-related controls update `WindowPlacement`, while close requests are translated into
 /// the lower-level protocol-close queue that already exists.
 pub fn window_control_request_system(
+    mut commands: Commands,
     mut pending_window_controls: ResMut<PendingWindowControls>,
     entity_index: bevy_ecs::prelude::Res<EntityIndex>,
     mut pending_window_requests: ResMut<PendingWindowServerRequests>,
@@ -26,6 +31,8 @@ pub fn window_control_request_system(
     mut stacking: ResMut<WindowStackingState>,
     mut tiling: ResMut<WorkspaceTilingState>,
     mut windows: Query<WindowRuntime, (With<XdgWindow>, Allow<Disabled>)>,
+    outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
+    primary_output: Option<bevy_ecs::prelude::Res<PrimaryOutputState>>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
     mut window_moved: MessageWriter<WindowMoved>,
 ) {
@@ -36,41 +43,57 @@ pub fn window_control_request_system(
     let mut deferred = Vec::new();
 
     for control in pending_window_controls.take() {
-        let Some(mut window) = entity_index
-            .entity_for_surface(control.surface_id.0)
-            .and_then(|entity| windows.get_mut(entity).ok())
-        else {
+        let Some(entity) = entity_index.entity_for_surface(control.surface_id.0) else {
+            deferred.push(control);
+            continue;
+        };
+        let Some(mut window) = windows.get_mut(entity).ok() else {
             deferred.push(control);
             continue;
         };
         let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces)
             .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID);
+        let output_state = resolve_output_state_for_workspace(
+            &outputs,
+            Some(workspace_id),
+            primary_output.as_deref(),
+        );
 
         if let Some(position) = control.position {
             window.placement.set_explicit_position(WindowPosition { x: position.x, y: position.y });
+            window.scene_geometry.x = position.x;
+            window.scene_geometry.y = position.y;
             *window.layout = WindowLayout::Floating;
             *window.mode = WindowMode::Normal;
             lock_window_policy(*window.layout, *window.mode, &mut window.policy_state);
             stacking.raise(workspace_id, window.surface_id());
+            if let Some((_, _, viewport, _)) = output_state.as_ref() {
+                *window.geometry = project_scene_geometry(&window.scene_geometry, viewport);
+            }
             window_moved.write(WindowMoved {
                 surface_id: window.surface_id(),
-                x: position.x,
-                y: position.y,
+                x: position.x as i64,
+                y: position.y as i64,
             });
         }
 
         if let Some(size) = control.size {
             window.placement.floating_size =
                 Some(WindowSize { width: size.width.max(64), height: size.height.max(64) });
+            window.scene_geometry.width = size.width.max(64);
+            window.scene_geometry.height = size.height.max(64);
             *window.layout = WindowLayout::Floating;
             *window.mode = WindowMode::Normal;
             lock_window_policy(*window.layout, *window.mode, &mut window.policy_state);
             stacking.raise(workspace_id, window.surface_id());
             if control.position.is_none() {
                 window.placement.set_explicit_position(WindowPosition {
-                    x: window.geometry.x,
-                    y: window.geometry.y,
+                    x: window.scene_geometry.x,
+                    y: window.scene_geometry.y,
                 });
+            }
+            if let Some((_, _, viewport, _)) = output_state.as_ref() {
+                *window.geometry = project_scene_geometry(&window.scene_geometry, viewport);
             }
         }
 
@@ -101,6 +124,37 @@ pub fn window_control_request_system(
                 action: WindowServerAction::Close,
             });
         }
+
+        if let Some(background_control) = control.background {
+            match background_control {
+                nekoland_ecs::resources::WindowBackgroundControl::Set { output } => {
+                    let restore = window
+                        .background
+                        .as_ref()
+                        .map(|background| background.restore.clone())
+                        .unwrap_or(WindowRestoreState {
+                            geometry: window.scene_geometry.clone(),
+                            layout: *window.layout,
+                            mode: *window.mode,
+                        });
+                    commands.entity(entity).insert(OutputBackgroundWindow {
+                        output: output.as_str().to_owned(),
+                        restore,
+                    });
+                    if keyboard_focus.focused_surface == Some(window.surface_id()) {
+                        keyboard_focus.focused_surface = None;
+                    }
+                }
+                nekoland_ecs::resources::WindowBackgroundControl::Clear => {
+                    if let Some(background) = window.background.as_ref() {
+                        *window.scene_geometry = background.restore.geometry.clone();
+                        *window.layout = background.restore.layout;
+                        *window.mode = background.restore.mode;
+                    }
+                    commands.entity(entity).remove::<OutputBackgroundWindow>();
+                }
+            }
+        }
     }
 
     pending_window_controls.replace(deferred);
@@ -113,8 +167,8 @@ mod tests {
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::WindowBundle;
     use nekoland_ecs::components::{
-        OutputProperties, WindowLayout, WindowMode, WindowPlacement, WlSurfaceHandle, Workspace,
-        WorkspaceId,
+        OutputBackgroundWindow, OutputProperties, WindowLayout, WindowMode, WindowPlacement,
+        WlSurfaceHandle, Workspace, WorkspaceId,
     };
     use nekoland_ecs::events::WindowMoved;
     use nekoland_ecs::resources::{
@@ -367,5 +421,60 @@ mod tests {
             .get_resource::<KeyboardFocusState>()
             .expect("keyboard focus should exist");
         assert_eq!(focus.focused_surface, Some(11));
+    }
+
+    #[test]
+    fn background_controls_insert_and_clear_output_background_role() {
+        let mut app = NekolandApp::new("window-control-background-test");
+        app.inner_mut()
+            .init_resource::<PendingWindowControls>()
+            .init_resource::<PendingWindowServerRequests>()
+            .init_resource::<KeyboardFocusState>()
+            .init_resource::<EntityIndex>()
+            .init_resource::<WindowStackingState>()
+            .init_resource::<WorkspaceTilingState>()
+            .insert_resource(WorkArea { x: 0, y: 0, width: 1280, height: 720 })
+            .add_message::<WindowMoved>()
+            .add_systems(
+                LayoutSchedule,
+                (rebuild_entity_index_system, window_control_request_system).chain(),
+            );
+
+        let entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn(WindowBundle {
+                surface: WlSurfaceHandle { id: 13 },
+                buffer: nekoland_ecs::components::BufferState { attached: true, scale: 1 },
+                layout: WindowLayout::Floating,
+                mode: WindowMode::Normal,
+                ..Default::default()
+            })
+            .id();
+
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<PendingWindowControls>()
+            .surface(SurfaceId(13))
+            .background_on("Virtual-1");
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        let background = world
+            .get::<OutputBackgroundWindow>(entity)
+            .expect("background role should be inserted");
+        assert_eq!(background.output, "Virtual-1");
+
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<PendingWindowControls>()
+            .surface(SurfaceId(13))
+            .clear_background();
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        assert!(
+            app.inner().world().get::<OutputBackgroundWindow>(entity).is_none(),
+            "background role should be removable",
+        );
     }
 }

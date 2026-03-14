@@ -1,10 +1,17 @@
 use bevy_ecs::prelude::{Local, Query, Res, With};
 use nekoland_ecs::components::{
-    OutputProperties, SurfaceGeometry, WindowLayout, WindowMode, WindowPlacement, WindowPosition,
-    XdgWindow,
+    OutputProperties, OutputViewport, SurfaceGeometry, WindowLayout, WindowMode, WindowPlacement,
+    WindowPosition, WindowSceneGeometry, XdgWindow,
 };
-use nekoland_ecs::resources::WorkArea;
-use nekoland_ecs::views::WindowRuntime;
+use nekoland_ecs::resources::{PrimaryOutputState, WorkArea};
+use nekoland_ecs::views::WorkspaceRuntime;
+use nekoland_ecs::views::{OutputRuntime, WindowRuntime};
+use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
+
+use crate::viewport::{
+    initialize_scene_geometry_from_surface, project_scene_geometry,
+    resolve_output_state_for_workspace,
+};
 
 /// Floating layout strategy.
 ///
@@ -22,10 +29,16 @@ pub struct FloatingLayout;
 pub fn floating_layout_system(
     mut previous_work_area: Local<Option<WorkArea>>,
     mut windows: Query<WindowRuntime, With<XdgWindow>>,
-    outputs: Query<&OutputProperties>,
+    outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
+    primary_output: Option<Res<PrimaryOutputState>>,
+    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
     work_area: Res<WorkArea>,
 ) {
-    let placement_area = placement_work_area(&work_area, outputs.iter().next());
+    let placement_area = placement_work_area(
+        &work_area,
+        resolve_output_state_for_workspace(&outputs, None, primary_output.as_deref())
+            .map(|(_, output, _, _)| output),
+    );
     let work_area_changed =
         previous_work_area.as_ref().is_some_and(|previous| *previous != placement_area);
 
@@ -49,23 +62,62 @@ pub fn floating_layout_system(
         if window.geometry.width == 0 || window.geometry.height == 0 {
             continue;
         }
+        let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces);
+        let output_state =
+            resolve_output_state_for_workspace(&outputs, workspace_id, primary_output.as_deref());
+        let window_work_area =
+            output_state.as_ref().map_or(placement_area, |(_, output, _, work_area)| {
+                placement_work_area(
+                    &WorkArea {
+                        x: work_area.x,
+                        y: work_area.y,
+                        width: work_area.width,
+                        height: work_area.height,
+                    },
+                    Some(output),
+                )
+            });
+        let fallback_viewport = OutputViewport::default();
+        let viewport = output_state
+            .as_ref()
+            .map(|(_, _, viewport, _)| &**viewport)
+            .unwrap_or(&fallback_viewport);
+        initialize_scene_geometry_from_surface(
+            &mut window.scene_geometry,
+            &window.geometry,
+            viewport,
+        );
 
         if let Some(size) = window.placement.floating_size {
-            window.geometry.width = size.width.max(64);
-            window.geometry.height = size.height.max(64);
+            window.scene_geometry.width = size.width.max(64);
+            window.scene_geometry.height = size.height.max(64);
         }
 
-        if should_reposition_floating_window(&window.placement, &window.geometry, work_area_changed)
-        {
+        if should_reposition_floating_window(
+            &window.placement,
+            &window.scene_geometry,
+            work_area_changed,
+        ) {
             window.placement.set_auto_position(WindowPosition {
-                x: centre_x(&placement_area, window.geometry.width),
-                y: centre_y(&placement_area, window.geometry.height),
+                x: centre_x(&window_work_area, viewport.origin_x, window.scene_geometry.width),
+                y: centre_y(&window_work_area, viewport.origin_y, window.scene_geometry.height),
             });
         }
 
         if let Some(position) = window.placement.resolved_floating_position() {
-            window.geometry.x = position.x;
-            window.geometry.y = position.y;
+            window.scene_geometry.x = position.x;
+            window.scene_geometry.y = position.y;
+        }
+
+        if output_state.is_some() {
+            *window.geometry = project_scene_geometry(&window.scene_geometry, viewport);
+        } else {
+            *window.geometry = SurfaceGeometry {
+                x: window.scene_geometry.x.clamp(i32::MIN as isize, i32::MAX as isize) as i32,
+                y: window.scene_geometry.y.clamp(i32::MIN as isize, i32::MAX as isize) as i32,
+                width: window.scene_geometry.width,
+                height: window.scene_geometry.height,
+            };
         }
     }
 
@@ -77,7 +129,7 @@ pub fn floating_layout_system(
 /// become visible.
 pub(crate) fn should_auto_place_floating_window(
     placement: &WindowPlacement,
-    geometry: &SurfaceGeometry,
+    geometry: &WindowSceneGeometry,
 ) -> bool {
     placement.should_auto_place(geometry)
 }
@@ -86,24 +138,28 @@ pub(crate) fn should_auto_place_floating_window(
 /// changes until the user explicitly places them.
 fn should_reposition_floating_window(
     placement: &WindowPlacement,
-    geometry: &SurfaceGeometry,
+    geometry: &WindowSceneGeometry,
     work_area_changed: bool,
 ) -> bool {
     placement.should_reposition_auto(geometry, work_area_changed)
 }
 
 /// Horizontal centre-align within `work_area`.
-pub(crate) fn centre_x(work_area: &WorkArea, width: u32) -> i32 {
-    let available = work_area.width as i32;
-    let window = width as i32;
-    work_area.x + ((available - window) / 2).max(0)
+pub(crate) fn centre_x(work_area: &WorkArea, viewport_origin_x: isize, width: u32) -> isize {
+    let available = work_area.width as isize;
+    let window = width as isize;
+    viewport_origin_x
+        .saturating_add(work_area.x as isize)
+        .saturating_add(((available - window) / 2).max(0))
 }
 
 /// Vertical centre-align within `work_area`.
-pub(crate) fn centre_y(work_area: &WorkArea, height: u32) -> i32 {
-    let available = work_area.height as i32;
-    let window = height as i32;
-    work_area.y + ((available - window) / 2).max(0)
+pub(crate) fn centre_y(work_area: &WorkArea, viewport_origin_y: isize, height: u32) -> isize {
+    let available = work_area.height as isize;
+    let window = height as isize;
+    viewport_origin_y
+        .saturating_add(work_area.y as isize)
+        .saturating_add(((available - window) / 2).max(0))
 }
 
 /// Uses the full output rect as a temporary placement area while the real work area is still at
@@ -146,24 +202,24 @@ mod tests {
     #[test]
     fn new_window_is_centred_horizontally() {
         // work_area: x=0 w=1280  →  (1280 - 800) / 2 = 240
-        assert_eq!(centre_x(&work_area(), 800), 240);
+        assert_eq!(centre_x(&work_area(), 0, 800), 240);
     }
 
     #[test]
     fn new_window_is_centred_vertically() {
         // work_area: y=32 h=688  →  32 + (688 - 600) / 2 = 32 + 44 = 76
-        assert_eq!(centre_y(&work_area(), 600), 76);
+        assert_eq!(centre_y(&work_area(), 0, 600), 76);
     }
 
     #[test]
     fn window_wider_than_work_area_is_placed_at_work_area_origin() {
         // clamp with max(0) prevents negative x
-        assert_eq!(centre_x(&work_area(), 2000), 0);
+        assert_eq!(centre_x(&work_area(), 0, 2000), 0);
     }
 
     #[test]
     fn window_taller_than_work_area_is_placed_at_work_area_top() {
-        assert_eq!(centre_y(&work_area(), 900), 32);
+        assert_eq!(centre_y(&work_area(), 0, 900), 32);
     }
 
     #[test]

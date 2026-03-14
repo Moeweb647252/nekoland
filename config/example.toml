@@ -9,6 +9,7 @@ background_color = "#e5e9f0"
 [input]
 focus_follows_mouse = false
 repeat_rate = 40
+viewport_pan_modifiers = ["Ctrl", "Shift"]
 
 [ipc]
 command_history_limit = 128
@@ -23,9 +24,9 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Return" = ["wezterm", "start", "--always-new-process"]
-"Super+Space" = ["wofi", "--show", "drun"]
-"Super+P" = ["wlogout", "--protocol", "layer-shell"]
-"Super+Shift+Q" = "close-window"
-"Super+1" = "workspace 1"
-"Super+2" = "workspace 2"
+"Super+Return" = { exec = ["wezterm", "start", "--always-new-process"] }
+"Super+Space" = { exec = ["wofi", "--show", "drun"] }
+"Super+P" = { exec = ["wlogout", "--protocol", "layer-shell"] }
+"Super+Shift+Q" = { close = true }
+"Super+1" = { workspace = 1 }
+"Super+2" = { workspace = 2 }

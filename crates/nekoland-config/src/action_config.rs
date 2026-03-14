@@ -1,0 +1,199 @@
+use nekoland_ecs::resources::ConfiguredAction;
+use nekoland_ecs::selectors::{OutputName, WorkspaceLookup, WorkspaceSelector};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ActionListConfig {
+    One(ConfiguredActionConfig),
+    Many(Vec<ConfiguredActionConfig>),
+}
+
+impl ActionListConfig {
+    pub fn into_actions(self) -> Result<Vec<ConfiguredAction>, String> {
+        match self {
+            Self::One(action) => Ok(vec![action.try_into()?]),
+            Self::Many(actions) => actions.into_iter().map(TryInto::try_into).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ConfiguredActionConfig {
+    Exec { exec: Vec<String> },
+    Close { close: bool },
+    Move { r#move: [isize; 2] },
+    Resize { resize: [u32; 2] },
+    Split { split: nekoland_ecs::resources::SplitAxis },
+    Background { background: OutputName },
+    ClearBackground { clear_background: bool },
+    Workspace { workspace: WorkspaceLookup },
+    WorkspaceCreate { workspace_create: WorkspaceLookup },
+    WorkspaceDestroy { workspace_destroy: WorkspaceDestroyTargetConfig },
+    OutputEnable { output_enable: OutputName },
+    OutputDisable { output_disable: OutputName },
+    OutputConfigure { output_configure: OutputConfigureConfig },
+    ViewportPan { viewport_pan: [isize; 2] },
+    ViewportMove { viewport_move: [isize; 2] },
+    ViewportCenter { viewport_center: bool },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutputConfigureConfig {
+    pub output: OutputName,
+    pub mode: String,
+    #[serde(default)]
+    pub scale: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum WorkspaceDestroyTargetConfig {
+    Id(u32),
+    Name(String),
+}
+
+impl TryFrom<ConfiguredActionConfig> for ConfiguredAction {
+    type Error = String;
+
+    fn try_from(value: ConfiguredActionConfig) -> Result<Self, Self::Error> {
+        match value {
+            ConfiguredActionConfig::Exec { exec } => {
+                let Some(program) = exec.first() else {
+                    return Err("`exec` must include at least one argv element".to_owned());
+                };
+                if program.trim().is_empty() {
+                    return Err("`exec` must not start with an empty program".to_owned());
+                }
+                Ok(Self::Exec { argv: exec })
+            }
+            ConfiguredActionConfig::Close { close } => {
+                require_flag("close", close).map(|()| Self::CloseFocusedWindow)
+            }
+            ConfiguredActionConfig::Move { r#move } => {
+                Ok(Self::MoveFocusedWindow { x: r#move[0], y: r#move[1] })
+            }
+            ConfiguredActionConfig::Resize { resize } => {
+                Ok(Self::ResizeFocusedWindow { width: resize[0], height: resize[1] })
+            }
+            ConfiguredActionConfig::Split { split } => Ok(Self::SplitFocusedWindow { axis: split }),
+            ConfiguredActionConfig::Background { background } => {
+                Ok(Self::BackgroundFocusedWindow { output: background })
+            }
+            ConfiguredActionConfig::ClearBackground { clear_background } => {
+                require_flag("clear_background", clear_background)
+                    .map(|()| Self::ClearFocusedWindowBackground)
+            }
+            ConfiguredActionConfig::Workspace { workspace } => {
+                Ok(Self::SwitchWorkspace { workspace })
+            }
+            ConfiguredActionConfig::WorkspaceCreate { workspace_create } => {
+                Ok(Self::CreateWorkspace { workspace: workspace_create })
+            }
+            ConfiguredActionConfig::WorkspaceDestroy { workspace_destroy } => {
+                Ok(Self::DestroyWorkspace {
+                    workspace: match workspace_destroy {
+                        WorkspaceDestroyTargetConfig::Id(id) => {
+                            WorkspaceSelector::Id(nekoland_ecs::components::WorkspaceId(id))
+                        }
+                        WorkspaceDestroyTargetConfig::Name(name)
+                            if name.eq_ignore_ascii_case("active") =>
+                        {
+                            WorkspaceSelector::Active
+                        }
+                        WorkspaceDestroyTargetConfig::Name(name) => {
+                            WorkspaceSelector::Name(name.into())
+                        }
+                    },
+                })
+            }
+            ConfiguredActionConfig::OutputEnable { output_enable } => {
+                Ok(Self::EnableOutput { output: output_enable })
+            }
+            ConfiguredActionConfig::OutputDisable { output_disable } => {
+                Ok(Self::DisableOutput { output: output_disable })
+            }
+            ConfiguredActionConfig::OutputConfigure { output_configure } => {
+                Ok(Self::ConfigureOutput {
+                    output: output_configure.output,
+                    mode: output_configure.mode,
+                    scale: output_configure.scale,
+                })
+            }
+            ConfiguredActionConfig::ViewportPan { viewport_pan } => {
+                Ok(Self::PanViewport { delta_x: viewport_pan[0], delta_y: viewport_pan[1] })
+            }
+            ConfiguredActionConfig::ViewportMove { viewport_move } => {
+                Ok(Self::MoveViewport { x: viewport_move[0], y: viewport_move[1] })
+            }
+            ConfiguredActionConfig::ViewportCenter { viewport_center } => {
+                require_flag("viewport_center", viewport_center)
+                    .map(|()| Self::CenterViewportOnFocusedWindow)
+            }
+        }
+    }
+}
+
+fn require_flag(name: &str, value: bool) -> Result<(), String> {
+    if value { Ok(()) } else { Err(format!("`{name}` must be true when present")) }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+
+    use nekoland_ecs::resources::ConfiguredAction;
+    use nekoland_ecs::selectors::WorkspaceSelector;
+
+    use super::{ActionListConfig, ConfiguredActionConfig};
+
+    #[derive(Debug, Deserialize)]
+    struct OneAction {
+        action: ConfiguredActionConfig,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ManyActions {
+        actions: ActionListConfig,
+    }
+
+    #[test]
+    fn one_or_many_short_actions_normalize_into_runtime_actions() {
+        let one = toml::from_str::<OneAction>("action = { exec = [\"foot\"] }")
+            .expect("single action should parse")
+            .action;
+        let many =
+            toml::from_str::<ManyActions>("actions = [{ workspace = 1 }, { exec = [\"foot\"] }]")
+                .expect("action list should parse")
+                .actions;
+
+        assert_eq!(
+            ActionListConfig::One(one).into_actions().expect("single action should normalize"),
+            vec![ConfiguredAction::Exec { argv: vec!["foot".to_owned()] }]
+        );
+        assert_eq!(
+            many.into_actions().expect("action list should normalize"),
+            vec![
+                ConfiguredAction::SwitchWorkspace {
+                    workspace: nekoland_ecs::selectors::WorkspaceLookup::Id(
+                        nekoland_ecs::components::WorkspaceId(1),
+                    ),
+                },
+                ConfiguredAction::Exec { argv: vec!["foot".to_owned()] },
+            ]
+        );
+    }
+
+    #[test]
+    fn workspace_destroy_accepts_active_keyword() {
+        let action = toml::from_str::<OneAction>("action = { workspace_destroy = \"active\" }")
+            .expect("destroy action should parse")
+            .action;
+
+        assert_eq!(
+            ConfiguredAction::try_from(action).expect("destroy action should normalize"),
+            ConfiguredAction::DestroyWorkspace { workspace: WorkspaceSelector::Active }
+        );
+    }
+}

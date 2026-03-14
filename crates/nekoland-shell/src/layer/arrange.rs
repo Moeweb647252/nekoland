@@ -4,7 +4,7 @@ use bevy_ecs::prelude::{Commands, Entity, Query, ResMut, With};
 use nekoland_ecs::bundles::LayerSurfaceBundle;
 use nekoland_ecs::components::{
     BufferState, DesiredOutputName, LayerAnchor, LayerOnOutput, LayerShellSurface, OutputDevice,
-    SurfaceGeometry, WlSurfaceHandle,
+    SurfaceContentVersion, SurfaceGeometry, WlSurfaceHandle,
 };
 use nekoland_ecs::resources::{
     EntityIndex, LayerLifecycleAction, PendingLayerRequests, PrimaryOutputState, WorkArea,
@@ -19,7 +19,14 @@ pub fn layer_lifecycle_system(
     entity_index: bevy_ecs::prelude::Res<EntityIndex>,
     existing_layers: Query<&WlSurfaceHandle, With<LayerShellSurface>>,
     mut layers: Query<
-        (Entity, &WlSurfaceHandle, &mut SurfaceGeometry, &mut BufferState, &mut LayerShellSurface),
+        (
+            Entity,
+            &WlSurfaceHandle,
+            &mut SurfaceGeometry,
+            &mut BufferState,
+            &mut SurfaceContentVersion,
+            &mut LayerShellSurface,
+        ),
         With<LayerShellSurface>,
     >,
 ) {
@@ -58,10 +65,17 @@ pub fn layer_lifecycle_system(
                 if layer.is_none() {
                     layer = layers
                         .iter_mut()
-                        .find(|(_, surface, _, _, _)| surface.id == request.surface_id);
+                        .find(|(_, surface, _, _, _, _)| surface.id == request.surface_id);
                 }
 
-                let Some((entity, _surface, mut geometry, mut buffer, mut layer_surface)) = layer
+                let Some((
+                    entity,
+                    _surface,
+                    mut geometry,
+                    mut buffer,
+                    mut content_version,
+                    mut layer_surface,
+                )) = layer
                 else {
                     deferred.push(request);
                     continue;
@@ -77,6 +91,7 @@ pub fn layer_lifecycle_system(
                     geometry.height = size.height.max(1);
                 }
                 buffer.attached = size.is_some();
+                content_version.bump();
             }
             LayerLifecycleAction::Destroyed => {
                 let mut layer = entity_index
@@ -85,10 +100,10 @@ pub fn layer_lifecycle_system(
                 if layer.is_none() {
                     layer = layers
                         .iter_mut()
-                        .find(|(_, surface, _, _, _)| surface.id == request.surface_id);
+                        .find(|(_, surface, _, _, _, _)| surface.id == request.surface_id);
                 }
 
-                let handled = if let Some((entity, _, _, _, _)) = layer {
+                let handled = if let Some((entity, _, _, _, _, _)) = layer {
                     commands.entity(entity).despawn();
                     known_surface_ids.remove(&request.surface_id);
                     true
@@ -187,8 +202,16 @@ pub fn layer_arrangement_system(
             geometry.height = layer_surface.desired_height.max(1);
         }
 
-        let mut width = geometry.width.max(layer_surface.desired_width).max(1) as i32;
-        let mut height = geometry.height.max(layer_surface.desired_height).max(1) as i32;
+        let mut width = if layer_surface.desired_width > 0 {
+            layer_surface.desired_width as i32
+        } else {
+            geometry.width.max(1) as i32
+        };
+        let mut height = if layer_surface.desired_height > 0 {
+            layer_surface.desired_height as i32
+        } else {
+            geometry.height.max(1) as i32
+        };
         let horizontal_margins =
             layer_surface.margins.left.saturating_add(layer_surface.margins.right);
         let vertical_margins =
@@ -234,7 +257,7 @@ pub fn layer_arrangement_system(
 /// output from the full output rectangle.
 pub fn work_area_system(
     primary_output: Option<bevy_ecs::prelude::Res<PrimaryOutputState>>,
-    outputs: Query<(Entity, OutputRuntime)>,
+    mut outputs: Query<(Entity, OutputRuntime)>,
     layers: Query<(
         &LayerShellSurface,
         Option<&DesiredOutputName>,
@@ -257,20 +280,43 @@ pub fn work_area_system(
         return;
     };
 
-    let mut left = 0_i32;
-    let mut top = 0_i32;
-    let mut right = output_width;
-    let mut bottom = output_height;
+    let mut output_work_areas = output_sizes
+        .iter()
+        .map(|(entity, width, height)| {
+            (
+                *entity,
+                WorkArea {
+                    x: 0,
+                    y: 0,
+                    width: (*width).max(1) as u32,
+                    height: (*height).max(1) as u32,
+                },
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
 
     for (layer_surface, desired_output_name, anchor, geometry, buffer, layer_output) in &layers {
         if !buffer.attached || layer_surface.exclusive_zone <= 0 {
             continue;
         }
-        if !layer_targets_output(desired_output_name, layer_output, primary_output) {
+        let Some((target_output, _, _)) = output_size_for_layer(
+            desired_output_name,
+            layer_output,
+            (primary_output, output_width, output_height),
+            &output_sizes,
+        ) else {
             continue;
-        }
+        };
 
         let zone = layer_surface.exclusive_zone;
+        let Some(area) = output_work_areas.get_mut(&target_output) else {
+            continue;
+        };
+        let mut left = area.x;
+        let mut top = area.y;
+        let mut right = area.x.saturating_add(area.width as i32);
+        let mut bottom = area.y.saturating_add(area.height as i32);
+
         if anchor.top && anchor.left && anchor.right && !anchor.bottom {
             top = top.max(geometry.y.saturating_add(zone));
         } else if anchor.bottom && anchor.left && anchor.right && !anchor.top {
@@ -282,12 +328,32 @@ pub fn work_area_system(
             right =
                 right.min(geometry.x.saturating_add(geometry.width as i32).saturating_sub(zone));
         }
+
+        area.x = left;
+        area.y = top;
+        area.width = right.saturating_sub(left).max(1) as u32;
+        area.height = bottom.saturating_sub(top).max(1) as u32;
     }
 
-    work_area.x = left;
-    work_area.y = top;
-    work_area.width = right.saturating_sub(left).max(1) as u32;
-    work_area.height = bottom.saturating_sub(top).max(1) as u32;
+    for (entity, mut output) in &mut outputs {
+        if let Some(next_work_area) = output_work_areas.get(&entity) {
+            output.work_area.x = next_work_area.x;
+            output.work_area.y = next_work_area.y;
+            output.work_area.width = next_work_area.width;
+            output.work_area.height = next_work_area.height;
+        }
+    }
+
+    let primary_area = output_work_areas.get(&primary_output).copied().unwrap_or(WorkArea {
+        x: 0,
+        y: 0,
+        width: output_width.max(1) as u32,
+        height: output_height.max(1) as u32,
+    });
+    work_area.x = primary_area.x;
+    work_area.y = primary_area.y;
+    work_area.width = primary_area.width;
+    work_area.height = primary_area.height;
 
     tracing::trace!(
         x = work_area.x,
@@ -318,6 +384,7 @@ fn output_size_for_layer(
 
 /// Treats layers without an explicit output binding as targeting the primary output, while layers
 /// with an unresolved desired output stay detached until the relationship can be restored.
+#[allow(dead_code)]
 fn layer_targets_output(
     desired_output_name: Option<&DesiredOutputName>,
     layer_output: Option<&LayerOnOutput>,
@@ -412,6 +479,7 @@ mod tests {
                     refresh_millihz: 60_000,
                     scale: 1,
                 },
+                ..Default::default()
             })
             .id();
 
@@ -466,6 +534,7 @@ mod tests {
                 refresh_millihz: 60_000,
                 scale: 1,
             },
+            ..Default::default()
         });
         let secondary_output = app
             .inner_mut()
@@ -483,6 +552,7 @@ mod tests {
                     refresh_millihz: 60_000,
                     scale: 1,
                 },
+                ..Default::default()
             })
             .id();
         let layer = app
@@ -537,6 +607,7 @@ mod tests {
                 refresh_millihz: 60_000,
                 scale: 1,
             },
+            ..Default::default()
         });
         let secondary_output = app
             .inner_mut()
@@ -554,6 +625,7 @@ mod tests {
                     refresh_millihz: 60_000,
                     scale: 1,
                 },
+                ..Default::default()
             })
             .id();
         app.inner_mut().world_mut().spawn((
@@ -604,6 +676,7 @@ mod tests {
                 refresh_millihz: 60_000,
                 scale: 1,
             },
+            ..Default::default()
         });
         let layer = app
             .inner_mut()
@@ -657,6 +730,7 @@ mod tests {
                 refresh_millihz: 60_000,
                 scale: 1,
             },
+            ..Default::default()
         });
         app.inner_mut().world_mut().spawn((
             LayerShellSurface {
@@ -708,6 +782,7 @@ mod tests {
                 refresh_millihz: 60_000,
                 scale: 1,
             },
+            ..Default::default()
         });
         app.inner_mut().world_mut().spawn(OutputBundle {
             output: OutputDevice {
@@ -722,6 +797,7 @@ mod tests {
                 refresh_millihz: 60_000,
                 scale: 1,
             },
+            ..Default::default()
         });
         let layer = app
             .inner_mut()
@@ -757,6 +833,59 @@ mod tests {
             .get_resource::<WorkArea>()
             .expect("work area resource should be present");
         assert_eq!(work_area, WorkArea { x: 0, y: 32, width: 800, height: 568 });
+    }
+
+    #[test]
+    fn explicit_layer_height_overrides_oversized_committed_geometry() {
+        let mut app = NekolandApp::new("layer-explicit-height-test");
+        app.inner_mut().add_systems(LayoutSchedule, layer_arrangement_system);
+
+        app.inner_mut().world_mut().spawn(OutputBundle {
+            output: OutputDevice {
+                name: "Virtual-1".to_owned(),
+                kind: OutputKind::Virtual,
+                make: "test".to_owned(),
+                model: "primary".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+            ..Default::default()
+        });
+        let layer = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                LayerShellSurface {
+                    namespace: "panel".to_owned(),
+                    layer: LayerLevel::Top,
+                    desired_width: 0,
+                    desired_height: 32,
+                    exclusive_zone: 0,
+                    margins: LayerMargins::default(),
+                },
+                DesiredOutputName(None),
+                LayerAnchor { top: true, bottom: false, left: true, right: true },
+                SurfaceGeometry { x: 0, y: 0, width: 1280, height: 720 },
+                BufferState { attached: true, scale: 1 },
+            ))
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let geometry = app
+            .inner()
+            .world()
+            .get::<SurfaceGeometry>(layer)
+            .expect("layer should keep geometry after arrangement");
+        assert_eq!(geometry.width, 1280);
+        assert_eq!(
+            geometry.height, 32,
+            "explicit layer height should win over a stale oversized committed size",
+        );
     }
 
     #[test]
@@ -805,6 +934,7 @@ mod tests {
                     refresh_millihz: 60_000,
                     scale: 1,
                 },
+                ..Default::default()
             })
             .id();
 
@@ -842,6 +972,7 @@ mod tests {
                     refresh_millihz: 60_000,
                     scale: 1,
                 },
+                ..Default::default()
             })
             .id();
         let layer = app

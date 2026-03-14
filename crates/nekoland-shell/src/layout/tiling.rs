@@ -4,9 +4,13 @@ use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::{Query, Res, ResMut, With};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{WindowLayout, XdgWindow};
-use nekoland_ecs::resources::{UNASSIGNED_WORKSPACE_TILING_ID, WorkArea, WorkspaceTilingState};
-use nekoland_ecs::views::{WindowRuntime, WorkspaceRuntime};
+use nekoland_ecs::resources::{
+    PrimaryOutputState, UNASSIGNED_WORKSPACE_TILING_ID, WorkArea, WorkspaceTilingState,
+};
+use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
+
+use crate::viewport::{project_scene_geometry, resolve_output_state_for_workspace};
 
 /// Tiling layout strategy backed by a workspace-scoped binary tile tree.
 ///
@@ -21,6 +25,8 @@ pub fn tiling_layout_system(
     mut tiling: ResMut<WorkspaceTilingState>,
     mut windows: Query<WindowRuntime, (With<XdgWindow>, Allow<Disabled>)>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
+    outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
+    primary_output: Option<Res<PrimaryOutputState>>,
     work_area: Res<WorkArea>,
 ) {
     let tiled_surfaces = windows
@@ -40,13 +46,42 @@ pub fn tiling_layout_system(
         tiling.ensure_surface(*workspace_id, *surface_id);
     }
 
-    let arranged = tiling.arranged_geometry(&work_area);
+    let mut arranged = BTreeMap::new();
+    for (workspace_id, tree) in &tiling.workspaces {
+        let workspace_area = resolve_output_state_for_workspace(
+            &outputs,
+            Some(*workspace_id),
+            primary_output.as_deref(),
+        )
+        .map(|(_, _, _, work_area)| WorkArea {
+            x: work_area.x,
+            y: work_area.y,
+            width: work_area.width,
+            height: work_area.height,
+        })
+        .unwrap_or(*work_area);
+        arranged.extend(tree.arranged_geometry(&workspace_area));
+    }
     for mut window in &mut windows {
         let Some(geometry) = arranged.get(&window.surface_id()) else {
             continue;
         };
 
-        *window.geometry = geometry.clone();
+        window.scene_geometry.x = geometry.x as isize;
+        window.scene_geometry.y = geometry.y as isize;
+        window.scene_geometry.width = geometry.width;
+        window.scene_geometry.height = geometry.height;
+        let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces)
+            .unwrap_or(UNASSIGNED_WORKSPACE_TILING_ID);
+        if let Some((_, _, viewport, _)) = resolve_output_state_for_workspace(
+            &outputs,
+            Some(workspace_id),
+            primary_output.as_deref(),
+        ) {
+            *window.geometry = project_scene_geometry(&window.scene_geometry, viewport);
+        } else {
+            *window.geometry = geometry.clone();
+        }
     }
 
     tracing::trace!(workspaces = tiling.workspaces.len(), "tiling layout system tick");

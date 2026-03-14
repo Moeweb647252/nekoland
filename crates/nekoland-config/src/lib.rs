@@ -1,5 +1,6 @@
 //! Config-file schema, loading, normalization, and hot-reload support.
 
+pub mod action_config;
 pub mod hot_reload;
 pub mod keybind_config;
 pub mod loader;

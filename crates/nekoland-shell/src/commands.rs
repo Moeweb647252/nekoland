@@ -2,16 +2,20 @@ use std::process::Command;
 
 use bevy_ecs::message::{MessageReader, MessageWriter};
 use bevy_ecs::prelude::{Res, ResMut, Resource};
+use nekoland_ecs::control::{
+    OutputControlApi, OutputOps, WindowControlApi, WindowOps, WorkspaceControlApi, WorkspaceOps,
+};
 use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
 use nekoland_ecs::resources::{
     CommandExecutionRecord, CommandExecutionStatus, CommandHistoryState, CompositorClock,
-    CompositorConfig, ExternalCommandRequest, PendingExternalCommandRequests, PendingInputEvents,
+    CompositorConfig, ConfiguredAction, ExternalCommandRequest, PendingExternalCommandRequests,
+    PendingInputEvents, describe_action_sequence,
 };
 use nekoland_protocol::{ProtocolServerState, XWaylandServerState};
 
-/// Tracks whether startup commands have already been queued for this session.
+/// Tracks whether startup actions have already been applied for this session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
-pub struct StartupCommandState {
+pub struct StartupActionState {
     pub queued: bool,
 }
 
@@ -89,22 +93,25 @@ pub fn external_command_launch_system(
     }
 }
 
-/// Queues startup commands once the nested protocol socket and optional XWayland bridge are ready.
-pub fn startup_command_queue_system(
+/// Applies startup actions once the nested protocol socket and optional XWayland bridge are ready.
+pub fn startup_action_queue_system(
     config: Res<CompositorConfig>,
     protocol_server: Option<Res<ProtocolServerState>>,
     xwayland_server: Option<Res<XWaylandServerState>>,
-    mut startup_commands: ResMut<StartupCommandState>,
+    mut startup_actions: ResMut<StartupActionState>,
     mut pending_input_events: ResMut<PendingInputEvents>,
     mut pending_external_commands: ResMut<PendingExternalCommandRequests>,
+    mut windows: WindowOps,
+    mut workspaces: WorkspaceOps,
+    mut outputs: OutputOps,
 ) {
-    if startup_commands.queued {
+    if startup_actions.queued {
         return;
     }
 
-    if startup_commands_disabled_by_env() {
-        startup_commands.queued = true;
-        tracing::info!("startup commands disabled by NEKOLAND_DISABLE_STARTUP_COMMANDS");
+    if startup_actions_disabled_by_env() {
+        startup_actions.queued = true;
+        tracing::info!("startup actions disabled by NEKOLAND_DISABLE_STARTUP_COMMANDS");
         return;
     }
 
@@ -121,39 +128,39 @@ pub fn startup_command_queue_system(
         }
     }
 
-    startup_commands.queued = true;
-    if config.startup_commands.is_empty() {
+    startup_actions.queued = true;
+    if config.startup_actions.is_empty() {
         return;
     }
 
-    let runtime_dir = protocol_server.runtime_dir.clone();
-    let mut queued_commands = 0_usize;
-    for command in &config.startup_commands {
-        let argv = split_command_line(command);
-        if argv.is_empty() {
-            pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
-                source: "startup".to_owned(),
-                detail: "ignored empty startup command".to_owned(),
-            });
-            continue;
+    let mut window_controls = windows.api();
+    let mut workspace_controls = workspaces.api();
+    let mut output_controls = outputs.api();
+    let mut applied_actions = 0_usize;
+    for action in &config.startup_actions {
+        if dispatch_configured_action(
+            "startup",
+            "startup",
+            action,
+            &mut pending_input_events,
+            &mut pending_external_commands,
+            &mut window_controls,
+            &mut workspace_controls,
+            &mut output_controls,
+        ) {
+            applied_actions += 1;
         }
-
-        pending_external_commands.push(ExternalCommandRequest {
-            origin: format!("startup -> {command}"),
-            candidates: vec![argv],
-        });
-        queued_commands += 1;
     }
 
     tracing::info!(
         socket = socket_name,
-        runtime_dir = runtime_dir.as_deref().unwrap_or("<unset>"),
-        queued_commands,
-        "queued startup commands for nested Wayland session"
+        runtime_dir = protocol_server.runtime_dir.as_deref().unwrap_or("<unset>"),
+        applied_actions,
+        "applied startup actions for nested Wayland session"
     );
     pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
         source: "startup".to_owned(),
-        detail: format!("queued {queued_commands} startup command(s) for {socket_name}"),
+        detail: format!("applied {applied_actions} startup action(s) for {socket_name}"),
     });
 }
 
@@ -207,16 +214,191 @@ pub fn queue_exec_command(
     pending_external_commands.push(ExternalCommandRequest { origin, candidates: vec![argv] });
 }
 
-/// Parses one shell-like command line into argv, falling back to whitespace splitting when quoted
-/// parsing fails.
-pub fn split_command_line(command: &str) -> Vec<String> {
-    parse_command_line(command)
-        .filter(|argv| !argv.is_empty())
-        .unwrap_or_else(|| command.split_whitespace().map(str::to_owned).collect())
+pub fn validate_action_sequence(actions: &[ConfiguredAction]) -> Result<(), String> {
+    if actions.is_empty() {
+        return Err("action sequence must contain at least one action".to_owned());
+    }
+    for action in actions {
+        validate_action(action)?;
+    }
+    Ok(())
 }
 
-/// Allows tests or nested sessions to disable startup commands entirely via environment variable.
-fn startup_commands_disabled_by_env() -> bool {
+fn validate_action(action: &ConfiguredAction) -> Result<(), String> {
+    match action {
+        ConfiguredAction::Exec { argv } => {
+            let Some(program) = argv.first() else {
+                return Err("command action must include at least one argv element".to_owned());
+            };
+            if program.trim().is_empty() {
+                return Err("command action must not start with an empty program".to_owned());
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+pub fn dispatch_action_sequence(
+    source: &str,
+    origin: &str,
+    actions: &[ConfiguredAction],
+    pending_input_events: &mut PendingInputEvents,
+    pending_external_commands: &mut PendingExternalCommandRequests,
+    windows: &mut WindowControlApi<'_>,
+    workspaces: &mut WorkspaceControlApi<'_>,
+    outputs: &mut OutputControlApi<'_>,
+) -> bool {
+    for action in actions {
+        if !dispatch_configured_action(
+            source,
+            origin,
+            action,
+            pending_input_events,
+            pending_external_commands,
+            windows,
+            workspaces,
+            outputs,
+        ) {
+            return false;
+        }
+    }
+
+    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+        source: source.to_owned(),
+        detail: format!("{origin} -> {}", describe_action_sequence(actions)),
+    });
+    true
+}
+
+pub fn dispatch_configured_action(
+    source: &str,
+    origin: &str,
+    action: &ConfiguredAction,
+    pending_input_events: &mut PendingInputEvents,
+    pending_external_commands: &mut PendingExternalCommandRequests,
+    windows: &mut WindowControlApi<'_>,
+    workspaces: &mut WorkspaceControlApi<'_>,
+    outputs: &mut OutputControlApi<'_>,
+) -> bool {
+    match action {
+        ConfiguredAction::CloseFocusedWindow => {
+            let Some(mut window) =
+                focused_window(source, origin, action, pending_input_events, windows)
+            else {
+                return false;
+            };
+            window.close();
+        }
+        ConfiguredAction::MoveFocusedWindow { x, y } => {
+            let Some(mut window) =
+                focused_window(source, origin, action, pending_input_events, windows)
+            else {
+                return false;
+            };
+            window.move_to(*x, *y);
+        }
+        ConfiguredAction::ResizeFocusedWindow { width, height } => {
+            let Some(mut window) =
+                focused_window(source, origin, action, pending_input_events, windows)
+            else {
+                return false;
+            };
+            window.resize_to(*width, *height);
+        }
+        ConfiguredAction::SplitFocusedWindow { axis } => {
+            let Some(mut window) =
+                focused_window(source, origin, action, pending_input_events, windows)
+            else {
+                return false;
+            };
+            window.split(*axis);
+        }
+        ConfiguredAction::BackgroundFocusedWindow { output } => {
+            let Some(mut window) =
+                focused_window(source, origin, action, pending_input_events, windows)
+            else {
+                return false;
+            };
+            window.background_on(output.clone());
+        }
+        ConfiguredAction::ClearFocusedWindowBackground => {
+            let Some(mut window) =
+                focused_window(source, origin, action, pending_input_events, windows)
+            else {
+                return false;
+            };
+            window.clear_background();
+        }
+        ConfiguredAction::SwitchWorkspace { workspace } => {
+            workspaces.switch_or_create(workspace.clone());
+        }
+        ConfiguredAction::CreateWorkspace { workspace } => {
+            workspaces.create(workspace.clone());
+        }
+        ConfiguredAction::DestroyWorkspace { workspace } => {
+            workspaces.destroy(workspace.clone());
+        }
+        ConfiguredAction::EnableOutput { output } => {
+            outputs.named(output.clone()).enable();
+        }
+        ConfiguredAction::DisableOutput { output } => {
+            outputs.named(output.clone()).disable();
+        }
+        ConfiguredAction::ConfigureOutput { output, mode, scale } => {
+            outputs.named(output.clone()).configure(mode.clone(), *scale);
+        }
+        ConfiguredAction::PanViewport { delta_x, delta_y } => {
+            outputs.focused().pan_viewport_by(*delta_x, *delta_y);
+        }
+        ConfiguredAction::MoveViewport { x, y } => {
+            outputs.focused().move_viewport_to(*x, *y);
+        }
+        ConfiguredAction::CenterViewportOnFocusedWindow => {
+            let Some(surface_id) = windows.focused_surface_id() else {
+                pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                    source: source.to_owned(),
+                    detail: format!(
+                        "{origin} -> {} ignored: no focused surface",
+                        action.describe()
+                    ),
+                });
+                return false;
+            };
+            outputs.focused().center_viewport_on_window(surface_id);
+        }
+        ConfiguredAction::Exec { argv } => {
+            queue_exec_command(
+                format!("{origin} -> {}", action.describe()),
+                argv.clone(),
+                pending_external_commands,
+            );
+        }
+    }
+
+    true
+}
+
+fn focused_window<'a>(
+    source: &str,
+    origin: &str,
+    action: &ConfiguredAction,
+    pending_input_events: &mut PendingInputEvents,
+    windows: &'a mut WindowControlApi<'_>,
+) -> Option<nekoland_ecs::resources::WindowControlHandle<'a>> {
+    if let Some(window) = windows.focused() {
+        return Some(window);
+    }
+
+    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+        source: source.to_owned(),
+        detail: format!("{origin} -> {} ignored: no focused surface", action.describe()),
+    });
+    None
+}
+
+/// Allows tests or nested sessions to disable startup actions entirely via environment variable.
+fn startup_actions_disabled_by_env() -> bool {
     std::env::var_os("NEKOLAND_DISABLE_STARTUP_COMMANDS").is_some_and(|value| {
         let value = value.to_string_lossy();
         !value.is_empty()
@@ -251,64 +433,6 @@ fn nested_wayland_env(
     env
 }
 
-/// Minimal quoted command-line parser used for config-provided startup commands.
-fn parse_command_line(command: &str) -> Option<Vec<String>> {
-    let mut argv = Vec::new();
-    let mut current = String::new();
-    let mut quote = None;
-    let mut chars = command.chars();
-
-    while let Some(ch) = chars.next() {
-        match quote {
-            Some('\'') => {
-                if ch == '\'' {
-                    quote = None;
-                } else {
-                    current.push(ch);
-                }
-            }
-            Some('"') => match ch {
-                '"' => quote = None,
-                '\\' => {
-                    if let Some(escaped) = chars.next() {
-                        current.push(escaped);
-                    } else {
-                        current.push('\\');
-                    }
-                }
-                _ => current.push(ch),
-            },
-            Some(_) => unreachable!(),
-            None => match ch {
-                '\'' | '"' => quote = Some(ch),
-                '\\' => {
-                    if let Some(escaped) = chars.next() {
-                        current.push(escaped);
-                    } else {
-                        current.push('\\');
-                    }
-                }
-                whitespace if whitespace.is_whitespace() => {
-                    if !current.is_empty() {
-                        argv.push(std::mem::take(&mut current));
-                    }
-                }
-                _ => current.push(ch),
-            },
-        }
-    }
-
-    if quote.is_some() {
-        return None;
-    }
-
-    if !current.is_empty() {
-        argv.push(current);
-    }
-
-    Some(argv)
-}
-
 #[cfg(test)]
 mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -316,23 +440,28 @@ mod tests {
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
     use nekoland_ecs::resources::{
-        CommandHistoryState, CompositorClock, CompositorConfig, PendingExternalCommandRequests,
-        PendingInputEvents,
+        CommandHistoryState, CompositorClock, CompositorConfig, ConfiguredAction,
+        KeyboardFocusState, PendingExternalCommandRequests, PendingInputEvents,
+        PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
     };
     use nekoland_protocol::{ProtocolServerState, XWaylandServerState};
 
-    use super::{StartupCommandState, startup_command_queue_system};
+    use super::{StartupActionState, startup_action_queue_system};
 
     #[test]
-    fn startup_commands_wait_for_xwayland_ready_when_enabled() {
+    fn startup_actions_wait_for_xwayland_ready_when_enabled() {
         let mut config = CompositorConfig::default();
-        config.startup_commands = vec!["true".to_owned()];
+        config.startup_actions = vec![ConfiguredAction::Exec { argv: vec!["true".to_owned()] }];
         let mut app = NekolandApp::new("startup-xwayland-test");
         app.insert_resource(CompositorClock::default())
             .insert_resource(config)
-            .insert_resource(StartupCommandState::default())
+            .insert_resource(StartupActionState::default())
             .insert_resource(CommandHistoryState::default())
             .insert_resource(PendingExternalCommandRequests::default())
+            .insert_resource(PendingWindowControls::default())
+            .insert_resource(PendingWorkspaceControls::default())
+            .insert_resource(PendingOutputControls::default())
+            .insert_resource(KeyboardFocusState::default())
             .insert_resource(PendingInputEvents::default())
             .insert_resource(ProtocolServerState {
                 socket_name: Some("wayland-77".to_owned()),
@@ -350,7 +479,7 @@ mod tests {
             .add_systems(
                 LayoutSchedule,
                 (
-                    startup_command_queue_system,
+                    startup_action_queue_system,
                     super::external_command_launch_system,
                     super::command_history_system,
                 )
@@ -360,29 +489,33 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let startup_state = world.get_resource::<StartupCommandState>().unwrap();
+        let startup_state = world.get_resource::<StartupActionState>().unwrap();
         assert!(!startup_state.queued, "should wait for xwayland ready");
 
         app.inner_mut().world_mut().resource_mut::<XWaylandServerState>().ready = true;
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let startup_state = world.get_resource::<StartupCommandState>().unwrap();
+        let startup_state = world.get_resource::<StartupActionState>().unwrap();
         let history = world.get_resource::<CommandHistoryState>().unwrap();
         assert!(startup_state.queued, "should be queued after xwayland ready");
         assert_eq!(history.items.len(), 1, "should have executed after xwayland ready");
     }
 
     #[test]
-    fn startup_commands_run_immediately_when_xwayland_disabled() {
+    fn startup_actions_run_immediately_when_xwayland_disabled() {
         let mut config = CompositorConfig::default();
-        config.startup_commands = vec!["true".to_owned()];
+        config.startup_actions = vec![ConfiguredAction::Exec { argv: vec!["true".to_owned()] }];
         let mut app = NekolandApp::new("startup-xwayland-disabled-test");
         app.insert_resource(CompositorClock::default())
             .insert_resource(config)
-            .insert_resource(StartupCommandState::default())
+            .insert_resource(StartupActionState::default())
             .insert_resource(CommandHistoryState::default())
             .insert_resource(PendingExternalCommandRequests::default())
+            .insert_resource(PendingWindowControls::default())
+            .insert_resource(PendingWorkspaceControls::default())
+            .insert_resource(PendingOutputControls::default())
+            .insert_resource(KeyboardFocusState::default())
             .insert_resource(PendingInputEvents::default())
             .insert_resource(ProtocolServerState {
                 socket_name: Some("wayland-77".to_owned()),
@@ -400,7 +533,7 @@ mod tests {
             .add_systems(
                 LayoutSchedule,
                 (
-                    startup_command_queue_system,
+                    startup_action_queue_system,
                     super::external_command_launch_system,
                     super::command_history_system,
                 )
@@ -410,22 +543,26 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let startup_state = world.get_resource::<StartupCommandState>().unwrap();
+        let startup_state = world.get_resource::<StartupActionState>().unwrap();
         let history = world.get_resource::<CommandHistoryState>().unwrap();
         assert!(startup_state.queued, "should run when xwayland disabled");
         assert_eq!(history.items.len(), 1, "should have executed");
     }
 
     #[test]
-    fn startup_commands_run_immediately_when_xwayland_not_present() {
+    fn startup_actions_run_immediately_when_xwayland_not_present() {
         let mut config = CompositorConfig::default();
-        config.startup_commands = vec!["true".to_owned()];
+        config.startup_actions = vec![ConfiguredAction::Exec { argv: vec!["true".to_owned()] }];
         let mut app = NekolandApp::new("startup-no-xwayland-test");
         app.insert_resource(CompositorClock::default())
             .insert_resource(config)
-            .insert_resource(StartupCommandState::default())
+            .insert_resource(StartupActionState::default())
             .insert_resource(CommandHistoryState::default())
             .insert_resource(PendingExternalCommandRequests::default())
+            .insert_resource(PendingWindowControls::default())
+            .insert_resource(PendingWorkspaceControls::default())
+            .insert_resource(PendingOutputControls::default())
+            .insert_resource(KeyboardFocusState::default())
             .insert_resource(PendingInputEvents::default())
             .insert_resource(ProtocolServerState {
                 socket_name: Some("wayland-77".to_owned()),
@@ -438,7 +575,7 @@ mod tests {
             .add_systems(
                 LayoutSchedule,
                 (
-                    startup_command_queue_system,
+                    startup_action_queue_system,
                     super::external_command_launch_system,
                     super::command_history_system,
                 )
@@ -448,7 +585,7 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let startup_state = world.get_resource::<StartupCommandState>().unwrap();
+        let startup_state = world.get_resource::<StartupActionState>().unwrap();
         let history = world.get_resource::<CommandHistoryState>().unwrap();
         assert!(startup_state.queued, "should run when no xwayland resource");
         assert_eq!(history.items.len(), 1, "should have executed");

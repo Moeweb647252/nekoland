@@ -16,7 +16,7 @@ use nekoland_ecs::resources::{RenderList, WorkArea};
 use nekoland_protocol::{ProtocolServerState, ProtocolSurfaceRegistry};
 use tempfile::tempfile;
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface,
+    wl_buffer, wl_compositor, wl_output, wl_registry, wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -41,6 +41,7 @@ struct LayerClientOptions {
     anchor_left: bool,
     anchor_right: bool,
     exclusive_zone: Option<i32>,
+    bind_output: bool,
 }
 
 impl LayerClientOptions {
@@ -57,6 +58,7 @@ impl LayerClientOptions {
             anchor_left: true,
             anchor_right: false,
             exclusive_zone: None,
+            bind_output: false,
         }
     }
 
@@ -73,7 +75,12 @@ impl LayerClientOptions {
             anchor_left: true,
             anchor_right: true,
             exclusive_zone: Some(TEST_EXCLUSIVE_PANEL_HEIGHT as i32),
+            bind_output: false,
         }
+    }
+
+    fn bound_standard_panel() -> Self {
+        Self { bind_output: true, ..Self::standard_panel() }
     }
 
     /// Converts the booleans in this helper struct into the Wayland layer-shell anchor bitflags.
@@ -110,6 +117,7 @@ struct LayerClientState {
     compositor: Option<wl_compositor::WlCompositor>,
     shm: Option<wl_shm::WlShm>,
     layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
+    output: Option<wl_output::WlOutput>,
     surface: Option<wl_surface::WlSurface>,
     layer_surface: Option<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
     _pool: Option<wl_shm_pool::WlShmPool>,
@@ -128,6 +136,7 @@ impl LayerClientState {
             compositor: None,
             shm: None,
             layer_shell: None,
+            output: None,
             surface: None,
             layer_surface: None,
             _pool: None,
@@ -140,7 +149,11 @@ impl LayerClientState {
 
     /// Creates the layer surface once both `wl_compositor` and `zwlr_layer_shell_v1` are bound.
     fn maybe_create_layer_surface(&mut self, qh: &QueueHandle<Self>) {
-        if self.surface.is_some() || self.compositor.is_none() || self.layer_shell.is_none() {
+        if self.surface.is_some()
+            || self.compositor.is_none()
+            || self.layer_shell.is_none()
+            || (self.options.bind_output && self.output.is_none())
+        {
             return;
         }
 
@@ -152,7 +165,7 @@ impl LayerClientState {
         let surface = compositor.create_surface(qh, ());
         let layer_surface = layer_shell.get_layer_surface(
             &surface,
-            None,
+            self.output.as_ref(),
             zwlr_layer_shell_v1::Layer::Top,
             self.options.namespace.to_owned(),
             qh,
@@ -279,6 +292,64 @@ fn layer_shell_surface_reaches_ecs_and_render_list() {
         "render list should contain the mapped layer surface: {render_elements:?}"
     );
     let _ = wl_surface;
+}
+
+#[test]
+fn output_bound_layer_shell_surface_resolves_to_a_real_output_entity() {
+    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
+    let runtime_dir = common::RuntimeDirGuard::new("nekoland-layer-output-bind-runtime");
+    let mut app = build_app(workspace_config_path());
+    app.insert_resource(RunLoopSettings {
+        frame_timeout: Duration::from_millis(1),
+        max_frames: Some(96),
+    });
+
+    let socket_path = match protocol_socket_path(&app, &runtime_dir.path) {
+        Ok(path) => path,
+        Err(common::TestControl::Skip(reason)) => {
+            eprintln!("skipping output-bound layer-shell test in restricted environment: {reason}");
+            return;
+        }
+        Err(common::TestControl::Fail(reason)) => {
+            panic!("protocol startup failed before run: {reason}");
+        }
+    };
+
+    let client_thread = thread::spawn(move || {
+        run_layer_shell_client(&socket_path, LayerClientOptions::bound_standard_panel())
+    });
+    app.run().expect("nekoland app should complete the configured frame budget");
+
+    let summary = match client_thread.join().expect("client thread should exit cleanly") {
+        Ok(summary) => summary,
+        Err(common::TestControl::Skip(reason)) => {
+            eprintln!("skipping output-bound layer-shell test in restricted environment: {reason}");
+            return;
+        }
+        Err(common::TestControl::Fail(reason)) => {
+            panic!("layer-shell client failed: {reason}");
+        }
+    };
+
+    common::assert_globals_present(&summary.globals);
+    assert!(summary.configure_serial > 0, "layer-shell client should ack a configure");
+
+    let world = app.inner_mut().world_mut();
+    let mut layers = world.query::<(
+        &WlSurfaceHandle,
+        &SurfaceGeometry,
+        &LayerShellSurface,
+        Option<&nekoland_ecs::components::LayerOnOutput>,
+    )>();
+    let (_, geometry, _, layer_output) = layers
+        .iter(world)
+        .next()
+        .expect("output-bound layer-shell client should create a layer entity");
+
+    assert!(layer_output.is_some(), "explicit wl_output binding should resolve to a real output");
+    assert_eq!(geometry.x, 0);
+    assert_eq!(geometry.y, 0);
 }
 
 #[test]
@@ -427,13 +498,17 @@ fn run_layer_shell_client(
     let mut state = LayerClientState::new(options);
     let deadline = Instant::now() + Duration::from_secs(2);
 
-    while !state.buffer_attached {
+    while Instant::now() < deadline {
         dispatch_client_once(&mut event_queue, &mut state)?;
-        if Instant::now() >= deadline {
-            return Err(common::TestControl::Fail(
-                "timed out waiting for layer-shell buffer attach".to_owned(),
-            ));
+        if state.buffer_attached {
+            break;
         }
+    }
+
+    if !state.buffer_attached {
+        return Err(common::TestControl::Fail(
+            "timed out waiting for layer-shell buffer attach".to_owned(),
+        ));
     }
 
     event_queue.flush().map_err(|error| {
@@ -526,6 +601,11 @@ impl Dispatch<wl_registry::WlRegistry, ()> for LayerClientState {
                         Some(registry.bind::<wl_compositor::WlCompositor, _, _>(name, 1, qh, ()));
                     state.maybe_create_layer_surface(qh);
                 }
+                "wl_output" => {
+                    state.output =
+                        Some(registry.bind::<wl_output::WlOutput, _, _>(name, 4, qh, ()));
+                    state.maybe_create_layer_surface(qh);
+                }
                 "wl_shm" => {
                     state.shm = Some(registry.bind::<wl_shm::WlShm, _, _>(name, 1, qh, ()));
                 }
@@ -566,6 +646,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for LayerClientStat
 
 delegate_noop!(LayerClientState: ignore wl_buffer::WlBuffer);
 delegate_noop!(LayerClientState: ignore wl_compositor::WlCompositor);
+delegate_noop!(LayerClientState: ignore wl_output::WlOutput);
 delegate_noop!(LayerClientState: ignore wl_shm::WlShm);
 delegate_noop!(LayerClientState: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(LayerClientState: ignore wl_surface::WlSurface);
