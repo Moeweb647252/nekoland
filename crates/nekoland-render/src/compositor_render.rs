@@ -4,7 +4,8 @@ use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, Query, ResMut, With};
 use nekoland_ecs::components::{LayerLevel, WindowMode, XdgPopup, XdgWindow};
 use nekoland_ecs::resources::{
-    RenderElement, RenderList, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
+    RenderElement, RenderList, SurfacePresentationRole, SurfacePresentationSnapshot,
+    UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
 };
 use nekoland_ecs::views::{
     LayerRenderRuntime, PopupRenderRuntime, WindowRenderRuntime, WorkspaceRuntime,
@@ -24,22 +25,38 @@ pub fn compose_frame_system(
     popups: Query<PopupRenderRuntime, With<XdgPopup>>,
     stacking: bevy_ecs::prelude::Res<WindowStackingState>,
     workspaces: Query<(Entity, WorkspaceRuntime)>,
+    surface_presentation: Option<bevy_ecs::prelude::Res<SurfacePresentationSnapshot>>,
     mut render_list: ResMut<RenderList>,
 ) {
+    let surface_presentation = surface_presentation.as_deref();
     let background_windows = windows
         .iter()
-        .filter(|(_, window)| {
-            *window.mode != WindowMode::Hidden
-                && window.viewport_visibility.visible
-                && window.background.is_some()
+        .filter_map(|(_, window)| {
+            let state = surface_presentation
+                .and_then(|snapshot| snapshot.surfaces.get(&window.surface_id()));
+            let visible = state.map_or_else(
+                || {
+                    *window.mode != WindowMode::Hidden
+                        && window.viewport_visibility.visible
+                        && window.background.is_some()
+                },
+                |state| state.visible && state.role == SurfacePresentationRole::OutputBackground,
+            );
+            if !visible {
+                return None;
+            }
+            let output_name =
+                state.and_then(|state| state.target_output.clone()).or_else(|| {
+                    window.background.as_ref().map(|background| background.output.clone())
+                })?;
+            Some((
+                output_name,
+                (window.surface_id(), opacity_for_animation(window.animation.progress)),
+            ))
         })
-        .fold(BTreeMap::new(), |mut backgrounds, (_, window)| {
-            let Some(background) = window.background.as_ref() else {
-                return backgrounds;
-            };
-            let candidate = (window.surface_id(), opacity_for_animation(window.animation.progress));
+        .fold(BTreeMap::new(), |mut backgrounds, (output_name, candidate)| {
             backgrounds
-                .entry(background.output.clone())
+                .entry(output_name)
                 .and_modify(|current: &mut (u64, f32)| {
                     if candidate.0 > current.0 {
                         *current = candidate;
@@ -52,19 +69,24 @@ pub fn compose_frame_system(
         .collect::<Vec<_>>();
     let visible_windows = windows
         .iter()
-        .filter(|(_, window)| {
-            *window.mode != WindowMode::Hidden
-                && window.viewport_visibility.visible
-                && window.background.is_none()
-        })
-        .map(|(entity, window)| {
-            (
+        .filter_map(|(entity, window)| {
+            let state = surface_presentation
+                .and_then(|snapshot| snapshot.surfaces.get(&window.surface_id()));
+            let visible = state.map_or_else(
+                || {
+                    *window.mode != WindowMode::Hidden
+                        && window.viewport_visibility.visible
+                        && window.background.is_none()
+                },
+                |state| state.visible && state.role == SurfacePresentationRole::Window,
+            );
+            visible.then_some((
                 entity,
                 window.surface_id(),
                 window_workspace_runtime_id(window.child_of, &workspaces)
                     .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID),
                 opacity_for_animation(window.animation.progress),
-            )
+            ))
         })
         .collect::<Vec<_>>();
     let active_window_entities =
@@ -81,9 +103,26 @@ pub fn compose_frame_system(
         .chain(
             layers
                 .iter()
-                .filter(|layer| layer.buffer.attached)
                 .filter(|layer| {
-                    matches!(layer.layer_surface.layer, LayerLevel::Background | LayerLevel::Bottom)
+                    surface_presentation
+                        .and_then(|snapshot| snapshot.surfaces.get(&layer.surface_id()))
+                        .map_or_else(
+                            || {
+                                layer.buffer.attached
+                                    && matches!(
+                                        layer.layer_surface.layer,
+                                        LayerLevel::Background | LayerLevel::Bottom
+                                    )
+                            },
+                            |state| {
+                                state.visible
+                                    && state.role == SurfacePresentationRole::Layer
+                                    && matches!(
+                                        layer.layer_surface.layer,
+                                        LayerLevel::Background | LayerLevel::Bottom
+                                    )
+                            },
+                        )
                 })
                 .map(|layer| (layer.surface_id(), opacity_for_animation(layer.animation.progress))),
         )
@@ -94,8 +133,15 @@ pub fn compose_frame_system(
             popups
                 .iter()
                 .filter(|popup| {
-                    popup.buffer.attached
-                        && popup_parent_visible(popup.child_of, &active_window_entities)
+                    surface_presentation
+                        .and_then(|snapshot| snapshot.surfaces.get(&popup.surface_id()))
+                        .map_or_else(
+                            || {
+                                popup.buffer.attached
+                                    && popup_parent_visible(popup.child_of, &active_window_entities)
+                            },
+                            |state| state.visible && state.role == SurfacePresentationRole::Popup,
+                        )
                 })
                 .map(|popup| (popup.surface_id(), opacity_for_animation(popup.animation.progress))),
         )
@@ -103,10 +149,24 @@ pub fn compose_frame_system(
             layers
                 .iter()
                 .filter(|layer| {
-                    layer.buffer.attached
-                        && matches!(
-                            layer.layer_surface.layer,
-                            LayerLevel::Top | LayerLevel::Overlay
+                    surface_presentation
+                        .and_then(|snapshot| snapshot.surfaces.get(&layer.surface_id()))
+                        .map_or_else(
+                            || {
+                                layer.buffer.attached
+                                    && matches!(
+                                        layer.layer_surface.layer,
+                                        LayerLevel::Top | LayerLevel::Overlay
+                                    )
+                            },
+                            |state| {
+                                state.visible
+                                    && state.role == SurfacePresentationRole::Layer
+                                    && matches!(
+                                        layer.layer_surface.layer,
+                                        LayerLevel::Top | LayerLevel::Overlay
+                                    )
+                            },
                         )
                 })
                 .map(|layer| (layer.surface_id(), opacity_for_animation(layer.animation.progress))),

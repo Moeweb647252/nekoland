@@ -9,6 +9,7 @@ pub mod layer;
 pub mod layout;
 pub mod plugin;
 mod presentation;
+mod surface_presentation;
 pub mod viewport;
 pub mod window_control;
 mod window_policy;

@@ -17,7 +17,8 @@ use nekoland_ecs::resources::{
     CompositorClock, CompositorConfig, CursorRenderState, FocusedOutputState,
     GlobalPointerPosition, OutputDamageRegions, OutputPresentationState, PendingBackendInputEvents,
     PendingOutputControls, PendingOutputPresentationEvents, PendingOutputServerRequests,
-    PendingProtocolInputEvents, PrimaryOutputState, RenderList, VirtualOutputCaptureState,
+    PendingProtocolInputEvents, PrimaryOutputState, RenderList, SurfacePresentationRole,
+    SurfacePresentationSnapshot, VirtualOutputCaptureState,
 };
 use nekoland_ecs::views::OutputRuntime;
 use nekoland_protocol::{ProtocolCursorState, ProtocolSeatDispatchSet, ProtocolSurfaceRegistry};
@@ -162,94 +163,115 @@ fn backend_present_system(
         Option<&LayerOnOutput>,
         Option<&DesiredOutputName>,
     )>,
+    surface_presentation: Option<Res<SurfacePresentationSnapshot>>,
     render_list: Res<RenderList>,
     protocol_cursor: Option<NonSend<ProtocolCursorState>>,
     surface_registry: Option<NonSend<ProtocolSurfaceRegistry>>,
     mut virtual_output_capture: ResMut<VirtualOutputCaptureState>,
 ) -> BevyResult {
     let output_snapshots = collect_output_snapshots(&outputs);
-    let output_names = outputs
-        .iter()
-        .map(|(entity, output, _)| (entity, output.name().to_owned()))
-        .collect::<HashMap<_, _>>();
-    let primary_output_name = primary_output.and_then(|primary_output| primary_output.name.clone());
-    let window_target_outputs = surfaces
-        .iter()
-        .filter_map(
-            |(entity, surface, _, window, _, _, viewport_visibility, background, _, _, _)| {
-                window.map(|_| {
+    let surface_snapshots = if let Some(surface_presentation) = surface_presentation.as_deref() {
+        surfaces
+            .iter()
+            .filter_map(|(_, surface, _, _, _, _, _, _, _, _, _)| {
+                surface_presentation.surfaces.get(&surface.id).map(|state| {
                     (
-                        entity,
+                        surface.id,
+                        RenderSurfaceSnapshot {
+                            geometry: state.geometry.clone(),
+                            role: render_surface_role_from_presentation(state.role),
+                            target_output: state.target_output.clone(),
+                        },
+                    )
+                })
+            })
+            .collect::<HashMap<_, _>>()
+    } else {
+        let output_names = outputs
+            .iter()
+            .map(|(entity, output, _)| (entity, output.name().to_owned()))
+            .collect::<HashMap<_, _>>();
+        let primary_output_name =
+            primary_output.and_then(|primary_output| primary_output.name.clone());
+        let window_target_outputs = surfaces
+            .iter()
+            .filter_map(
+                |(entity, surface, _, window, _, _, viewport_visibility, background, _, _, _)| {
+                    window.map(|_| {
+                        (
+                            entity,
+                            background.map(|background| background.output.clone()).or_else(|| {
+                                viewport_visibility.and_then(|viewport_visibility| {
+                                    viewport_visibility.output.clone()
+                                })
+                            }),
+                            surface.id,
+                        )
+                    })
+                },
+            )
+            .collect::<Vec<_>>();
+        let window_entity_target_outputs = window_target_outputs
+            .iter()
+            .map(|(entity, target_output, _)| (*entity, target_output.clone()))
+            .collect::<HashMap<_, _>>();
+        let window_surface_target_outputs = window_target_outputs
+            .iter()
+            .map(|(_, target_output, surface_id)| (*surface_id, target_output.clone()))
+            .collect::<HashMap<_, _>>();
+        surfaces
+            .iter()
+            .map(
+                |(
+                    _entity,
+                    surface,
+                    geometry,
+                    window,
+                    popup,
+                    layer,
+                    viewport_visibility,
+                    background,
+                    child_of,
+                    layer_output,
+                    desired_output_name,
+                )| {
+                    let role = if window.is_some() {
+                        RenderSurfaceRole::Window
+                    } else if popup.is_some() {
+                        RenderSurfaceRole::Popup
+                    } else if layer.is_some() {
+                        RenderSurfaceRole::Layer
+                    } else {
+                        RenderSurfaceRole::Unknown
+                    };
+                    let target_output = if window.is_some() {
                         background.map(|background| background.output.clone()).or_else(|| {
                             viewport_visibility
                                 .and_then(|viewport_visibility| viewport_visibility.output.clone())
-                        }),
-                        surface.id,
-                    )
-                })
-            },
-        )
-        .collect::<Vec<_>>();
-    let window_entity_target_outputs = window_target_outputs
-        .iter()
-        .map(|(entity, target_output, _)| (*entity, target_output.clone()))
-        .collect::<HashMap<_, _>>();
-    let window_surface_target_outputs = window_target_outputs
-        .iter()
-        .map(|(_, target_output, surface_id)| (*surface_id, target_output.clone()))
-        .collect::<HashMap<_, _>>();
-    let surface_snapshots = surfaces
-        .iter()
-        .map(
-            |(
-                _entity,
-                surface,
-                geometry,
-                window,
-                popup,
-                layer,
-                viewport_visibility,
-                background,
-                child_of,
-                layer_output,
-                desired_output_name,
-            )| {
-                let role = if window.is_some() {
-                    RenderSurfaceRole::Window
-                } else if popup.is_some() {
-                    RenderSurfaceRole::Popup
-                } else if layer.is_some() {
-                    RenderSurfaceRole::Layer
-                } else {
-                    RenderSurfaceRole::Unknown
-                };
-                let target_output = if window.is_some() {
-                    background.map(|background| background.output.clone()).or_else(|| {
-                        viewport_visibility
-                            .and_then(|viewport_visibility| viewport_visibility.output.clone())
-                    })
-                } else if popup.is_some() {
-                    child_of.and_then(|child_of| {
-                        window_entity_target_outputs.get(&child_of.parent()).cloned().flatten()
-                    })
-                } else if layer.is_some() {
-                    layer_output
-                        .and_then(|layer_output| output_names.get(&layer_output.0).cloned())
-                        .or_else(|| {
-                            desired_output_name
-                                .and_then(|desired_output_name| desired_output_name.0.clone())
                         })
-                        .or_else(|| primary_output_name.clone())
-                } else {
-                    window_surface_target_outputs.get(&surface.id).cloned().flatten()
-                };
-                (
-                    surface.id,
-                    RenderSurfaceSnapshot { geometry: geometry.clone(), role, target_output },
-                )
-            },
-        )
-        .collect::<HashMap<_, _>>();
+                    } else if popup.is_some() {
+                        child_of.and_then(|child_of| {
+                            window_entity_target_outputs.get(&child_of.parent()).cloned().flatten()
+                        })
+                    } else if layer.is_some() {
+                        layer_output
+                            .and_then(|layer_output| output_names.get(&layer_output.0).cloned())
+                            .or_else(|| {
+                                desired_output_name
+                                    .and_then(|desired_output_name| desired_output_name.0.clone())
+                            })
+                            .or_else(|| primary_output_name.clone())
+                    } else {
+                        window_surface_target_outputs.get(&surface.id).cloned().flatten()
+                    };
+                    (
+                        surface.id,
+                        RenderSurfaceSnapshot { geometry: geometry.clone(), role, target_output },
+                    )
+                },
+            )
+            .collect::<HashMap<_, _>>()
+    };
 
     let mut ctx = BackendPresentCtx {
         config: config.as_deref(),
@@ -266,6 +288,16 @@ fn backend_present_system(
     };
 
     manager.present_all(&mut ctx).map_err(Into::into)
+}
+
+fn render_surface_role_from_presentation(role: SurfacePresentationRole) -> RenderSurfaceRole {
+    match role {
+        SurfacePresentationRole::Window | SurfacePresentationRole::OutputBackground => {
+            RenderSurfaceRole::Window
+        }
+        SurfacePresentationRole::Popup => RenderSurfaceRole::Popup,
+        SurfacePresentationRole::Layer => RenderSurfaceRole::Layer,
+    }
 }
 
 #[cfg(test)]

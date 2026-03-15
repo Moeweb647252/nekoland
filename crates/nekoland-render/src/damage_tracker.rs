@@ -6,7 +6,10 @@ use nekoland_ecs::components::{
     BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputDevice,
     SurfaceContentVersion, SurfaceGeometry, WindowMode, WlSurfaceHandle, XdgPopup, XdgWindow,
 };
-use nekoland_ecs::resources::{DamageRect, DamageState, OutputDamageRegions, PrimaryOutputState};
+use nekoland_ecs::resources::{
+    DamageRect, DamageState, OutputDamageRegions, PrimaryOutputState, SurfacePresentationRole,
+    SurfacePresentationSnapshot,
+};
 use nekoland_ecs::views::{PopupSnapshotRuntime, WindowSnapshotRuntime};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -46,6 +49,7 @@ pub(crate) fn damage_tracking_system(
     popups: Query<PopupSnapshotRuntime, With<XdgPopup>>,
     outputs: Query<(Entity, &OutputDevice)>,
     primary_output: Option<Res<PrimaryOutputState>>,
+    surface_presentation: Option<Res<SurfacePresentationSnapshot>>,
     mut damage_state: ResMut<DamageState>,
     mut output_damage_regions: ResMut<OutputDamageRegions>,
     mut tracker_state: Local<DamageTrackerState>,
@@ -71,30 +75,45 @@ pub(crate) fn damage_tracking_system(
             .collect::<OutputDamageSnapshot>()
     };
 
+    let surface_presentation = surface_presentation.as_deref();
     let visible_windows = windows
         .iter()
-        .filter(|(_, window)| {
-            *window.mode != WindowMode::Hidden && window.viewport_visibility.visible
-        })
-        .map(|(entity, window)| {
-            (
+        .filter_map(|(entity, window)| {
+            let state = surface_presentation
+                .and_then(|snapshot| snapshot.surfaces.get(&window.surface_id()));
+            let visible = state.map_or_else(
+                || *window.mode != WindowMode::Hidden && window.viewport_visibility.visible,
+                |state| state.visible && state.damage_enabled,
+            );
+            visible.then_some((
                 entity,
                 window.surface_id(),
-                window.background.is_some(),
-                window
-                    .background
-                    .map(|background| background.output.clone())
-                    .or_else(|| window.viewport_visibility.output.clone()),
+                state.is_some_and(|state| state.role == SurfacePresentationRole::OutputBackground)
+                    || window.background.is_some(),
+                state.and_then(|state| state.target_output.clone()).or_else(|| {
+                    window
+                        .background
+                        .map(|background| background.output.clone())
+                        .or_else(|| window.viewport_visibility.output.clone())
+                }),
                 TrackedSurfaceDamage {
-                    rect: DamageRect {
-                        x: window.geometry.x,
-                        y: window.geometry.y,
-                        width: window.geometry.width,
-                        height: window.geometry.height,
-                    },
+                    rect: state.map_or_else(
+                        || DamageRect {
+                            x: window.geometry.x,
+                            y: window.geometry.y,
+                            width: window.geometry.width,
+                            height: window.geometry.height,
+                        },
+                        |state| DamageRect {
+                            x: state.geometry.x,
+                            y: state.geometry.y,
+                            width: state.geometry.width,
+                            height: state.geometry.height,
+                        },
+                    ),
                     content_version: window.content_version.value,
                 },
-            )
+            ))
         })
         .collect::<Vec<_>>();
     let visible_windows = visible_windows
@@ -141,16 +160,20 @@ pub(crate) fn damage_tracking_system(
     }
 
     for (surface, geometry, buffer, content_version, layer_output, desired_output_name) in &layers {
-        if !buffer.attached {
+        let state = surface_presentation.and_then(|snapshot| snapshot.surfaces.get(&surface.id));
+        if !state.map_or(buffer.attached, |state| state.visible && state.damage_enabled) {
             continue;
         }
 
-        let output_name = layer_output
-            .and_then(|layer_output| output_names_by_entity.get(&layer_output.0).cloned())
-            .or_else(|| {
-                desired_output_name.and_then(|desired_output_name| desired_output_name.0.clone())
-            })
-            .or_else(|| primary_output_name.clone());
+        let output_name = state.and_then(|state| state.target_output.clone()).or_else(|| {
+            layer_output
+                .and_then(|layer_output| output_names_by_entity.get(&layer_output.0).cloned())
+                .or_else(|| {
+                    desired_output_name
+                        .and_then(|desired_output_name| desired_output_name.0.clone())
+                })
+                .or_else(|| primary_output_name.clone())
+        });
         record_surface_geometry(
             &mut current_snapshot,
             surface.id,
@@ -158,24 +181,42 @@ pub(crate) fn damage_tracking_system(
             &live_output_names,
             &fallback_output_name,
             TrackedSurfaceDamage {
-                rect: DamageRect {
-                    x: geometry.x,
-                    y: geometry.y,
-                    width: geometry.width,
-                    height: geometry.height,
-                },
+                rect: state.map_or_else(
+                    || DamageRect {
+                        x: geometry.x,
+                        y: geometry.y,
+                        width: geometry.width,
+                        height: geometry.height,
+                    },
+                    |state| DamageRect {
+                        x: state.geometry.x,
+                        y: state.geometry.y,
+                        width: state.geometry.width,
+                        height: state.geometry.height,
+                    },
+                ),
                 content_version: content_version.value,
             },
         );
     }
 
     for popup in &popups {
-        if !popup.buffer.attached || !popup_parent_visible(popup.child_of, &active_window_entities)
-        {
+        let state =
+            surface_presentation.and_then(|snapshot| snapshot.surfaces.get(&popup.surface_id()));
+        if !state.map_or(
+            popup.buffer.attached && popup_parent_visible(popup.child_of, &active_window_entities),
+            |state| {
+                state.visible
+                    && state.damage_enabled
+                    && state.role == SurfacePresentationRole::Popup
+            },
+        ) {
             continue;
         }
 
-        let output_name = window_output_names.get(&popup.child_of.parent()).cloned().flatten();
+        let output_name = state
+            .and_then(|state| state.target_output.clone())
+            .or_else(|| window_output_names.get(&popup.child_of.parent()).cloned().flatten());
         record_surface_geometry(
             &mut current_snapshot,
             popup.surface_id(),
@@ -183,12 +224,20 @@ pub(crate) fn damage_tracking_system(
             &live_output_names,
             &fallback_output_name,
             TrackedSurfaceDamage {
-                rect: DamageRect {
-                    x: popup.geometry.x,
-                    y: popup.geometry.y,
-                    width: popup.geometry.width,
-                    height: popup.geometry.height,
-                },
+                rect: state.map_or_else(
+                    || DamageRect {
+                        x: popup.geometry.x,
+                        y: popup.geometry.y,
+                        width: popup.geometry.width,
+                        height: popup.geometry.height,
+                    },
+                    |state| DamageRect {
+                        x: state.geometry.x,
+                        y: state.geometry.y,
+                        width: state.geometry.width,
+                        height: state.geometry.height,
+                    },
+                ),
                 content_version: popup.content_version.value,
             },
         );

@@ -8,15 +8,16 @@ use nekoland_ecs::events::{
 use nekoland_ecs::resources::{
     CommandHistoryState, PendingExternalCommandRequests, PendingLayerRequests,
     PendingPopupServerRequests, PendingWindowControls, PendingWindowServerRequests,
-    PendingWorkspaceControls, PendingX11Requests, PendingXdgRequests, WindowStackingState,
-    WorkArea, WorkspaceTilingState,
+    PendingWorkspaceControls, PendingX11Requests, PendingXdgRequests, SurfacePresentationSnapshot,
+    WindowStackingState, WorkArea, WorkspaceTilingState,
 };
 use nekoland_ecs::resources::{EntityIndex, rebuild_entity_index_system};
 
 use crate::{
     commands, decorations, focus,
     interaction::{self, ActiveWindowGrab},
-    layer, layout, presentation, viewport, window_control, workspace, x11, xdg,
+    layer, layout, presentation, surface_presentation, viewport, window_control, workspace, x11,
+    xdg,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -38,6 +39,7 @@ impl NekolandPlugin for ShellPlugin {
             .init_resource::<ActiveWindowGrab>()
             .init_resource::<WindowStackingState>()
             .init_resource::<WorkspaceTilingState>()
+            .init_resource::<SurfacePresentationSnapshot>()
             .init_resource::<workspace::RememberedOutputWorkspaceState>()
             .init_resource::<CommandHistoryState>()
             .init_resource::<commands::StartupActionState>()
@@ -80,10 +82,11 @@ impl NekolandPlugin for ShellPlugin {
                         layout::fullscreen::fullscreen_layout_system,
                         viewport::window_viewport_projection_system,
                         xdg::popup::popup_projection_system,
-                        presentation::window_presentation_sync_system,
                         focus::pointer_button_focus_system,
                         interaction::window_grab_system,
                         layout::stacking::stacking_layout_system,
+                        surface_presentation::surface_presentation_snapshot_system,
+                        presentation::window_presentation_sync_system,
                         focus::focus_management_system,
                         decorations::server_decoration_system,
                     )

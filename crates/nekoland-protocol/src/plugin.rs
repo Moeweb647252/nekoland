@@ -41,8 +41,8 @@ use nekoland_ecs::resources::{
     OutputPresentationState, PendingLayerRequests, PendingOutputEvents,
     PendingPopupServerRequests, PendingProtocolInputEvents, PendingWindowServerRequests,
     PendingX11Requests, PendingXdgRequests, PopupPlacement, PopupServerAction, PrimaryOutputState,
-    ResizeEdges, PrimarySelectionState, RenderList, SurfaceExtent, WindowServerAction, X11WindowGeometry,
-    XdgSurfaceRole,
+    ResizeEdges, PrimarySelectionState, RenderList, SurfaceExtent, SurfacePresentationRole,
+    SurfacePresentationSnapshot, WindowServerAction, X11WindowGeometry, XdgSurfaceRole,
 };
 use nekoland_ecs::views::{
     OutputRuntime, PopupRuntime, SurfaceRuntime, WindowVisibilityRuntime, WorkspaceRuntime,
@@ -637,28 +637,48 @@ fn sync_workspace_visibility_system(
         (With<XdgWindow>, Allow<Disabled>),
     >,
     popups: Query<(PopupRuntime, Has<Disabled>), (With<XdgPopup>, Allow<Disabled>)>,
+    surface_presentation: Option<Res<SurfacePresentationSnapshot>>,
     mut visibility: Local<WorkspaceVisibilityState>,
     mut server: NonSendMut<SmithayProtocolServer>,
 ) {
     let (_, active_workspace) =
         nekoland_ecs::workspace_membership::active_workspace_runtime_target(&workspaces);
+    let surface_presentation = surface_presentation.as_deref();
     let visible_toplevels = windows
         .iter()
         .filter(|(_, window, disabled)| {
-            *window.mode != WindowMode::Hidden
-                && window.viewport_visibility.visible
-                && window.background.is_none()
-                && !disabled
+            !disabled
+                && surface_presentation.map_or_else(
+                    || {
+                        *window.mode != WindowMode::Hidden
+                            && window.viewport_visibility.visible
+                            && window.background.is_none()
+                    },
+                    |snapshot| {
+                        snapshot.surfaces.get(&window.surface_id()).is_some_and(|state| {
+                            state.visible && state.role == SurfacePresentationRole::Window
+                        })
+                    },
+                )
         })
         .map(|(_, window, _)| window.surface_id())
         .collect::<BTreeSet<_>>();
     let visible_toplevel_entities = windows
         .iter()
         .filter(|(_, window, disabled)| {
-            *window.mode != WindowMode::Hidden
-                && window.viewport_visibility.visible
-                && window.background.is_none()
-                && !disabled
+            !disabled
+                && surface_presentation.map_or_else(
+                    || {
+                        *window.mode != WindowMode::Hidden
+                            && window.viewport_visibility.visible
+                            && window.background.is_none()
+                    },
+                    |snapshot| {
+                        snapshot.surfaces.get(&window.surface_id()).is_some_and(|state| {
+                            state.visible && state.role == SurfacePresentationRole::Window
+                        })
+                    },
+                )
         })
         .map(|(entity, _, _)| entity)
         .collect::<BTreeSet<_>>();
@@ -666,8 +686,17 @@ fn sync_workspace_visibility_system(
         .iter()
         .filter(|(popup, disabled)| {
             !disabled
-                && popup.buffer.attached
-                && popup_parent_visible(popup.child_of, &visible_toplevel_entities)
+                && surface_presentation.map_or_else(
+                    || {
+                        popup.buffer.attached
+                            && popup_parent_visible(popup.child_of, &visible_toplevel_entities)
+                    },
+                    |snapshot| {
+                        snapshot.surfaces.get(&popup.surface_id()).is_some_and(|state| {
+                            state.visible && state.role == SurfacePresentationRole::Popup
+                        })
+                    },
+                )
         })
         .map(|(popup, _)| popup.surface_id())
         .collect::<BTreeSet<_>>();
@@ -706,6 +735,7 @@ fn dispatch_seat_input_system(
     keyboard_focus: Option<Res<KeyboardFocusState>>,
     pointer: Option<Res<GlobalPointerPosition>>,
     render_list: Option<Res<RenderList>>,
+    surface_presentation: Option<Res<SurfacePresentationSnapshot>>,
     primary_output: Option<Res<PrimaryOutputState>>,
     mut pending_protocol_input_events: ResMut<PendingProtocolInputEvents>,
     outputs: Query<(Entity, &OutputDevice, &OutputPlacement)>,
@@ -735,6 +765,7 @@ fn dispatch_seat_input_system(
     let keyboard_focus = keyboard_focus.as_deref();
     let pointer = pointer.as_deref();
     let render_list = render_list.as_deref();
+    let surface_presentation = surface_presentation.as_deref();
 
     for event in pending_protocol_input_events.drain() {
         sync_keyboard_focus_if_needed(&mut server, &mut seat_sync, keyboard_focus);
@@ -748,6 +779,7 @@ fn dispatch_seat_input_system(
                     &mut seat_sync,
                     pointer,
                     render_list,
+                    surface_presentation,
                     primary_output.as_deref(),
                     &outputs,
                     &windows,
@@ -768,6 +800,7 @@ fn dispatch_seat_input_system(
                     &mut seat_sync,
                     pointer,
                     render_list,
+                    surface_presentation,
                     primary_output.as_deref(),
                     &outputs,
                     &windows,
@@ -782,6 +815,7 @@ fn dispatch_seat_input_system(
                     &mut seat_sync,
                     pointer,
                     render_list,
+                    surface_presentation,
                     primary_output.as_deref(),
                     &outputs,
                     &windows,
@@ -804,6 +838,7 @@ fn dispatch_seat_input_system(
                     &mut seat_sync,
                     pointer,
                     render_list,
+                    surface_presentation,
                     primary_output.as_deref(),
                     &outputs,
                     &windows,
@@ -824,6 +859,7 @@ fn dispatch_seat_input_system(
         &mut seat_sync,
         pointer,
         render_list,
+        surface_presentation,
         primary_output.as_deref(),
         &outputs,
         &windows,
@@ -3293,6 +3329,7 @@ fn sync_pointer_focus_if_needed(
     seat_sync: &mut SeatInputSyncState,
     pointer: Option<&GlobalPointerPosition>,
     render_list: Option<&RenderList>,
+    surface_presentation: Option<&SurfacePresentationSnapshot>,
     primary_output: Option<&PrimaryOutputState>,
     outputs: &Query<(Entity, &OutputDevice, &OutputPlacement)>,
     windows: &Query<
@@ -3322,6 +3359,7 @@ fn sync_pointer_focus_if_needed(
                 Some(&*server),
                 location,
                 render_list,
+                surface_presentation,
                 primary_output,
                 outputs,
                 windows,
@@ -3349,6 +3387,7 @@ fn pointer_focus_target(
     server: Option<&SmithayProtocolServer>,
     location: Point<f64, Logical>,
     render_list: Option<&RenderList>,
+    surface_presentation: Option<&SurfacePresentationSnapshot>,
     primary_output: Option<&PrimaryOutputState>,
     outputs: &Query<(Entity, &OutputDevice, &OutputPlacement)>,
     windows: &Query<
@@ -3367,6 +3406,46 @@ fn pointer_focus_target(
     >,
 ) -> Option<PointerSurfaceFocus> {
     let render_list = render_list?;
+    if let Some(surface_presentation) = surface_presentation {
+        let output_offsets = outputs
+            .iter()
+            .map(|(_, output, placement)| (output.name.clone(), (placement.x, placement.y)))
+            .collect::<HashMap<_, _>>();
+
+        for element in render_list.elements.iter().rev() {
+            let Some(state) = surface_presentation.surfaces.get(&element.surface_id) else {
+                continue;
+            };
+            if !state.visible || !state.input_enabled {
+                continue;
+            }
+            let bounds = global_surface_bounds(
+                &state.geometry,
+                state.target_output.as_deref(),
+                &output_offsets,
+            );
+            if pointer_x < bounds.x
+                || pointer_x >= bounds.x + bounds.width
+                || pointer_y < bounds.y
+                || pointer_y >= bounds.y + bounds.height
+            {
+                continue;
+            }
+            let surface_origin = Point::<f64, Logical>::from((bounds.x, bounds.y));
+            if server.is_some_and(|server| {
+                !server.pointer_focus_candidate_accepts(
+                    element.surface_id,
+                    location,
+                    surface_origin,
+                )
+            }) {
+                continue;
+            }
+            return Some(PointerSurfaceFocus { surface_id: element.surface_id, surface_origin });
+        }
+
+        return None;
+    }
     let primary_output_name =
         primary_output.and_then(|primary_output| primary_output.name.as_deref());
     let output_names = outputs
@@ -3872,6 +3951,7 @@ mod tests {
             (16.0, 16.0).into(),
             Some(&render_list),
             None,
+            None,
             &outputs,
             &windows,
             &popups,
@@ -3943,6 +4023,7 @@ mod tests {
             None,
             (110.0, 10.0).into(),
             Some(&render_list),
+            None,
             Some(&PrimaryOutputState { name: Some("DP-1".to_owned()) }),
             &outputs,
             &windows,
@@ -3960,6 +4041,7 @@ mod tests {
                 None,
                 (10.0, 10.0).into(),
                 Some(&render_list),
+                None,
                 Some(&PrimaryOutputState { name: Some("DP-1".to_owned()) }),
                 &outputs,
                 &windows,
