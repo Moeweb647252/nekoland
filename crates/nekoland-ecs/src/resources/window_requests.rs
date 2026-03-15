@@ -1,3 +1,4 @@
+use crate::components::SurfaceGeometry;
 use crate::kinds::CompositorRequestQueue;
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WindowServerAction {
     Close,
+    SyncPresentation { geometry: SurfaceGeometry, fullscreen: bool, maximized: bool },
 }
 
 /// One low-level window request targeted at a surface id.

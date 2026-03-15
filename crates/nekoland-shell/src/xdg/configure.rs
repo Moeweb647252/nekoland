@@ -83,6 +83,9 @@ pub fn configure_sequence_system(
                     deferred.push(request);
                     continue;
                 };
+                if window.background.is_some() {
+                    continue;
+                }
 
                 *window.layout = WindowLayout::Floating;
                 *window.mode = WindowMode::Normal;
@@ -115,6 +118,9 @@ pub fn configure_sequence_system(
                     deferred.push(request);
                     continue;
                 };
+                if window.background.is_some() {
+                    continue;
+                }
 
                 *window.layout = WindowLayout::Floating;
                 *window.mode = WindowMode::Normal;

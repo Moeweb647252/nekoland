@@ -45,9 +45,9 @@ enabled = true
 # [startup]
 # actions = [{ exec = ["swaybg", "-o", "eDP-1", "-i", "/path/to/wallpaper.png", "-m", "fill"] }]
 #
- [[window_rules]]
+[[window_rules]]
 app_id = "ffplay"
-background = "Winit-1"
+background = "eDP-1"
 
 [keybinds.bindings]
 # External commands use argv arrays.

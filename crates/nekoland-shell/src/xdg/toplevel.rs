@@ -121,6 +121,7 @@ pub fn toplevel_lifecycle_system(
                     &mut mode,
                     None,
                 );
+                commands.entity(window_entity).insert((scene_geometry.clone(), layout, mode));
                 if let Some(workspace_entity) = workspace_entity {
                     commands.entity(window_entity).insert(ChildOf(workspace_entity));
                 }

@@ -18,6 +18,9 @@ pub fn fullscreen_layout_system(
     work_area: Res<WorkArea>,
 ) {
     for mut window in &mut windows {
+        if window.background.is_some() {
+            continue;
+        }
         let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces);
         let output_state =
             resolve_output_state_for_workspace(&outputs, workspace_id, primary_output.as_deref());

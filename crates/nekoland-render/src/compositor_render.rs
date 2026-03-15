@@ -16,8 +16,8 @@ pub struct FrameComposer;
 
 /// Builds the per-frame render list from already-laid-out surfaces.
 ///
-/// Composition order is deliberate: background/bottom layers, visible windows, popups whose
-/// parents are still visible, then top/overlay layers.
+/// Composition order is deliberate: output backgrounds, background/bottom layers, visible
+/// windows, popups whose parents are still visible, then top/overlay layers.
 pub fn compose_frame_system(
     layers: Query<LayerRenderRuntime, With<nekoland_ecs::components::LayerShellSurface>>,
     windows: Query<(Entity, WindowRenderRuntime), With<XdgWindow>>,
@@ -33,7 +33,22 @@ pub fn compose_frame_system(
                 && window.viewport_visibility.visible
                 && window.background.is_some()
         })
-        .map(|(_, window)| (window.surface_id(), opacity_for_animation(window.animation.progress)))
+        .fold(BTreeMap::new(), |mut backgrounds, (_, window)| {
+            let Some(background) = window.background.as_ref() else {
+                return backgrounds;
+            };
+            let candidate = (window.surface_id(), opacity_for_animation(window.animation.progress));
+            backgrounds
+                .entry(background.output.clone())
+                .and_modify(|current: &mut (u64, f32)| {
+                    if candidate.0 > current.0 {
+                        *current = candidate;
+                    }
+                })
+                .or_insert(candidate);
+            backgrounds
+        })
+        .into_values()
         .collect::<Vec<_>>();
     let visible_windows = windows
         .iter()
@@ -61,14 +76,17 @@ pub fn compose_frame_system(
     let ordered_window_surfaces = stacking.ordered_surfaces(
         visible_windows.iter().map(|(_, surface_id, workspace_id, _)| (*workspace_id, *surface_id)),
     );
-    let mut elements = layers
-        .iter()
-        .filter(|layer| layer.buffer.attached)
-        .filter(|layer| {
-            matches!(layer.layer_surface.layer, LayerLevel::Background | LayerLevel::Bottom)
-        })
-        .map(|layer| (layer.surface_id(), opacity_for_animation(layer.animation.progress)))
-        .chain(background_windows.into_iter())
+    let mut elements = background_windows
+        .into_iter()
+        .chain(
+            layers
+                .iter()
+                .filter(|layer| layer.buffer.attached)
+                .filter(|layer| {
+                    matches!(layer.layer_surface.layer, LayerLevel::Background | LayerLevel::Bottom)
+                })
+                .map(|layer| (layer.surface_id(), opacity_for_animation(layer.animation.progress))),
+        )
         .chain(ordered_window_surfaces.into_iter().filter_map(|surface_id| {
             active_window_opacity.get(&surface_id).copied().map(|opacity| (surface_id, opacity))
         }))
@@ -116,8 +134,10 @@ fn opacity_for_animation(animation_progress: f32) -> f32 {
 mod tests {
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::RenderSchedule;
-    use nekoland_ecs::bundles::WindowBundle;
-    use nekoland_ecs::components::{OutputBackgroundWindow, WlSurfaceHandle, XdgWindow};
+    use nekoland_ecs::bundles::{LayerSurfaceBundle, WindowBundle};
+    use nekoland_ecs::components::{
+        LayerLevel, OutputBackgroundWindow, WlSurfaceHandle, XdgWindow,
+    };
     use nekoland_ecs::resources::{RenderList, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState};
 
     use super::compose_frame_system;
@@ -219,5 +239,100 @@ mod tests {
             .map(|element| element.surface_id)
             .collect::<Vec<_>>();
         assert_eq!(render_order, vec![11, 22]);
+    }
+
+    #[test]
+    fn background_windows_render_below_background_layers() {
+        let mut app = NekolandApp::new("render-background-layer-order-test");
+        app.inner_mut()
+            .init_resource::<RenderList>()
+            .insert_resource(WindowStackingState::default())
+            .add_systems(RenderSchedule, compose_frame_system);
+
+        app.inner_mut().world_mut().spawn((
+            WindowBundle {
+                surface: WlSurfaceHandle { id: 11 },
+                window: XdgWindow {
+                    app_id: "org.nekoland.test".to_owned(),
+                    title: "background".to_owned(),
+                    last_acked_configure: None,
+                },
+                ..Default::default()
+            },
+            OutputBackgroundWindow {
+                output: "Virtual-1".to_owned(),
+                restore: nekoland_ecs::components::WindowRestoreState {
+                    geometry: Default::default(),
+                    layout: nekoland_ecs::components::WindowLayout::Floating,
+                    mode: nekoland_ecs::components::WindowMode::Normal,
+                },
+            },
+        ));
+        app.inner_mut().world_mut().spawn(LayerSurfaceBundle {
+            surface: WlSurfaceHandle { id: 22 },
+            buffer: nekoland_ecs::components::BufferState { attached: true, scale: 1 },
+            layer_surface: nekoland_ecs::components::LayerShellSurface {
+                layer: LayerLevel::Background,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+
+        let render_order = app
+            .inner()
+            .world()
+            .resource::<RenderList>()
+            .elements
+            .iter()
+            .filter(|element| element.surface_id != 0)
+            .map(|element| element.surface_id)
+            .collect::<Vec<_>>();
+        assert_eq!(render_order, vec![11, 22]);
+    }
+
+    #[test]
+    fn only_latest_background_window_per_output_renders() {
+        let mut app = NekolandApp::new("render-single-background-per-output-test");
+        app.inner_mut()
+            .init_resource::<RenderList>()
+            .insert_resource(WindowStackingState::default())
+            .add_systems(RenderSchedule, compose_frame_system);
+
+        for surface_id in [11, 22] {
+            app.inner_mut().world_mut().spawn((
+                WindowBundle {
+                    surface: WlSurfaceHandle { id: surface_id },
+                    window: XdgWindow {
+                        app_id: "org.nekoland.test".to_owned(),
+                        title: format!("background-{surface_id}"),
+                        last_acked_configure: None,
+                    },
+                    ..Default::default()
+                },
+                OutputBackgroundWindow {
+                    output: "Virtual-1".to_owned(),
+                    restore: nekoland_ecs::components::WindowRestoreState {
+                        geometry: Default::default(),
+                        layout: nekoland_ecs::components::WindowLayout::Floating,
+                        mode: nekoland_ecs::components::WindowMode::Normal,
+                    },
+                },
+            ));
+        }
+
+        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+
+        let render_order = app
+            .inner()
+            .world()
+            .resource::<RenderList>()
+            .elements
+            .iter()
+            .filter(|element| element.surface_id != 0)
+            .map(|element| element.surface_id)
+            .collect::<Vec<_>>();
+        assert_eq!(render_order, vec![22]);
     }
 }

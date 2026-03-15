@@ -76,6 +76,7 @@ use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as XdgDecorationMode;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
@@ -88,7 +89,8 @@ use smithay::reexports::wayland_server::{
 };
 use smithay::utils::Serial;
 use smithay::utils::{
-    Clock, ClockSource, Logical, Monotonic, Point, SERIAL_COUNTER, Time, Transform,
+    Clock, ClockSource, Logical, Monotonic, Point, Rectangle, SERIAL_COUNTER, Size, Time,
+    Transform,
 };
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
@@ -133,7 +135,7 @@ use smithay::wayland::xwayland_shell::{
     XWaylandShellHandler, XWaylandShellState as SmithayXWaylandShellState,
 };
 use smithay::xwayland::xwm::{
-    Reorder, ResizeEdge, WmWindowProperty, X11Surface, X11Wm, XwmHandler, XwmId,
+    Reorder, ResizeEdge, WmWindowProperty, WmWindowType, X11Surface, X11Wm, XwmHandler, XwmId,
 };
 use smithay::xwayland::{XWayland, XWaylandClientData, XWaylandEvent};
 use smithay::{
@@ -541,6 +543,13 @@ fn dispatch_window_server_requests_system(
     for request in pending_window_requests.drain() {
         let handled = match request.action {
             WindowServerAction::Close => server.send_close(request.surface_id),
+            WindowServerAction::SyncPresentation { ref geometry, fullscreen, maximized } => server
+                .sync_window_presentation(
+                    request.surface_id,
+                    geometry.clone(),
+                    fullscreen,
+                    maximized,
+                ),
         };
 
         if !handled {
@@ -635,14 +644,20 @@ fn sync_workspace_visibility_system(
     let visible_toplevels = windows
         .iter()
         .filter(|(_, window, disabled)| {
-            *window.mode != WindowMode::Hidden && window.viewport_visibility.visible && !disabled
+            *window.mode != WindowMode::Hidden
+                && window.viewport_visibility.visible
+                && window.background.is_none()
+                && !disabled
         })
         .map(|(_, window, _)| window.surface_id())
         .collect::<BTreeSet<_>>();
     let visible_toplevel_entities = windows
         .iter()
         .filter(|(_, window, disabled)| {
-            *window.mode != WindowMode::Hidden && window.viewport_visibility.visible && !disabled
+            *window.mode != WindowMode::Hidden
+                && window.viewport_visibility.visible
+                && window.background.is_none()
+                && !disabled
         })
         .map(|(entity, _, _)| entity)
         .collect::<BTreeSet<_>>();
@@ -906,6 +921,39 @@ impl SmithayProtocolServer {
         self.runtime
             .as_ref()
             .map(|runtime| runtime.borrow_mut().send_close(surface_id))
+            .unwrap_or(false)
+    }
+
+    fn pointer_focus_candidate_accepts(
+        &self,
+        surface_id: u64,
+        location: Point<f64, Logical>,
+        surface_origin: Point<f64, Logical>,
+    ) -> bool {
+        self.runtime
+            .as_ref()
+            .map(|runtime| {
+                runtime
+                    .borrow()
+                    .pointer_focus_candidate_accepts(surface_id, location, surface_origin)
+            })
+            .unwrap_or(true)
+    }
+
+    fn sync_window_presentation(
+        &mut self,
+        surface_id: u64,
+        geometry: SurfaceGeometry,
+        fullscreen: bool,
+        maximized: bool,
+    ) -> bool {
+        self.runtime
+            .as_ref()
+            .map(|runtime| {
+                runtime
+                    .borrow_mut()
+                    .sync_window_presentation(surface_id, geometry, fullscreen, maximized)
+            })
             .unwrap_or(false)
     }
 
@@ -1443,6 +1491,87 @@ impl SmithayProtocolRuntime {
         handled
     }
 
+    fn sync_window_presentation(
+        &mut self,
+        surface_id: u64,
+        geometry: SurfaceGeometry,
+        fullscreen: bool,
+        maximized: bool,
+    ) -> bool {
+        let handled = if let Some(toplevel) = self.state.toplevels.get(&surface_id).cloned() {
+            toplevel.with_pending_state(|state| {
+                state.size = Some(Size::<i32, Logical>::from((
+                    geometry.width.max(1) as i32,
+                    geometry.height.max(1) as i32,
+                )));
+                if fullscreen {
+                    state.states.set(xdg_toplevel::State::Fullscreen);
+                } else {
+                    state.states.unset(xdg_toplevel::State::Fullscreen);
+                }
+                if maximized {
+                    state.states.set(xdg_toplevel::State::Maximized);
+                } else {
+                    state.states.unset(xdg_toplevel::State::Maximized);
+                }
+            });
+            toplevel.send_configure();
+            true
+        } else if let Some(window_id) =
+            self.state.x11_window_ids_by_surface.get(&surface_id).copied()
+        {
+            let Some(window) = self.state.x11_windows.get(&window_id).cloned() else {
+                return false;
+            };
+
+            if let Err(error) = window.set_fullscreen(fullscreen) {
+                remember_protocol_error(
+                    &mut self.last_xwayland_error,
+                    error,
+                    "failed to sync X11 fullscreen state",
+                );
+                return false;
+            }
+            if let Err(error) = window.set_maximized(maximized) {
+                remember_protocol_error(
+                    &mut self.last_xwayland_error,
+                    error,
+                    "failed to sync X11 maximized state",
+                );
+                return false;
+            }
+            if !window.is_override_redirect() {
+                let rect = Rectangle::new(
+                    Point::from((geometry.x, geometry.y)),
+                    Size::from((geometry.width.max(1) as i32, geometry.height.max(1) as i32)),
+                );
+                if let Err(error) = window.configure(rect) {
+                    remember_protocol_error(
+                        &mut self.last_xwayland_error,
+                        error,
+                        "failed to sync X11 window geometry",
+                    );
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        };
+
+        if handled {
+            if let Err(error) = self.display.flush_clients() {
+                remember_protocol_error(
+                    &mut self.last_dispatch_error,
+                    error,
+                    "failed to flush Wayland clients after syncing window presentation",
+                );
+            }
+        }
+
+        handled
+    }
+
     fn dismiss_popup(&mut self, surface_id: u64) -> bool {
         let Some(popup) = self.state.popups.get(&surface_id).cloned() else {
             return false;
@@ -1535,7 +1664,6 @@ impl SmithayProtocolRuntime {
                 WindowSurfaceType::ALL,
             )
             .map(|(surface, origin)| (surface, origin.to_f64()))
-            .or(Some((root_surface, focus.surface_origin)))
         });
         pointer.motion(
             &mut self.state,
@@ -1771,6 +1899,25 @@ impl SmithayProtocolRuntime {
         compositor::with_states(&surface, |states| {
             SurfacePresentationFeedback::from_states(states, PresentationKind::empty())
         })
+    }
+
+    fn pointer_focus_candidate_accepts(
+        &self,
+        surface_id: u64,
+        location: Point<f64, Logical>,
+        surface_origin: Point<f64, Logical>,
+    ) -> bool {
+        let Some(root_surface) = self.surface_for_id(surface_id) else {
+            return false;
+        };
+
+        under_from_surface_tree(
+            &root_surface,
+            location,
+            surface_origin.to_i32_round(),
+            WindowSurfaceType::ALL,
+        )
+        .is_some()
     }
 
     fn sync_server_state(&self, server_state: &mut ProtocolServerState) {
@@ -2044,6 +2191,32 @@ impl ProtocolRuntimeState {
         }
     }
 
+    fn should_publish_managed_x11_window(
+        window: &X11Surface,
+        title: &str,
+        app_id: &str,
+        geometry: X11WindowGeometry,
+    ) -> bool {
+        if title.is_empty() && app_id.is_empty() && geometry.width <= 1 && geometry.height <= 1 {
+            return false;
+        }
+
+        if window.is_popup() {
+            return false;
+        }
+
+        !matches!(
+            window.window_type(),
+            Some(
+                WmWindowType::DropdownMenu
+                    | WmWindowType::Menu
+                    | WmWindowType::Notification
+                    | WmWindowType::PopupMenu
+                    | WmWindowType::Tooltip
+            )
+        )
+    }
+
     fn remember_x11_window(&mut self, window: &X11Surface) {
         self.x11_windows.insert(window.window_id(), window.clone());
         let _ = self.sync_x11_surface_mapping(window);
@@ -2064,11 +2237,14 @@ impl ProtocolRuntimeState {
         let app_id = Self::x11_app_id(&window);
         let geometry = Self::x11_geometry(&window);
 
-        if title.is_empty() && app_id.is_empty() && geometry.width <= 1 && geometry.height <= 1 {
+        if !Self::should_publish_managed_x11_window(&window, &title, &app_id, geometry) {
             tracing::trace!(
                 window_id,
                 surface_id,
-                "ignoring 1x1 XWayland helper surface without title or app_id"
+                window_type = ?window.window_type(),
+                popup = window.is_popup(),
+                override_redirect = window.is_override_redirect(),
+                "ignoring XWayland helper surface"
             );
             return;
         }
@@ -3132,6 +3308,8 @@ fn sync_pointer_focus_if_needed(
             pointer_focus_target(
                 pointer.x,
                 pointer.y,
+                Some(&*server),
+                location,
                 render_list,
                 primary_output,
                 outputs,
@@ -3157,6 +3335,8 @@ fn sync_pointer_focus_if_needed(
 fn pointer_focus_target(
     pointer_x: f64,
     pointer_y: f64,
+    server: Option<&SmithayProtocolServer>,
+    location: Point<f64, Logical>,
     render_list: Option<&RenderList>,
     primary_output: Option<&PrimaryOutputState>,
     outputs: &Query<(Entity, &OutputDevice, &OutputPlacement)>,
@@ -3190,6 +3370,9 @@ fn pointer_focus_target(
     let mut window_target_outputs_by_entity = HashMap::new();
 
     for (entity, surface, viewport_visibility, background) in windows.iter() {
+        if background.is_some() {
+            continue;
+        }
         let target_output = background
             .map(|background| background.output.clone())
             .or_else(|| viewport_visibility.and_then(|visibility| visibility.output.clone()));
@@ -3233,9 +3416,19 @@ fn pointer_focus_target(
             && pointer_y >= bounds.y
             && pointer_y < bounds.y + bounds.height
         {
+            let surface_origin = Point::<f64, Logical>::from((bounds.x, bounds.y));
+            if server.is_some_and(|server| {
+                !server.pointer_focus_candidate_accepts(
+                    element.surface_id,
+                    location,
+                    surface_origin,
+                )
+            }) {
+                continue;
+            }
             return Some(PointerSurfaceFocus {
                 surface_id: element.surface_id,
-                surface_origin: Point::<f64, Logical>::from((bounds.x, bounds.y)),
+                surface_origin,
             });
         }
     }
@@ -3667,6 +3860,8 @@ mod tests {
         let target = pointer_focus_target(
             16.0,
             16.0,
+            None,
+            (16.0, 16.0).into(),
             Some(&render_list),
             None,
             &outputs,
@@ -3737,6 +3932,8 @@ mod tests {
         let target = pointer_focus_target(
             110.0,
             10.0,
+            None,
+            (110.0, 10.0).into(),
             Some(&render_list),
             Some(&PrimaryOutputState { name: Some("DP-1".to_owned()) }),
             &outputs,
@@ -3752,6 +3949,8 @@ mod tests {
             pointer_focus_target(
                 10.0,
                 10.0,
+                None,
+                (10.0, 10.0).into(),
                 Some(&render_list),
                 Some(&PrimaryOutputState { name: Some("DP-1".to_owned()) }),
                 &outputs,

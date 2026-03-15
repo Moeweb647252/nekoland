@@ -93,6 +93,7 @@ pub fn sync_window_background_role(
                     mode: *mode,
                 },
             );
+            *mode = WindowMode::Fullscreen;
             commands.entity(entity).insert(OutputBackgroundWindow { output, restore });
         }
         None => {
@@ -236,6 +237,7 @@ mod tests {
             .expect("background role should exist")
             .clone();
         assert_eq!(background.output, "Virtual-1");
+        assert_eq!(mode, WindowMode::Fullscreen);
 
         {
             let mut commands = world.commands();

@@ -16,7 +16,7 @@ use nekoland_ecs::resources::{EntityIndex, rebuild_entity_index_system};
 use crate::{
     commands, decorations, focus,
     interaction::{self, ActiveWindowGrab},
-    layer, layout, viewport, window_control, workspace, x11, xdg,
+    layer, layout, presentation, viewport, window_control, workspace, x11, xdg,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -79,6 +79,7 @@ impl NekolandPlugin for ShellPlugin {
                         layout::floating::floating_layout_system,
                         layout::fullscreen::fullscreen_layout_system,
                         viewport::window_viewport_projection_system,
+                        presentation::window_presentation_sync_system,
                         focus::pointer_button_focus_system,
                         interaction::window_grab_system,
                         layout::stacking::stacking_layout_system,

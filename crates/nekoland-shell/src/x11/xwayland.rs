@@ -361,6 +361,7 @@ fn map_x11_window(
         &mut mode,
         None,
     );
+    commands.entity(window_entity).insert((scene_geometry.clone(), layout, mode));
     if let Some(active_workspace_entity) = active_workspace_entity {
         commands.entity(window_entity).insert(ChildOf(active_workspace_entity));
     }
@@ -526,6 +527,9 @@ fn start_x11_window_grab(
     let Ok((_, mut window)) = windows.get_mut(entity) else {
         return false;
     };
+    if window.background.is_some() {
+        return true;
+    }
 
     let override_redirect =
         window.x11_window.expect("x11 runtime should expose x11 metadata").override_redirect;

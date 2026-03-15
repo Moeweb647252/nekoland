@@ -31,7 +31,9 @@ pub fn tiling_layout_system(
 ) {
     let tiled_surfaces = windows
         .iter()
-        .filter(|window| matches!(*window.layout, WindowLayout::Tiled))
+        .filter(|window| {
+            window.background.is_none() && matches!(*window.layout, WindowLayout::Tiled)
+        })
         .map(|window| {
             (
                 window.surface_id(),
@@ -63,6 +65,9 @@ pub fn tiling_layout_system(
         arranged.extend(tree.arranged_geometry(&workspace_area));
     }
     for mut window in &mut windows {
+        if window.background.is_some() {
+            continue;
+        }
         let Some(geometry) = arranged.get(&window.surface_id()) else {
             continue;
         };

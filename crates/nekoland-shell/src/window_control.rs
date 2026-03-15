@@ -2,10 +2,7 @@ use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::{Commands, Query, ResMut, With};
 use bevy_ecs::query::Allow;
-use nekoland_ecs::components::{
-    OutputBackgroundWindow, WindowLayout, WindowMode, WindowPosition, WindowRestoreState,
-    WindowSize, XdgWindow,
-};
+use nekoland_ecs::components::{WindowLayout, WindowMode, WindowPosition, WindowSize, XdgWindow};
 use nekoland_ecs::events::WindowMoved;
 use nekoland_ecs::resources::{
     EntityIndex, KeyboardFocusState, PendingWindowControls, PendingWindowServerRequests,
@@ -16,7 +13,7 @@ use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 use crate::viewport::{project_scene_geometry, resolve_output_state_for_workspace};
-use crate::window_policy::lock_window_policy;
+use crate::window_policy::{lock_window_policy, sync_window_background_role};
 
 /// Applies high-level staged window controls to the current window set.
 ///
@@ -58,6 +55,48 @@ pub fn window_control_request_system(
             Some(workspace_id),
             primary_output.as_deref(),
         );
+        let is_background = window.background.is_some();
+
+        if is_background {
+            if control.close {
+                pending_window_requests.push(WindowServerRequest {
+                    surface_id: window.surface_id(),
+                    action: WindowServerAction::Close,
+                });
+            }
+
+            if let Some(background_control) = control.background {
+                match background_control {
+                    nekoland_ecs::resources::WindowBackgroundControl::Set { output } => {
+                        sync_window_background_role(
+                            &mut commands,
+                            entity,
+                            Some(output),
+                            &mut window.scene_geometry,
+                            &mut window.layout,
+                            &mut window.mode,
+                            window.background.as_ref().map(|background| (*background).clone()),
+                        );
+                        if keyboard_focus.focused_surface == Some(window.surface_id()) {
+                            keyboard_focus.focused_surface = None;
+                        }
+                    }
+                    nekoland_ecs::resources::WindowBackgroundControl::Clear => {
+                        sync_window_background_role(
+                            &mut commands,
+                            entity,
+                            None,
+                            &mut window.scene_geometry,
+                            &mut window.layout,
+                            &mut window.mode,
+                            window.background.as_ref().map(|background| (*background).clone()),
+                        );
+                    }
+                }
+            }
+
+            continue;
+        }
 
         if let Some(position) = control.position {
             window.placement.set_explicit_position(WindowPosition { x: position.x, y: position.y });
@@ -128,30 +167,29 @@ pub fn window_control_request_system(
         if let Some(background_control) = control.background {
             match background_control {
                 nekoland_ecs::resources::WindowBackgroundControl::Set { output } => {
-                    let restore = window
-                        .background
-                        .as_ref()
-                        .map(|background| background.restore.clone())
-                        .unwrap_or(WindowRestoreState {
-                            geometry: window.scene_geometry.clone(),
-                            layout: *window.layout,
-                            mode: *window.mode,
-                        });
-                    commands.entity(entity).insert(OutputBackgroundWindow {
-                        output: output.as_str().to_owned(),
-                        restore,
-                    });
+                    sync_window_background_role(
+                        &mut commands,
+                        entity,
+                        Some(output),
+                        &mut window.scene_geometry,
+                        &mut window.layout,
+                        &mut window.mode,
+                        window.background.as_ref().map(|background| (*background).clone()),
+                    );
                     if keyboard_focus.focused_surface == Some(window.surface_id()) {
                         keyboard_focus.focused_surface = None;
                     }
                 }
                 nekoland_ecs::resources::WindowBackgroundControl::Clear => {
-                    if let Some(background) = window.background.as_ref() {
-                        *window.scene_geometry = background.restore.geometry.clone();
-                        *window.layout = background.restore.layout;
-                        *window.mode = background.restore.mode;
-                    }
-                    commands.entity(entity).remove::<OutputBackgroundWindow>();
+                    sync_window_background_role(
+                        &mut commands,
+                        entity,
+                        None,
+                        &mut window.scene_geometry,
+                        &mut window.layout,
+                        &mut window.mode,
+                        window.background.as_ref().map(|background| (*background).clone()),
+                    );
                 }
             }
         }
