@@ -466,7 +466,9 @@ impl Backend for WinitRuntime {
                 }
             }
 
-            let mut elements = Vec::new();
+            // Smithay consumes elements in front-to-back presentation order, so the cursor must
+            // stay ahead of scene surfaces to remain visually on top.
+            let mut elements = cursor_elements;
             for (render_element, geometry) in output_surfaces_in_presentation_order(
                 cx.render_list,
                 cx.surfaces,
@@ -484,7 +486,6 @@ impl Backend for WinitRuntime {
                     Kind::Unspecified,
                 ));
             }
-            elements.extend(cursor_elements);
 
             let smithay_damage = match damage_tracker.render_output(
                 renderer,

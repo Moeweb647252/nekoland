@@ -17,6 +17,8 @@ pub(crate) struct ViewportPointerPanGestureState {
     engaged: bool,
 }
 
+const POINTER_BOUNDS_EPSILON: f64 = 0.001;
+
 /// Consumes pointer-related backend input records into raw pointer state, pointer deltas, and
 /// higher-level button messages.
 pub fn pointer_input_system(
@@ -112,6 +114,8 @@ pub fn pointer_input_system(
 /// the compositor.
 pub fn cursor_motion_system(
     mut pointer: ResMut<GlobalPointerPosition>,
+    focused_output: Option<Res<FocusedOutputState>>,
+    outputs: Query<OutputRuntime>,
     mut pointer_delta: ResMut<PointerDelta>,
     mut motion_events: MessageWriter<PointerMotion>,
 ) {
@@ -119,11 +123,21 @@ pub fn cursor_motion_system(
         return;
     }
 
-    pointer.x += pointer_delta.dx;
-    pointer.y += pointer_delta.dy;
-    motion_events.write(PointerMotion { x: pointer.x, y: pointer.y });
+    let next_x = pointer.x + pointer_delta.dx;
+    let next_y = pointer.y + pointer_delta.dy;
+    let (clamped_x, clamped_y) = clamp_pointer_to_active_output(
+        (next_x, next_y),
+        &pointer,
+        focused_output.as_deref(),
+        &outputs,
+    )
+    .unwrap_or((next_x, next_y));
+
+    pointer.x = clamped_x;
+    pointer.y = clamped_y;
     pointer_delta.dx = 0.0;
     pointer_delta.dy = 0.0;
+    motion_events.write(PointerMotion { x: pointer.x, y: pointer.y });
 }
 
 pub fn focused_output_tracking_system(
@@ -150,6 +164,50 @@ pub fn focused_output_tracking_system(
     if focused_output.name != next_output {
         focused_output.name = next_output;
     }
+}
+
+fn clamp_pointer_to_active_output(
+    next_pointer: (f64, f64),
+    current_pointer: &GlobalPointerPosition,
+    focused_output: Option<&FocusedOutputState>,
+    outputs: &Query<OutputRuntime>,
+) -> Option<(f64, f64)> {
+    let output = focused_output
+        .and_then(|focused_output| {
+            focused_output
+                .name
+                .as_deref()
+                .and_then(|output_name| outputs.iter().find(|output| output.name() == output_name))
+        })
+        .or_else(|| {
+            outputs.iter().find(|output| {
+                pointer_within_output((current_pointer.x, current_pointer.y), output)
+            })
+        })
+        .or_else(|| outputs.iter().find(|output| pointer_within_output(next_pointer, output)))
+        .or_else(|| outputs.iter().next())?;
+
+    let left = f64::from(output.placement.x);
+    let top = f64::from(output.placement.y);
+    let right = left + f64::from(output.properties.width.max(1));
+    let bottom = top + f64::from(output.properties.height.max(1));
+
+    Some((
+        next_pointer.0.clamp(left, right - POINTER_BOUNDS_EPSILON),
+        next_pointer.1.clamp(top, bottom - POINTER_BOUNDS_EPSILON),
+    ))
+}
+
+fn pointer_within_output(
+    pointer: (f64, f64),
+    output: &nekoland_ecs::views::OutputRuntimeReadOnlyItem<'_, '_>,
+) -> bool {
+    let left = f64::from(output.placement.x);
+    let top = f64::from(output.placement.y);
+    let right = left + f64::from(output.properties.width.max(1));
+    let bottom = top + f64::from(output.properties.height.max(1));
+
+    pointer.0 >= left && pointer.0 < right && pointer.1 >= top && pointer.1 < bottom
 }
 
 /// Treats the configured viewport-pan shortcut plus pointer delta as direct viewport panning on
@@ -215,6 +273,8 @@ mod tests {
     use bevy_ecs::message::Messages;
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::RunSystemOnce;
+    use nekoland_ecs::bundles::OutputBundle;
+    use nekoland_ecs::components::{OutputDevice, OutputKind, OutputPlacement, OutputProperties};
     use nekoland_ecs::events::{PointerButton, PointerMotion};
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, CompositorConfig, FocusedOutputState,
@@ -327,6 +387,37 @@ mod tests {
         let pointer_delta = world.resource::<PointerDelta>();
         assert_eq!((pointer.x, pointer.y), (24.0, 17.0));
         assert_eq!((pointer_delta.dx, pointer_delta.dy), (0.0, 0.0));
+    }
+
+    #[test]
+    fn cursor_motion_clamps_to_focused_output_bounds() {
+        let mut world = World::default();
+        world.insert_resource(GlobalPointerPosition { x: 90.0, y: 40.0 });
+        world.insert_resource(PointerDelta { dx: 20.0, dy: 30.0 });
+        world.insert_resource(FocusedOutputState { name: Some("DP-1".to_owned()) });
+        world.init_resource::<Messages<PointerMotion>>();
+        world.spawn(OutputBundle {
+            output: OutputDevice {
+                name: "DP-1".to_owned(),
+                kind: OutputKind::Nested,
+                make: "Nekoland".to_owned(),
+                model: "test".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 100,
+                height: 50,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+            placement: OutputPlacement { x: 0, y: 0 },
+            ..Default::default()
+        });
+
+        world.run_system_once(cursor_motion_system).expect("cursor motion system should run");
+
+        let pointer = world.resource::<GlobalPointerPosition>();
+        assert!((pointer.x - 99.999).abs() < 0.01, "pointer.x should stay inside output bounds");
+        assert!((pointer.y - 49.999).abs() < 0.01, "pointer.y should stay inside output bounds");
     }
 
     #[test]
