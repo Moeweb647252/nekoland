@@ -21,7 +21,7 @@ pub mod xdg_shell;
 
 use bevy_ecs::prelude::Resource;
 use nekoland_core::bridge::{EventBridge, WaylandBridge};
-use nekoland_ecs::components::{LayerAnchor, LayerLevel, LayerMargins};
+use nekoland_ecs::components::{LayerAnchor, LayerLevel, LayerMargins, X11WindowType};
 use nekoland_ecs::kinds::ProtocolEvent as ProtocolEventKind;
 use nekoland_ecs::resources::pending_events::{
     OutputEventRecord, PendingOutputEvents, PendingXdgRequests, PopupPlacement, ResizeEdges,
@@ -136,6 +136,9 @@ pub enum ProtocolEvent {
         surface_id: u64,
         window_id: u32,
         override_redirect: bool,
+        popup: bool,
+        transient_for: Option<u32>,
+        window_type: Option<X11WindowType>,
         title: String,
         app_id: String,
         geometry: X11WindowGeometry,
@@ -144,6 +147,9 @@ pub enum ProtocolEvent {
         surface_id: u64,
         title: String,
         app_id: String,
+        popup: bool,
+        transient_for: Option<u32>,
+        window_type: Option<X11WindowType>,
         geometry: X11WindowGeometry,
     },
     X11WindowMaximizeRequested {
@@ -423,6 +429,9 @@ impl ProtocolState {
                     surface_id,
                     window_id,
                     override_redirect,
+                    popup,
+                    transient_for,
+                    window_type,
                     title,
                     app_id,
                     geometry,
@@ -432,16 +441,34 @@ impl ProtocolState {
                         action: X11LifecycleAction::Mapped {
                             window_id,
                             override_redirect,
+                            popup,
+                            transient_for,
+                            window_type,
                             title,
                             app_id,
                             geometry,
                         },
                     });
                 }
-                ProtocolEvent::X11WindowReconfigured { surface_id, title, app_id, geometry } => {
+                ProtocolEvent::X11WindowReconfigured {
+                    surface_id,
+                    title,
+                    app_id,
+                    popup,
+                    transient_for,
+                    window_type,
+                    geometry,
+                } => {
                     pending_x11_requests.push(X11LifecycleRequest {
                         surface_id,
-                        action: X11LifecycleAction::Reconfigured { title, app_id, geometry },
+                        action: X11LifecycleAction::Reconfigured {
+                            title,
+                            app_id,
+                            popup,
+                            transient_for,
+                            window_type,
+                            geometry,
+                        },
                     });
                 }
                 ProtocolEvent::X11WindowMaximizeRequested { surface_id } => {

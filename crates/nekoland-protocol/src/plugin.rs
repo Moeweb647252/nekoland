@@ -26,13 +26,14 @@ use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
 use calloop::generic::{FdWrapper, Generic};
 use calloop::{Interest, Mode, PostAction};
 use nekoland_core::bridge::WaylandBridge;
+use nekoland_ecs::presentation_logic::{managed_window_visible, popup_visible};
 use nekoland_core::calloop::CalloopSourceRegistry;
 use nekoland_core::error::NekolandError;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule, ProtocolSchedule, RenderSchedule};
 use nekoland_ecs::components::{
-    DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow,
-    OutputDevice, OutputPlacement, SurfaceGeometry, WindowMode, WindowViewportVisibility,
+    DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow, OutputDevice,
+    OutputPlacement, SurfaceGeometry, WindowRole, WindowViewportVisibility, X11WindowType,
     XdgPopup, XdgWindow,
 };
 use nekoland_ecs::resources::{
@@ -654,9 +655,11 @@ fn sync_workspace_visibility_system(
             !disabled
                 && surface_presentation.map_or_else(
                     || {
-                        *window.mode != WindowMode::Hidden
-                            && window.viewport_visibility.visible
-                            && window.background.is_none()
+                        managed_window_visible(
+                            *window.mode,
+                            window.viewport_visibility.visible,
+                            *window.role,
+                        )
                     },
                     |snapshot| {
                         snapshot.surfaces.get(&window.surface_id()).is_some_and(|state| {
@@ -673,9 +676,11 @@ fn sync_workspace_visibility_system(
             !disabled
                 && surface_presentation.map_or_else(
                     || {
-                        *window.mode != WindowMode::Hidden
-                            && window.viewport_visibility.visible
-                            && window.background.is_none()
+                        managed_window_visible(
+                            *window.mode,
+                            window.viewport_visibility.visible,
+                            *window.role,
+                        )
                     },
                     |snapshot| {
                         snapshot.surfaces.get(&window.surface_id()).is_some_and(|state| {
@@ -692,8 +697,10 @@ fn sync_workspace_visibility_system(
             !disabled
                 && surface_presentation.map_or_else(
                     || {
-                        popup.buffer.attached
-                            && popup_parent_visible(popup.child_of, &visible_toplevel_entities)
+                        popup_visible(
+                            popup.buffer.attached,
+                            popup_parent_visible(popup.child_of, &visible_toplevel_entities),
+                        )
                     },
                     |snapshot| {
                         snapshot.surfaces.get(&popup.surface_id()).is_some_and(|state| {
@@ -760,6 +767,7 @@ fn dispatch_seat_input_system(
         (
             Entity,
             SurfaceRuntime,
+            &WindowRole,
             Option<&WindowViewportVisibility>,
             Option<&OutputBackgroundWindow>,
         ),
@@ -2293,28 +2301,45 @@ impl ProtocolRuntimeState {
         }
     }
 
+    fn x11_window_type(window: &X11Surface) -> Option<X11WindowType> {
+        match window.window_type() {
+            Some(WmWindowType::DropdownMenu) => Some(X11WindowType::DropdownMenu),
+            Some(WmWindowType::Dialog) => Some(X11WindowType::Dialog),
+            Some(WmWindowType::Menu) => Some(X11WindowType::Menu),
+            Some(WmWindowType::Notification) => Some(X11WindowType::Notification),
+            Some(WmWindowType::Normal) => Some(X11WindowType::Normal),
+            Some(WmWindowType::PopupMenu) => Some(X11WindowType::PopupMenu),
+            Some(WmWindowType::Splash) => Some(X11WindowType::Splash),
+            Some(WmWindowType::Toolbar) => Some(X11WindowType::Toolbar),
+            Some(WmWindowType::Tooltip) => Some(X11WindowType::Tooltip),
+            Some(WmWindowType::Utility) => Some(X11WindowType::Utility),
+            None => None,
+        }
+    }
+
     fn should_publish_managed_x11_window(
-        window: &X11Surface,
         title: &str,
         app_id: &str,
         geometry: X11WindowGeometry,
+        popup: bool,
+        window_type: Option<X11WindowType>,
     ) -> bool {
         if title.is_empty() && app_id.is_empty() && geometry.width <= 1 && geometry.height <= 1 {
             return false;
         }
 
-        if window.is_popup() {
+        if popup {
             return false;
         }
 
         !matches!(
-            window.window_type(),
+            window_type,
             Some(
-                WmWindowType::DropdownMenu
-                    | WmWindowType::Menu
-                    | WmWindowType::Notification
-                    | WmWindowType::PopupMenu
-                    | WmWindowType::Tooltip
+                X11WindowType::DropdownMenu
+                    | X11WindowType::Menu
+                    | X11WindowType::Notification
+                    | X11WindowType::PopupMenu
+                    | X11WindowType::Tooltip
             )
         )
     }
@@ -2338,13 +2363,17 @@ impl ProtocolRuntimeState {
         let title = window.title();
         let app_id = Self::x11_app_id(&window);
         let geometry = Self::x11_geometry(&window);
+        let popup = window.is_popup();
+        let transient_for = window.is_transient_for();
+        let window_type = Self::x11_window_type(&window);
 
-        if !Self::should_publish_managed_x11_window(&window, &title, &app_id, geometry) {
+        if !Self::should_publish_managed_x11_window(&title, &app_id, geometry, popup, window_type) {
             tracing::trace!(
                 window_id,
                 surface_id,
-                window_type = ?window.window_type(),
-                popup = window.is_popup(),
+                window_type = ?window_type,
+                popup,
+                transient_for = ?transient_for,
                 override_redirect = window.is_override_redirect(),
                 "ignoring XWayland helper surface"
             );
@@ -2356,12 +2385,23 @@ impl ProtocolRuntimeState {
                 surface_id,
                 window_id,
                 override_redirect: window.is_override_redirect(),
+                popup,
+                transient_for,
+                window_type,
                 title,
                 app_id,
                 geometry,
             }
         } else {
-            ProtocolEvent::X11WindowReconfigured { surface_id, title, app_id, geometry }
+            ProtocolEvent::X11WindowReconfigured {
+                surface_id,
+                title,
+                app_id,
+                popup,
+                transient_for,
+                window_type,
+                geometry,
+            }
         };
         self.queue_event(event);
     }
@@ -2377,11 +2417,17 @@ impl ProtocolRuntimeState {
         let Some(surface_id) = self.sync_x11_surface_mapping(&window) else {
             return;
         };
+        let popup = window.is_popup();
+        let transient_for = window.is_transient_for();
+        let window_type = Self::x11_window_type(&window);
 
         self.queue_event(ProtocolEvent::X11WindowReconfigured {
             surface_id,
             title: window.title(),
             app_id: Self::x11_app_id(&window),
+            popup,
+            transient_for,
+            window_type,
             geometry: Self::x11_geometry(&window),
         });
     }
@@ -3391,6 +3437,7 @@ fn sync_pointer_focus_if_needed(
         (
             Entity,
             SurfaceRuntime,
+            &WindowRole,
             Option<&WindowViewportVisibility>,
             Option<&OutputBackgroundWindow>,
         ),
@@ -3449,6 +3496,7 @@ fn pointer_focus_target(
         (
             Entity,
             SurfaceRuntime,
+            &WindowRole,
             Option<&WindowViewportVisibility>,
             Option<&OutputBackgroundWindow>,
         ),
@@ -3514,8 +3562,8 @@ fn pointer_focus_target(
     let mut surface_bounds = HashMap::new();
     let mut window_target_outputs_by_entity = HashMap::new();
 
-    for (entity, surface, viewport_visibility, background) in windows.iter() {
-        if background.is_some() {
+    for (entity, surface, role, viewport_visibility, background) in windows.iter() {
+        if role.is_output_background() {
             continue;
         }
         let target_output = background
@@ -3860,7 +3908,7 @@ mod tests {
     use nekoland_ecs::bundles::OutputBundle;
     use nekoland_ecs::components::{
         DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow, OutputDevice,
-        OutputPlacement, OutputProperties, SurfaceGeometry, WindowViewportVisibility,
+        OutputPlacement, OutputProperties, SurfaceGeometry, WindowRole, WindowViewportVisibility,
         WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{PrimaryOutputState, RenderElement, RenderList};
@@ -3986,6 +4034,7 @@ mod tests {
                 (
                     Entity,
                     SurfaceRuntime,
+                    &WindowRole,
                     Option<&WindowViewportVisibility>,
                     Option<&OutputBackgroundWindow>,
                 ),
@@ -4059,6 +4108,7 @@ mod tests {
                 (
                     Entity,
                     SurfaceRuntime,
+                    &WindowRole,
                     Option<&WindowViewportVisibility>,
                     Option<&OutputBackgroundWindow>,
                 ),

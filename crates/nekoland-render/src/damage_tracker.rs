@@ -4,8 +4,9 @@ use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, Local, Query, Res, ResMut, With};
 use nekoland_ecs::components::{
     BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputDevice,
-    SurfaceContentVersion, SurfaceGeometry, WindowMode, WlSurfaceHandle, XdgPopup, XdgWindow,
+    SurfaceContentVersion, SurfaceGeometry, WlSurfaceHandle, XdgPopup, XdgWindow,
 };
+use nekoland_ecs::presentation_logic::{managed_window_visible, popup_visible};
 use nekoland_ecs::resources::{
     DamageRect, DamageState, OutputDamageRegions, PrimaryOutputState, SurfacePresentationRole,
     SurfacePresentationSnapshot,
@@ -82,14 +83,20 @@ pub(crate) fn damage_tracking_system(
             let state = surface_presentation
                 .and_then(|snapshot| snapshot.surfaces.get(&window.surface_id()));
             let visible = state.map_or_else(
-                || *window.mode != WindowMode::Hidden && window.viewport_visibility.visible,
+                || {
+                    managed_window_visible(
+                        *window.mode,
+                        window.viewport_visibility.visible,
+                        *window.role,
+                    )
+                },
                 |state| state.visible && state.damage_enabled,
             );
             visible.then_some((
                 entity,
                 window.surface_id(),
                 state.is_some_and(|state| state.role == SurfacePresentationRole::OutputBackground)
-                    || window.background.is_some(),
+                    || window.role.is_output_background(),
                 state.and_then(|state| state.target_output.clone()).or_else(|| {
                     window
                         .background
@@ -204,7 +211,10 @@ pub(crate) fn damage_tracking_system(
         let state =
             surface_presentation.and_then(|snapshot| snapshot.surfaces.get(&popup.surface_id()));
         if !state.map_or(
-            popup.buffer.attached && popup_parent_visible(popup.child_of, &active_window_entities),
+            popup_visible(
+                popup.buffer.attached,
+                popup_parent_visible(popup.child_of, &active_window_entities),
+            ),
             |state| {
                 state.visible
                     && state.damage_enabled

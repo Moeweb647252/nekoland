@@ -18,7 +18,7 @@ pub fn fullscreen_layout_system(
     work_area: Res<WorkArea>,
 ) {
     for mut window in &mut windows {
-        if window.background.is_some() {
+        if !window.role.is_managed() {
             continue;
         }
         let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces);

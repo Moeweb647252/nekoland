@@ -11,6 +11,7 @@ use crate::components::WorkspaceCoord;
     crate::components::SurfaceContentVersion,
     WindowSceneGeometry,
     WindowViewportVisibility,
+    WindowRole,
     WindowLayout,
     WindowMode,
     WindowPolicyState,
@@ -43,6 +44,25 @@ pub struct WindowViewportVisibility {
 impl Default for WindowViewportVisibility {
     fn default() -> Self {
         Self { visible: true, output: None }
+    }
+}
+
+/// Explicit runtime role for one managed window entity.
+#[derive(Component, Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowRole {
+    #[default]
+    Managed,
+    OutputBackground,
+}
+
+impl WindowRole {
+    pub const fn is_managed(self) -> bool {
+        matches!(self, Self::Managed)
+    }
+
+    pub const fn is_output_background(self) -> bool {
+        matches!(self, Self::OutputBackground)
     }
 }
 

@@ -57,8 +57,8 @@ pub fn window_presentation_sync_system(
 fn desired_presentation_state(
     window: &WindowSnapshotRuntimeItem<'_, '_>,
 ) -> Option<WindowPresentationState> {
-    let fullscreen = window.background.is_some() || *window.mode == WindowMode::Fullscreen;
-    let maximized = window.background.is_none() && *window.mode == WindowMode::Maximized;
+    let fullscreen = window.role.is_output_background() || *window.mode == WindowMode::Fullscreen;
+    let maximized = window.role.is_managed() && *window.mode == WindowMode::Maximized;
     match window.x11_window {
         Some(_) if fullscreen || maximized => Some(WindowPresentationState::X11Presentation {
             geometry: X11WindowGeometry {
@@ -123,7 +123,7 @@ mod tests {
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::{WindowBundle, X11WindowBundle};
     use nekoland_ecs::components::{
-        OutputBackgroundWindow, WindowLayout, WindowRestoreState, WindowSceneGeometry,
+        OutputBackgroundWindow, WindowLayout, WindowRestoreState, WindowRole, WindowSceneGeometry,
         WlSurfaceHandle, X11Window,
     };
     use nekoland_ecs::resources::{
@@ -151,9 +151,16 @@ mod tests {
                 scene_geometry: WindowSceneGeometry { x: 200, y: 300, width: 640, height: 480 },
                 layout: WindowLayout::Floating,
                 mode: nekoland_ecs::components::WindowMode::Fullscreen,
-                x11_window: X11Window { window_id: 7, override_redirect: false },
+                x11_window: X11Window {
+                    window_id: 7,
+                    override_redirect: false,
+                    popup: false,
+                    transient_for: None,
+                    window_type: None,
+                },
                 ..Default::default()
             },
+            WindowRole::OutputBackground,
             OutputBackgroundWindow {
                 output: "Virtual-1".to_owned(),
                 restore: WindowRestoreState {
@@ -202,7 +209,13 @@ mod tests {
             scene_geometry: WindowSceneGeometry { x: 1200, y: 2100, width: 800, height: 600 },
             layout: WindowLayout::Floating,
             mode: nekoland_ecs::components::WindowMode::Normal,
-            x11_window: X11Window { window_id: 8, override_redirect: false },
+            x11_window: X11Window {
+                window_id: 8,
+                override_redirect: false,
+                popup: false,
+                transient_for: None,
+                window_type: None,
+            },
             ..Default::default()
         });
 

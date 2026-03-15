@@ -8,8 +8,8 @@ use nekoland_ecs::bundles::X11WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, FloatingPosition, ServerDecoration, SurfaceGeometry, WindowAnimation,
     WindowLayout, WindowMode, WindowPlacement, WindowPolicyState, WindowPosition,
-    WindowRestoreState, WindowSceneGeometry, WindowSize, WlSurfaceHandle, X11Window, XdgPopup,
-    XdgWindow,
+    WindowRestoreState, WindowRole, WindowSceneGeometry, WindowSize, WlSurfaceHandle, X11Window,
+    XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
 use nekoland_ecs::resources::{
@@ -80,6 +80,9 @@ pub fn xwayland_bridge_system(
             X11LifecycleAction::Mapped {
                 window_id,
                 override_redirect,
+                popup,
+                transient_for,
+                window_type,
                 title,
                 app_id,
                 geometry,
@@ -88,6 +91,9 @@ pub fn xwayland_bridge_system(
                     request.surface_id,
                     window_id,
                     override_redirect,
+                    popup,
+                    transient_for,
+                    window_type,
                     title,
                     app_id,
                     geometry,
@@ -100,11 +106,21 @@ pub fn xwayland_bridge_system(
                     &mut window_moved,
                 );
             }
-            X11LifecycleAction::Reconfigured { title, app_id, geometry } => {
+            X11LifecycleAction::Reconfigured {
+                title,
+                app_id,
+                popup,
+                transient_for,
+                window_type,
+                geometry,
+            } => {
                 if !reconfigure_x11_window(
                     request.surface_id,
                     title,
                     app_id,
+                    popup,
+                    transient_for,
+                    window_type,
                     geometry,
                     &config,
                     &entity_index,
@@ -228,6 +244,9 @@ fn map_x11_window(
     surface_id: u64,
     window_id: u32,
     override_redirect: bool,
+    popup: bool,
+    transient_for: Option<u32>,
+    window_type: Option<nekoland_ecs::components::X11WindowType>,
     title: String,
     app_id: String,
     geometry: nekoland_ecs::resources::X11WindowGeometry,
@@ -271,6 +290,7 @@ fn map_x11_window(
                 commands,
                 entity,
                 background,
+                &mut window.role,
                 &mut window.scene_geometry,
                 &mut window.layout,
                 &mut window.mode,
@@ -326,7 +346,13 @@ fn map_x11_window(
                     title: title.clone(),
                     last_acked_configure: None,
                 },
-                x11_window: X11Window { window_id, override_redirect },
+                x11_window: X11Window {
+                    window_id,
+                    override_redirect,
+                    popup,
+                    transient_for,
+                    window_type,
+                },
                 layout: policy.layout,
                 mode: policy.mode,
                 decoration: ServerDecoration { enabled: true },
@@ -355,18 +381,20 @@ fn map_x11_window(
         width: geometry.width.max(1),
         height: geometry.height.max(1),
     };
+    let mut role = WindowRole::Managed;
     let mut layout = policy.layout;
     let mut mode = policy.mode;
     sync_window_background_role(
         commands,
         window_entity,
         background,
+        &mut role,
         &mut scene_geometry,
         &mut layout,
         &mut mode,
         None,
     );
-    commands.entity(window_entity).insert((scene_geometry.clone(), layout, mode));
+    commands.entity(window_entity).insert((scene_geometry.clone(), layout, mode, role));
     if let Some(active_workspace_entity) = active_workspace_entity {
         commands.entity(window_entity).insert(ChildOf(active_workspace_entity));
     }
@@ -377,6 +405,9 @@ fn reconfigure_x11_window(
     surface_id: u64,
     title: String,
     app_id: String,
+    popup: bool,
+    transient_for: Option<u32>,
+    window_type: Option<nekoland_ecs::components::X11WindowType>,
     geometry: nekoland_ecs::resources::X11WindowGeometry,
     config: &CompositorConfig,
     entity_index: &EntityIndex,
@@ -395,8 +426,11 @@ fn reconfigure_x11_window(
     let xdg_window = window.xdg_window.as_mut().expect("x11 runtime should expose xdg metadata");
     xdg_window.title = title;
     xdg_window.app_id = app_id;
-    let override_redirect =
-        window.x11_window.expect("x11 runtime should expose x11 metadata").override_redirect;
+    let x11_window = window.x11_window.as_mut().expect("x11 runtime should expose x11 metadata");
+    x11_window.popup = popup;
+    x11_window.transient_for = transient_for;
+    x11_window.window_type = window_type;
+    let override_redirect = x11_window.override_redirect;
     let policy =
         config.resolve_window_policy(&xdg_window.app_id, &xdg_window.title, override_redirect);
     let background =
@@ -412,6 +446,7 @@ fn reconfigure_x11_window(
         commands,
         entity,
         background,
+        &mut window.role,
         &mut window.scene_geometry,
         &mut window.layout,
         &mut window.mode,
@@ -532,7 +567,7 @@ fn start_x11_window_grab(
     let Ok((_, mut window)) = windows.get_mut(entity) else {
         return false;
     };
-    if window.background.is_some() {
+    if window.role.is_output_background() {
         return true;
     }
 
@@ -661,7 +696,13 @@ mod tests {
                     title: "X11 Test".to_owned(),
                     last_acked_configure: None,
                 },
-                x11_window: X11Window { window_id: 7, override_redirect: false },
+                x11_window: X11Window {
+                    window_id: 7,
+                    override_redirect: false,
+                    popup: false,
+                    transient_for: None,
+                    window_type: None,
+                },
                 layout: WindowLayout::Tiled,
                 mode: WindowMode::Normal,
                 decoration: ServerDecoration { enabled: true },
@@ -775,6 +816,9 @@ mod tests {
                 action: X11LifecycleAction::Mapped {
                     window_id: 5,
                     override_redirect: false,
+                    popup: false,
+                    transient_for: None,
+                    window_type: None,
                     title: "mapped".to_owned(),
                     app_id: "mapped.app".to_owned(),
                     geometry: X11WindowGeometry { x: 16, y: 24, width: 640, height: 480 },
@@ -845,6 +889,9 @@ mod tests {
                 action: X11LifecycleAction::Mapped {
                     window_id: 9,
                     override_redirect: false,
+                    popup: false,
+                    transient_for: None,
+                    window_type: None,
                     title: "mapped".to_owned(),
                     app_id: "mapped.app".to_owned(),
                     geometry: X11WindowGeometry { x: 40, y: 56, width: 640, height: 480 },

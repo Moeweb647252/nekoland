@@ -2,7 +2,7 @@ use bevy_ecs::prelude::{Commands, Entity};
 use nekoland_ecs::components::WindowRestoreState;
 use nekoland_ecs::components::{
     OutputBackgroundWindow, WindowLayout, WindowMode, WindowPolicy, WindowPolicyState,
-    WindowRestoreSnapshot, WindowSceneGeometry,
+    WindowRestoreSnapshot, WindowRole, WindowSceneGeometry,
 };
 use nekoland_ecs::selectors::OutputName;
 
@@ -72,6 +72,7 @@ pub fn sync_window_background_role(
     commands: &mut Commands,
     entity: Entity,
     desired_output: Option<OutputName>,
+    role: &mut WindowRole,
     scene_geometry: &mut WindowSceneGeometry,
     layout: &mut WindowLayout,
     mode: &mut WindowMode,
@@ -94,6 +95,7 @@ pub fn sync_window_background_role(
                 },
             );
             *mode = WindowMode::Fullscreen;
+            *role = WindowRole::OutputBackground;
             commands.entity(entity).insert(OutputBackgroundWindow { output, restore });
         }
         None => {
@@ -101,6 +103,7 @@ pub fn sync_window_background_role(
                 *scene_geometry = background.restore.geometry.clone();
                 *layout = background.restore.layout;
                 *mode = background.restore.mode;
+                *role = WindowRole::Managed;
                 commands.entity(entity).remove::<OutputBackgroundWindow>();
             }
         }
@@ -111,7 +114,7 @@ pub fn sync_window_background_role(
 mod tests {
     use bevy_ecs::prelude::World;
     use nekoland_ecs::components::{
-        OutputBackgroundWindow, WindowRestoreState, WindowSceneGeometry,
+        OutputBackgroundWindow, WindowRestoreState, WindowRole, WindowSceneGeometry,
     };
     use nekoland_ecs::selectors::OutputName;
 
@@ -214,6 +217,7 @@ mod tests {
     fn sync_window_background_role_inserts_and_clears_background_component() {
         let mut world = World::default();
         let entity = world.spawn_empty().id();
+        let mut role = WindowRole::Managed;
         let mut scene_geometry = WindowSceneGeometry { x: 10, y: 20, width: 800, height: 600 };
         let mut layout = WindowLayout::Floating;
         let mut mode = WindowMode::Normal;
@@ -224,6 +228,7 @@ mod tests {
                 &mut commands,
                 entity,
                 Some(OutputName::from("Virtual-1")),
+                &mut role,
                 &mut scene_geometry,
                 &mut layout,
                 &mut mode,
@@ -237,6 +242,7 @@ mod tests {
             .expect("background role should exist")
             .clone();
         assert_eq!(background.output, "Virtual-1");
+        assert_eq!(role, WindowRole::OutputBackground);
         assert_eq!(mode, WindowMode::Fullscreen);
 
         {
@@ -245,6 +251,7 @@ mod tests {
                 &mut commands,
                 entity,
                 None,
+                &mut role,
                 &mut scene_geometry,
                 &mut layout,
                 &mut mode,
@@ -254,6 +261,7 @@ mod tests {
         world.flush();
 
         assert!(world.get::<OutputBackgroundWindow>(entity).is_none());
+        assert_eq!(role, WindowRole::Managed);
         assert_eq!(scene_geometry, WindowSceneGeometry { x: 10, y: 20, width: 800, height: 600 });
         assert_eq!(layout, WindowLayout::Floating);
         assert_eq!(mode, WindowMode::Normal);

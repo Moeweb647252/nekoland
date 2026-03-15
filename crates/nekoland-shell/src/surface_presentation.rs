@@ -2,8 +2,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
 use nekoland_ecs::components::{
-    BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, SurfaceGeometry, WindowMode,
+    BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, SurfaceGeometry,
     WlSurfaceHandle, XdgPopup, XdgWindow,
+};
+use nekoland_ecs::presentation_logic::{
+    layer_visible, managed_window_visible, output_background_window_visible, popup_visible,
 };
 use nekoland_ecs::resources::{
     PrimaryOutputState, SurfacePresentationRole, SurfacePresentationSnapshot,
@@ -42,7 +45,7 @@ pub fn surface_presentation_snapshot_system(
     let mut window_presentation_by_entity = HashMap::new();
 
     for (entity, window) in windows.iter() {
-        let role = if window.background.is_some() {
+        let role = if window.role.is_output_background() {
             SurfacePresentationRole::OutputBackground
         } else {
             SurfacePresentationRole::Window
@@ -52,20 +55,26 @@ pub fn surface_presentation_snapshot_system(
             .map(|background| background.output.clone())
             .or_else(|| window.viewport_visibility.output.clone())
             .filter(|output_name| live_output_names.contains(output_name));
-        let visible = *window.mode != WindowMode::Hidden
-            && target_output.is_some()
-            && match role {
-                SurfacePresentationRole::OutputBackground => true,
-                SurfacePresentationRole::Window => window.viewport_visibility.visible,
-                _ => false,
-            };
+        let visible = match role {
+            SurfacePresentationRole::OutputBackground => output_background_window_visible(
+                *window.mode,
+                target_output.is_some(),
+                *window.role,
+            ),
+            SurfacePresentationRole::Window => managed_window_visible(
+                *window.mode,
+                window.viewport_visibility.visible,
+                *window.role,
+            ),
+            _ => false,
+        };
         let state = SurfacePresentationState {
             visible,
             target_output: target_output.clone(),
             geometry: window.geometry.clone(),
             input_enabled: visible
-                && role == SurfacePresentationRole::Window
-                && window.x11_window.is_none_or(|window| !window.override_redirect),
+                && window.role.is_managed()
+                && window.x11_window.is_none_or(|window| !window.is_helper_surface()),
             damage_enabled: visible,
             role,
         };
@@ -75,7 +84,8 @@ pub fn surface_presentation_snapshot_system(
 
     for popup in popups.iter() {
         let parent_state = window_presentation_by_entity.get(&popup.child_of.parent());
-        let visible = popup.buffer.attached && parent_state.is_some_and(|parent| parent.visible);
+        let visible =
+            popup_visible(popup.buffer.attached, parent_state.is_some_and(|parent| parent.visible));
         surfaces.insert(
             popup.surface_id(),
             SurfacePresentationState {
@@ -97,7 +107,7 @@ pub fn surface_presentation_snapshot_system(
             })
             .or_else(|| primary_output_name.clone())
             .filter(|output_name| live_output_names.contains(output_name));
-        let visible = buffer.attached && target_output.is_some();
+        let visible = layer_visible(buffer.attached, target_output.is_some());
         surfaces.insert(
             surface.id,
             SurfacePresentationState {

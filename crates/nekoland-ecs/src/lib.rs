@@ -8,6 +8,7 @@ pub mod components;
 pub mod control;
 pub mod events;
 pub mod kinds;
+pub mod presentation_logic;
 pub mod resources;
 pub mod selectors;
 pub mod views;
@@ -19,6 +20,7 @@ pub mod prelude {
     pub use crate::control::*;
     pub use crate::events::*;
     pub use crate::kinds::*;
+    pub use crate::presentation_logic::*;
     pub use crate::resources::*;
     pub use crate::selectors::*;
     pub use crate::views::*;

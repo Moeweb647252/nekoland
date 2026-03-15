@@ -21,7 +21,7 @@ pub fn stacking_layout_system(
 ) {
     let known_surfaces = windows
         .iter()
-        .filter(|window| window.background.is_none())
+        .filter(|window| window.role.is_managed())
         .map(|window| {
             (
                 window.surface_id(),
@@ -33,7 +33,7 @@ pub fn stacking_layout_system(
     stacking.retain_known(&known_surfaces);
 
     for window in &windows {
-        if window.background.is_some() {
+        if !window.role.is_managed() {
             continue;
         }
         stacking.ensure(

@@ -83,7 +83,7 @@ pub fn configure_sequence_system(
                     deferred.push(request);
                     continue;
                 };
-                if window.background.is_some() {
+                if window.role.is_output_background() {
                     continue;
                 }
 
@@ -118,7 +118,7 @@ pub fn configure_sequence_system(
                     deferred.push(request);
                     continue;
                 };
-                if window.background.is_some() {
+                if window.role.is_output_background() {
                     continue;
                 }
 

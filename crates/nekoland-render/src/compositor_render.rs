@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, Query, ResMut, With};
-use nekoland_ecs::components::{LayerLevel, WindowMode, XdgPopup, XdgWindow};
+use nekoland_ecs::components::{XdgPopup, XdgWindow};
+use nekoland_ecs::presentation_logic::{
+    is_background_band_layer, is_foreground_band_layer, managed_window_visible, popup_visible,
+};
 use nekoland_ecs::resources::{
     RenderElement, RenderList, SurfacePresentationRole, SurfacePresentationSnapshot,
     UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
@@ -36,9 +39,11 @@ pub fn compose_frame_system(
                 .and_then(|snapshot| snapshot.surfaces.get(&window.surface_id()));
             let visible = state.map_or_else(
                 || {
-                    *window.mode != WindowMode::Hidden
-                        && window.viewport_visibility.visible
-                        && window.background.is_some()
+                    nekoland_ecs::presentation_logic::output_background_window_visible(
+                        *window.mode,
+                        window.background.is_some(),
+                        *window.role,
+                    )
                 },
                 |state| state.visible && state.role == SurfacePresentationRole::OutputBackground,
             );
@@ -74,9 +79,11 @@ pub fn compose_frame_system(
                 .and_then(|snapshot| snapshot.surfaces.get(&window.surface_id()));
             let visible = state.map_or_else(
                 || {
-                    *window.mode != WindowMode::Hidden
-                        && window.viewport_visibility.visible
-                        && window.background.is_none()
+                    managed_window_visible(
+                        *window.mode,
+                        window.viewport_visibility.visible,
+                        *window.role,
+                    )
                 },
                 |state| state.visible && state.role == SurfacePresentationRole::Window,
             );
@@ -109,18 +116,12 @@ pub fn compose_frame_system(
                         .map_or_else(
                             || {
                                 layer.buffer.attached
-                                    && matches!(
-                                        layer.layer_surface.layer,
-                                        LayerLevel::Background | LayerLevel::Bottom
-                                    )
+                                    && is_background_band_layer(layer.layer_surface.layer)
                             },
                             |state| {
                                 state.visible
                                     && state.role == SurfacePresentationRole::Layer
-                                    && matches!(
-                                        layer.layer_surface.layer,
-                                        LayerLevel::Background | LayerLevel::Bottom
-                                    )
+                                    && is_background_band_layer(layer.layer_surface.layer)
                             },
                         )
                 })
@@ -137,8 +138,10 @@ pub fn compose_frame_system(
                         .and_then(|snapshot| snapshot.surfaces.get(&popup.surface_id()))
                         .map_or_else(
                             || {
-                                popup.buffer.attached
-                                    && popup_parent_visible(popup.child_of, &active_window_entities)
+                                popup_visible(
+                                    popup.buffer.attached,
+                                    popup_parent_visible(popup.child_of, &active_window_entities),
+                                )
                             },
                             |state| state.visible && state.role == SurfacePresentationRole::Popup,
                         )
@@ -154,18 +157,12 @@ pub fn compose_frame_system(
                         .map_or_else(
                             || {
                                 layer.buffer.attached
-                                    && matches!(
-                                        layer.layer_surface.layer,
-                                        LayerLevel::Top | LayerLevel::Overlay
-                                    )
+                                    && is_foreground_band_layer(layer.layer_surface.layer)
                             },
                             |state| {
                                 state.visible
                                     && state.role == SurfacePresentationRole::Layer
-                                    && matches!(
-                                        layer.layer_surface.layer,
-                                        LayerLevel::Top | LayerLevel::Overlay
-                                    )
+                                    && is_foreground_band_layer(layer.layer_surface.layer)
                             },
                         )
                 })
@@ -199,7 +196,7 @@ mod tests {
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::bundles::{LayerSurfaceBundle, WindowBundle};
     use nekoland_ecs::components::{
-        LayerLevel, OutputBackgroundWindow, WlSurfaceHandle, XdgWindow,
+        LayerLevel, OutputBackgroundWindow, WindowRole, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{RenderList, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState};
 
@@ -271,6 +268,7 @@ mod tests {
                 },
                 ..Default::default()
             },
+            WindowRole::OutputBackground,
             OutputBackgroundWindow {
                 output: "Virtual-1".to_owned(),
                 restore: nekoland_ecs::components::WindowRestoreState {
@@ -322,6 +320,7 @@ mod tests {
                 },
                 ..Default::default()
             },
+            WindowRole::OutputBackground,
             OutputBackgroundWindow {
                 output: "Virtual-1".to_owned(),
                 restore: nekoland_ecs::components::WindowRestoreState {
@@ -374,6 +373,7 @@ mod tests {
                     },
                     ..Default::default()
                 },
+                WindowRole::OutputBackground,
                 OutputBackgroundWindow {
                     output: "Virtual-1".to_owned(),
                     restore: nekoland_ecs::components::WindowRestoreState {

@@ -1,3 +1,4 @@
+use crate::components::X11WindowType;
 use serde::{Deserialize, Serialize};
 
 use crate::kinds::ProtocolEventQueue;
@@ -29,6 +30,9 @@ pub enum X11LifecycleAction {
     Mapped {
         window_id: u32,
         override_redirect: bool,
+        popup: bool,
+        transient_for: Option<u32>,
+        window_type: Option<X11WindowType>,
         title: String,
         app_id: String,
         geometry: X11WindowGeometry,
@@ -37,6 +41,9 @@ pub enum X11LifecycleAction {
     Reconfigured {
         title: String,
         app_id: String,
+        popup: bool,
+        transient_for: Option<u32>,
+        window_type: Option<X11WindowType>,
         geometry: X11WindowGeometry,
     },
     Maximize,

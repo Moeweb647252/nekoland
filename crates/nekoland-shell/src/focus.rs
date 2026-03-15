@@ -157,8 +157,8 @@ fn visible_window_geometries(
         .filter_map(|window| {
             (*window.mode != WindowMode::Hidden
                 && window.viewport_visibility.visible
-                && window.background.is_none()
-                && window.x11_window.is_none_or(|x11_window| !x11_window.override_redirect))
+                && window.role.is_managed()
+                && window.x11_window.is_none_or(|x11_window| !x11_window.is_helper_surface()))
             .then_some((
                 window.surface_id(),
                 (

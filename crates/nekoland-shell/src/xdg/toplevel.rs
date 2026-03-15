@@ -8,7 +8,7 @@ use bevy_ecs::query::Allow;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, ServerDecoration, SurfaceContentVersion, SurfaceGeometry,
-    WindowAnimation, WindowLayout, WindowMode, WindowPolicyState, WindowSceneGeometry,
+    WindowAnimation, WindowLayout, WindowMode, WindowPolicyState, WindowRole, WindowSceneGeometry,
     WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
@@ -73,6 +73,7 @@ pub fn toplevel_lifecycle_system(
                 let policy = config.resolve_window_policy("org.nekoland.demo", &title, false);
                 let background =
                     config.resolve_window_background("org.nekoland.demo", &title, false);
+                let mut role = WindowRole::Managed;
                 let mut scene_geometry = WindowSceneGeometry {
                     x: 0,
                     y: 0,
@@ -116,12 +117,13 @@ pub fn toplevel_lifecycle_system(
                     &mut commands,
                     window_entity,
                     background,
+                    &mut role,
                     &mut scene_geometry,
                     &mut layout,
                     &mut mode,
                     None,
                 );
-                commands.entity(window_entity).insert((scene_geometry.clone(), layout, mode));
+                commands.entity(window_entity).insert((scene_geometry.clone(), layout, mode, role));
                 if let Some(workspace_entity) = workspace_entity {
                     commands.entity(window_entity).insert(ChildOf(workspace_entity));
                 }
@@ -247,6 +249,7 @@ pub fn toplevel_lifecycle_system(
                     &mut commands,
                     entity,
                     background,
+                    &mut window_runtime.role,
                     &mut window_runtime.scene_geometry,
                     &mut window_runtime.layout,
                     &mut window_runtime.mode,

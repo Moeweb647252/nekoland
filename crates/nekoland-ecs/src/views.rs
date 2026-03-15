@@ -5,7 +5,7 @@ use crate::components::{
     BufferState, LayerShellSurface, OutputBackgroundWindow, OutputCurrentWorkspace, OutputDevice,
     OutputPlacement, OutputProperties, OutputViewport, OutputWorkArea, PopupGrab,
     SurfaceContentVersion, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode,
-    WindowPlacement, WindowPolicyState, WindowRestoreSnapshot, WindowSceneGeometry,
+    WindowPlacement, WindowPolicyState, WindowRestoreSnapshot, WindowRole, WindowSceneGeometry,
     WindowViewportVisibility, WlSurfaceHandle, Workspace, X11Window, XdgPopup, XdgWindow,
 };
 
@@ -29,6 +29,7 @@ pub struct WindowFocusRuntime {
     pub surface: &'static WlSurfaceHandle,
     pub geometry: &'static SurfaceGeometry,
     pub viewport_visibility: &'static WindowViewportVisibility,
+    pub role: &'static WindowRole,
     pub background: Option<&'static OutputBackgroundWindow>,
     pub layout: &'static WindowLayout,
     pub mode: &'static WindowMode,
@@ -54,6 +55,7 @@ pub struct WindowRuntime {
     pub scene_geometry: &'static mut WindowSceneGeometry,
     pub content_version: &'static mut SurfaceContentVersion,
     pub viewport_visibility: &'static mut WindowViewportVisibility,
+    pub role: &'static mut WindowRole,
     pub background: Option<&'static mut OutputBackgroundWindow>,
     pub placement: &'static mut WindowPlacement,
     pub restore: &'static mut WindowRestoreSnapshot,
@@ -63,7 +65,7 @@ pub struct WindowRuntime {
     pub child_of: Option<&'static ChildOf>,
     pub buffer: Option<&'static mut BufferState>,
     pub xdg_window: Option<&'static mut XdgWindow>,
-    pub x11_window: Option<&'static X11Window>,
+    pub x11_window: Option<&'static mut X11Window>,
 }
 
 impl<'w, 's> WindowRuntimeItem<'w, 's> {
@@ -91,6 +93,7 @@ impl<'w, 's> WindowRuntimeReadOnlyItem<'w, 's> {
 pub struct WindowVisibilityRuntime {
     pub surface: &'static WlSurfaceHandle,
     pub viewport_visibility: &'static WindowViewportVisibility,
+    pub role: &'static WindowRole,
     pub background: Option<&'static OutputBackgroundWindow>,
     pub mode: &'static WindowMode,
 }
@@ -140,6 +143,7 @@ pub struct WindowSnapshotRuntime {
     pub scene_geometry: &'static WindowSceneGeometry,
     pub content_version: &'static SurfaceContentVersion,
     pub viewport_visibility: &'static WindowViewportVisibility,
+    pub role: &'static WindowRole,
     pub background: Option<&'static OutputBackgroundWindow>,
     pub mode: &'static WindowMode,
     pub layout: &'static WindowLayout,
@@ -175,6 +179,7 @@ pub struct WindowRenderRuntime {
     pub surface: &'static WlSurfaceHandle,
     pub animation: &'static WindowAnimation,
     pub viewport_visibility: &'static WindowViewportVisibility,
+    pub role: &'static WindowRole,
     pub background: Option<&'static OutputBackgroundWindow>,
     pub mode: &'static WindowMode,
     pub child_of: Option<&'static ChildOf>,

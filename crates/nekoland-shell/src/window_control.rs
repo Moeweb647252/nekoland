@@ -55,7 +55,7 @@ pub fn window_control_request_system(
             Some(workspace_id),
             primary_output.as_deref(),
         );
-        let is_background = window.background.is_some();
+        let is_background = window.role.is_output_background();
 
         if is_background {
             if control.close {
@@ -72,6 +72,7 @@ pub fn window_control_request_system(
                             &mut commands,
                             entity,
                             Some(output),
+                            &mut window.role,
                             &mut window.scene_geometry,
                             &mut window.layout,
                             &mut window.mode,
@@ -86,6 +87,7 @@ pub fn window_control_request_system(
                             &mut commands,
                             entity,
                             None,
+                            &mut window.role,
                             &mut window.scene_geometry,
                             &mut window.layout,
                             &mut window.mode,
@@ -151,7 +153,7 @@ pub fn window_control_request_system(
 
         if control.focus
             && *window.mode != WindowMode::Hidden
-            && window.x11_window.is_none_or(|window| !window.override_redirect)
+            && window.x11_window.as_ref().is_none_or(|window| !window.is_helper_surface())
         {
             keyboard_focus.focused_surface = Some(window.surface_id());
             stacking.raise(workspace_id, window.surface_id());
@@ -171,6 +173,7 @@ pub fn window_control_request_system(
                         &mut commands,
                         entity,
                         Some(output),
+                        &mut window.role,
                         &mut window.scene_geometry,
                         &mut window.layout,
                         &mut window.mode,
@@ -185,6 +188,7 @@ pub fn window_control_request_system(
                         &mut commands,
                         entity,
                         None,
+                        &mut window.role,
                         &mut window.scene_geometry,
                         &mut window.layout,
                         &mut window.mode,
