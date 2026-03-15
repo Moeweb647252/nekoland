@@ -2,6 +2,8 @@
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -42,6 +44,8 @@ struct PopupMutationPlan {
     target_grab_active: bool,
     /// Target popup-grab serial written by the mutation system.
     target_grab_serial: Option<u32>,
+    /// Armed after the subscription thread has had time to connect.
+    ready: Arc<AtomicBool>,
     /// Set once the mutation has been applied so it only runs once.
     applied: bool,
 }
@@ -57,8 +61,10 @@ struct PopupChangeEvents {
 #[test]
 fn popup_subscription_reports_geometry_and_grab_transitions() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _runtime_dir = common::RuntimeDirGuard::new("nekoland-popup-subscription");
     let config_path = workspace_config_path();
+    let mutation_ready = Arc::new(AtomicBool::new(false));
 
     let mut app = build_app(config_path);
     app.insert_resource(RunLoopSettings {
@@ -72,6 +78,7 @@ fn popup_subscription_reports_geometry_and_grab_transitions() {
         target_height: 180,
         target_grab_active: true,
         target_grab_serial: Some(77),
+        ready: mutation_ready.clone(),
         applied: false,
     });
     app.inner_mut().add_systems(LayoutSchedule, apply_popup_mutation_system);
@@ -106,8 +113,13 @@ fn popup_subscription_reports_geometry_and_grab_transitions() {
             POPUP_SURFACE_ID,
         )
     });
+    let mutation_arm_thread = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(50));
+        mutation_ready.store(true, Ordering::SeqCst);
+    });
 
     app.run().expect("nekoland app should complete the configured frame budget");
+    mutation_arm_thread.join().expect("popup mutation arm thread should exit cleanly");
 
     let events =
         match subscription_thread.join().expect("popup subscription thread should exit cleanly") {
@@ -159,7 +171,15 @@ fn seed_popup_tree(world: &mut bevy_ecs::world::World) {
 
     world.spawn((
         WlSurfaceHandle { id: POPUP_SURFACE_ID },
-        XdgPopup { configure_serial: Some(1), grab_serial: None, reposition_token: None },
+        XdgPopup {
+            configure_serial: Some(1),
+            grab_serial: None,
+            reposition_token: None,
+            placement_x: 24,
+            placement_y: 48,
+            placement_width: 220,
+            placement_height: 120,
+        },
         SurfaceGeometry { x: 24, y: 48, width: 220, height: 120 },
         PopupGrab { active: false, seat_name: "seat-0".to_owned(), serial: None },
         ChildOf(parent),
@@ -175,18 +195,25 @@ fn workspace_config_path() -> PathBuf {
 fn apply_popup_mutation_system(
     clock: Res<CompositorClock>,
     mut plan: ResMut<PopupMutationPlan>,
-    mut popups: Query<(&WlSurfaceHandle, &mut SurfaceGeometry, &mut PopupGrab), With<XdgPopup>>,
+    mut popups: Query<
+        (&WlSurfaceHandle, &mut SurfaceGeometry, &mut XdgPopup, &mut PopupGrab),
+        With<XdgPopup>,
+    >,
 ) {
-    if plan.applied || clock.frame < 2 {
+    if plan.applied || clock.frame < 2 || !plan.ready.load(Ordering::SeqCst) {
         return;
     }
 
-    let Some((_, mut geometry, mut grab)) =
-        popups.iter_mut().find(|(surface, _, _)| surface.id == POPUP_SURFACE_ID)
+    let Some((_, mut geometry, mut popup, mut grab)) =
+        popups.iter_mut().find(|(surface, ..)| surface.id == POPUP_SURFACE_ID)
     else {
         return;
     };
 
+    popup.placement_x = plan.target_x;
+    popup.placement_y = plan.target_y;
+    popup.placement_width = plan.target_width;
+    popup.placement_height = plan.target_height;
     geometry.x = plan.target_x;
     geometry.y = plan.target_y;
     geometry.width = plan.target_width;

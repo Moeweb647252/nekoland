@@ -181,8 +181,8 @@ fn issue_move_command_when_window_is_ready(
                         correlation_id: 7,
                         command: IpcCommand::Window(WindowCommand::Move {
                             surface_id: TARGET_SURFACE_ID,
-                            x: target_x,
-                            y: target_y,
+                            x: i64::from(target_x),
+                            y: i64::from(target_y),
                         }),
                     },
                 )

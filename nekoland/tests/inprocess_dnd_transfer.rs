@@ -16,8 +16,9 @@ use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::components::{SurfaceGeometry, WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, CompositorClock, DragAndDropState,
-    GlobalPointerPosition, KeyboardFocusState, PendingProtocolInputEvents,
+    GlobalPointerPosition, KeyboardFocusState, PendingProtocolInputEvents, PendingWindowControls,
 };
+use nekoland_ecs::selectors::SurfaceId;
 use nekoland_protocol::ProtocolServerState;
 use nekoland_shell::decorations;
 use tempfile::tempfile;
@@ -46,6 +47,12 @@ const TEST_BUFFER_HEIGHT: u32 = 48;
 const INPUT_PUMP_START_FRAME: u64 = 8;
 /// Generous frame budget for the two-client DnD scenario.
 const MAX_TEST_FRAMES: u64 = 1024;
+const SOURCE_WINDOW_X: isize = 120;
+const SOURCE_WINDOW_Y: isize = 120;
+const TARGET_WINDOW_X: isize = 420;
+const TARGET_WINDOW_Y: isize = 120;
+const DND_WINDOW_WIDTH: u32 = 240;
+const DND_WINDOW_HEIGHT: u32 = 180;
 
 /// High-level state machine for the synthetic input pump that drives the DnD scenario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +81,8 @@ struct DndTransferPump {
     target_ready: Arc<AtomicBool>,
     /// Flag set once the target observed a matching DnD offer.
     target_offer_ready: Arc<AtomicBool>,
+    /// Whether the helper windows have been arranged into deterministic floating slots.
+    windows_arranged: bool,
     /// Current phase of the synthetic pointer choreography.
     phase: DndPumpPhase,
     /// Retry counter while waiting for source focus/pointer entry.
@@ -119,6 +128,10 @@ struct SourceClientState {
     configured: bool,
     /// Whether the helper attached a real buffer and became mappable.
     buffer_attached: bool,
+    /// Last compositor-suggested width for the toplevel, if non-zero.
+    configured_width: Option<u32>,
+    /// Last compositor-suggested height for the toplevel, if non-zero.
+    configured_height: Option<u32>,
     /// Whether the pointer is currently inside the source surface.
     pointer_inside: bool,
     /// Whether the source already started the drag operation.
@@ -147,6 +160,10 @@ struct TargetClientState {
     configured: bool,
     /// Whether the helper attached a real buffer and became mappable.
     buffer_attached: bool,
+    /// Last compositor-suggested width for the toplevel, if non-zero.
+    configured_width: Option<u32>,
+    /// Last compositor-suggested height for the toplevel, if non-zero.
+    configured_height: Option<u32>,
     /// Current drag offer announced by the compositor, if any.
     drag_offer: Option<wl_data_offer::WlDataOffer>,
     /// Serial from the most recent `wl_data_device.enter`.
@@ -226,6 +243,7 @@ fn run_dnd_transfer_scenario()
             source_drag_started: source_drag_started.clone(),
             target_ready: target_client_ready.clone(),
             target_offer_ready: target_offer_ready.clone(),
+            windows_arranged: false,
             phase: DndPumpPhase::WaitForWindows,
             source_focus_attempts: 0,
             target_offer_attempts: 0,
@@ -332,6 +350,7 @@ fn pump_dnd_transfer_input(
     mut keyboard_focus: ResMut<KeyboardFocusState>,
     mut pointer: ResMut<GlobalPointerPosition>,
     mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
+    mut pending_window_controls: ResMut<PendingWindowControls>,
     mut windows: Query<(&WlSurfaceHandle, &mut SurfaceGeometry, &XdgWindow), With<XdgWindow>>,
 ) {
     if clock.frame < INPUT_PUMP_START_FRAME || pump.phase == DndPumpPhase::Done {
@@ -365,27 +384,38 @@ fn pump_dnd_transfer_input(
         return;
     };
 
-    let mut target_geometry = target_geometry;
-    if pump.phase == DndPumpPhase::WaitForWindows
-        && geometries_overlap(&source_geometry, &target_geometry)
-    {
-        let mut adjusted_target = target_geometry.clone();
-        adjusted_target.x = source_geometry.x + source_geometry.width as i32 + 32;
-        adjusted_target.y = source_geometry.y;
-        for (surface, mut geometry, _) in windows.iter_mut() {
-            if surface.id == target_surface_id {
-                *geometry = adjusted_target.clone();
-                break;
-            }
-        }
-        target_geometry = adjusted_target;
-    }
-
     let source_position = pointer_in_geometry(&source_geometry);
     let target_position = pointer_in_geometry(&target_geometry);
 
     match pump.phase {
         DndPumpPhase::WaitForWindows => {
+            if !pump.windows_arranged {
+                pending_window_controls
+                    .surface(SurfaceId(source_surface_id))
+                    .move_to(SOURCE_WINDOW_X, SOURCE_WINDOW_Y)
+                    .resize_to(DND_WINDOW_WIDTH, DND_WINDOW_HEIGHT)
+                    .focus();
+                pending_window_controls
+                    .surface(SurfaceId(target_surface_id))
+                    .move_to(TARGET_WINDOW_X, TARGET_WINDOW_Y)
+                    .resize_to(DND_WINDOW_WIDTH, DND_WINDOW_HEIGHT);
+                pump.windows_arranged = geometry_matches(
+                    &source_geometry,
+                    SOURCE_WINDOW_X as i32,
+                    SOURCE_WINDOW_Y as i32,
+                    DND_WINDOW_WIDTH,
+                    DND_WINDOW_HEIGHT,
+                ) && geometry_matches(
+                    &target_geometry,
+                    TARGET_WINDOW_X as i32,
+                    TARGET_WINDOW_Y as i32,
+                    DND_WINDOW_WIDTH,
+                    DND_WINDOW_HEIGHT,
+                );
+                if !pump.windows_arranged {
+                    return;
+                }
+            }
             if !pump.source_window_ready.load(Ordering::SeqCst) {
                 return;
             }
@@ -505,35 +535,32 @@ fn apply_pointer_motion(
 
 /// Picks a pointer coordinate guaranteed to fall inside the supplied geometry.
 fn pointer_in_geometry(geometry: &SurfaceGeometry) -> (f64, f64) {
-    let x = f64::from(geometry.x) + 64.0f64.min(f64::from(geometry.width.saturating_sub(1)));
-    let y = f64::from(geometry.y) + 64.0f64.min(f64::from(geometry.height.saturating_sub(1)));
+    // The compositor may allocate a larger window slot than the helper client's committed
+    // 48x48 buffer. Keep the synthetic pointer inside that known buffer footprint so strict
+    // surface-tree hit-testing still lands on the client surface.
+    let x = f64::from(geometry.x)
+        + f64::from((TEST_BUFFER_WIDTH / 2).min(geometry.width.saturating_sub(1)));
+    let y = f64::from(geometry.y)
+        + f64::from((TEST_BUFFER_HEIGHT / 2).min(geometry.height.saturating_sub(1)));
     (x, y)
 }
 
-/// Checks whether two geometries overlap.
-fn geometries_overlap(a: &SurfaceGeometry, b: &SurfaceGeometry) -> bool {
-    let a_left = i64::from(a.x);
-    let a_top = i64::from(a.y);
-    let a_right = a_left + i64::from(a.width);
-    let a_bottom = a_top + i64::from(a.height);
-    let b_left = i64::from(b.x);
-    let b_top = i64::from(b.y);
-    let b_right = b_left + i64::from(b.width);
-    let b_bottom = b_top + i64::from(b.height);
-
-    a_left < b_right && a_right > b_left && a_top < b_bottom && a_bottom > b_top
+fn geometry_matches(geometry: &SurfaceGeometry, x: i32, y: i32, width: u32, height: u32) -> bool {
+    geometry.x == x && geometry.y == y && geometry.width == width && geometry.height == height
 }
 
 /// Creates a small SHM buffer with deterministic pixel data for the helper clients.
 fn create_test_buffer<T>(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<T>,
+    width: u32,
+    height: u32,
 ) -> Result<(std::fs::File, wl_shm_pool::WlShmPool, wl_buffer::WlBuffer), common::TestControl>
 where
     T: Dispatch<wl_shm_pool::WlShmPool, ()> + Dispatch<wl_buffer::WlBuffer, ()> + 'static,
 {
-    let stride = TEST_BUFFER_WIDTH * 4;
-    let file_size = stride * TEST_BUFFER_HEIGHT;
+    let stride = width * 4;
+    let file_size = stride * height;
     let mut file = tempfile().map_err(|error| common::TestControl::Fail(error.to_string()))?;
     let mut pixels = vec![0_u8; file_size as usize];
     for chunk in pixels.chunks_exact_mut(4) {
@@ -549,8 +576,8 @@ where
     let pool = shm.create_pool(file.as_fd(), file_size as i32, qh, ());
     let buffer = pool.create_buffer(
         0,
-        TEST_BUFFER_WIDTH as i32,
-        TEST_BUFFER_HEIGHT as i32,
+        width as i32,
+        height as i32,
         stride as i32,
         wl_shm::Format::Xrgb8888,
         qh,
@@ -852,6 +879,22 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for SourceClientState {
     }
 }
 
+impl Dispatch<xdg_toplevel::XdgToplevel, ()> for SourceClientState {
+    fn event(
+        state: &mut Self,
+        _toplevel: &xdg_toplevel::XdgToplevel,
+        event: xdg_toplevel::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let xdg_toplevel::Event::Configure { width, height, .. } = event {
+            state.configured_width = u32::try_from(width).ok().filter(|width| *width > 0);
+            state.configured_height = u32::try_from(height).ok().filter(|height| *height > 0);
+        }
+    }
+}
+
 impl Dispatch<xdg_surface::XdgSurface, ()> for TargetClientState {
     fn event(
         state: &mut Self,
@@ -868,6 +911,22 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for TargetClientState {
                 surface.commit();
             }
             state.configured = true;
+        }
+    }
+}
+
+impl Dispatch<xdg_toplevel::XdgToplevel, ()> for TargetClientState {
+    fn event(
+        state: &mut Self,
+        _toplevel: &xdg_toplevel::XdgToplevel,
+        event: xdg_toplevel::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let xdg_toplevel::Event::Configure { width, height, .. } = event {
+            state.configured_width = u32::try_from(width).ok().filter(|width| *width > 0);
+            state.configured_height = u32::try_from(height).ok().filter(|height| *height > 0);
         }
     }
 }
@@ -1057,7 +1116,6 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for TargetClientState {
 
 delegate_noop!(SourceClientState: ignore wl_compositor::WlCompositor);
 delegate_noop!(SourceClientState: ignore wl_surface::WlSurface);
-delegate_noop!(SourceClientState: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(SourceClientState: ignore wl_data_device_manager::WlDataDeviceManager);
 delegate_noop!(SourceClientState: ignore wl_shm::WlShm);
 delegate_noop!(SourceClientState: ignore wl_shm_pool::WlShmPool);
@@ -1065,7 +1123,6 @@ delegate_noop!(SourceClientState: ignore wl_buffer::WlBuffer);
 
 delegate_noop!(TargetClientState: ignore wl_compositor::WlCompositor);
 delegate_noop!(TargetClientState: ignore wl_surface::WlSurface);
-delegate_noop!(TargetClientState: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(TargetClientState: ignore wl_data_device_manager::WlDataDeviceManager);
 delegate_noop!(TargetClientState: ignore wl_shm::WlShm);
 delegate_noop!(TargetClientState: ignore wl_shm_pool::WlShmPool);
@@ -1131,12 +1188,14 @@ impl SourceClientState {
         }
 
         let shm = self.shm.as_ref().expect("shm presence checked immediately above");
-        let (file, pool, buffer) =
-            create_test_buffer(shm, qh).expect("source DnD client should create a wl_shm buffer");
+        let width = self.configured_width.unwrap_or(TEST_BUFFER_WIDTH).max(1);
+        let height = self.configured_height.unwrap_or(TEST_BUFFER_HEIGHT).max(1);
+        let (file, pool, buffer) = create_test_buffer(shm, qh, width, height)
+            .expect("source DnD client should create a wl_shm buffer");
         let surface =
             self.base_surface.as_ref().expect("surface presence checked immediately above");
         surface.attach(Some(&buffer), 0, 0);
-        surface.damage(0, 0, TEST_BUFFER_WIDTH as i32, TEST_BUFFER_HEIGHT as i32);
+        surface.damage(0, 0, width as i32, height as i32);
         self._backing_file = Some(file);
         self._pool = Some(pool);
         self._buffer = Some(buffer);
@@ -1249,12 +1308,14 @@ impl TargetClientState {
         }
 
         let shm = self.shm.as_ref().expect("shm presence checked immediately above");
-        let (file, pool, buffer) =
-            create_test_buffer(shm, qh).expect("target DnD client should create a wl_shm buffer");
+        let width = self.configured_width.unwrap_or(TEST_BUFFER_WIDTH).max(1);
+        let height = self.configured_height.unwrap_or(TEST_BUFFER_HEIGHT).max(1);
+        let (file, pool, buffer) = create_test_buffer(shm, qh, width, height)
+            .expect("target DnD client should create a wl_shm buffer");
         let surface =
             self.base_surface.as_ref().expect("surface presence checked immediately above");
         surface.attach(Some(&buffer), 0, 0);
-        surface.damage(0, 0, TEST_BUFFER_WIDTH as i32, TEST_BUFFER_HEIGHT as i32);
+        surface.damage(0, 0, width as i32, height as i32);
         self._backing_file = Some(file);
         self._pool = Some(pool);
         self._buffer = Some(buffer);

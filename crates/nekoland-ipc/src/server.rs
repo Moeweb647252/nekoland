@@ -1086,6 +1086,7 @@ mod tests {
                 },
                 viewport_visibility: Default::default(),
                 buffer: BufferState { attached: true, scale: 1 },
+                content_version: nekoland_ecs::components::SurfaceContentVersion::default(),
                 window: XdgWindow {
                     app_id: "test.app".to_owned(),
                     title: "Test".to_owned(),
