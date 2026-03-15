@@ -544,13 +544,17 @@ fn dispatch_window_server_requests_system(
     for request in pending_window_requests.drain() {
         let handled = match request.action {
             WindowServerAction::Close => server.send_close(request.surface_id),
-            WindowServerAction::SyncPresentation { ref geometry, fullscreen, maximized } => server
-                .sync_window_presentation(
+            WindowServerAction::SyncXdgToplevelState { size, fullscreen, maximized } => {
+                server.sync_xdg_toplevel_state(request.surface_id, size, fullscreen, maximized)
+            }
+            WindowServerAction::SyncX11WindowPresentation { geometry, fullscreen, maximized } => {
+                server.sync_x11_window_presentation(
                     request.surface_id,
-                    geometry.clone(),
+                    geometry,
                     fullscreen,
                     maximized,
-                ),
+                )
+            }
         };
 
         if !handled {
@@ -700,6 +704,13 @@ fn sync_workspace_visibility_system(
         })
         .map(|(popup, _)| popup.surface_id())
         .collect::<BTreeSet<_>>();
+    let hidden_parent_popups = popups
+        .iter()
+        .filter(|(popup, disabled)| {
+            !disabled && !visible_toplevel_entities.contains(&popup.child_of.parent())
+        })
+        .map(|(popup, _)| popup.surface_id())
+        .collect::<BTreeSet<_>>();
 
     if !visibility.initialized {
         visibility.initialized = true;
@@ -709,8 +720,14 @@ fn sync_workspace_visibility_system(
         return;
     }
 
-    let dismissed_popups =
-        visibility.visible_popups.difference(&visible_popups).copied().collect::<Vec<_>>();
+    let dismissed_popups = visibility
+        .visible_popups
+        .difference(&visible_popups)
+        .copied()
+        .chain(hidden_parent_popups.iter().copied())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     let activated_toplevels =
         visible_toplevels.difference(&visibility.visible_toplevels).copied().collect::<Vec<_>>();
 
@@ -982,10 +999,10 @@ impl SmithayProtocolServer {
             .unwrap_or(true)
     }
 
-    fn sync_window_presentation(
+    fn sync_xdg_toplevel_state(
         &mut self,
         surface_id: u64,
-        geometry: Option<SurfaceGeometry>,
+        size: Option<SurfaceExtent>,
         fullscreen: bool,
         maximized: bool,
     ) -> bool {
@@ -994,7 +1011,24 @@ impl SmithayProtocolServer {
             .map(|runtime| {
                 runtime
                     .borrow_mut()
-                    .sync_window_presentation(surface_id, geometry, fullscreen, maximized)
+                    .sync_xdg_toplevel_state(surface_id, size, fullscreen, maximized)
+            })
+            .unwrap_or(false)
+    }
+
+    fn sync_x11_window_presentation(
+        &mut self,
+        surface_id: u64,
+        geometry: X11WindowGeometry,
+        fullscreen: bool,
+        maximized: bool,
+    ) -> bool {
+        self.runtime
+            .as_ref()
+            .map(|runtime| {
+                runtime
+                    .borrow_mut()
+                    .sync_x11_window_presentation(surface_id, geometry, fullscreen, maximized)
             })
             .unwrap_or(false)
     }
@@ -1533,19 +1567,19 @@ impl SmithayProtocolRuntime {
         handled
     }
 
-    fn sync_window_presentation(
+    fn sync_xdg_toplevel_state(
         &mut self,
         surface_id: u64,
-        geometry: Option<SurfaceGeometry>,
+        size: Option<SurfaceExtent>,
         fullscreen: bool,
         maximized: bool,
     ) -> bool {
         let handled = if let Some(toplevel) = self.state.toplevels.get(&surface_id).cloned() {
             toplevel.with_pending_state(|state| {
-                state.size = geometry.as_ref().map(|geometry| {
+                state.size = size.map(|size| {
                     Size::<i32, Logical>::from((
-                        geometry.width.max(1) as i32,
-                        geometry.height.max(1) as i32,
+                        size.width.max(1) as i32,
+                        size.height.max(1) as i32,
                     ))
                 });
                 if fullscreen {
@@ -1561,7 +1595,31 @@ impl SmithayProtocolRuntime {
             });
             toplevel.send_configure();
             true
-        } else if let Some(window_id) =
+        } else {
+            false
+        };
+
+        if handled {
+            if let Err(error) = self.display.flush_clients() {
+                remember_protocol_error(
+                    &mut self.last_dispatch_error,
+                    error,
+                    "failed to flush Wayland clients after syncing XDG toplevel state",
+                );
+            }
+        }
+
+        handled
+    }
+
+    fn sync_x11_window_presentation(
+        &mut self,
+        surface_id: u64,
+        geometry: X11WindowGeometry,
+        fullscreen: bool,
+        maximized: bool,
+    ) -> bool {
+        let handled = if let Some(window_id) =
             self.state.x11_window_ids_by_surface.get(&surface_id).copied()
         {
             let Some(window) = self.state.x11_windows.get(&window_id).cloned() else {
@@ -1585,9 +1643,6 @@ impl SmithayProtocolRuntime {
                 return false;
             }
             if !window.is_override_redirect() {
-                let Some(geometry) = geometry else {
-                    return false;
-                };
                 let rect = Rectangle::new(
                     Point::from((geometry.x, geometry.y)),
                     Size::from((geometry.width.max(1) as i32, geometry.height.max(1) as i32)),
@@ -1611,7 +1666,7 @@ impl SmithayProtocolRuntime {
                 remember_protocol_error(
                     &mut self.last_dispatch_error,
                     error,
-                    "failed to flush Wayland clients after syncing window presentation",
+                    "failed to flush Wayland clients after syncing X11 window presentation",
                 );
             }
         }

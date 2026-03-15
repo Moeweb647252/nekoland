@@ -1,17 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::prelude::{Local, Query, ResMut, With};
-use nekoland_ecs::components::{SurfaceGeometry, WindowMode, XdgWindow};
+use nekoland_ecs::components::{WindowMode, XdgWindow};
 use nekoland_ecs::resources::{
-    PendingWindowServerRequests, WindowServerAction, WindowServerRequest,
+    PendingWindowServerRequests, SurfaceExtent, WindowServerAction, WindowServerRequest,
+    X11WindowGeometry,
 };
 use nekoland_ecs::views::{WindowSnapshotRuntime, WindowSnapshotRuntimeItem};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WindowPresentationState {
-    geometry: Option<SurfaceGeometry>,
-    fullscreen: bool,
-    maximized: bool,
+pub(crate) enum WindowPresentationState {
+    XdgToplevelState { size: Option<SurfaceExtent>, fullscreen: bool, maximized: bool },
+    X11Presentation { geometry: X11WindowGeometry, fullscreen: bool, maximized: bool },
 }
 
 pub fn window_presentation_sync_system(
@@ -33,18 +33,17 @@ pub fn window_presentation_sync_system(
         if let Some(desired) = desired {
             pending_window_requests.push(WindowServerRequest {
                 surface_id,
-                action: WindowServerAction::SyncPresentation {
-                    geometry: desired.geometry.clone(),
-                    fullscreen: desired.fullscreen,
-                    maximized: desired.maximized,
-                },
+                action: window_server_action_for_presentation_state(&desired),
             });
             synced.insert(surface_id, desired);
-        } else if synced.remove(&surface_id).is_some() {
+        } else if matches!(
+            synced.remove(&surface_id),
+            Some(WindowPresentationState::XdgToplevelState { .. })
+        ) {
             pending_window_requests.push(WindowServerRequest {
                 surface_id,
-                action: WindowServerAction::SyncPresentation {
-                    geometry: None,
+                action: WindowServerAction::SyncXdgToplevelState {
+                    size: None,
                     fullscreen: false,
                     maximized: false,
                 },
@@ -60,24 +59,58 @@ fn desired_presentation_state(
 ) -> Option<WindowPresentationState> {
     let fullscreen = window.background.is_some() || *window.mode == WindowMode::Fullscreen;
     let maximized = window.background.is_none() && *window.mode == WindowMode::Maximized;
-    let geometry = match window.x11_window {
-        Some(_) if fullscreen || maximized => Some(window.geometry.clone()),
-        Some(_) => Some(SurfaceGeometry {
-            x: saturating_isize_to_i32(window.scene_geometry.x),
-            y: saturating_isize_to_i32(window.scene_geometry.y),
-            width: window.scene_geometry.width.max(1),
-            height: window.scene_geometry.height.max(1),
+    match window.x11_window {
+        Some(_) if fullscreen || maximized => Some(WindowPresentationState::X11Presentation {
+            geometry: X11WindowGeometry {
+                x: window.geometry.x,
+                y: window.geometry.y,
+                width: window.geometry.width.max(1),
+                height: window.geometry.height.max(1),
+            },
+            fullscreen,
+            maximized,
         }),
-        None if fullscreen || maximized => Some(SurfaceGeometry {
-            x: 0,
-            y: 0,
-            width: window.geometry.width.max(1),
-            height: window.geometry.height.max(1),
+        Some(_) => Some(WindowPresentationState::X11Presentation {
+            geometry: X11WindowGeometry {
+                x: saturating_isize_to_i32(window.scene_geometry.x),
+                y: saturating_isize_to_i32(window.scene_geometry.y),
+                width: window.scene_geometry.width.max(1),
+                height: window.scene_geometry.height.max(1),
+            },
+            fullscreen,
+            maximized,
         }),
-        None => return None,
-    };
+        None if fullscreen || maximized => Some(WindowPresentationState::XdgToplevelState {
+            size: Some(SurfaceExtent {
+                width: window.geometry.width.max(1),
+                height: window.geometry.height.max(1),
+            }),
+            fullscreen,
+            maximized,
+        }),
+        None => None,
+    }
+}
 
-    Some(WindowPresentationState { geometry, fullscreen, maximized })
+fn window_server_action_for_presentation_state(
+    state: &WindowPresentationState,
+) -> WindowServerAction {
+    match state {
+        WindowPresentationState::XdgToplevelState { size, fullscreen, maximized } => {
+            WindowServerAction::SyncXdgToplevelState {
+                size: *size,
+                fullscreen: *fullscreen,
+                maximized: *maximized,
+            }
+        }
+        WindowPresentationState::X11Presentation { geometry, fullscreen, maximized } => {
+            WindowServerAction::SyncX11WindowPresentation {
+                geometry: *geometry,
+                fullscreen: *fullscreen,
+                maximized: *maximized,
+            }
+        }
+    }
 }
 
 fn saturating_isize_to_i32(value: isize) -> i32 {
@@ -93,7 +126,9 @@ mod tests {
         OutputBackgroundWindow, WindowLayout, WindowRestoreState, WindowSceneGeometry,
         WlSurfaceHandle, X11Window,
     };
-    use nekoland_ecs::resources::{PendingWindowServerRequests, WindowServerAction};
+    use nekoland_ecs::resources::{
+        PendingWindowServerRequests, SurfaceExtent, WindowServerAction, X11WindowGeometry,
+    };
 
     use super::window_presentation_sync_system;
 
@@ -140,16 +175,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(requests.len(), 1);
         match &requests[0].action {
-            WindowServerAction::SyncPresentation { geometry, fullscreen, maximized } => {
-                assert_eq!(
-                    geometry.as_ref().expect("background geometry"),
-                    &nekoland_ecs::components::SurfaceGeometry {
-                        x: 0,
-                        y: 0,
-                        width: 1920,
-                        height: 1080,
-                    }
-                );
+            WindowServerAction::SyncX11WindowPresentation { geometry, fullscreen, maximized } => {
+                assert_eq!(geometry, &X11WindowGeometry { x: 0, y: 0, width: 1920, height: 1080 });
                 assert!(*fullscreen);
                 assert!(!maximized);
             }
@@ -190,15 +217,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(requests.len(), 1);
         match &requests[0].action {
-            WindowServerAction::SyncPresentation { geometry, fullscreen, maximized } => {
+            WindowServerAction::SyncX11WindowPresentation { geometry, fullscreen, maximized } => {
                 assert_eq!(
-                    geometry.as_ref().expect("x11 geometry"),
-                    &nekoland_ecs::components::SurfaceGeometry {
-                        x: 1200,
-                        y: 2100,
-                        width: 800,
-                        height: 600,
-                    }
+                    geometry,
+                    &X11WindowGeometry { x: 1200, y: 2100, width: 800, height: 600 }
                 );
                 assert!(!fullscreen);
                 assert!(!maximized);
@@ -238,5 +260,46 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>();
         assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn fullscreen_xdg_windows_sync_state_without_geometry() {
+        let mut app = NekolandApp::new("window-presentation-xdg-fullscreen-test");
+        app.inner_mut()
+            .init_resource::<PendingWindowServerRequests>()
+            .add_systems(LayoutSchedule, window_presentation_sync_system);
+
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 44 },
+            geometry: nekoland_ecs::components::SurfaceGeometry {
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 720,
+            },
+            scene_geometry: WindowSceneGeometry { x: 4000, y: 5000, width: 1024, height: 768 },
+            layout: WindowLayout::Floating,
+            mode: nekoland_ecs::components::WindowMode::Fullscreen,
+            ..Default::default()
+        });
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let requests = app
+            .inner()
+            .world()
+            .resource::<PendingWindowServerRequests>()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(requests.len(), 1);
+        match &requests[0].action {
+            WindowServerAction::SyncXdgToplevelState { size, fullscreen, maximized } => {
+                assert_eq!(*size, Some(SurfaceExtent { width: 1280, height: 720 }));
+                assert!(*fullscreen);
+                assert!(!maximized);
+            }
+            action => panic!("unexpected action: {action:?}"),
+        }
     }
 }

@@ -16,8 +16,8 @@ use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::{LayoutSchedule, RenderSchedule};
 use nekoland_ecs::components::{
-    OutputProperties, PopupGrab, SurfaceGeometry, WindowDisplayState, WindowLayout, WindowMode,
-    WlSurfaceHandle, XdgPopup, XdgWindow,
+    BufferState, OutputProperties, PopupGrab, SurfaceGeometry, WindowDisplayState, WindowLayout,
+    WindowMode, WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
@@ -1336,13 +1336,16 @@ fn pump_interactive_seat_input(
     mut keyboard_focus: ResMut<KeyboardFocusState>,
     mut pointer: ResMut<GlobalPointerPosition>,
     mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
-    windows: Query<(&WlSurfaceHandle, &SurfaceGeometry), With<XdgWindow>>,
+    windows: Query<(&WlSurfaceHandle, &SurfaceGeometry, &BufferState), With<XdgWindow>>,
 ) {
     if pump.remaining_frames == 0 {
         return;
     }
 
-    let Some((surface, geometry)) = windows.iter().next() else {
+    let Some((surface, geometry, buffer)) = windows.iter().next() else {
+        return;
+    };
+    if !buffer.attached {
         return;
     };
 

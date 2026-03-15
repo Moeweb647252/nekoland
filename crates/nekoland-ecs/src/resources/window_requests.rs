@@ -1,16 +1,18 @@
-use crate::components::SurfaceGeometry;
+use super::pending_events::SurfaceExtent;
+use super::x11_requests::X11WindowGeometry;
 use crate::kinds::CompositorRequestQueue;
 use serde::{Deserialize, Serialize};
 
 /// Internal protocol bridge requests for windows.
 ///
 /// New user-facing control flows should go through `PendingWindowControls` and `WindowOps`.
-/// This queue remains only for the final protocol close bridge after shell-side reconciliation has
-/// already decided that a close should happen.
+/// This queue remains only for the final protocol bridge after shell-side reconciliation has
+/// already decided that a close or presentation-state sync should happen.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WindowServerAction {
     Close,
-    SyncPresentation { geometry: Option<SurfaceGeometry>, fullscreen: bool, maximized: bool },
+    SyncXdgToplevelState { size: Option<SurfaceExtent>, fullscreen: bool, maximized: bool },
+    SyncX11WindowPresentation { geometry: X11WindowGeometry, fullscreen: bool, maximized: bool },
 }
 
 /// One low-level window request targeted at a surface id.

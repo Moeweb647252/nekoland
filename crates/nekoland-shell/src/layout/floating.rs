@@ -13,6 +13,8 @@ use crate::viewport::{
     resolve_output_state_for_workspace,
 };
 
+const MIN_FLOATING_WINDOW_SIZE: u32 = 32;
+
 /// Floating layout strategy.
 ///
 /// Windows whose layout resolves to floating semantics keep their geometry but receive initial
@@ -89,14 +91,16 @@ pub fn floating_layout_system(
         );
 
         if let Some(size) = window.placement.floating_size {
-            window.scene_geometry.width = size.width.max(64);
-            window.scene_geometry.height = size.height.max(64);
+            window.scene_geometry.width = size.width.max(MIN_FLOATING_WINDOW_SIZE);
+            window.scene_geometry.height = size.height.max(MIN_FLOATING_WINDOW_SIZE);
         }
 
-        let max_width = window_work_area.width.max(64);
-        let max_height = window_work_area.height.max(64);
-        window.scene_geometry.width = window.scene_geometry.width.clamp(64, max_width);
-        window.scene_geometry.height = window.scene_geometry.height.clamp(64, max_height);
+        let max_width = window_work_area.width.max(MIN_FLOATING_WINDOW_SIZE);
+        let max_height = window_work_area.height.max(MIN_FLOATING_WINDOW_SIZE);
+        window.scene_geometry.width =
+            window.scene_geometry.width.clamp(MIN_FLOATING_WINDOW_SIZE, max_width);
+        window.scene_geometry.height =
+            window.scene_geometry.height.clamp(MIN_FLOATING_WINDOW_SIZE, max_height);
 
         if should_reposition_floating_window(
             &window.placement,
@@ -311,7 +315,7 @@ mod tests {
             .world()
             .get::<SurfaceGeometry>(entity)
             .expect("floating layout should keep geometry after work area updates");
-        assert_eq!((geometry.x, geometry.y), (928, 508));
+        assert_eq!((geometry.x, geometry.y), (944, 524));
     }
 
     #[test]

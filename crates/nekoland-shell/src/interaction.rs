@@ -13,7 +13,7 @@ use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 use crate::viewport::{project_scene_geometry, resolve_output_state_for_workspace};
 
-const MIN_WINDOW_SIZE: i32 = 64;
+const MIN_WINDOW_SIZE: i32 = 32;
 
 /// Interactive grab mode currently applied to a floating window.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,8 +249,8 @@ mod tests {
             &GlobalPointerPosition { x: 900.0, y: 200.0 },
         );
 
-        assert_eq!(geometry.x, 776);
-        assert_eq!(geometry.width, 64);
+        assert_eq!(geometry.x, 808);
+        assert_eq!(geometry.width, 32);
     }
 
     #[test]
