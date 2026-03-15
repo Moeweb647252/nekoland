@@ -93,7 +93,10 @@ pub fn compose_frame_system(
         .chain(
             popups
                 .iter()
-                .filter(|popup| popup_parent_visible(popup.child_of, &active_window_entities))
+                .filter(|popup| {
+                    popup.buffer.attached
+                        && popup_parent_visible(popup.child_of, &active_window_entities)
+                })
                 .map(|popup| (popup.surface_id(), opacity_for_animation(popup.animation.progress))),
         )
         .chain(

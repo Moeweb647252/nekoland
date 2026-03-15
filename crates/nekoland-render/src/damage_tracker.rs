@@ -80,6 +80,7 @@ pub(crate) fn damage_tracking_system(
             (
                 entity,
                 window.surface_id(),
+                window.background.is_some(),
                 window
                     .background
                     .map(|background| background.output.clone())
@@ -95,6 +96,31 @@ pub(crate) fn damage_tracking_system(
                 },
             )
         })
+        .collect::<Vec<_>>();
+    let visible_windows = visible_windows
+        .into_iter()
+        .fold(BTreeMap::new(), |mut deduped, window| {
+            let (entity, surface_id, is_background, output_name, rect) = window;
+            let dedupe_key = is_background
+                .then(|| output_name.clone())
+                .flatten()
+                .map(|output_name| format!("background:{output_name}"));
+            if let Some(dedupe_key) = dedupe_key {
+                match deduped.get(&dedupe_key) {
+                    Some((_, current_surface_id, _, _)) if *current_surface_id >= surface_id => {}
+                    _ => {
+                        deduped.insert(dedupe_key, (entity, surface_id, output_name, rect));
+                    }
+                }
+            } else {
+                deduped.insert(
+                    format!("window:{surface_id}"),
+                    (entity, surface_id, output_name, rect),
+                );
+            }
+            deduped
+        })
+        .into_values()
         .collect::<Vec<_>>();
     let active_window_entities =
         visible_windows.iter().map(|(entity, ..)| *entity).collect::<BTreeSet<_>>();
@@ -144,7 +170,8 @@ pub(crate) fn damage_tracking_system(
     }
 
     for popup in &popups {
-        if !popup_parent_visible(popup.child_of, &active_window_entities) {
+        if !popup.buffer.attached || !popup_parent_visible(popup.child_of, &active_window_entities)
+        {
             continue;
         }
 
@@ -406,6 +433,7 @@ mod tests {
         app.inner_mut().world_mut().spawn((
             WlSurfaceHandle { id: 3 },
             XdgPopup::default(),
+            BufferState { attached: true, scale: 1 },
             SurfaceGeometry { x: 5, y: 7, width: 30, height: 20 },
             ChildOf(secondary_window),
         ));

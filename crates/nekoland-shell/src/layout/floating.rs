@@ -93,6 +93,11 @@ pub fn floating_layout_system(
             window.scene_geometry.height = size.height.max(64);
         }
 
+        let max_width = window_work_area.width.max(64);
+        let max_height = window_work_area.height.max(64);
+        window.scene_geometry.width = window.scene_geometry.width.clamp(64, max_width);
+        window.scene_geometry.height = window.scene_geometry.height.clamp(64, max_height);
+
         if should_reposition_floating_window(
             &window.placement,
             &window.scene_geometry,
@@ -218,6 +223,33 @@ mod tests {
     }
 
     #[test]
+    fn floating_layout_clamps_window_size_to_work_area() {
+        let mut app = NekolandApp::new("floating-layout-clamp-test");
+        app.insert_resource(WorkArea { x: 0, y: 0, width: 1280, height: 720 })
+            .inner_mut()
+            .add_systems(LayoutSchedule, floating_layout_system);
+
+        let window = app
+            .inner_mut()
+            .world_mut()
+            .spawn(WindowBundle {
+                surface: WlSurfaceHandle { id: 99 },
+                geometry: SurfaceGeometry { x: 0, y: 0, width: 3000, height: 2000 },
+                buffer: BufferState { attached: true, scale: 1 },
+                layout: WindowLayout::Floating,
+                mode: WindowMode::Normal,
+                ..Default::default()
+            })
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let geometry = app.inner().world().get::<SurfaceGeometry>(window).expect("window geometry");
+        assert_eq!(geometry.width, 1280);
+        assert_eq!(geometry.height, 720);
+    }
+
+    #[test]
     fn window_taller_than_work_area_is_placed_at_work_area_top() {
         assert_eq!(centre_y(&work_area(), 0, 900), 32);
     }
@@ -279,7 +311,7 @@ mod tests {
             .world()
             .get::<SurfaceGeometry>(entity)
             .expect("floating layout should keep geometry after work area updates");
-        assert_eq!((geometry.x, geometry.y), (944, 524));
+        assert_eq!((geometry.x, geometry.y), (928, 508));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::message::MessageWriter;
-use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With};
+use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With, Without};
 use bevy_ecs::query::Allow;
 use bevy_ecs::system::SystemParam;
 use nekoland_ecs::bundles::X11WindowBundle;
@@ -17,7 +17,7 @@ use nekoland_ecs::resources::{
     PendingPopupServerRequests, PendingX11Requests, PopupServerAction, PopupServerRequest,
     PrimaryOutputState, X11LifecycleAction,
 };
-use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowRuntime, WorkspaceRuntime};
+use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_target;
 
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
@@ -35,7 +35,12 @@ type X11Windows<'w, 's> =
 
 #[derive(SystemParam)]
 pub struct X11PopupDismissals<'w, 's> {
-    popups: Query<'w, 's, PopupRuntime, (With<XdgPopup>, Allow<Disabled>)>,
+    popups: Query<
+        'w,
+        's,
+        (&'static WlSurfaceHandle, &'static ChildOf),
+        (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>),
+    >,
     requests: ResMut<'w, PendingPopupServerRequests>,
 }
 
@@ -571,19 +576,22 @@ fn destroy_x11_window(
 fn popup_dismissal_surface_ids(
     parent_surface_id: u64,
     entity_index: &EntityIndex,
-    popups: &Query<PopupRuntime, (With<XdgPopup>, Allow<Disabled>)>,
+    popups: &Query<
+        (&WlSurfaceHandle, &ChildOf),
+        (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>),
+    >,
 ) -> Vec<u64> {
     let Some(parent_entity) = entity_index.entity_for_surface(parent_surface_id) else {
         return Vec::new();
     };
     let mut dismissed = std::collections::BTreeSet::new();
     let mut surface_ids = Vec::new();
-    for popup in popups.iter() {
-        if popup.child_of.parent() != parent_entity || !dismissed.insert(popup.surface_id()) {
+    for (surface, child_of) in popups.iter() {
+        if child_of.parent() != parent_entity || !dismissed.insert(surface.id) {
             continue;
         }
 
-        surface_ids.push(popup.surface_id());
+        surface_ids.push(surface.id);
     }
 
     surface_ids

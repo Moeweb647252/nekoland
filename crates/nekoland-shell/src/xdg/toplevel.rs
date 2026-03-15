@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::message::MessageWriter;
-use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With};
+use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With, Without};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
@@ -44,7 +44,7 @@ pub fn toplevel_lifecycle_system(
     primary_output: Option<Res<PrimaryOutputState>>,
     focused_output: Option<Res<FocusedOutputState>>,
     mut windows: Query<(Entity, WindowRuntime), (With<XdgWindow>, Allow<Disabled>)>,
-    popups: Query<PopupRuntime, (With<XdgPopup>, Allow<Disabled>)>,
+    popups: Query<PopupRuntime, (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>)>,
     _workspaces: Query<(Entity, WorkspaceRuntime)>,
     mut window_created: MessageWriter<WindowCreated>,
     mut window_closed: MessageWriter<WindowClosed>,
@@ -357,7 +357,7 @@ fn _trace_unhandled_request(request: &WindowLifecycleRequest) {
 fn enqueue_popup_dismissals(
     parent_surface_id: u64,
     entity_index: &EntityIndex,
-    popups: &Query<PopupRuntime, (With<XdgPopup>, Allow<Disabled>)>,
+    popups: &Query<PopupRuntime, (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>)>,
     pending_popup_requests: &mut PendingPopupServerRequests,
 ) {
     let Some(parent_entity) = entity_index.entity_for_surface(parent_surface_id) else {
@@ -481,7 +481,15 @@ mod tests {
             .id();
         app.inner_mut().world_mut().spawn((
             WlSurfaceHandle { id: 12 },
-            XdgPopup { configure_serial: None, grab_serial: None, reposition_token: None },
+            XdgPopup {
+                configure_serial: None,
+                grab_serial: None,
+                reposition_token: None,
+                placement_x: 0,
+                placement_y: 0,
+                placement_width: 1,
+                placement_height: 1,
+            },
             ChildOf(parent),
         ));
 

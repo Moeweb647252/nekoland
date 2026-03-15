@@ -14,6 +14,10 @@ pub struct XdgPopup {
     pub configure_serial: Option<u32>,
     pub grab_serial: Option<u32>,
     pub reposition_token: Option<u32>,
+    pub placement_x: i32,
+    pub placement_y: i32,
+    pub placement_width: u32,
+    pub placement_height: u32,
 }
 
 /// Tracks whether a popup currently owns an explicit popup grab.

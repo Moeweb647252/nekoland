@@ -105,6 +105,7 @@ impl<'w, 's> WindowVisibilityRuntimeItem<'w, 's> {
 #[derive(QueryData)]
 pub struct PopupRuntime {
     pub surface: &'static WlSurfaceHandle,
+    pub buffer: &'static BufferState,
     pub child_of: &'static ChildOf,
 }
 
@@ -157,6 +158,7 @@ pub struct PopupSnapshotRuntime {
     pub surface: &'static WlSurfaceHandle,
     pub child_of: &'static ChildOf,
     pub geometry: &'static SurfaceGeometry,
+    pub buffer: &'static BufferState,
     pub content_version: &'static SurfaceContentVersion,
     pub grab: Option<&'static PopupGrab>,
 }
@@ -188,6 +190,7 @@ impl<'w, 's> WindowRenderRuntimeItem<'w, 's> {
 #[derive(QueryData)]
 pub struct PopupRenderRuntime {
     pub surface: &'static WlSurfaceHandle,
+    pub buffer: &'static BufferState,
     pub animation: &'static WindowAnimation,
     pub child_of: &'static ChildOf,
 }

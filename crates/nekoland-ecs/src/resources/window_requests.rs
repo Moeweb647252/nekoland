@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WindowServerAction {
     Close,
-    SyncPresentation { geometry: SurfaceGeometry, fullscreen: bool, maximized: bool },
+    SyncPresentation { geometry: Option<SurfaceGeometry>, fullscreen: bool, maximized: bool },
 }
 
 /// One low-level window request targeted at a surface id.

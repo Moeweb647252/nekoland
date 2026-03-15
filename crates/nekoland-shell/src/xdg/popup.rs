@@ -80,6 +80,10 @@ pub fn popup_management_system(
                     XdgPopup {
                         configure_serial: None,
                         grab_serial: None,
+                        placement_x: placement.x,
+                        placement_y: placement.y,
+                        placement_width: placement.width.max(1) as u32,
+                        placement_height: placement.height.max(1) as u32,
                         reposition_token: placement.reposition_token,
                     },
                     PopupGrab::default(),
@@ -105,6 +109,10 @@ pub fn popup_management_system(
                 {
                     *geometry = next_geometry;
                 }
+                popup.placement_x = placement.x;
+                popup.placement_y = placement.y;
+                popup.placement_width = placement.width.max(1) as u32;
+                popup.placement_height = placement.height.max(1) as u32;
                 popup.reposition_token = placement.reposition_token;
             }
             WindowLifecycleAction::Committed { role: XdgSurfaceRole::Popup, size } => {
@@ -175,6 +183,30 @@ pub fn popup_management_system(
     tracing::trace!(count = known_popups.len(), "xdg popup system tick");
 }
 
+pub fn popup_projection_system(
+    parent_geometries: Query<
+        &SurfaceGeometry,
+        (With<XdgWindow>, Without<XdgPopup>, Allow<Disabled>),
+    >,
+    mut popups: Query<
+        (&mut SurfaceGeometry, &XdgPopup, &ChildOf),
+        (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>),
+    >,
+) {
+    for (mut geometry, popup, child_of) in &mut popups {
+        let Ok(parent_geometry) = parent_geometries.get(child_of.parent()) else {
+            continue;
+        };
+
+        *geometry = SurfaceGeometry {
+            x: parent_geometry.x.saturating_add(popup.placement_x),
+            y: parent_geometry.y.saturating_add(popup.placement_y),
+            width: popup.placement_width.max(1),
+            height: popup.placement_height.max(1),
+        };
+    }
+}
+
 /// Converts popup-relative placement coordinates into global surface geometry using the resolved
 /// parent toplevel rectangle.
 fn popup_geometry_for(
@@ -228,7 +260,7 @@ mod tests {
         WindowLifecycleRequest, rebuild_entity_index_system,
     };
 
-    use super::popup_management_system;
+    use super::{popup_management_system, popup_projection_system};
 
     #[test]
     fn popup_creation_inserts_child_of_parent_when_parent_exists() {
@@ -277,5 +309,66 @@ mod tests {
             world.get::<ChildOf>(popup_entity).expect("popup should have ChildOf relationship");
 
         assert_eq!(popup_parent.parent(), parent);
+    }
+
+    #[test]
+    fn popup_projection_tracks_parent_geometry_changes() {
+        let mut app = NekolandApp::new("popup-projection-test");
+        app.insert_resource(EntityIndex::default()).insert_resource(PendingXdgRequests::default());
+        app.inner_mut().add_systems(
+            LayoutSchedule,
+            (rebuild_entity_index_system, popup_management_system, popup_projection_system).chain(),
+        );
+
+        let parent = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                WlSurfaceHandle { id: 42 },
+                SurfaceGeometry { x: 20, y: 30, width: 640, height: 480 },
+                XdgWindow::default(),
+            ))
+            .id();
+
+        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+            WindowLifecycleRequest {
+                surface_id: 100,
+                action: WindowLifecycleAction::PopupCreated {
+                    parent_surface_id: Some(42),
+                    placement: PopupPlacement {
+                        x: 10,
+                        y: 12,
+                        width: 200,
+                        height: 120,
+                        reposition_token: Some(7),
+                    },
+                },
+            },
+        );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+        app.inner_mut()
+            .world_mut()
+            .get_mut::<SurfaceGeometry>(parent)
+            .expect("parent geometry")
+            .x = 120;
+        app.inner_mut()
+            .world_mut()
+            .get_mut::<SurfaceGeometry>(parent)
+            .expect("parent geometry")
+            .y = 230;
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner_mut().world_mut();
+        let popup_geometry = world
+            .query::<(&WlSurfaceHandle, &SurfaceGeometry)>()
+            .iter(world)
+            .find(|(surface, _)| surface.id == 100)
+            .map(|(_, geometry)| geometry.clone())
+            .expect("popup geometry should exist");
+        assert_eq!(popup_geometry.x, 130);
+        assert_eq!(popup_geometry.y, 242);
+        assert_eq!(popup_geometry.width, 200);
+        assert_eq!(popup_geometry.height, 120);
     }
 }

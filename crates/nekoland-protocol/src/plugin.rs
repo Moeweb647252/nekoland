@@ -292,6 +292,7 @@ struct XWaylandRuntimeState {
 struct WorkspaceVisibilityState {
     initialized: bool,
     active_workspace: Option<u32>,
+    visible_toplevels: BTreeSet<u64>,
     visible_popups: BTreeSet<u64>,
 }
 
@@ -664,7 +665,9 @@ fn sync_workspace_visibility_system(
     let visible_popups = popups
         .iter()
         .filter(|(popup, disabled)| {
-            !disabled && popup_parent_visible(popup.child_of, &visible_toplevel_entities)
+            !disabled
+                && popup.buffer.attached
+                && popup_parent_visible(popup.child_of, &visible_toplevel_entities)
         })
         .map(|(popup, _)| popup.surface_id())
         .collect::<BTreeSet<_>>();
@@ -672,24 +675,25 @@ fn sync_workspace_visibility_system(
     if !visibility.initialized {
         visibility.initialized = true;
         visibility.active_workspace = active_workspace;
+        visibility.visible_toplevels = visible_toplevels;
         visibility.visible_popups = visible_popups;
         return;
     }
 
-    if visibility.active_workspace != active_workspace {
-        let dismissed_popups = popups
-            .iter()
-            .filter(|(popup, _)| !popup_parent_visible(popup.child_of, &visible_toplevel_entities))
-            .map(|(popup, _)| popup.surface_id())
-            .collect::<Vec<_>>();
-        let activated_toplevels = visible_toplevels.iter().copied().collect::<Vec<_>>();
+    let dismissed_popups =
+        visibility.visible_popups.difference(&visible_popups).copied().collect::<Vec<_>>();
+    let activated_toplevels =
+        visible_toplevels.difference(&visibility.visible_toplevels).copied().collect::<Vec<_>>();
 
-        if !dismissed_popups.is_empty() || !activated_toplevels.is_empty() {
-            server.sync_workspace_visibility(&activated_toplevels, &dismissed_popups);
-        }
+    if visibility.active_workspace != active_workspace
+        || visibility.visible_toplevels != visible_toplevels
+        || visibility.visible_popups != visible_popups
+    {
+        server.sync_workspace_visibility(&activated_toplevels, &dismissed_popups);
     }
 
     visibility.active_workspace = active_workspace;
+    visibility.visible_toplevels = visible_toplevels;
     visibility.visible_popups = visible_popups;
 }
 
@@ -933,9 +937,11 @@ impl SmithayProtocolServer {
         self.runtime
             .as_ref()
             .map(|runtime| {
-                runtime
-                    .borrow()
-                    .pointer_focus_candidate_accepts(surface_id, location, surface_origin)
+                runtime.borrow().pointer_focus_candidate_accepts(
+                    surface_id,
+                    location,
+                    surface_origin,
+                )
             })
             .unwrap_or(true)
     }
@@ -943,7 +949,7 @@ impl SmithayProtocolServer {
     fn sync_window_presentation(
         &mut self,
         surface_id: u64,
-        geometry: SurfaceGeometry,
+        geometry: Option<SurfaceGeometry>,
         fullscreen: bool,
         maximized: bool,
     ) -> bool {
@@ -1494,16 +1500,18 @@ impl SmithayProtocolRuntime {
     fn sync_window_presentation(
         &mut self,
         surface_id: u64,
-        geometry: SurfaceGeometry,
+        geometry: Option<SurfaceGeometry>,
         fullscreen: bool,
         maximized: bool,
     ) -> bool {
         let handled = if let Some(toplevel) = self.state.toplevels.get(&surface_id).cloned() {
             toplevel.with_pending_state(|state| {
-                state.size = Some(Size::<i32, Logical>::from((
-                    geometry.width.max(1) as i32,
-                    geometry.height.max(1) as i32,
-                )));
+                state.size = geometry.as_ref().map(|geometry| {
+                    Size::<i32, Logical>::from((
+                        geometry.width.max(1) as i32,
+                        geometry.height.max(1) as i32,
+                    ))
+                });
                 if fullscreen {
                     state.states.set(xdg_toplevel::State::Fullscreen);
                 } else {
@@ -1541,6 +1549,9 @@ impl SmithayProtocolRuntime {
                 return false;
             }
             if !window.is_override_redirect() {
+                let Some(geometry) = geometry else {
+                    return false;
+                };
                 let rect = Rectangle::new(
                     Point::from((geometry.x, geometry.y)),
                     Size::from((geometry.width.max(1) as i32, geometry.height.max(1) as i32)),
@@ -3426,10 +3437,7 @@ fn pointer_focus_target(
             }) {
                 continue;
             }
-            return Some(PointerSurfaceFocus {
-                surface_id: element.surface_id,
-                surface_origin,
-            });
+            return Some(PointerSurfaceFocus { surface_id: element.surface_id, surface_origin });
         }
     }
 

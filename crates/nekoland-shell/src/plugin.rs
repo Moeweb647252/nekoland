@@ -79,6 +79,7 @@ impl NekolandPlugin for ShellPlugin {
                         layout::floating::floating_layout_system,
                         layout::fullscreen::fullscreen_layout_system,
                         viewport::window_viewport_projection_system,
+                        xdg::popup::popup_projection_system,
                         presentation::window_presentation_sync_system,
                         focus::pointer_button_focus_system,
                         interaction::window_grab_system,
