@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub enum BackendInputAction {
     Key { keycode: u32, pressed: bool },
     PointerMoved { x: f64, y: f64 },
+    PointerDelta { dx: f64, dy: f64 },
     PointerButton { button_code: u32, pressed: bool },
     PointerAxis { horizontal: f64, vertical: f64 },
     FocusChanged { focused: bool },

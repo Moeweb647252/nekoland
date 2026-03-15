@@ -14,6 +14,7 @@ pub struct PhysicalPointerPosition {
     pub x: f64,
     pub y: f64,
     pub initialized: bool,
+    pub needs_resync: bool,
 }
 
 /// Per-frame raw pointer delta accumulated from backend motion events.

@@ -13,10 +13,6 @@ use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, CompositorConfig, DamageRect, OutputDamageRegions,
 };
-use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, ButtonState, InputEvent, KeyState, KeyboardKeyEvent,
-    PointerAxisEvent, PointerButtonEvent,
-};
 use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::Kind;
@@ -24,8 +20,6 @@ use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
-use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::winit::{self as smithay_winit, WinitEvent, WinitGraphicsBackend};
 use smithay::reexports::winit::dpi::PhysicalSize;
 use smithay::reexports::winit::window::{CursorGrabMode, Window as HostWindow};
 use smithay::render_elements;
@@ -42,13 +36,15 @@ use crate::traits::{
     Backend, BackendApplyCtx, BackendCapabilities, BackendDescriptor, BackendExtractCtx, BackendId,
     BackendKind, BackendPresentCtx, BackendRole, OutputSnapshot,
 };
-
-type WinitRendererBackend = WinitGraphicsBackend<GlesRenderer>;
+use crate::winit::host::{
+    HOST_WINIT_DEVICE, HostCaptureModeState, HostWinitEvent, HostWinitGraphicsBackend,
+    init_host_winit,
+};
 
 render_elements! {
-    WinitRenderElement<=GlesRenderer>;
-    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
-    Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
+    WinitRenderElement<=smithay::backend::renderer::gles::GlesRenderer>;
+    Surface=WaylandSurfaceRenderElement<smithay::backend::renderer::gles::GlesRenderer>,
+    Memory=MemoryRenderBufferRenderElement<smithay::backend::renderer::gles::GlesRenderer>,
 }
 
 #[derive(Debug, Clone, Resource, PartialEq, Eq)]
@@ -81,7 +77,7 @@ impl Default for WinitWindowState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WinitPresentDriver {
     TimerFallback,
-    SmithayEventLoop,
+    HostEventLoop,
 }
 
 impl Default for WinitPresentDriver {
@@ -110,7 +106,8 @@ struct WinitPresentCompletionShared {
     pending_input_events: Vec<BackendInputEvent>,
     pending_timestamps_nanos: Vec<u64>,
     pending_window_state: Option<PendingWinitWindowState>,
-    backend: Option<WinitRendererBackend>,
+    backend: Option<HostWinitGraphicsBackend>,
+    capture_mode: HostCaptureModeState,
     closed: bool,
     driver: WinitPresentDriver,
     desired_window_spec: WinitWindowSpec,
@@ -125,6 +122,7 @@ impl Default for WinitPresentCompletionShared {
             pending_timestamps_nanos: Vec::new(),
             pending_window_state: None,
             backend: None,
+            capture_mode: Rc::new(std::cell::Cell::new(None)),
             closed: false,
             driver: WinitPresentDriver::TimerFallback,
             desired_window_spec: WinitWindowSpec {
@@ -181,12 +179,12 @@ impl WinitRuntime {
             .expect("calloop registry inserted immediately before access");
         let source_shared = shared.clone();
         registry.push(move |handle| {
-            match install_smithay_winit_source(handle, source_shared.clone()) {
+            match install_host_winit_source(handle, source_shared.clone()) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     tracing::warn!(
                         error = %error,
-                        "failed to initialize smithay winit event source; falling back to timer"
+                        "failed to initialize nested winit event source; falling back to timer"
                     );
                     install_timer_source(handle, source_shared.clone())
                 }
@@ -307,7 +305,7 @@ impl Backend for WinitRuntime {
         if let Some(window_state) = cx.winit_window_state.as_mut() {
             let window_state = &mut **window_state;
             window_state.driver = match shared.driver {
-                WinitPresentDriver::SmithayEventLoop => "smithay-event-loop".to_owned(),
+                WinitPresentDriver::HostEventLoop => "host-winit-event-loop".to_owned(),
                 WinitPresentDriver::TimerFallback => "timer-fallback".to_owned(),
             };
             window_state.closed = shared.closed;
@@ -326,7 +324,7 @@ impl Backend for WinitRuntime {
         }
 
         self.descriptor.description = match shared.driver {
-            WinitPresentDriver::SmithayEventLoop => "nested winit development backend".to_owned(),
+            WinitPresentDriver::HostEventLoop => "nested winit development backend".to_owned(),
             WinitPresentDriver::TimerFallback => {
                 "nested winit development backend (timer fallback)".to_owned()
             }
@@ -630,7 +628,11 @@ fn apply_window_spec(window: &HostWindow, spec: &WinitWindowSpec) {
     window.request_redraw();
 }
 
-fn set_host_cursor_capture(window: &HostWindow, capture: bool) {
+fn set_host_cursor_capture(
+    window: &HostWindow,
+    capture: bool,
+    capture_mode: &std::cell::Cell<Option<CursorGrabMode>>,
+) {
     if capture {
         let grab_result = preferred_cursor_grab_modes()
             .into_iter()
@@ -638,10 +640,12 @@ fn set_host_cursor_capture(window: &HostWindow, capture: bool) {
         match grab_result {
             Some(mode) => {
                 window.set_cursor_visible(false);
+                capture_mode.set(Some(mode));
                 tracing::debug!(?mode, "captured winit host cursor");
             }
             None => {
                 window.set_cursor_visible(true);
+                capture_mode.set(None);
                 tracing::warn!("failed to capture winit host cursor");
             }
         }
@@ -650,11 +654,12 @@ fn set_host_cursor_capture(window: &HostWindow, capture: bool) {
             tracing::debug!(error = %error, "failed to release winit host cursor grab");
         }
         window.set_cursor_visible(true);
+        capture_mode.set(None);
     }
 }
 
 fn preferred_cursor_grab_modes() -> [CursorGrabMode; 2] {
-    [CursorGrabMode::Confined, CursorGrabMode::Locked]
+    [CursorGrabMode::Locked, CursorGrabMode::Confined]
 }
 
 fn clear_color(config: Option<&CompositorConfig>) -> Color32F {
@@ -694,7 +699,7 @@ fn parse_hex_color32f(color: &str) -> Option<Color32F> {
     ))
 }
 
-fn install_smithay_winit_source(
+fn install_host_winit_source(
     handle: &calloop::LoopHandle<'_, ()>,
     shared: Rc<RefCell<WinitPresentCompletionShared>>,
 ) -> Result<(), NekolandError> {
@@ -703,40 +708,40 @@ fn install_smithay_winit_source(
         .with_inner_size(PhysicalSize::new(desired_spec.width, desired_spec.height))
         .with_title(desired_spec.title.clone())
         .with_visible(true);
-    let (backend, event_loop) = match std::panic::catch_unwind(AssertUnwindSafe(|| {
-        smithay_winit::init_from_attributes::<GlesRenderer>(window_attributes)
-    })) {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(error)) => return Err(NekolandError::Runtime(error.to_string())),
-        Err(_) => {
-            return Err(NekolandError::Runtime(
-                "winit event loop initialization panicked".to_owned(),
-            ));
-        }
-    };
+    let (backend, event_loop, capture_mode) =
+        match std::panic::catch_unwind(AssertUnwindSafe(|| init_host_winit(window_attributes))) {
+            Ok(Ok(triple)) => triple,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                return Err(NekolandError::Runtime(
+                    "winit event loop initialization panicked".to_owned(),
+                ));
+            }
+        };
     let monotonic_clock = smithay::utils::Clock::<Monotonic>::new();
 
     {
         let mut shared = shared.borrow_mut();
-        shared.driver = WinitPresentDriver::SmithayEventLoop;
+        shared.driver = WinitPresentDriver::HostEventLoop;
         shared.closed = false;
         shared.pending_window_state = Some(PendingWinitWindowState {
             size: backend.window_size(),
             scale_factor: backend.scale_factor(),
         });
         shared.backend = Some(backend);
+        shared.capture_mode = capture_mode;
     }
     {
         let shared = shared.borrow();
         if let Some(backend) = shared.backend.as_ref() {
             apply_window_spec(backend.window(), &shared.desired_window_spec);
-            set_host_cursor_capture(backend.window(), true);
+            set_host_cursor_capture(backend.window(), true, shared.capture_mode.as_ref());
         }
     }
 
     handle
         .insert_source(event_loop, move |event, _, _| match event {
-            WinitEvent::Redraw => {
+            HostWinitEvent::Redraw => {
                 let mut shared = shared.borrow_mut();
                 if !shared.closed {
                     if shared.active {
@@ -747,26 +752,31 @@ fn install_smithay_winit_source(
                     }
                 }
             }
-            WinitEvent::Resized { size, scale_factor } => {
+            HostWinitEvent::Resized { size, scale_factor } => {
                 shared.borrow_mut().pending_window_state =
                     Some(PendingWinitWindowState { size, scale_factor });
             }
-            WinitEvent::Input(input_event) => {
-                if let Some(event) = translate_winit_input_event(input_event) {
-                    shared.borrow_mut().pending_input_events.push(event);
+            HostWinitEvent::Input(input_event) => {
+                let mut shared = shared.borrow_mut();
+                if should_forward_host_winit_input(shared.capture_mode.get(), &input_event.action) {
+                    shared.pending_input_events.push(input_event);
                 }
             }
-            WinitEvent::Focus(focused) => {
+            HostWinitEvent::Focus(focused) => {
                 let mut shared = shared.borrow_mut();
                 if let Some(backend) = shared.backend.as_ref() {
-                    set_host_cursor_capture(backend.window(), focused);
+                    set_host_cursor_capture(
+                        backend.window(),
+                        focused,
+                        shared.capture_mode.as_ref(),
+                    );
                 }
                 shared.pending_input_events.push(BackendInputEvent {
-                    device: "winit".to_owned(),
+                    device: HOST_WINIT_DEVICE.to_owned(),
                     action: BackendInputAction::FocusChanged { focused },
                 });
             }
-            WinitEvent::CloseRequested => {
+            HostWinitEvent::CloseRequested => {
                 shared.borrow_mut().closed = true;
             }
         })
@@ -785,6 +795,7 @@ fn install_timer_source(
         shared.driver = WinitPresentDriver::TimerFallback;
         shared.closed = false;
         shared.backend = None;
+        shared.capture_mode.set(None);
     }
 
     handle
@@ -807,35 +818,15 @@ fn monotonic_now_nanos(monotonic_clock: &smithay::utils::Clock<Monotonic>) -> u6
     now.as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
-fn translate_winit_input_event(
-    input_event: InputEvent<smithay_winit::WinitInput>,
-) -> Option<BackendInputEvent> {
-    let action = match input_event {
-        InputEvent::Keyboard { event } => BackendInputAction::Key {
-            keycode: event.key_code().into(),
-            pressed: event.state() == KeyState::Pressed,
-        },
-        InputEvent::PointerMotionAbsolute { event } => {
-            BackendInputAction::PointerMoved { x: event.x(), y: event.y() }
-        }
-        InputEvent::PointerButton { event } => BackendInputAction::PointerButton {
-            button_code: event.button_code(),
-            pressed: event.state() == ButtonState::Pressed,
-        },
-        InputEvent::PointerAxis { event } => BackendInputAction::PointerAxis {
-            horizontal: event
-                .amount(Axis::Horizontal)
-                .or_else(|| event.amount_v120(Axis::Horizontal))
-                .unwrap_or(0.0),
-            vertical: event
-                .amount(Axis::Vertical)
-                .or_else(|| event.amount_v120(Axis::Vertical))
-                .unwrap_or(0.0),
-        },
-        _ => return None,
-    };
-
-    Some(BackendInputEvent { device: "winit".to_owned(), action })
+fn should_forward_host_winit_input(
+    capture_mode: Option<CursorGrabMode>,
+    action: &BackendInputAction,
+) -> bool {
+    match action {
+        BackendInputAction::PointerMoved { .. } => capture_mode != Some(CursorGrabMode::Locked),
+        BackendInputAction::PointerDelta { .. } => capture_mode == Some(CursorGrabMode::Locked),
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -843,7 +834,7 @@ mod tests {
     use nekoland_core::prelude::AppMetadata;
     use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
     use nekoland_ecs::resources::{
-        CompositorConfig, ConfiguredOutput, DamageRect, OutputDamageRegions,
+        BackendInputAction, CompositorConfig, ConfiguredOutput, DamageRect, OutputDamageRegions,
     };
     use smithay::reexports::winit::window::CursorGrabMode;
     use smithay::utils::Transform;
@@ -852,7 +843,8 @@ mod tests {
 
     use super::{
         desired_window_spec, merge_submit_damage, output_damage_regions_physical,
-        parse_hex_color32f, preferred_cursor_grab_modes, winit_output_transform,
+        parse_hex_color32f, preferred_cursor_grab_modes, should_forward_host_winit_input,
+        winit_output_transform,
     };
 
     #[test]
@@ -914,10 +906,10 @@ mod tests {
     }
 
     #[test]
-    fn winit_cursor_grab_prefers_confined_before_locked() {
+    fn winit_cursor_grab_prefers_locked_before_confined() {
         assert_eq!(
             preferred_cursor_grab_modes(),
-            [CursorGrabMode::Confined, CursorGrabMode::Locked]
+            [CursorGrabMode::Locked, CursorGrabMode::Confined]
         );
     }
 
@@ -953,5 +945,29 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert!(merged.contains(&smithay::utils::Rectangle::new((0, 0).into(), (10, 10).into())));
         assert!(merged.contains(&smithay::utils::Rectangle::new((40, 20).into(), (5, 6).into())));
+    }
+
+    #[test]
+    fn locked_grab_prefers_relative_pointer_delta() {
+        assert!(!should_forward_host_winit_input(
+            Some(CursorGrabMode::Locked),
+            &BackendInputAction::PointerMoved { x: 10.0, y: 20.0 },
+        ));
+        assert!(should_forward_host_winit_input(
+            Some(CursorGrabMode::Locked),
+            &BackendInputAction::PointerDelta { dx: 3.0, dy: -4.0 },
+        ));
+    }
+
+    #[test]
+    fn confined_grab_uses_absolute_pointer_motion() {
+        assert!(should_forward_host_winit_input(
+            Some(CursorGrabMode::Confined),
+            &BackendInputAction::PointerMoved { x: 10.0, y: 20.0 },
+        ));
+        assert!(!should_forward_host_winit_input(
+            Some(CursorGrabMode::Confined),
+            &BackendInputAction::PointerDelta { dx: 3.0, dy: -4.0 },
+        ));
     }
 }

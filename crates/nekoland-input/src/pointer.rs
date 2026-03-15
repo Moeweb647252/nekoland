@@ -35,6 +35,19 @@ pub fn pointer_input_system(
     for event in pending_backend_input_events.drain() {
         match event.action {
             BackendInputAction::PointerMoved { x, y } => {
+                if physical_pointer.needs_resync {
+                    physical_pointer.x = x;
+                    physical_pointer.y = y;
+                    physical_pointer.initialized = true;
+                    physical_pointer.needs_resync = false;
+
+                    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                        source: format!("pointer:{}", event.device),
+                        detail: format!("resynced to ({x:.1}, {y:.1})"),
+                    });
+                    continue;
+                }
+
                 let (previous_x, previous_y) = if physical_pointer.initialized {
                     (physical_pointer.x, physical_pointer.y)
                 } else {
@@ -45,10 +58,22 @@ pub fn pointer_input_system(
                 physical_pointer.x = x;
                 physical_pointer.y = y;
                 physical_pointer.initialized = true;
+                physical_pointer.needs_resync = false;
 
                 pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
                     source: format!("pointer:{}", event.device),
                     detail: format!("moved to ({x:.1}, {y:.1})"),
+                });
+            }
+            BackendInputAction::PointerDelta { dx, dy } => {
+                pointer_delta.dx += dx;
+                pointer_delta.dy += dy;
+                physical_pointer.initialized = false;
+                physical_pointer.needs_resync = true;
+
+                pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                    source: format!("pointer:{}", event.device),
+                    detail: format!("delta ({dx:.1}, {dy:.1})"),
                 });
             }
             BackendInputAction::PointerButton { button_code, pressed } => {
@@ -66,6 +91,15 @@ pub fn pointer_input_system(
                     source: format!("pointer:{}", event.device),
                     detail: format!("axis ({horizontal:.1}, {vertical:.1})"),
                 });
+            }
+            BackendInputAction::FocusChanged { focused } => {
+                if !focused {
+                    physical_pointer.initialized = false;
+                    physical_pointer.needs_resync = false;
+                    pointer_delta.dx = 0.0;
+                    pointer_delta.dy = 0.0;
+                }
+                deferred.push(event);
             }
             _ => deferred.push(event),
         }
@@ -181,15 +215,16 @@ mod tests {
     use bevy_ecs::message::Messages;
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::RunSystemOnce;
-    use nekoland_ecs::events::PointerMotion;
+    use nekoland_ecs::events::{PointerButton, PointerMotion};
     use nekoland_ecs::resources::{
-        CompositorConfig, FocusedOutputState, GlobalPointerPosition, ModifierMask,
-        PendingInputEvents, PendingOutputControls, PointerDelta, PressedKeys,
+        BackendInputAction, BackendInputEvent, CompositorConfig, FocusedOutputState,
+        GlobalPointerPosition, ModifierMask, PendingBackendInputEvents, PendingInputEvents,
+        PendingOutputControls, PhysicalPointerPosition, PointerDelta, PressedKeys,
         ViewportPointerPanState,
     };
     use nekoland_ecs::selectors::{OutputName, OutputSelector};
 
-    use super::{cursor_motion_system, viewport_pointer_pan_system};
+    use super::{cursor_motion_system, pointer_input_system, viewport_pointer_pan_system};
 
     #[test]
     fn viewport_pointer_pan_consumes_pointer_delta_without_moving_cursor() {
@@ -292,5 +327,89 @@ mod tests {
         let pointer_delta = world.resource::<PointerDelta>();
         assert_eq!((pointer.x, pointer.y), (24.0, 17.0));
         assert_eq!((pointer_delta.dx, pointer_delta.dy), (0.0, 0.0));
+    }
+
+    #[test]
+    fn pointer_input_resyncs_after_relative_motion_without_jumping() {
+        let mut world = World::default();
+        world.insert_resource(GlobalPointerPosition { x: 20.0, y: 10.0 });
+        world.insert_resource(PhysicalPointerPosition::default());
+        world.insert_resource(PointerDelta::default());
+        world.init_resource::<PendingBackendInputEvents>();
+        world.init_resource::<PendingInputEvents>();
+        world.init_resource::<Messages<PointerButton>>();
+        world.init_resource::<Messages<PointerMotion>>();
+
+        world.resource_mut::<PendingBackendInputEvents>().push(BackendInputEvent {
+            device: "winit".to_owned(),
+            action: BackendInputAction::PointerDelta { dx: 4.0, dy: 7.0 },
+        });
+        world.run_system_once(pointer_input_system).expect("pointer input system should run");
+        world.run_system_once(cursor_motion_system).expect("cursor motion system should run");
+
+        let pointer = world.resource::<GlobalPointerPosition>();
+        let physical = world.resource::<PhysicalPointerPosition>();
+        assert_eq!((pointer.x, pointer.y), (24.0, 17.0));
+        assert!(!physical.initialized);
+        assert!(physical.needs_resync);
+
+        world.resource_mut::<PendingBackendInputEvents>().push(BackendInputEvent {
+            device: "winit".to_owned(),
+            action: BackendInputAction::PointerMoved { x: 300.0, y: 200.0 },
+        });
+        world.run_system_once(pointer_input_system).expect("pointer input system should run");
+
+        let pointer_delta = world.resource::<PointerDelta>();
+        let physical = world.resource::<PhysicalPointerPosition>();
+        assert_eq!((pointer_delta.dx, pointer_delta.dy), (0.0, 0.0));
+        assert_eq!((physical.x, physical.y), (300.0, 200.0));
+        assert!(physical.initialized);
+        assert!(!physical.needs_resync);
+
+        world.resource_mut::<PendingBackendInputEvents>().push(BackendInputEvent {
+            device: "winit".to_owned(),
+            action: BackendInputAction::PointerMoved { x: 302.0, y: 203.0 },
+        });
+        world.run_system_once(pointer_input_system).expect("pointer input system should run");
+
+        let pointer_delta = world.resource::<PointerDelta>();
+        assert_eq!((pointer_delta.dx, pointer_delta.dy), (2.0, 3.0));
+    }
+
+    #[test]
+    fn pointer_focus_loss_clears_physical_sample_and_pending_delta() {
+        let mut world = World::default();
+        world.insert_resource(GlobalPointerPosition { x: 20.0, y: 10.0 });
+        world.insert_resource(PhysicalPointerPosition {
+            x: 300.0,
+            y: 200.0,
+            initialized: true,
+            needs_resync: true,
+        });
+        world.insert_resource(PointerDelta { dx: 9.0, dy: -4.0 });
+        world.init_resource::<PendingBackendInputEvents>();
+        world.init_resource::<PendingInputEvents>();
+        world.init_resource::<Messages<PointerButton>>();
+
+        world.resource_mut::<PendingBackendInputEvents>().push(BackendInputEvent {
+            device: "winit".to_owned(),
+            action: BackendInputAction::FocusChanged { focused: false },
+        });
+        world.run_system_once(pointer_input_system).expect("pointer input system should run");
+
+        let physical = world.resource::<PhysicalPointerPosition>();
+        let pointer_delta = world.resource::<PointerDelta>();
+        let pending_backend = world.resource::<PendingBackendInputEvents>();
+
+        assert!(!physical.initialized);
+        assert!(!physical.needs_resync);
+        assert_eq!((pointer_delta.dx, pointer_delta.dy), (0.0, 0.0));
+        assert_eq!(
+            pending_backend.as_slice(),
+            &[BackendInputEvent {
+                device: "winit".to_owned(),
+                action: BackendInputAction::FocusChanged { focused: false },
+            }]
+        );
     }
 }

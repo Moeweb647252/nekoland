@@ -743,7 +743,7 @@ fn dispatch_seat_input_system(
                     server.dispatch_keyboard_input(keycode, pressed, time);
                 }
             }
-            BackendInputAction::PointerMoved { .. } => {
+            BackendInputAction::PointerMoved { .. } | BackendInputAction::PointerDelta { .. } => {
                 sync_pointer_focus_if_needed(
                     &mut server,
                     &mut seat_sync,
