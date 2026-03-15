@@ -22,6 +22,11 @@ mode = "2560x1440@144"
 scale = 1
 enabled = true
 
+# Example wallpaper setup using an external Wayland client.
+[[window_rules]]
+app_id = "swaybg"
+background = "HDMI-A-1"
+
 [keybinds.bindings]
 "Super+Return" = { exec = ["wezterm", "start", "--always-new-process"] }
 "Super+Space" = { exec = ["wofi", "--show", "drun"] }

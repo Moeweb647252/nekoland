@@ -23,6 +23,7 @@ use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_tar
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
 use crate::window_policy::{
     apply_window_policy, lock_window_policy, refresh_window_policy, restore_window_policy,
+    sync_window_background_role,
 };
 
 /// Bridges XWayland lifecycle requests into the same ECS window model used by native XDG windows.
@@ -103,6 +104,7 @@ pub fn xwayland_bridge_system(
                     &config,
                     &entity_index,
                     &mut windows,
+                    &mut commands,
                     &mut window_moved,
                 ) {
                     deferred.push(request);
@@ -233,6 +235,7 @@ fn map_x11_window(
     window_moved: &mut MessageWriter<WindowMoved>,
 ) {
     let policy = config.resolve_window_policy(&app_id, &title, override_redirect);
+    let background = config.resolve_window_background(&app_id, &title, override_redirect);
     if let Some(entity) = resolve_x11_window_entity(surface_id, entity_index, windows) {
         if let Ok((entity, mut window)) = windows.get_mut(entity) {
             let moved = window.geometry.x != geometry.x || window.geometry.y != geometry.y;
@@ -258,6 +261,15 @@ fn map_x11_window(
                 &mut window.layout,
                 &mut window.mode,
                 &mut window.policy_state,
+            );
+            sync_window_background_role(
+                commands,
+                entity,
+                background,
+                &mut window.scene_geometry,
+                &mut window.layout,
+                &mut window.mode,
+                window.background.as_ref().map(|background| (*background).clone()),
             );
             if matches!(*window.layout, WindowLayout::Floating)
                 && *window.mode == WindowMode::Normal
@@ -285,53 +297,72 @@ fn map_x11_window(
         }
     }
 
-    let mut window_entity = commands.spawn((
-        X11WindowBundle {
-            surface: WlSurfaceHandle { id: surface_id },
-            geometry: SurfaceGeometry {
-                x: geometry.x,
-                y: geometry.y,
-                width: geometry.width.max(1),
-                height: geometry.height.max(1),
+    let window_entity = commands
+        .spawn((
+            X11WindowBundle {
+                surface: WlSurfaceHandle { id: surface_id },
+                geometry: SurfaceGeometry {
+                    x: geometry.x,
+                    y: geometry.y,
+                    width: geometry.width.max(1),
+                    height: geometry.height.max(1),
+                },
+                scene_geometry: WindowSceneGeometry {
+                    x: geometry.x as isize,
+                    y: geometry.y as isize,
+                    width: geometry.width.max(1),
+                    height: geometry.height.max(1),
+                },
+                viewport_visibility: Default::default(),
+                buffer: BufferState { attached: true, scale: 1 },
+                content_version: Default::default(),
+                window: XdgWindow {
+                    app_id: app_id.clone(),
+                    title: title.clone(),
+                    last_acked_configure: None,
+                },
+                x11_window: X11Window { window_id, override_redirect },
+                layout: policy.layout,
+                mode: policy.mode,
+                decoration: ServerDecoration { enabled: true },
+                border_theme: BorderTheme {
+                    width: policy.layout.border_width(),
+                    color: config.border_color.clone(),
+                },
+                animation: WindowAnimation::default(),
             },
-            scene_geometry: WindowSceneGeometry {
-                x: geometry.x as isize,
-                y: geometry.y as isize,
-                width: geometry.width.max(1),
-                height: geometry.height.max(1),
+            WindowPolicyState { applied: policy, locked: false },
+            WindowPlacement {
+                floating_position: Some(FloatingPosition::Explicit(WindowPosition {
+                    x: geometry.x as isize,
+                    y: geometry.y as isize,
+                })),
+                floating_size: Some(WindowSize {
+                    width: geometry.width.max(1),
+                    height: geometry.height.max(1),
+                }),
             },
-            viewport_visibility: Default::default(),
-            buffer: BufferState { attached: true, scale: 1 },
-            content_version: Default::default(),
-            window: XdgWindow {
-                app_id: app_id.clone(),
-                title: title.clone(),
-                last_acked_configure: None,
-            },
-            x11_window: X11Window { window_id, override_redirect },
-            layout: policy.layout,
-            mode: policy.mode,
-            decoration: ServerDecoration { enabled: true },
-            border_theme: BorderTheme {
-                width: policy.layout.border_width(),
-                color: config.border_color.clone(),
-            },
-            animation: WindowAnimation::default(),
-        },
-        WindowPolicyState { applied: policy, locked: false },
-        WindowPlacement {
-            floating_position: Some(FloatingPosition::Explicit(WindowPosition {
-                x: geometry.x as isize,
-                y: geometry.y as isize,
-            })),
-            floating_size: Some(WindowSize {
-                width: geometry.width.max(1),
-                height: geometry.height.max(1),
-            }),
-        },
-    ));
+        ))
+        .id();
+    let mut scene_geometry = WindowSceneGeometry {
+        x: geometry.x as isize,
+        y: geometry.y as isize,
+        width: geometry.width.max(1),
+        height: geometry.height.max(1),
+    };
+    let mut layout = policy.layout;
+    let mut mode = policy.mode;
+    sync_window_background_role(
+        commands,
+        window_entity,
+        background,
+        &mut scene_geometry,
+        &mut layout,
+        &mut mode,
+        None,
+    );
     if let Some(active_workspace_entity) = active_workspace_entity {
-        window_entity.insert(ChildOf(active_workspace_entity));
+        commands.entity(window_entity).insert(ChildOf(active_workspace_entity));
     }
     window_created.write(WindowCreated { surface_id, title });
 }
@@ -344,6 +375,7 @@ fn reconfigure_x11_window(
     config: &CompositorConfig,
     entity_index: &EntityIndex,
     windows: &mut X11Windows<'_, '_>,
+    commands: &mut Commands,
     window_moved: &mut MessageWriter<WindowMoved>,
 ) -> bool {
     let Some(entity) = resolve_x11_window_entity(surface_id, entity_index, windows) else {
@@ -361,12 +393,23 @@ fn reconfigure_x11_window(
         window.x11_window.expect("x11 runtime should expose x11 metadata").override_redirect;
     let policy =
         config.resolve_window_policy(&xdg_window.app_id, &xdg_window.title, override_redirect);
+    let background =
+        config.resolve_window_background(&xdg_window.app_id, &xdg_window.title, override_redirect);
     refresh_window_policy(
         policy,
         &mut window.layout,
         &mut window.mode,
         &mut window.restore,
         &mut window.policy_state,
+    );
+    sync_window_background_role(
+        commands,
+        entity,
+        background,
+        &mut window.scene_geometry,
+        &mut window.layout,
+        &mut window.mode,
+        window.background.as_ref().map(|background| (*background).clone()),
     );
 
     let moved = window.geometry.x != geometry.x || window.geometry.y != geometry.y;
@@ -754,6 +797,7 @@ mod tests {
             title: None,
             layout: Some(WindowLayout::Tiled),
             mode: None,
+            background: None,
         });
         app.insert_resource(config)
             .insert_resource(EntityIndex::default())

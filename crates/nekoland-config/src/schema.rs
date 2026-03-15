@@ -236,6 +236,10 @@ layout = "tiled"
 title = "Video"
 mode = "fullscreen"
 
+[[window_rules]]
+app_id = "swaybg"
+background = "eDP-1"
+
 [[outputs]]
 name = "eDP-1"
 mode = "1920x1080@60"
@@ -251,7 +255,7 @@ enabled = true
 
         let runtime = nekoland_ecs::resources::CompositorConfig::try_from(config)
             .expect("config should normalize");
-        assert_eq!(runtime.window_rules.len(), 2);
+        assert_eq!(runtime.window_rules.len(), 3);
         assert_eq!(
             runtime.resolve_window_policy("org.nekoland.rules", "Notes", false),
             WindowPolicy::new(WindowLayout::Tiled, WindowMode::Normal)
@@ -259,6 +263,10 @@ enabled = true
         assert_eq!(
             runtime.resolve_window_policy("org.other.app", "Video", false),
             WindowPolicy::new(WindowLayout::Floating, WindowMode::Fullscreen)
+        );
+        assert_eq!(
+            runtime.resolve_window_background("swaybg", "Wallpaper", false),
+            Some(nekoland_ecs::selectors::OutputName::from("eDP-1"))
         );
         assert_eq!(runtime.viewport_pan_modifiers, ModifierMask::new(false, true, false, true));
     }

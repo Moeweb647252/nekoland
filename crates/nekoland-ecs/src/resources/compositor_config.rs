@@ -176,6 +176,7 @@ pub struct ConfiguredWindowRule {
     pub title: Option<String>,
     pub layout: Option<WindowLayout>,
     pub mode: Option<WindowMode>,
+    pub background: Option<OutputName>,
 }
 
 impl ConfiguredWindowRule {
@@ -262,5 +263,21 @@ impl CompositorConfig {
             .iter()
             .filter(|rule| rule.matches(app_id, title))
             .fold(self.default_window_policy(), |policy, rule| rule.apply_to(policy))
+    }
+
+    pub fn resolve_window_background(
+        &self,
+        app_id: &str,
+        title: &str,
+        override_redirect: bool,
+    ) -> Option<OutputName> {
+        if override_redirect {
+            return None;
+        }
+
+        self.window_rules
+            .iter()
+            .filter(|rule| rule.matches(app_id, title))
+            .fold(None, |background, rule| rule.background.clone().or(background))
     }
 }

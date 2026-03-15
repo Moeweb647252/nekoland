@@ -23,7 +23,7 @@ use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_tar
 use crate::layout::floating::{
     centre_x, centre_y, placement_work_area, should_auto_place_floating_window,
 };
-use crate::window_policy::refresh_window_policy;
+use crate::window_policy::{refresh_window_policy, sync_window_background_role};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToplevelManager;
@@ -71,42 +71,58 @@ pub fn toplevel_lifecycle_system(
                     .unwrap_or(nekoland_ecs::resources::SurfaceExtent { width: 960, height: 720 });
                 let title = format!("Window {}", request.surface_id);
                 let policy = config.resolve_window_policy("org.nekoland.demo", &title, false);
-                let mut window_entity = commands.spawn((
-                    WindowBundle {
-                        surface: WlSurfaceHandle { id: request.surface_id },
-                        geometry: SurfaceGeometry {
-                            x: 0,
-                            y: 0,
-                            width: geometry.width.max(1),
-                            height: geometry.height.max(1),
+                let background =
+                    config.resolve_window_background("org.nekoland.demo", &title, false);
+                let mut scene_geometry = WindowSceneGeometry {
+                    x: 0,
+                    y: 0,
+                    width: geometry.width.max(1),
+                    height: geometry.height.max(1),
+                };
+                let mut layout = policy.layout;
+                let mut mode = policy.mode;
+                let window_entity = commands
+                    .spawn((
+                        WindowBundle {
+                            surface: WlSurfaceHandle { id: request.surface_id },
+                            geometry: SurfaceGeometry {
+                                x: 0,
+                                y: 0,
+                                width: geometry.width.max(1),
+                                height: geometry.height.max(1),
+                            },
+                            scene_geometry: scene_geometry.clone(),
+                            viewport_visibility: Default::default(),
+                            buffer: BufferState { attached: size.is_some(), scale: 1 },
+                            content_version: SurfaceContentVersion { value: 1 },
+                            window: XdgWindow {
+                                app_id: "org.nekoland.demo".to_owned(),
+                                title: title.clone(),
+                                last_acked_configure: None,
+                            },
+                            layout,
+                            mode,
+                            decoration: ServerDecoration { enabled: true },
+                            border_theme: BorderTheme {
+                                width: policy.layout.border_width(),
+                                color: config.border_color.clone(),
+                            },
+                            animation: WindowAnimation::default(),
                         },
-                        scene_geometry: WindowSceneGeometry {
-                            x: 0,
-                            y: 0,
-                            width: geometry.width.max(1),
-                            height: geometry.height.max(1),
-                        },
-                        viewport_visibility: Default::default(),
-                        buffer: BufferState { attached: size.is_some(), scale: 1 },
-                        content_version: SurfaceContentVersion { value: 1 },
-                        window: XdgWindow {
-                            app_id: "org.nekoland.demo".to_owned(),
-                            title: title.clone(),
-                            last_acked_configure: None,
-                        },
-                        layout: policy.layout,
-                        mode: policy.mode,
-                        decoration: ServerDecoration { enabled: true },
-                        border_theme: BorderTheme {
-                            width: policy.layout.border_width(),
-                            color: config.border_color.clone(),
-                        },
-                        animation: WindowAnimation::default(),
-                    },
-                    WindowPolicyState { applied: policy, locked: false },
-                ));
+                        WindowPolicyState { applied: policy, locked: false },
+                    ))
+                    .id();
+                sync_window_background_role(
+                    &mut commands,
+                    window_entity,
+                    background,
+                    &mut scene_geometry,
+                    &mut layout,
+                    &mut mode,
+                    None,
+                );
                 if let Some(workspace_entity) = workspace_entity {
-                    window_entity.insert(ChildOf(workspace_entity));
+                    commands.entity(window_entity).insert(ChildOf(workspace_entity));
                 }
                 window_created.write(WindowCreated { surface_id: request.surface_id, title });
             }
@@ -204,7 +220,7 @@ pub fn toplevel_lifecycle_system(
                         .find(|(_, window)| window.surface_id() == request.surface_id);
                 }
 
-                let Some((_, mut window_runtime)) = window else {
+                let Some((entity, mut window_runtime)) = window else {
                     deferred.push(request);
                     continue;
                 };
@@ -223,6 +239,17 @@ pub fn toplevel_lifecycle_system(
                     &mut window_runtime.mode,
                     &mut window_runtime.restore,
                     &mut window_runtime.policy_state,
+                );
+                let background =
+                    config.resolve_window_background(&window.app_id, &window.title, false);
+                sync_window_background_role(
+                    &mut commands,
+                    entity,
+                    background,
+                    &mut window_runtime.scene_geometry,
+                    &mut window_runtime.layout,
+                    &mut window_runtime.mode,
+                    window_runtime.background.as_ref().map(|background| (*background).clone()),
                 );
             }
             _ => deferred.push(request),
@@ -481,6 +508,7 @@ mod tests {
             title: None,
             layout: Some(WindowLayout::Tiled),
             mode: None,
+            background: None,
         });
         app.insert_resource(config)
             .insert_resource(WorkArea::default())

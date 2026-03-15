@@ -22,6 +22,7 @@ Important top-level fields:
 - `[startup]`
 - `[xwayland]`
 - `[[outputs]]`
+- `[[window_rules]]`
 - `[keybinds.bindings]`
 
 `[ipc]` fields:
@@ -59,6 +60,19 @@ session.
 - `enabled`
 
 Configured outputs are applied at startup and re-applied when the config file changes.
+
+`[[window_rules]]` fields:
+
+- `app_id`
+- `title`
+- `layout`
+- `mode`
+- `background`
+
+`background = "OUTPUT"` marks matching windows as that output's background role. This is the
+current config-level wallpaper hook: pair it with a startup command that launches a wallpaper
+client, for example `swaybg`, and the matching window will be kept out of normal focus/stacking
+and rendered as the target output's background.
 
 Supported keybinding actions:
 
@@ -101,3 +115,14 @@ Key names use the XKB/X11-style names already used elsewhere in the project, for
 `viewport_pan_mode` is special: the binding must contain modifiers only, for example
 `"Super+Alt"` or `"Ctrl+Shift"`. While those modifiers are held, pointer motion is consumed by
 viewport panning instead of being forwarded to client hover handling.
+
+Wallpaper example:
+
+```toml
+[startup]
+actions = [{ exec = ["swaybg", "-o", "eDP-1", "-i", "/path/to/wallpaper.png", "-m", "fill"] }]
+
+[[window_rules]]
+app_id = "swaybg"
+background = "eDP-1"
+```

@@ -1,6 +1,10 @@
+use bevy_ecs::prelude::{Commands, Entity};
+use nekoland_ecs::components::WindowRestoreState;
 use nekoland_ecs::components::{
-    WindowLayout, WindowMode, WindowPolicy, WindowPolicyState, WindowRestoreSnapshot,
+    OutputBackgroundWindow, WindowLayout, WindowMode, WindowPolicy, WindowPolicyState,
+    WindowRestoreSnapshot, WindowSceneGeometry,
 };
+use nekoland_ecs::selectors::OutputName;
 
 /// Applies a newly resolved default policy to a window and marks policy updates as unlocked.
 pub fn apply_window_policy(
@@ -64,13 +68,56 @@ pub fn restore_window_policy(
     policy_state.applied.apply(layout, mode);
 }
 
+pub fn sync_window_background_role(
+    commands: &mut Commands,
+    entity: Entity,
+    desired_output: Option<OutputName>,
+    scene_geometry: &mut WindowSceneGeometry,
+    layout: &mut WindowLayout,
+    mode: &mut WindowMode,
+    current_background: Option<OutputBackgroundWindow>,
+) {
+    let desired_output = desired_output.map(|output| output.as_str().to_owned());
+    let current_output = current_background.as_ref().map(|background| background.output.clone());
+
+    if desired_output == current_output {
+        return;
+    }
+
+    match desired_output {
+        Some(output) => {
+            let restore = current_background.map(|background| background.restore).unwrap_or(
+                WindowRestoreState {
+                    geometry: scene_geometry.clone(),
+                    layout: *layout,
+                    mode: *mode,
+                },
+            );
+            commands.entity(entity).insert(OutputBackgroundWindow { output, restore });
+        }
+        None => {
+            if let Some(background) = current_background {
+                *scene_geometry = background.restore.geometry.clone();
+                *layout = background.restore.layout;
+                *mode = background.restore.mode;
+                commands.entity(entity).remove::<OutputBackgroundWindow>();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use nekoland_ecs::components::{WindowRestoreState, WindowSceneGeometry};
+    use bevy_ecs::prelude::World;
+    use nekoland_ecs::components::{
+        OutputBackgroundWindow, WindowRestoreState, WindowSceneGeometry,
+    };
+    use nekoland_ecs::selectors::OutputName;
 
     use super::{
         WindowLayout, WindowMode, WindowPolicy, WindowPolicyState, WindowRestoreSnapshot,
         apply_window_policy, lock_window_policy, refresh_window_policy,
+        sync_window_background_role,
     };
 
     #[test]
@@ -160,5 +207,53 @@ mod tests {
             policy_state.applied,
             WindowPolicy::new(WindowLayout::Floating, WindowMode::Normal)
         );
+    }
+
+    #[test]
+    fn sync_window_background_role_inserts_and_clears_background_component() {
+        let mut world = World::default();
+        let entity = world.spawn_empty().id();
+        let mut scene_geometry = WindowSceneGeometry { x: 10, y: 20, width: 800, height: 600 };
+        let mut layout = WindowLayout::Floating;
+        let mut mode = WindowMode::Normal;
+
+        {
+            let mut commands = world.commands();
+            sync_window_background_role(
+                &mut commands,
+                entity,
+                Some(OutputName::from("Virtual-1")),
+                &mut scene_geometry,
+                &mut layout,
+                &mut mode,
+                None,
+            );
+        }
+        world.flush();
+
+        let background = world
+            .get::<OutputBackgroundWindow>(entity)
+            .expect("background role should exist")
+            .clone();
+        assert_eq!(background.output, "Virtual-1");
+
+        {
+            let mut commands = world.commands();
+            sync_window_background_role(
+                &mut commands,
+                entity,
+                None,
+                &mut scene_geometry,
+                &mut layout,
+                &mut mode,
+                Some(background),
+            );
+        }
+        world.flush();
+
+        assert!(world.get::<OutputBackgroundWindow>(entity).is_none());
+        assert_eq!(scene_geometry, WindowSceneGeometry { x: 10, y: 20, width: 800, height: 600 });
+        assert_eq!(layout, WindowLayout::Floating);
+        assert_eq!(mode, WindowMode::Normal);
     }
 }
