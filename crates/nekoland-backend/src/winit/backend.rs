@@ -466,7 +466,7 @@ impl Backend for WinitRuntime {
                 }
             }
 
-            let mut elements = cursor_elements;
+            let mut elements = Vec::new();
             for (render_element, geometry) in output_surfaces_in_presentation_order(
                 cx.render_list,
                 cx.surfaces,
@@ -484,6 +484,7 @@ impl Backend for WinitRuntime {
                     Kind::Unspecified,
                 ));
             }
+            elements.extend(cursor_elements);
 
             let smithay_damage = match damage_tracker.render_output(
                 renderer,
@@ -658,6 +659,26 @@ fn set_host_cursor_capture(
     }
 }
 
+fn host_window_center(window: &HostWindow) -> (f64, f64) {
+    let size = window.inner_size();
+    (f64::from(size.width.max(1)) / 2.0, f64::from(size.height.max(1)) / 2.0)
+}
+
+fn locked_pointer_seed_event(
+    window: &HostWindow,
+    capture_mode: Option<CursorGrabMode>,
+) -> Option<BackendInputEvent> {
+    if capture_mode != Some(CursorGrabMode::Locked) {
+        return None;
+    }
+
+    let (x, y) = host_window_center(window);
+    Some(BackendInputEvent {
+        device: HOST_WINIT_DEVICE.to_owned(),
+        action: BackendInputAction::PointerMoved { x, y },
+    })
+}
+
 fn preferred_cursor_grab_modes() -> [CursorGrabMode; 2] {
     [CursorGrabMode::Locked, CursorGrabMode::Confined]
 }
@@ -732,10 +753,14 @@ fn install_host_winit_source(
         shared.capture_mode = capture_mode;
     }
     {
-        let shared = shared.borrow();
+        let mut shared = shared.borrow_mut();
         if let Some(backend) = shared.backend.as_ref() {
             apply_window_spec(backend.window(), &shared.desired_window_spec);
             set_host_cursor_capture(backend.window(), true, shared.capture_mode.as_ref());
+            let seed_event = locked_pointer_seed_event(backend.window(), shared.capture_mode.get());
+            if let Some(seed_event) = seed_event {
+                shared.pending_input_events.push(seed_event);
+            }
         }
     }
 
@@ -770,6 +795,11 @@ fn install_host_winit_source(
                         focused,
                         shared.capture_mode.as_ref(),
                     );
+                    let seed_event =
+                        locked_pointer_seed_event(backend.window(), shared.capture_mode.get());
+                    if let Some(seed_event) = seed_event {
+                        shared.pending_input_events.push(seed_event);
+                    }
                 }
                 shared.pending_input_events.push(BackendInputEvent {
                     device: HOST_WINIT_DEVICE.to_owned(),
