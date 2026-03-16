@@ -25,7 +25,6 @@ use bevy_ecs::prelude::Resource;
 use nekoland_core::bridge::{EventBridge, WaylandBridge};
 use nekoland_ecs::components::{LayerAnchor, LayerLevel, LayerMargins, X11WindowType};
 use nekoland_ecs::kinds::ProtocolEvent as ProtocolEventKind;
-use nekoland_ecs::selectors::SurfaceId;
 use nekoland_ecs::resources::pending_events::{
     OutputEventRecord, PendingOutputEvents, PendingXdgRequests, PopupPlacement, ResizeEdges,
     SurfaceExtent, WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
@@ -37,6 +36,7 @@ use nekoland_ecs::resources::{
     PrimarySelectionState, SelectionOwner, X11LifecycleAction, X11LifecycleRequest,
     X11WindowGeometry,
 };
+use nekoland_ecs::selectors::SurfaceId;
 use serde::{Deserialize, Serialize};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
@@ -44,6 +44,15 @@ pub use plugin::{
     ProtocolCursorImage, ProtocolCursorState, ProtocolDmabufSupport, ProtocolPlugin,
     ProtocolSeatDispatchSet, ProtocolServerState, XWaylandServerState,
 };
+
+/// Trait implemented by protocol-state marker types that advertise one or more Wayland globals.
+pub trait ProtocolGlobals {
+    const GLOBALS: &'static [&'static str];
+
+    fn globals(&self) -> &'static [&'static str] {
+        Self::GLOBALS
+    }
+}
 
 /// High-level protocol notifications that need to cross from callback-driven Smithay code into
 /// the compositor's scheduled ECS world.
@@ -688,18 +697,18 @@ impl ProtocolState {
 
     pub fn supported_globals(&self) -> Vec<&'static str> {
         let mut globals = Vec::new();
-        globals.extend(self.compositor.globals());
-        globals.extend(self.xdg_shell.globals());
-        globals.extend(self.foreign_toplevel_list.globals());
-        globals.extend(self.xdg_activation.globals());
-        globals.extend(self.xdg_decoration.globals());
-        globals.extend(self.layer_shell.globals());
-        globals.extend(self.data_device.globals());
-        globals.extend(self.primary_selection.globals());
-        globals.extend(self.dmabuf.globals());
-        globals.extend(self.viewporter.globals());
-        globals.extend(self.fractional_scale.globals());
-        globals.extend(self.presentation_time.globals());
+        globals.extend_from_slice(self.compositor.globals());
+        globals.extend_from_slice(self.xdg_shell.globals());
+        globals.extend_from_slice(self.foreign_toplevel_list.globals());
+        globals.extend_from_slice(self.xdg_activation.globals());
+        globals.extend_from_slice(self.xdg_decoration.globals());
+        globals.extend_from_slice(self.layer_shell.globals());
+        globals.extend_from_slice(self.data_device.globals());
+        globals.extend_from_slice(self.primary_selection.globals());
+        globals.extend_from_slice(self.dmabuf.globals());
+        globals.extend_from_slice(self.viewporter.globals());
+        globals.extend_from_slice(self.fractional_scale.globals());
+        globals.extend_from_slice(self.presentation_time.globals());
         globals.extend(["wl_shm", "wl_seat", "wl_output", "zxdg_output_manager_v1"]);
         globals
     }
