@@ -10,6 +10,7 @@ pub enum QueryCommand {
     GetTree,
     GetOutputs,
     GetWorkspaces,
+    GetWindows,
     GetCommands,
     GetConfig,
     GetClipboard,
@@ -23,12 +24,21 @@ pub struct OutputSnapshot {
     pub kind: OutputKind,
     pub make: String,
     pub model: String,
+    pub connected: bool,
+    pub enabled: bool,
     pub width: u32,
     pub height: u32,
     pub refresh_millihz: u32,
     pub scale: u32,
+    pub x: i32,
+    pub y: i32,
     pub viewport_origin_x: i64,
     pub viewport_origin_y: i64,
+    pub work_area_x: i32,
+    pub work_area_y: i32,
+    pub work_area_width: u32,
+    pub work_area_height: u32,
+    pub mode: String,
     pub current_workspace: Option<u32>,
 }
 
@@ -36,8 +46,13 @@ pub struct OutputSnapshot {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceSnapshot {
     pub id: u32,
+    pub idx: u32,
     pub name: String,
     pub active: bool,
+    pub focused: bool,
+    pub occupied: bool,
+    pub urgent: bool,
+    pub output: Option<String>,
 }
 
 /// Window tree entry returned by `get_tree`.
@@ -49,6 +64,8 @@ pub struct WindowSnapshot {
     pub xwayland: bool,
     pub x11_window_id: Option<u32>,
     pub override_redirect: bool,
+    pub role: String,
+    pub layout: String,
     pub x: i32,
     pub y: i32,
     pub scene_x: i64,
@@ -62,6 +79,7 @@ pub struct WindowSnapshot {
     pub output: Option<String>,
     pub focused: bool,
     pub visible_in_viewport: bool,
+    pub render_index: Option<usize>,
 }
 
 /// Popup tree entry returned by `get_tree`.

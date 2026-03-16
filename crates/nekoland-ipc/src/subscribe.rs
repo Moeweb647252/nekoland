@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use crate::commands::{
     ClipboardSnapshot, ConfigSnapshot, PopupSnapshot, PrimarySelectionSnapshot, TreeSnapshot,
-    WindowSnapshot,
+    WindowSnapshot, WorkspaceSnapshot,
 };
 use crate::server::{IpcQueryCache, default_socket_path};
 use crate::{IpcCommand, IpcReply, IpcRequest};
@@ -45,7 +45,10 @@ pub const KNOWN_SUBSCRIPTION_EVENT_NAMES: &[&str] = &[
     "window_created",
     "window_closed",
     "window_moved",
+    "window_opened_or_changed",
+    "windows_changed",
     "window_geometry_changed",
+    "window_layouts_changed",
     "window_state_changed",
     "popup_created",
     "popup_dismissed",
@@ -53,12 +56,14 @@ pub const KNOWN_SUBSCRIPTION_EVENT_NAMES: &[&str] = &[
     "popup_grab_changed",
     "outputs_changed",
     "workspaces_changed",
+    "workspace_activated",
     "command_launched",
     "command_failed",
     "config_changed",
     "clipboard_changed",
     "primary_selection_changed",
     "focus_changed",
+    "window_focus_changed",
     "tree_changed",
 ];
 
@@ -126,6 +131,19 @@ pub struct PopupGrabChangeSnapshot {
     pub previous_grab_serial: Option<u32>,
     pub grab_active: bool,
     pub grab_serial: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowFocusChangeSnapshot {
+    pub previous_surface: Option<u64>,
+    pub focused_surface: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceActivatedSnapshot {
+    pub previous_workspace: Option<u32>,
+    pub workspace: Option<u32>,
+    pub output: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -406,11 +424,34 @@ pub(crate) fn subscription_dispatch_system(
         .cloned()
         .map(|window| (window.surface_id, window))
         .collect::<BTreeMap<_, _>>();
+    let windows_changed = last_tree.windows != query_cache.tree.windows;
+    let window_layouts_changed = if last_tree.windows.len() != query_cache.tree.windows.len() {
+        true
+    } else {
+        current_windows.iter().any(|(surface_id, window)| {
+            previous_windows
+                .get(surface_id)
+                .is_none_or(|previous| window_layout_changed(previous, window))
+        })
+    };
 
     for window in current_windows.values() {
         let Some(previous) = previous_windows.get(&window.surface_id) else {
+            pending_events.push(IpcSubscriptionEvent {
+                topic: SubscriptionTopic::Window,
+                event: "window_opened_or_changed".to_owned(),
+                payload: serde_json::to_value(window).ok(),
+            });
             continue;
         };
+
+        if previous != window {
+            pending_events.push(IpcSubscriptionEvent {
+                topic: SubscriptionTopic::Window,
+                event: "window_opened_or_changed".to_owned(),
+                payload: serde_json::to_value(window).ok(),
+            });
+        }
 
         if window_geometry_changed(previous, window) {
             pending_events.push(IpcSubscriptionEvent {
@@ -445,6 +486,22 @@ pub(crate) fn subscription_dispatch_system(
         }
     }
 
+    if windows_changed {
+        pending_events.push(IpcSubscriptionEvent {
+            topic: SubscriptionTopic::Window,
+            event: "windows_changed".to_owned(),
+            payload: serde_json::to_value(&query_cache.tree.windows).ok(),
+        });
+    }
+
+    if window_layouts_changed {
+        pending_events.push(IpcSubscriptionEvent {
+            topic: SubscriptionTopic::Window,
+            event: "window_layouts_changed".to_owned(),
+            payload: serde_json::to_value(&query_cache.tree.windows).ok(),
+        });
+    }
+
     if last_tree.outputs != query_cache.tree.outputs {
         pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Output,
@@ -458,6 +515,29 @@ pub(crate) fn subscription_dispatch_system(
             topic: SubscriptionTopic::Workspace,
             event: "workspaces_changed".to_owned(),
             payload: serde_json::to_value(&query_cache.tree.workspaces).ok(),
+        });
+    }
+
+    let previous_active_workspace = active_workspace(last_tree.workspaces.as_slice());
+    let active_workspace = active_workspace(query_cache.tree.workspaces.as_slice());
+    if previous_active_workspace != active_workspace {
+        let active_output = active_workspace.and_then(|workspace| {
+            query_cache
+                .tree
+                .outputs
+                .iter()
+                .find(|output| output.current_workspace == Some(workspace.id))
+                .map(|output| output.name.clone())
+        });
+        pending_events.push(IpcSubscriptionEvent {
+            topic: SubscriptionTopic::Workspace,
+            event: "workspace_activated".to_owned(),
+            payload: serde_json::to_value(WorkspaceActivatedSnapshot {
+                previous_workspace: previous_active_workspace.map(|workspace| workspace.id),
+                workspace: active_workspace.map(|workspace| workspace.id),
+                output: active_output,
+            })
+            .ok(),
         });
     }
 
@@ -490,6 +570,15 @@ pub(crate) fn subscription_dispatch_system(
             topic: SubscriptionTopic::Focus,
             event: "focus_changed".to_owned(),
             payload: serde_json::to_value(FocusChangeSnapshot {
+                previous_surface: last_tree.focused_surface,
+                focused_surface: query_cache.tree.focused_surface,
+            })
+            .ok(),
+        });
+        pending_events.push(IpcSubscriptionEvent {
+            topic: SubscriptionTopic::Focus,
+            event: "window_focus_changed".to_owned(),
+            payload: serde_json::to_value(WindowFocusChangeSnapshot {
                 previous_surface: last_tree.focused_surface,
                 focused_surface: query_cache.tree.focused_surface,
             })
@@ -528,6 +617,22 @@ fn popup_geometry_changed(previous: &PopupSnapshot, current: &PopupSnapshot) -> 
 
 fn popup_grab_changed(previous: &PopupSnapshot, current: &PopupSnapshot) -> bool {
     previous.grab_active != current.grab_active || previous.grab_serial != current.grab_serial
+}
+
+fn window_layout_changed(previous: &WindowSnapshot, current: &WindowSnapshot) -> bool {
+    previous.layout != current.layout
+        || previous.role != current.role
+        || previous.scene_x != current.scene_x
+        || previous.scene_y != current.scene_y
+        || previous.width != current.width
+        || previous.height != current.height
+        || previous.workspace != current.workspace
+        || previous.output != current.output
+        || previous.render_index != current.render_index
+}
+
+fn active_workspace(workspaces: &[WorkspaceSnapshot]) -> Option<&WorkspaceSnapshot> {
+    workspaces.iter().find(|workspace| workspace.active)
 }
 
 fn tree_structure_changed(previous: &TreeSnapshot, current: &TreeSnapshot) -> bool {

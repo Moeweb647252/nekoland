@@ -16,5 +16,6 @@ pub use subscribe::{
     FocusChangeSnapshot, IpcSubscription, IpcSubscriptionEvent, IpcSubscriptionStream,
     KNOWN_SUBSCRIPTION_EVENT_NAMES, PendingSubscriptionEvents, PopupGeometryChangeSnapshot,
     PopupGrabChangeSnapshot, SUPPORTED_SUBSCRIPTION_TOPIC_NAMES, SubscriptionTopic,
-    WindowGeometryChangeSnapshot, WindowStateChangeSnapshot, subscribe, subscribe_to_path,
+    WindowFocusChangeSnapshot, WindowGeometryChangeSnapshot, WindowStateChangeSnapshot,
+    WorkspaceActivatedSnapshot, subscribe, subscribe_to_path,
 };

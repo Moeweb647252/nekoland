@@ -1,12 +1,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::commands::{OutputCommand, PopupCommand, QueryCommand, WindowCommand, WorkspaceCommand};
+use crate::commands::{
+    ActionCommand, OutputCommand, PopupCommand, QueryCommand, WindowCommand, WorkspaceCommand,
+};
 use crate::subscribe::IpcSubscription;
 
 /// Top-level IPC command envelope exchanged between clients and the compositor.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum IpcCommand {
+    Action(ActionCommand),
     Window(WindowCommand),
     Popup(PopupCommand),
     Subscribe(IpcSubscription),

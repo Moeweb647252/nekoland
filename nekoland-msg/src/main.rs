@@ -9,7 +9,8 @@ use std::process::ExitCode;
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use clap_complete::{Shell, generate};
 use nekoland_ipc::commands::{
-    OutputCommand, PopupCommand, QueryCommand, SplitAxis, WindowCommand, WorkspaceCommand,
+    ActionCommand, OutputCommand, PopupCommand, QueryCommand, SplitAxis, WindowCommand,
+    WorkspaceCommand,
 };
 use nekoland_ipc::{
     IpcCommand, IpcRequest, IpcSubscription, KNOWN_SUBSCRIPTION_EVENT_NAMES,
@@ -18,7 +19,7 @@ use nekoland_ipc::{
 };
 
 const USAGE: &str = "usage:
-  nekoland-msg <query|window|popup|workspace|output> ...
+  nekoland-msg <query|window|popup|workspace|output|action> ...
   nekoland-msg subscribe <window|popup|workspace|output|command|config|clipboard|primary-selection|focus|tree|all> [--pretty|--jsonl] [--no-payloads] [--event <name|prefix*>]...";
 const SUBSCRIPTION_HELP_EXAMPLES: &[&str] = &[
     "nekoland-msg subscribe workspace",
@@ -44,6 +45,7 @@ enum RootCommand {
     Popup(PopupArgs),
     Workspace(WorkspaceArgs),
     Output(OutputArgs),
+    Action(ActionArgs),
     Completion(CompletionArgs),
     Subscribe(SubscribeArgs),
     Help(HelpArgs),
@@ -53,6 +55,8 @@ enum RootCommand {
     GetOutputs,
     #[command(name = "get_workspaces", hide = true)]
     GetWorkspaces,
+    #[command(name = "get_windows", hide = true)]
+    GetWindows,
     #[command(name = "get_commands", hide = true)]
     GetCommands,
     #[command(name = "get_config", hide = true)]
@@ -78,6 +82,7 @@ enum QueryTarget {
     Tree,
     Outputs,
     Workspaces,
+    Windows,
     Commands,
     Config,
     Clipboard,
@@ -207,6 +212,35 @@ enum OutputAction {
         output: String,
         surface_id: u64,
     },
+}
+
+/// Arguments for the higher-level `action` command family.
+#[derive(Args, Debug)]
+struct ActionArgs {
+    #[command(subcommand)]
+    action: ActionAction,
+}
+
+/// Shell-style higher-level actions exposed for external shell integration.
+#[derive(Subcommand, Debug)]
+enum ActionAction {
+    FocusWorkspace {
+        workspace: String,
+    },
+    FocusWindow {
+        #[arg(long = "id")]
+        id: u64,
+    },
+    CloseWindow {
+        #[arg(long = "id")]
+        id: u64,
+    },
+    Spawn {
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    PowerOffMonitors,
+    PowerOnMonitors,
 }
 
 /// Arguments for shell-completion generation.
@@ -356,6 +390,7 @@ where
             QueryTarget::Tree => IpcCommand::Query(QueryCommand::GetTree),
             QueryTarget::Outputs => IpcCommand::Query(QueryCommand::GetOutputs),
             QueryTarget::Workspaces => IpcCommand::Query(QueryCommand::GetWorkspaces),
+            QueryTarget::Windows => IpcCommand::Query(QueryCommand::GetWindows),
             QueryTarget::Commands => IpcCommand::Query(QueryCommand::GetCommands),
             QueryTarget::Config => IpcCommand::Query(QueryCommand::GetConfig),
             QueryTarget::Clipboard => IpcCommand::Query(QueryCommand::GetClipboard),
@@ -418,6 +453,20 @@ where
                 IpcCommand::Output(OutputCommand::CenterViewportOnWindow { output, surface_id })
             }
         })),
+        RootCommand::Action(action) => Ok(ParsedAction::Request(match action.action {
+            ActionAction::FocusWorkspace { workspace } => {
+                IpcCommand::Action(ActionCommand::FocusWorkspace { workspace })
+            }
+            ActionAction::FocusWindow { id } => {
+                IpcCommand::Action(ActionCommand::FocusWindow { id })
+            }
+            ActionAction::CloseWindow { id } => {
+                IpcCommand::Action(ActionCommand::CloseWindow { id })
+            }
+            ActionAction::Spawn { command } => IpcCommand::Action(ActionCommand::Spawn { command }),
+            ActionAction::PowerOffMonitors => IpcCommand::Action(ActionCommand::PowerOffMonitors),
+            ActionAction::PowerOnMonitors => IpcCommand::Action(ActionCommand::PowerOnMonitors),
+        })),
         RootCommand::Completion(completion) => Ok(ParsedAction::Completion(completion.shell)),
         RootCommand::Subscribe(subscribe) => parse_subscribe_args(subscribe),
         RootCommand::Help(help) => Ok(ParsedAction::SubscriptionHelp(match help.topic {
@@ -435,6 +484,9 @@ where
         }
         RootCommand::GetWorkspaces => {
             Ok(ParsedAction::Request(IpcCommand::Query(QueryCommand::GetWorkspaces)))
+        }
+        RootCommand::GetWindows => {
+            Ok(ParsedAction::Request(IpcCommand::Query(QueryCommand::GetWindows)))
         }
         RootCommand::GetCommands => {
             Ok(ParsedAction::Request(IpcCommand::Query(QueryCommand::GetCommands)))
@@ -663,7 +715,9 @@ mod tests {
         CompletionShellArg, HelpOutputMode, ParsedAction, SplitAxis, SubscriptionCommand,
         SubscriptionOutputMode, parse_cli_from, render_completion, render_subscription_help,
     };
-    use nekoland_ipc::commands::{OutputCommand, PopupCommand, QueryCommand, WindowCommand};
+    use nekoland_ipc::commands::{
+        ActionCommand, OutputCommand, PopupCommand, QueryCommand, WindowCommand,
+    };
     use nekoland_ipc::{IpcCommand, IpcSubscription, SubscriptionTopic};
     use serde_json::Value;
 
@@ -695,6 +749,18 @@ mod tests {
         assert_eq!(
             parse_ok(["nekoland-msg", "get_commands"]),
             ParsedAction::Request(IpcCommand::Query(QueryCommand::GetCommands))
+        );
+    }
+
+    #[test]
+    fn parses_query_windows_alias() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "query", "windows"]),
+            ParsedAction::Request(IpcCommand::Query(QueryCommand::GetWindows))
+        );
+        assert_eq!(
+            parse_ok(["nekoland-msg", "get_windows"]),
+            ParsedAction::Request(IpcCommand::Query(QueryCommand::GetWindows))
         );
     }
 
@@ -787,6 +853,34 @@ mod tests {
             ParsedAction::Request(IpcCommand::Window(WindowCommand::Split {
                 surface_id: 7,
                 axis: SplitAxis::Vertical,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_action_focus_workspace() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "action", "focus-workspace", "2"]),
+            ParsedAction::Request(IpcCommand::Action(ActionCommand::FocusWorkspace {
+                workspace: "2".to_owned(),
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_action_focus_window() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "action", "focus-window", "--id", "77"]),
+            ParsedAction::Request(IpcCommand::Action(ActionCommand::FocusWindow { id: 77 }))
+        );
+    }
+
+    #[test]
+    fn parses_action_spawn() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "action", "spawn", "foot", "--server"]),
+            ParsedAction::Request(IpcCommand::Action(ActionCommand::Spawn {
+                command: vec!["foot".to_owned(), "--server".to_owned()],
             }))
         );
     }

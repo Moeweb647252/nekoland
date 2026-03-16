@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
@@ -24,7 +25,9 @@ use crate::commands::query::{
     ConfigSnapshot, OutputSnapshot, PopupSnapshot, PrimarySelectionSnapshot, QueryCommand,
     SelectionOwnerSnapshot, TreeSnapshot, WindowSnapshot, WorkspaceSnapshot,
 };
-use crate::commands::{OutputCommand, PopupCommand, WindowCommand, WorkspaceCommand};
+use crate::commands::{
+    ActionCommand, OutputCommand, PopupCommand, WindowCommand, WorkspaceCommand,
+};
 use crate::subscribe::{
     IpcSubscription, IpcSubscriptionEvent, PendingSubscriptionEvents, SubscriptionTopic,
 };
@@ -34,9 +37,10 @@ use nekoland_ecs::components::{
 };
 use nekoland_ecs::resources::{
     ClipboardSelectionState, CommandExecutionStatus, CommandHistoryState, CompositorClock,
-    CompositorConfig, EntityIndex, KeyboardFocusState, PendingOutputControls,
-    PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls, PopupServerAction,
-    PopupServerRequest, PrimarySelectionState, RenderList, SelectionOwner,
+    CompositorConfig, EntityIndex, ExternalCommandRequest, KeyboardFocusState,
+    PendingExternalCommandRequests, PendingOutputControls, PendingPopupServerRequests,
+    PendingWindowControls, PendingWorkspaceControls, PopupServerAction, PopupServerRequest,
+    PrimarySelectionState, RenderList, SelectionOwner,
 };
 use nekoland_ecs::views::{
     OutputRuntime, PopupSnapshotRuntime, WindowSnapshotRuntime, WorkspaceRuntime,
@@ -102,6 +106,7 @@ type IpcSurfaceQuery<'w, 's> = Query<'w, 's, &'static WlSurfaceHandle, Allow<Dis
 
 struct IpcRequestDispatchCtx<'a> {
     query_cache: &'a IpcQueryCache,
+    pending_external_commands: &'a mut PendingExternalCommandRequests,
     pending_popup_requests: &'a mut PendingPopupServerRequests,
     pending_window_controls: &'a mut PendingWindowControls,
     pending_workspace_controls: &'a mut PendingWorkspaceControls,
@@ -113,6 +118,7 @@ pub(crate) struct IpcPumpParams<'w, 's> {
     server_state: ResMut<'w, IpcServerState>,
     query_cache: Res<'w, IpcQueryCache>,
     pending_subscription_events: ResMut<'w, PendingSubscriptionEvents>,
+    pending_external_commands: ResMut<'w, PendingExternalCommandRequests>,
     pending_popup_requests: ResMut<'w, PendingPopupServerRequests>,
     pending_window_controls: ResMut<'w, PendingWindowControls>,
     pending_workspace_controls: ResMut<'w, PendingWorkspaceControls>,
@@ -157,6 +163,7 @@ impl IpcQueryCache {
             QueryCommand::GetTree => serde_json::to_value(&self.tree),
             QueryCommand::GetOutputs => serde_json::to_value(&self.outputs),
             QueryCommand::GetWorkspaces => serde_json::to_value(&self.workspaces),
+            QueryCommand::GetWindows => serde_json::to_value(&self.tree.windows),
             QueryCommand::GetCommands => serde_json::to_value(&self.commands),
             QueryCommand::GetConfig => serde_json::to_value(&self.config),
             QueryCommand::GetClipboard => serde_json::to_value(&self.clipboard),
@@ -309,6 +316,7 @@ impl IpcConnection {
                     Ok(request) => reply_for_request(
                         request,
                         request_ctx.query_cache,
+                        request_ctx.pending_external_commands,
                         request_ctx.pending_popup_requests,
                         request_ctx.pending_window_controls,
                         request_ctx.pending_workspace_controls,
@@ -489,6 +497,7 @@ pub(crate) fn accept_connections_system(
         mut server_state,
         query_cache,
         mut pending_subscription_events,
+        mut pending_external_commands,
         mut pending_popup_requests,
         mut pending_window_controls,
         mut pending_workspace_controls,
@@ -497,6 +506,7 @@ pub(crate) fn accept_connections_system(
     } = params;
     let mut request_ctx = IpcRequestDispatchCtx {
         query_cache: &query_cache,
+        pending_external_commands: &mut pending_external_commands,
         pending_popup_requests: &mut pending_popup_requests,
         pending_window_controls: &mut pending_window_controls,
         pending_workspace_controls: &mut pending_workspace_controls,
@@ -537,34 +547,135 @@ pub(crate) fn refresh_query_cache_system(
         entity_index,
     } = inputs;
 
-    query_cache.outputs = outputs
+    let mut output_snapshots = outputs
         .iter()
         .map(|output| OutputSnapshot {
             name: output.device.name.clone(),
             kind: output.device.kind.clone(),
             make: output.device.make.clone(),
             model: output.device.model.clone(),
+            connected: true,
+            enabled: true,
             width: output.properties.width,
             height: output.properties.height,
             refresh_millihz: output.properties.refresh_millihz,
             scale: output.properties.scale,
+            x: output.placement.x,
+            y: output.placement.y,
             viewport_origin_x: output.viewport.origin_x as i64,
             viewport_origin_y: output.viewport.origin_y as i64,
+            work_area_x: output.work_area.x,
+            work_area_y: output.work_area.y,
+            work_area_width: output.work_area.width,
+            work_area_height: output.work_area.height,
+            mode: format_output_mode(
+                output.properties.width,
+                output.properties.height,
+                output.properties.refresh_millihz,
+            ),
             current_workspace: output
                 .current_workspace
                 .as_ref()
                 .map(|current_workspace| current_workspace.workspace.0),
         })
-        .collect();
+        .collect::<Vec<_>>();
+    output_snapshots.sort_by(|left, right| {
+        (left.y, left.x, left.name.as_str()).cmp(&(right.y, right.x, right.name.as_str()))
+    });
 
-    query_cache.workspaces = workspaces
+    let render_indices = render_list
+        .elements
         .iter()
-        .map(|(_, workspace)| WorkspaceSnapshot {
-            id: workspace.id().0,
-            name: workspace.name().to_owned(),
-            active: workspace.is_active(),
+        .enumerate()
+        .map(|(index, element)| (element.surface_id, index))
+        .collect::<HashMap<_, _>>();
+    let focused_workspace = keyboard_focus.focused_surface.and_then(|focused_surface| {
+        windows
+            .iter()
+            .find(|window| window.surface_id() == focused_surface)
+            .and_then(|window| window_workspace_runtime_id(window.child_of, &workspaces))
+    });
+    let workspace_output_names = output_snapshots
+        .iter()
+        .filter_map(|output| {
+            output.current_workspace.map(|workspace| (workspace, output.name.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+
+    let mut window_snapshots = windows
+        .iter()
+        .map(|window| WindowSnapshot {
+            surface_id: window.surface_id(),
+            title: window.window.title.clone(),
+            app_id: window.window.app_id.clone(),
+            xwayland: window.x11_window.is_some(),
+            x11_window_id: window.x11_window.map(|x11_window| x11_window.window_id),
+            override_redirect: window
+                .x11_window
+                .is_some_and(|x11_window| x11_window.override_redirect),
+            role: window_role_label(*window.role),
+            layout: window_layout_label(*window.layout),
+            x: window.geometry.x,
+            y: window.geometry.y,
+            scene_x: window.scene_geometry.x as i64,
+            scene_y: window.scene_geometry.y as i64,
+            screen_x: window.geometry.x,
+            screen_y: window.geometry.y,
+            width: window.geometry.width,
+            height: window.geometry.height,
+            state: window_state_label(*window.layout, *window.mode),
+            workspace: window_workspace_runtime_id(window.child_of, &workspaces),
+            output: window.viewport_visibility.output.clone(),
+            focused: keyboard_focus.focused_surface == Some(window.surface_id()),
+            visible_in_viewport: window.viewport_visibility.visible,
+            render_index: render_indices.get(&window.surface_id()).copied(),
+        })
+        .collect::<Vec<_>>();
+    window_snapshots.sort_by(|left, right| {
+        (
+            left.workspace.unwrap_or(u32::MAX),
+            left.output.as_deref().unwrap_or(""),
+            left.render_index.unwrap_or(usize::MAX),
+            left.scene_y,
+            left.scene_x,
+            left.surface_id,
+        )
+            .cmp(&(
+                right.workspace.unwrap_or(u32::MAX),
+                right.output.as_deref().unwrap_or(""),
+                right.render_index.unwrap_or(usize::MAX),
+                right.scene_y,
+                right.scene_x,
+                right.surface_id,
+            ))
+    });
+
+    let occupied_workspaces = window_snapshots
+        .iter()
+        .filter_map(|window| window.workspace)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut workspace_rows = workspaces
+        .iter()
+        .map(|(_, workspace)| {
+            (workspace.id().0, workspace.name().to_owned(), workspace.is_active())
+        })
+        .collect::<Vec<_>>();
+    workspace_rows.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    query_cache.workspaces = workspace_rows
+        .iter()
+        .enumerate()
+        .map(|(index, (id, name, active))| WorkspaceSnapshot {
+            id: *id,
+            idx: index as u32,
+            name: name.clone(),
+            active: *active,
+            focused: focused_workspace == Some(*id),
+            occupied: occupied_workspaces.contains(id),
+            urgent: false,
+            output: workspace_output_names.get(id).cloned(),
         })
         .collect();
+    query_cache.outputs = output_snapshots;
 
     query_cache.commands = command_history
         .items
@@ -656,32 +767,6 @@ pub(crate) fn refresh_query_cache_system(
             .unwrap_or_default(),
     };
 
-    let windows = windows
-        .iter()
-        .map(|window| WindowSnapshot {
-            surface_id: window.surface_id(),
-            title: window.window.title.clone(),
-            app_id: window.window.app_id.clone(),
-            xwayland: window.x11_window.is_some(),
-            x11_window_id: window.x11_window.map(|x11_window| x11_window.window_id),
-            override_redirect: window
-                .x11_window
-                .is_some_and(|x11_window| x11_window.override_redirect),
-            x: window.geometry.x,
-            y: window.geometry.y,
-            scene_x: window.scene_geometry.x as i64,
-            scene_y: window.scene_geometry.y as i64,
-            screen_x: window.geometry.x,
-            screen_y: window.geometry.y,
-            width: window.geometry.width,
-            height: window.geometry.height,
-            state: window_state_label(*window.layout, *window.mode),
-            workspace: window_workspace_runtime_id(window.child_of, &workspaces),
-            output: window.viewport_visibility.output.clone(),
-            focused: keyboard_focus.focused_surface == Some(window.surface_id()),
-            visible_in_viewport: window.viewport_visibility.visible,
-        })
-        .collect::<Vec<_>>();
     let popups = popups
         .iter()
         .map(|popup| PopupSnapshot {
@@ -705,7 +790,7 @@ pub(crate) fn refresh_query_cache_system(
         focused_surface: keyboard_focus.focused_surface,
         outputs: query_cache.outputs.clone(),
         workspaces: query_cache.workspaces.clone(),
-        windows,
+        windows: window_snapshots,
         popups,
         render_order: render_list.elements.iter().map(|element| element.surface_id).collect(),
     };
@@ -720,6 +805,28 @@ fn selection_owner_snapshot(owner: SelectionOwner) -> SelectionOwnerSnapshot {
 
 fn window_state_label(layout: WindowLayout, mode: WindowMode) -> String {
     WindowDisplayState::from_layout_mode(layout, mode).label().to_owned()
+}
+
+fn window_layout_label(layout: WindowLayout) -> String {
+    match layout {
+        WindowLayout::Tiled => "tiled".to_owned(),
+        WindowLayout::Floating => "floating".to_owned(),
+    }
+}
+
+fn window_role_label(role: nekoland_ecs::components::WindowRole) -> String {
+    match role {
+        nekoland_ecs::components::WindowRole::Managed => "managed".to_owned(),
+        nekoland_ecs::components::WindowRole::OutputBackground => "output_background".to_owned(),
+    }
+}
+
+fn format_output_mode(width: u32, height: u32, refresh_millihz: u32) -> String {
+    if refresh_millihz % 1000 == 0 {
+        format!("{}x{}@{}", width, height, refresh_millihz / 1000)
+    } else {
+        format!("{}x{}@{:.1}", width, height, refresh_millihz as f64 / 1000.0)
+    }
 }
 
 fn popup_parent_surface_id(
@@ -828,6 +935,7 @@ fn event_filter_matches(pattern: &str, event_name: &str) -> bool {
 fn reply_for_request(
     request: IpcRequest,
     query_cache: &IpcQueryCache,
+    pending_external_commands: &mut PendingExternalCommandRequests,
     pending_popup_requests: &mut PendingPopupServerRequests,
     pending_window_controls: &mut PendingWindowControls,
     pending_workspace_controls: &mut PendingWorkspaceControls,
@@ -840,6 +948,82 @@ fn reply_for_request(
     match request.command {
         IpcCommand::Query(command) => RequestDisposition::Reply(query_cache.build_reply(&command)),
         IpcCommand::Subscribe(subscription) => RequestDisposition::Subscribe(subscription),
+        IpcCommand::Action(ActionCommand::FocusWorkspace { workspace }) => {
+            workspaces.switch_or_create(WorkspaceLookup::parse(&workspace));
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: format!("queued focus workspace action for {workspace}"),
+                payload: None,
+            })
+        }
+        IpcCommand::Action(ActionCommand::FocusWindow { id }) => {
+            windows.surface(SurfaceId(id)).focus();
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: format!("queued focus window action for surface {id}"),
+                payload: None,
+            })
+        }
+        IpcCommand::Action(ActionCommand::CloseWindow { id }) => {
+            windows.surface(SurfaceId(id)).close();
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: format!("queued close window action for surface {id}"),
+                payload: None,
+            })
+        }
+        IpcCommand::Action(ActionCommand::Spawn { command }) => {
+            if command.is_empty() {
+                RequestDisposition::Reply(IpcReply {
+                    ok: false,
+                    message: "spawn action requires at least one argv entry".to_owned(),
+                    payload: None,
+                })
+            } else {
+                pending_external_commands.push(ExternalCommandRequest {
+                    origin: "ipc action spawn".to_owned(),
+                    candidates: vec![command.clone()],
+                });
+                RequestDisposition::Reply(IpcReply {
+                    ok: true,
+                    message: format!("queued spawn action for `{}`", command.join(" ")),
+                    payload: None,
+                })
+            }
+        }
+        IpcCommand::Action(ActionCommand::PowerOffMonitors) => {
+            let output_names = query_cache
+                .outputs
+                .iter()
+                .filter(|output| output.enabled)
+                .map(|output| output.name.clone())
+                .collect::<Vec<_>>();
+            for output in &output_names {
+                outputs.select(nekoland_ecs::selectors::OutputSelector::parse(output)).disable();
+            }
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: format!("queued power-off for {} output(s)", output_names.len()),
+                payload: None,
+            })
+        }
+        IpcCommand::Action(ActionCommand::PowerOnMonitors) => {
+            let output_names = query_cache
+                .config
+                .outputs
+                .iter()
+                .filter(|output| output.enabled)
+                .map(|output| output.name.clone())
+                .collect::<Vec<_>>();
+            for output in &output_names {
+                outputs.select(nekoland_ecs::selectors::OutputSelector::parse(output)).enable();
+            }
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: format!("queued power-on for {} output(s)", output_names.len()),
+                payload: None,
+            })
+        }
         IpcCommand::Popup(PopupCommand::Dismiss { surface_id }) => {
             pending_popup_requests
                 .push(PopupServerRequest { surface_id, action: PopupServerAction::Dismiss });
@@ -1013,13 +1197,14 @@ mod tests {
     use nekoland_ecs::resources::SplitAxis;
     use nekoland_ecs::resources::{
         ClipboardSelectionState, CompositorClock, CompositorConfig, EntityIndex,
-        KeyboardFocusState, PendingOutputControls, PendingPopupServerRequests,
-        PendingWindowControls, PendingWorkspaceControls, PrimarySelectionState, RenderList,
+        KeyboardFocusState, PendingExternalCommandRequests, PendingOutputControls,
+        PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls,
+        PrimarySelectionState, RenderList,
     };
 
     use super::{RequestDisposition, refresh_query_cache_system, reply_for_request};
     use super::{event_filter_matches, subscription_matches};
-    use crate::commands::WindowCommand;
+    use crate::commands::{ActionCommand, WindowCommand};
     use crate::subscribe::{IpcSubscription, IpcSubscriptionEvent, SubscriptionTopic};
     use crate::{IpcCommand, IpcQueryCache, IpcRequest};
 
@@ -1133,6 +1318,7 @@ mod tests {
     #[test]
     fn reply_for_request_stages_window_split_control() {
         let mut pending_popup_requests = PendingPopupServerRequests::default();
+        let mut pending_external_commands = PendingExternalCommandRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
@@ -1146,6 +1332,7 @@ mod tests {
                 }),
             },
             &IpcQueryCache::default(),
+            &mut pending_external_commands,
             &mut pending_popup_requests,
             &mut pending_window_controls,
             &mut pending_workspace_controls,
@@ -1153,6 +1340,7 @@ mod tests {
         );
 
         assert!(matches!(disposition, RequestDisposition::Reply(_)));
+        assert!(pending_external_commands.is_empty());
         assert!(pending_popup_requests.is_empty());
         assert!(pending_workspace_controls.is_empty());
         assert!(pending_output_controls.is_empty());
@@ -1164,6 +1352,7 @@ mod tests {
     #[test]
     fn reply_for_request_stages_window_background_control() {
         let mut pending_popup_requests = PendingPopupServerRequests::default();
+        let mut pending_external_commands = PendingExternalCommandRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
@@ -1177,6 +1366,7 @@ mod tests {
                 }),
             },
             &IpcQueryCache::default(),
+            &mut pending_external_commands,
             &mut pending_popup_requests,
             &mut pending_window_controls,
             &mut pending_workspace_controls,
@@ -1184,6 +1374,7 @@ mod tests {
         );
 
         assert!(matches!(disposition, RequestDisposition::Reply(_)));
+        assert!(pending_external_commands.is_empty());
         assert!(pending_popup_requests.is_empty());
         assert!(pending_workspace_controls.is_empty());
         assert!(pending_output_controls.is_empty());
@@ -1193,5 +1384,40 @@ mod tests {
             Some(nekoland_ecs::resources::WindowBackgroundControl::Set { ref output })
                 if output.as_str() == "Virtual-1"
         ));
+    }
+
+    #[test]
+    fn reply_for_request_stages_spawn_action() {
+        let mut pending_popup_requests = PendingPopupServerRequests::default();
+        let mut pending_external_commands = PendingExternalCommandRequests::default();
+        let mut pending_window_controls = PendingWindowControls::default();
+        let mut pending_workspace_controls = PendingWorkspaceControls::default();
+        let mut pending_output_controls = PendingOutputControls::default();
+
+        let disposition = reply_for_request(
+            IpcRequest {
+                correlation_id: 3,
+                command: IpcCommand::Action(ActionCommand::Spawn {
+                    command: vec!["foot".to_owned(), "--server".to_owned()],
+                }),
+            },
+            &IpcQueryCache::default(),
+            &mut pending_external_commands,
+            &mut pending_popup_requests,
+            &mut pending_window_controls,
+            &mut pending_workspace_controls,
+            &mut pending_output_controls,
+        );
+
+        assert!(matches!(disposition, RequestDisposition::Reply(_)));
+        assert_eq!(pending_external_commands.len(), 1);
+        assert_eq!(
+            pending_external_commands.as_slice()[0].candidates,
+            vec![vec!["foot".to_owned(), "--server".to_owned()]]
+        );
+        assert!(pending_window_controls.is_empty());
+        assert!(pending_workspace_controls.is_empty());
+        assert!(pending_output_controls.is_empty());
+        assert!(pending_popup_requests.is_empty());
     }
 }
