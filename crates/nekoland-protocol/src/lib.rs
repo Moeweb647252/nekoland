@@ -6,6 +6,7 @@
 pub mod compositor;
 pub mod data_device;
 pub mod dmabuf;
+pub mod foreign_toplevel_list;
 pub mod fractional_scale;
 pub mod idle_notify;
 pub mod layer_shell;
@@ -257,7 +258,9 @@ mod tests {
     #[test]
     fn supported_protocol_lists_include_xdg_activation() {
         let state = ProtocolState::default();
+        assert!(state.supported_globals().contains(&"ext_foreign_toplevel_list_v1"));
         assert!(state.supported_globals().contains(&"xdg_activation_v1"));
+        assert!(supported_protocols().contains(&"ext_foreign_toplevel_list_v1"));
         assert!(supported_protocols().contains(&"xdg_activation_v1"));
     }
 
@@ -299,6 +302,7 @@ mod tests {
 pub struct ProtocolState {
     pub compositor: compositor::CompositorProtocolState,
     pub xdg_shell: xdg_shell::XdgShellState,
+    pub foreign_toplevel_list: foreign_toplevel_list::ForeignToplevelListProtocolState,
     pub xdg_activation: xdg_activation::XdgActivationState,
     pub layer_shell: layer_shell::LayerShellState,
     pub data_device: data_device::DataDeviceState,
@@ -686,6 +690,7 @@ impl ProtocolState {
         let mut globals = Vec::new();
         globals.extend(self.compositor.globals());
         globals.extend(self.xdg_shell.globals());
+        globals.extend(self.foreign_toplevel_list.globals());
         globals.extend(self.xdg_activation.globals());
         globals.extend(self.xdg_decoration.globals());
         globals.extend(self.layer_shell.globals());
@@ -758,6 +763,7 @@ pub fn supported_protocols() -> &'static [&'static str] {
         "wl_compositor",
         "wl_subcompositor",
         "xdg_wm_base",
+        "ext_foreign_toplevel_list_v1",
         "xdg_activation_v1",
         "zxdg_decoration_manager_v1",
         "zwlr_layer_shell_v1",

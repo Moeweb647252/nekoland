@@ -5,7 +5,7 @@
 //! selection handling, presentation feedback, and XWayland bridging.
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -57,6 +57,7 @@ use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_
 use smithay::delegate_data_device;
 use smithay::delegate_dmabuf;
 use smithay::delegate_fractional_scale;
+use smithay::delegate_foreign_toplevel_list;
 use smithay::delegate_output;
 use smithay::delegate_primary_selection;
 use smithay::delegate_presentation;
@@ -106,6 +107,10 @@ use smithay::wayland::dmabuf::{
 };
 use smithay::wayland::fractional_scale::{
     FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
+};
+use smithay::wayland::foreign_toplevel_list::{
+    ForeignToplevelHandle, ForeignToplevelListHandler,
+    ForeignToplevelListState as SmithayForeignToplevelListState,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState as SmithayOutputManagerState};
 use smithay::wayland::presentation::{PresentationState as SmithayPresentationState, Refresh};
@@ -209,6 +214,7 @@ struct ProtocolRuntimeState {
     compositor_state: SmithayCompositorState,
     xdg_shell_state: SmithayXdgShellState,
     _xdg_decoration_state: SmithayXdgDecorationState,
+    _foreign_toplevel_list_state: SmithayForeignToplevelListState,
     _xdg_activation_state: SmithayXdgActivationState,
     xwayland_shell_state: SmithayXWaylandShellState,
     layer_shell_state: WlrLayerShellState,
@@ -226,6 +232,7 @@ struct ProtocolRuntimeState {
     seat: Seat<Self>,
     primary_output: Output,
     popup_manager: DesktopPopupManager,
+    foreign_toplevels: HashMap<u64, ForeignToplevelHandle>,
     toplevels: HashMap<u64, ToplevelSurface>,
     popups: HashMap<u64, PopupSurface>,
     layers: HashMap<u64, SmithayLayerSurface>,
@@ -451,6 +458,13 @@ struct OutputTiming {
     scale: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForeignToplevelSnapshot {
+    surface_id: u64,
+    title: String,
+    app_id: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PresentationFeedbackTiming {
     frame_time: Time<Monotonic>,
@@ -592,7 +606,10 @@ impl NekolandPlugin for ProtocolPlugin {
                 )
                     .chain(),
             )
-            .add_systems(RenderSchedule, sync_workspace_visibility_system)
+            .add_systems(
+                RenderSchedule,
+                (sync_foreign_toplevel_list_system, sync_workspace_visibility_system).chain(),
+            )
             .add_systems(
                 PresentSchedule,
                 dispatch_seat_input_system.in_set(ProtocolSeatDispatchSet),
@@ -1159,6 +1176,12 @@ impl SmithayProtocolServer {
         }
     }
 
+    fn sync_foreign_toplevel_list(&mut self, windows: &[ForeignToplevelSnapshot]) {
+        if let Some(runtime) = self.runtime.as_ref() {
+            runtime.borrow_mut().sync_foreign_toplevel_list(windows);
+        }
+    }
+
     fn dispatch_keyboard_input(&mut self, keycode: u32, pressed: bool, time: u32) {
         if let Some(runtime) = self.runtime.as_ref() {
             runtime.borrow_mut().dispatch_keyboard_input(keycode, pressed, time);
@@ -1331,6 +1354,26 @@ fn sync_keyboard_layout_config_system(
     if runtime.borrow_mut().sync_keyboard_layout(&active_layout) {
         *last_layout = Some(active_layout);
     }
+}
+
+fn sync_foreign_toplevel_list_system(
+    windows: Query<nekoland_ecs::views::WindowSnapshotRuntime, (With<XdgWindow>, Allow<Disabled>)>,
+    mut server: NonSendMut<SmithayProtocolServer>,
+) {
+    let snapshots = windows
+        .iter()
+        .filter(|window| {
+            window.role.is_managed()
+                && window.x11_window.is_none_or(|x11_window| !x11_window.is_helper_surface())
+        })
+        .map(|window| ForeignToplevelSnapshot {
+            surface_id: window.surface_id(),
+            title: window.window.title.clone(),
+            app_id: window.window.app_id.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    server.sync_foreign_toplevel_list(&snapshots);
 }
 
 impl SmithayProtocolRuntime {
@@ -2030,6 +2073,65 @@ impl SmithayProtocolRuntime {
         true
     }
 
+    fn sync_foreign_toplevel_list(&mut self, windows: &[ForeignToplevelSnapshot]) {
+        let current_ids = windows.iter().map(|window| window.surface_id).collect::<HashSet<_>>();
+        let mut changed = false;
+
+        for window in windows {
+            let handle = self
+                .state
+                .foreign_toplevels
+                .entry(window.surface_id)
+                .or_insert_with(|| {
+                    changed = true;
+                    self.state
+                        ._foreign_toplevel_list_state
+                        .new_toplevel::<ProtocolRuntimeState>(
+                            window.title.clone(),
+                            window.app_id.clone(),
+                        )
+                })
+                .clone();
+
+            let mut updated = false;
+            if handle.title() != window.title {
+                handle.send_title(&window.title);
+                updated = true;
+            }
+            if handle.app_id() != window.app_id {
+                handle.send_app_id(&window.app_id);
+                updated = true;
+            }
+            if updated {
+                handle.send_done();
+                changed = true;
+            }
+        }
+
+        let removed_ids = self
+            .state
+            .foreign_toplevels
+            .keys()
+            .copied()
+            .filter(|surface_id| !current_ids.contains(surface_id))
+            .collect::<Vec<_>>();
+        for surface_id in removed_ids {
+            if let Some(handle) = self.state.foreign_toplevels.remove(&surface_id) {
+                self.state._foreign_toplevel_list_state.remove_toplevel(&handle);
+                changed = true;
+            }
+        }
+        self.state._foreign_toplevel_list_state.cleanup_closed_handles();
+
+        if changed && let Err(error) = self.display.flush_clients() {
+            remember_protocol_error(
+                &mut self.last_dispatch_error,
+                error,
+                "failed to flush Wayland clients after syncing foreign toplevel list",
+            );
+        }
+    }
+
     fn sync_keyboard_repeat_info(&mut self, repeat_rate: u16) {
         let seat = self.state.seat.clone();
         let Some(keyboard) = seat.get_keyboard() else {
@@ -2243,6 +2345,7 @@ impl ProtocolRuntimeState {
             SUPPORTED_XDG_WM_CAPABILITIES,
         );
         let xdg_decoration_state = SmithayXdgDecorationState::new::<Self>(display_handle);
+        let foreign_toplevel_list_state = SmithayForeignToplevelListState::new::<Self>(display_handle);
         let xdg_activation_state = SmithayXdgActivationState::new::<Self>(display_handle);
         let xwayland_shell_state = SmithayXWaylandShellState::new::<Self>(display_handle);
         let layer_shell_state = WlrLayerShellState::new::<Self>(display_handle);
@@ -2293,6 +2396,7 @@ impl ProtocolRuntimeState {
             compositor_state,
             xdg_shell_state,
             _xdg_decoration_state: xdg_decoration_state,
+            _foreign_toplevel_list_state: foreign_toplevel_list_state,
             _xdg_activation_state: xdg_activation_state,
             xwayland_shell_state,
             layer_shell_state,
@@ -2310,6 +2414,7 @@ impl ProtocolRuntimeState {
             seat,
             primary_output: primary_output.clone(),
             popup_manager: DesktopPopupManager::default(),
+            foreign_toplevels: HashMap::new(),
             toplevels: HashMap::new(),
             popups: HashMap::new(),
             layers: HashMap::new(),
@@ -3097,6 +3202,12 @@ impl XdgActivationHandler for ProtocolRuntimeState {
         }
 
         self.queue_event(ProtocolEvent::ActivationRequested { surface_id });
+    }
+}
+
+impl ForeignToplevelListHandler for ProtocolRuntimeState {
+    fn foreign_toplevel_list_state(&mut self) -> &mut SmithayForeignToplevelListState {
+        &mut self._foreign_toplevel_list_state
     }
 }
 
@@ -4077,6 +4188,7 @@ impl AsRawFd for RegisteredRawFd {
 delegate_compositor!(ProtocolRuntimeState);
 delegate_xdg_shell!(ProtocolRuntimeState);
 delegate_xdg_decoration!(ProtocolRuntimeState);
+delegate_foreign_toplevel_list!(ProtocolRuntimeState);
 delegate_xdg_activation!(ProtocolRuntimeState);
 delegate_layer_shell!(ProtocolRuntimeState);
 delegate_xwayland_shell!(ProtocolRuntimeState);
@@ -4115,8 +4227,9 @@ mod tests {
     use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
     use super::{
-        DEFAULT_KEYBOARD_REPEAT_RATE, PointerFocusInputs, PointerHitTestState, ProtocolClientState,
-        ProtocolEvent, ProtocolRuntimeState, SmithayProtocolRuntime, XdgSurfaceRole,
+        DEFAULT_KEYBOARD_REPEAT_RATE, ForeignToplevelSnapshot, PointerFocusInputs,
+        PointerHitTestState, ProtocolClientState, ProtocolEvent, ProtocolRuntimeState,
+        SmithayProtocolRuntime, XdgSurfaceRole,
         pointer_focus_target,
     };
 
@@ -4325,6 +4438,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn foreign_toplevel_sync_creates_updates_and_removes_handles() {
+        let socket_path = temporary_socket_path();
+        let listener = UnixListener::bind(&socket_path).expect("test UnixListener bind");
+        let client_socket_path = socket_path.clone();
+        let client_thread = thread::spawn(move || UnixStream::connect(client_socket_path));
+        let (server_stream, _) = listener.accept().expect("test UnixListener accept");
+        let _ = fs::remove_file(&socket_path);
+        let mut runtime = test_runtime(server_stream);
+        let _ = client_thread.join();
+
+        runtime.sync_foreign_toplevel_list(&[ForeignToplevelSnapshot {
+            surface_id: 11,
+            title: "One".to_owned(),
+            app_id: "app.one".to_owned(),
+        }]);
+        assert_eq!(runtime.state.foreign_toplevels.len(), 1);
+        let handle = runtime
+            .state
+            .foreign_toplevels
+            .get(&11)
+            .expect("foreign toplevel handle should exist after sync");
+        assert_eq!(handle.title(), "One");
+        assert_eq!(handle.app_id(), "app.one");
+
+        runtime.sync_foreign_toplevel_list(&[ForeignToplevelSnapshot {
+            surface_id: 11,
+            title: "Renamed".to_owned(),
+            app_id: "app.one".to_owned(),
+        }]);
+        let handle = runtime
+            .state
+            .foreign_toplevels
+            .get(&11)
+            .expect("foreign toplevel handle should still exist after update");
+        assert_eq!(handle.title(), "Renamed");
+
+        runtime.sync_foreign_toplevel_list(&[]);
+        assert!(runtime.state.foreign_toplevels.is_empty());
+    }
+
     fn test_runtime(server_stream: UnixStream) -> SmithayProtocolRuntime {
         let Ok(display) = Display::new() else {
             panic!("server display");
@@ -4439,6 +4593,7 @@ mod tests {
             "wl_compositor",
             "wl_subcompositor",
             "xdg_wm_base",
+            "ext_foreign_toplevel_list_v1",
             "xdg_activation_v1",
             "zxdg_decoration_manager_v1",
             "zwlr_layer_shell_v1",

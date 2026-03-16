@@ -176,6 +176,7 @@ pub fn assert_globals_present(globals: &[String]) {
         "wl_compositor",
         "wl_subcompositor",
         "xdg_wm_base",
+        "ext_foreign_toplevel_list_v1",
         "xdg_activation_v1",
         "zxdg_decoration_manager_v1",
         "zwlr_layer_shell_v1",
