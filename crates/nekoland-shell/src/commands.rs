@@ -19,6 +19,23 @@ pub struct StartupActionState {
     pub queued: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ChildCommandEnvironment {
+    vars: Vec<(String, String)>,
+    removals: Vec<String>,
+}
+
+impl ChildCommandEnvironment {
+    fn apply_to(&self, command: &mut Command) {
+        for key in &self.removals {
+            command.env_remove(key);
+        }
+        for (key, value) in &self.vars {
+            command.env(key, value);
+        }
+    }
+}
+
 /// Attempts to launch queued external commands and records the result as both ECS messages and
 /// human-readable input-log entries.
 pub fn external_command_launch_system(
@@ -38,20 +55,19 @@ pub fn external_command_launch_system(
                 continue;
             };
 
-            let nested_wayland_env =
+            let child_environment =
                 nested_wayland_env(protocol_server.as_deref(), xwayland_server.as_deref());
             let mut command = Command::new(program);
             command.args(args);
-            for (key, value) in &nested_wayland_env {
-                command.env(key, value);
-            }
+            child_environment.apply_to(&mut command);
 
             match command.spawn() {
                 Ok(child) => {
                     tracing::info!(
-                        "Command args={:?}, env={:?} executed",
+                        "Command args={:?}, env={:?}, removed_env={:?} executed",
                         args,
-                        nested_wayland_env
+                        child_environment.vars,
+                        child_environment.removals
                     );
                     launched_events.write(ExternalCommandLaunched {
                         origin: request.origin.clone(),
@@ -412,22 +428,34 @@ fn startup_actions_disabled_by_env() -> bool {
 fn nested_wayland_env(
     protocol_server: Option<&ProtocolServerState>,
     xwayland_server: Option<&XWaylandServerState>,
-) -> Vec<(String, String)> {
-    let mut env = Vec::new();
-    let Some(protocol_server) = protocol_server else {
-        return env;
+) -> ChildCommandEnvironment {
+    let mut env = ChildCommandEnvironment {
+        removals: vec![
+            "DISPLAY".to_owned(),
+            "WAYLAND_DISPLAY".to_owned(),
+            "WAYLAND_SOCKET".to_owned(),
+            "DESKTOP_STARTUP_ID".to_owned(),
+            "XDG_ACTIVATION_TOKEN".to_owned(),
+        ],
+        ..ChildCommandEnvironment::default()
     };
 
-    if let Some(socket_name) = protocol_server.socket_name.as_ref() {
-        env.push(("WAYLAND_DISPLAY".to_owned(), socket_name.clone()));
+    if let Some(protocol_server) = protocol_server {
+        if let Some(socket_name) = protocol_server.socket_name.as_ref() {
+            env.vars.push(("WAYLAND_DISPLAY".to_owned(), socket_name.clone()));
+        }
+        if let Some(runtime_dir) = protocol_server.runtime_dir.as_ref() {
+            env.vars.push(("XDG_RUNTIME_DIR".to_owned(), runtime_dir.clone()));
+        }
     }
-    if let Some(runtime_dir) = protocol_server.runtime_dir.as_ref() {
-        env.push(("XDG_RUNTIME_DIR".to_owned(), runtime_dir.clone()));
-    }
+
+    env.vars.push(("XDG_CURRENT_DESKTOP".to_owned(), "nekoland".to_owned()));
+    env.vars.push(("XDG_SESSION_TYPE".to_owned(), "wayland".to_owned()));
+
     if let Some(display_name) = xwayland_server
         .and_then(|state| state.ready.then_some(state.display_name.as_deref()).flatten())
     {
-        env.push(("DISPLAY".to_owned(), display_name.to_owned()));
+        env.vars.push(("DISPLAY".to_owned(), display_name.to_owned()));
     }
 
     env
@@ -435,6 +463,8 @@ fn nested_wayland_env(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
@@ -447,6 +477,64 @@ mod tests {
     use nekoland_protocol::{ProtocolServerState, XWaylandServerState};
 
     use super::{StartupActionState, startup_action_queue_system};
+
+    #[test]
+    fn nested_wayland_env_scrubs_host_display_leaks_without_xwayland() {
+        let env = super::nested_wayland_env(
+            Some(&ProtocolServerState {
+                socket_name: Some("wayland-77".to_owned()),
+                runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
+                ..ProtocolServerState::default()
+            }),
+            Some(&XWaylandServerState {
+                enabled: true,
+                ready: false,
+                display_name: Some(":77".to_owned()),
+                ..XWaylandServerState::default()
+            }),
+        );
+
+        let vars = env.vars.iter().cloned().collect::<BTreeMap<_, _>>();
+        assert_eq!(vars.get("WAYLAND_DISPLAY"), Some(&"wayland-77".to_owned()));
+        assert_eq!(vars.get("XDG_RUNTIME_DIR"), Some(&"/tmp/nekoland-runtime".to_owned()));
+        assert_eq!(vars.get("XDG_CURRENT_DESKTOP"), Some(&"nekoland".to_owned()));
+        assert_eq!(vars.get("XDG_SESSION_TYPE"), Some(&"wayland".to_owned()));
+        assert!(
+            !vars.contains_key("DISPLAY"),
+            "host DISPLAY should be removed until nested XWayland is ready"
+        );
+        assert_eq!(
+            env.removals,
+            vec![
+                "DISPLAY".to_owned(),
+                "WAYLAND_DISPLAY".to_owned(),
+                "WAYLAND_SOCKET".to_owned(),
+                "DESKTOP_STARTUP_ID".to_owned(),
+                "XDG_ACTIVATION_TOKEN".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_wayland_env_sets_nested_display_when_xwayland_ready() {
+        let env = super::nested_wayland_env(
+            Some(&ProtocolServerState {
+                socket_name: Some("wayland-77".to_owned()),
+                runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
+                ..ProtocolServerState::default()
+            }),
+            Some(&XWaylandServerState {
+                enabled: true,
+                ready: true,
+                display_name: Some(":77".to_owned()),
+                ..XWaylandServerState::default()
+            }),
+        );
+
+        let vars = env.vars.iter().cloned().collect::<BTreeMap<_, _>>();
+        assert_eq!(vars.get("DISPLAY"), Some(&":77".to_owned()));
+        assert_eq!(vars.get("WAYLAND_DISPLAY"), Some(&"wayland-77".to_owned()));
+    }
 
     #[test]
     fn startup_actions_wait_for_xwayland_ready_when_enabled() {
