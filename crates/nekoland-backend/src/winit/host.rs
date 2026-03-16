@@ -9,6 +9,7 @@ use calloop::{EventSource, Interest, PostAction, Readiness, Token};
 use nekoland_core::error::NekolandError;
 use nekoland_ecs::resources::{BackendInputAction, BackendInputEvent};
 use smithay::backend::SwapBuffersError;
+use smithay::backend::allocator::Format as DmabufFormat;
 use smithay::backend::egl::{
     EGLContext, EGLSurface, Error as EglError,
     context::{GlAttributes, PixelFormatRequirements},
@@ -16,7 +17,7 @@ use smithay::backend::egl::{
     native,
 };
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{Bind, RendererSuper};
+use smithay::backend::renderer::{Bind, ImportDma, RendererSuper};
 use smithay::reexports::winit::application::ApplicationHandler;
 use smithay::reexports::winit::dpi::PhysicalPosition;
 use smithay::reexports::winit::event::{
@@ -116,6 +117,10 @@ impl HostWinitGraphicsBackend {
         self.window.pre_present_notify();
         self.egl_surface.swap_buffers(damage.as_deref_mut())?;
         Ok(())
+    }
+
+    pub(crate) fn dmabuf_formats(&self) -> Vec<DmabufFormat> {
+        ImportDma::dmabuf_formats(&self.renderer).into_iter().collect::<Vec<_>>()
     }
 }
 

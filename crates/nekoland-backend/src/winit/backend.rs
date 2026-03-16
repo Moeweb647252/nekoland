@@ -13,6 +13,7 @@ use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, CompositorConfig, DamageRect, OutputDamageRegions,
 };
+use nekoland_protocol::ProtocolDmabufSupport;
 use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::Kind;
@@ -521,6 +522,23 @@ impl Backend for WinitRuntime {
             tracing::warn!(error = %error, "failed to submit winit backbuffer");
         }
 
+        Ok(())
+    }
+
+    fn collect_protocol_dmabuf_support(
+        &mut self,
+        support: &mut ProtocolDmabufSupport,
+    ) -> Result<(), NekolandError> {
+        let formats = self
+            .shared
+            .borrow()
+            .backend
+            .as_ref()
+            .map(|backend| backend.dmabuf_formats())
+            .unwrap_or_default();
+        if !formats.is_empty() {
+            support.merge_formats(formats, true);
+        }
         Ok(())
     }
 }

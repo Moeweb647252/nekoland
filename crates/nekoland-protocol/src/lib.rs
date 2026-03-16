@@ -37,8 +37,8 @@ use serde::{Deserialize, Serialize};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 pub use plugin::{
-    ProtocolCursorImage, ProtocolCursorState, ProtocolPlugin, ProtocolSeatDispatchSet,
-    ProtocolServerState, XWaylandServerState,
+    ProtocolCursorImage, ProtocolCursorState, ProtocolDmabufSupport, ProtocolPlugin,
+    ProtocolSeatDispatchSet, ProtocolServerState, XWaylandServerState,
 };
 
 /// High-level protocol notifications that need to cross from callback-driven Smithay code into

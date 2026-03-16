@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bevy_app::App;
+use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, Has, Local, NonSend, NonSendMut, Query, Res, ResMut, Resource, With};
@@ -49,7 +50,7 @@ use nekoland_ecs::views::{
     OutputRuntime, PopupRuntime, SurfaceRuntime, WindowVisibilityRuntime, WorkspaceRuntime,
 };
 use smithay::backend::input::{Axis as InputAxis, AxisSource, ButtonState, KeyState};
-use smithay::backend::allocator::{Format as DmabufFormat, dmabuf::Dmabuf};
+use smithay::backend::allocator::{Buffer, Format as DmabufFormat, dmabuf::Dmabuf};
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
 use smithay::delegate_data_device;
 use smithay::delegate_dmabuf;
@@ -86,7 +87,7 @@ use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
-    Client, Display, ListeningSocket, Resource as WaylandResource,
+    Client, Display, DisplayHandle, ListeningSocket, Resource as WaylandResource,
 };
 use smithay::utils::Serial;
 use smithay::utils::{
@@ -207,6 +208,7 @@ struct ProtocolRuntimeState {
     _primary_selection_state: SmithayPrimarySelectionState,
     dmabuf_state: SmithayDmabufState,
     _dmabuf_global: DmabufGlobal,
+    dmabuf_support: ProtocolDmabufSupport,
     _viewporter_state: SmithayViewporterState,
     _fractional_scale_state: FractionalScaleManagerState,
     shm_state: SmithayShmState,
@@ -261,6 +263,27 @@ pub struct XWaylandServerState {
     pub display_name: Option<String>,
     pub startup_error: Option<String>,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
+pub struct ProtocolDmabufSupport {
+    pub formats: Vec<DmabufFormat>,
+    pub importable: bool,
+}
+
+impl ProtocolDmabufSupport {
+    pub fn merge_formats(
+        &mut self,
+        formats: impl IntoIterator<Item = DmabufFormat>,
+        importable: bool,
+    ) {
+        for format in formats {
+            if !self.formats.contains(&format) {
+                self.formats.push(format);
+            }
+        }
+        self.importable |= importable;
+    }
 }
 
 /// Protocol-originated cursor image state exposed to present backends.
@@ -442,6 +465,7 @@ impl NekolandPlugin for ProtocolPlugin {
         app.insert_resource(state)
             .insert_resource(registry)
             .insert_resource(server_state)
+            .init_resource::<ProtocolDmabufSupport>()
             .init_resource::<XWaylandServerState>()
             .insert_non_send_resource(server)
             .insert_non_send_resource(ProtocolSurfaceRegistry::default())
@@ -461,6 +485,7 @@ impl NekolandPlugin for ProtocolPlugin {
                 ProtocolSchedule,
                 (
                     sync_protocol_server_state_system,
+                    sync_protocol_dmabuf_support_system,
                     sync_xwayland_server_state_system,
                     sync_keyboard_repeat_config_system,
                     dispatch_xwayland_runtime_system,
@@ -502,6 +527,17 @@ fn sync_protocol_server_state_system(
     };
 
     runtime.borrow().sync_server_state(&mut server_state);
+}
+
+fn sync_protocol_dmabuf_support_system(
+    support: Res<ProtocolDmabufSupport>,
+    mut server: NonSendMut<SmithayProtocolServer>,
+) {
+    if !support.is_changed() {
+        return;
+    }
+
+    server.sync_dmabuf_support(&support);
 }
 
 fn sync_xwayland_server_state_system(
@@ -966,6 +1002,14 @@ impl SmithayProtocolServer {
         } else {
             *cursor_state = ProtocolCursorState::default();
         }
+    }
+
+    fn sync_dmabuf_support(&mut self, support: &ProtocolDmabufSupport) {
+        let Some(runtime) = self.runtime.as_ref() else {
+            return;
+        };
+
+        runtime.borrow_mut().sync_dmabuf_support(support);
     }
 
     fn sync_xwayland_state(&self, state: &mut XWaylandServerState) {
@@ -2041,6 +2085,10 @@ impl SmithayProtocolRuntime {
         server_state.last_dispatch_error = self.last_dispatch_error.clone();
     }
 
+    fn sync_dmabuf_support(&mut self, support: &ProtocolDmabufSupport) {
+        self.state.sync_dmabuf_support(&self.display.handle(), support);
+    }
+
     fn sync_xwayland_state(&self, state: &mut XWaylandServerState) {
         *state = XWaylandServerState {
             enabled: self.state.xwayland_state.enabled,
@@ -2145,6 +2193,7 @@ impl ProtocolRuntimeState {
             _primary_selection_state: primary_selection_state,
             dmabuf_state,
             _dmabuf_global: dmabuf_global,
+            dmabuf_support: ProtocolDmabufSupport::default(),
             _viewporter_state: viewporter_state,
             _fractional_scale_state: fractional_scale_state,
             shm_state,
@@ -2178,6 +2227,22 @@ impl ProtocolRuntimeState {
         state.queue_event(ProtocolEvent::OutputAnnounced { output_name: primary_output.name() });
 
         state
+    }
+
+    fn sync_dmabuf_support(
+        &mut self,
+        display_handle: &DisplayHandle,
+        support: &ProtocolDmabufSupport,
+    ) {
+        if &self.dmabuf_support == support {
+            return;
+        }
+
+        self.dmabuf_state.disable_global::<Self>(display_handle, &self._dmabuf_global);
+        self.dmabuf_state.destroy_global::<Self>(display_handle, self._dmabuf_global);
+        self._dmabuf_global =
+            self.dmabuf_state.create_global::<Self>(display_handle, support.formats.clone());
+        self.dmabuf_support = support.clone();
     }
 
     fn surface_id(&mut self, surface: &WlSurface) -> u64 {
@@ -3059,10 +3124,15 @@ impl DmabufHandler for ProtocolRuntimeState {
     fn dmabuf_imported(
         &mut self,
         _global: &DmabufGlobal,
-        _dmabuf: Dmabuf,
+        dmabuf: Dmabuf,
         notifier: ImportNotifier,
     ) {
-        notifier.failed();
+        if self.dmabuf_support.importable && self.dmabuf_support.formats.contains(&dmabuf.format())
+        {
+            let _ = notifier.successful::<Self>();
+        } else {
+            notifier.failed();
+        }
     }
 }
 

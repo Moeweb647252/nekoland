@@ -1,5 +1,6 @@
 use bevy_app::App;
 use bevy_ecs::prelude::Resource;
+use nekoland_protocol::ProtocolDmabufSupport;
 use serde::{Deserialize, Serialize};
 
 use crate::drm::DrmRuntime;
@@ -135,6 +136,16 @@ impl BackendManager {
     ) -> Result<(), nekoland_core::error::NekolandError> {
         for backend in &mut self.backends {
             backend.present(cx)?;
+        }
+        Ok(())
+    }
+
+    pub fn collect_protocol_dmabuf_support(
+        &mut self,
+        support: &mut ProtocolDmabufSupport,
+    ) -> Result<(), nekoland_core::error::NekolandError> {
+        for backend in &mut self.backends {
+            backend.collect_protocol_dmabuf_support(support)?;
         }
         Ok(())
     }

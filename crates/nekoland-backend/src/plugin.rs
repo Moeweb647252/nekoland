@@ -21,7 +21,9 @@ use nekoland_ecs::resources::{
     SurfacePresentationSnapshot, VirtualOutputCaptureState,
 };
 use nekoland_ecs::views::OutputRuntime;
-use nekoland_protocol::{ProtocolCursorState, ProtocolSeatDispatchSet, ProtocolSurfaceRegistry};
+use nekoland_protocol::{
+    ProtocolCursorState, ProtocolDmabufSupport, ProtocolSeatDispatchSet, ProtocolSurfaceRegistry,
+};
 
 use crate::common::outputs::{
     BackendOutputRegistry, PendingBackendOutputEvents, PendingBackendOutputUpdates,
@@ -71,6 +73,7 @@ impl NekolandPlugin for BackendPlugin {
                 ExtractSchedule,
                 (
                     sync_configured_outputs_system,
+                    sync_protocol_dmabuf_support_system,
                     backend_extract_system,
                     synchronize_backend_outputs_system,
                     apply_backend_output_updates_system,
@@ -88,6 +91,24 @@ impl NekolandPlugin for BackendPlugin {
             .configure_sets(PresentSchedule, BackendPresentSet.after(ProtocolSeatDispatchSet))
             .add_systems(PresentSchedule, backend_present_system.in_set(BackendPresentSet));
     }
+}
+
+fn sync_protocol_dmabuf_support_system(
+    mut manager: NonSendMut<BackendManager>,
+    dmabuf_support: Option<ResMut<ProtocolDmabufSupport>>,
+) -> BevyResult {
+    let Some(mut dmabuf_support) = dmabuf_support else {
+        return Ok(());
+    };
+
+    let mut next = ProtocolDmabufSupport::default();
+    manager.collect_protocol_dmabuf_support(&mut next)?;
+
+    if *dmabuf_support != next {
+        *dmabuf_support = next;
+    }
+
+    Ok(())
 }
 
 /// Collect backend-originated events and state updates into ECS pending queues.

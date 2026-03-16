@@ -9,8 +9,7 @@ use nekoland_ecs::resources::{
     OutputDamageRegions, PendingBackendInputEvents, PendingOutputPresentationEvents,
     PendingProtocolInputEvents, RenderList, VirtualOutputCaptureState,
 };
-use nekoland_protocol::ProtocolCursorState;
-use nekoland_protocol::ProtocolSurfaceRegistry;
+use nekoland_protocol::{ProtocolCursorState, ProtocolDmabufSupport, ProtocolSurfaceRegistry};
 
 use crate::common::outputs::{
     BackendOutputBlueprint, PendingBackendOutputEvents, PendingBackendOutputUpdates,
@@ -164,6 +163,12 @@ pub trait Backend {
     fn extract(&mut self, cx: &mut BackendExtractCtx<'_>) -> Result<(), NekolandError>;
     fn apply(&mut self, cx: &mut BackendApplyCtx<'_>) -> Result<(), NekolandError>;
     fn present(&mut self, cx: &mut BackendPresentCtx<'_>) -> Result<(), NekolandError>;
+    fn collect_protocol_dmabuf_support(
+        &mut self,
+        _support: &mut ProtocolDmabufSupport,
+    ) -> Result<(), NekolandError> {
+        Ok(())
+    }
     fn shutdown(&mut self, _cx: &mut BackendShutdownCtx) -> Result<(), NekolandError> {
         Ok(())
     }
