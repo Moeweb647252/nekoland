@@ -587,10 +587,8 @@ pub(crate) fn subscription_dispatch_system(
         });
     }
 
-    let previous_active_keyboard_layout = snapshots
-        .last_keyboard_layouts
-        .as_ref()
-        .map(|keyboard_layouts| {
+    let previous_active_keyboard_layout =
+        snapshots.last_keyboard_layouts.as_ref().map(|keyboard_layouts| {
             (keyboard_layouts.active_index, keyboard_layouts.active_name.as_str())
         });
     let active_keyboard_layout = (

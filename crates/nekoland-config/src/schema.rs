@@ -271,14 +271,20 @@ fn normalize_keyboard_layouts(
     let mut seen = std::collections::BTreeSet::new();
     for layout in &layouts {
         if !seen.insert(layout.name.clone()) {
-            return Err(format!("keyboard layout names must be unique, duplicate `{}`", layout.name));
+            return Err(format!(
+                "keyboard layout names must be unique, duplicate `{}`",
+                layout.name
+            ));
         }
     }
 
-    let current = current
-        .unwrap_or_else(|| layouts.first().map(|layout| layout.name.clone()).unwrap_or("us".to_owned()));
+    let current = current.unwrap_or_else(|| {
+        layouts.first().map(|layout| layout.name.clone()).unwrap_or("us".to_owned())
+    });
     if layouts.iter().all(|layout| layout.name != current) {
-        return Err(format!("keyboard current layout `{current}` was not found in input.keyboard.layouts"));
+        return Err(format!(
+            "keyboard current layout `{current}` was not found in input.keyboard.layouts"
+        ));
     }
 
     Ok((layouts, current))

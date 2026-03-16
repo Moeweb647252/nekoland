@@ -523,9 +523,9 @@ where
         RootCommand::GetConfig => {
             Ok(ParsedAction::Request(IpcCommand::Query(QueryCommand::GetConfig)))
         }
-        RootCommand::GetKeyboardLayouts => Ok(ParsedAction::Request(IpcCommand::Query(
-            QueryCommand::GetKeyboardLayouts,
-        ))),
+        RootCommand::GetKeyboardLayouts => {
+            Ok(ParsedAction::Request(IpcCommand::Query(QueryCommand::GetKeyboardLayouts)))
+        }
         RootCommand::GetClipboard => {
             Ok(ParsedAction::Request(IpcCommand::Query(QueryCommand::GetClipboard)))
         }

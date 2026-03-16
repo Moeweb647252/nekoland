@@ -42,8 +42,8 @@ use nekoland_ecs::resources::{
     BackendOutputRegistry, ClipboardSelectionState, CommandExecutionStatus, CommandHistoryState,
     CompositorClock, CompositorConfig, EntityIndex, ExternalCommandRequest, KeyboardFocusState,
     KeyboardLayoutState, PendingExternalCommandRequests, PendingOutputControls,
-    PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls,
-    PopupServerAction, PopupServerRequest, PrimarySelectionState, RenderList, SelectionOwner,
+    PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls, PopupServerAction,
+    PopupServerRequest, PrimarySelectionState, RenderList, SelectionOwner,
 };
 use nekoland_ecs::views::{
     OutputRuntime, PopupSnapshotRuntime, WindowSnapshotRuntime, WorkspaceRuntime,
@@ -751,11 +751,7 @@ pub(crate) fn refresh_query_cache_system(
         seat_name: keyboard_layout_state.seat_name.clone(),
         active_index: keyboard_layout_state.active_index,
         active_name: keyboard_layout_state.active_name().to_owned(),
-        layouts: keyboard_layout_state
-            .layouts
-            .iter()
-            .map(keyboard_layout_entry_snapshot)
-            .collect(),
+        layouts: keyboard_layout_state.layouts.iter().map(keyboard_layout_entry_snapshot).collect(),
     };
 
     query_cache.commands = command_history

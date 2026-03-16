@@ -88,8 +88,10 @@ impl NekolandPlugin for ConfigPlugin {
                 }
             };
 
-        let keyboard_layout_state =
-            KeyboardLayoutState::from_config(&config.keyboard_layouts, &config.current_keyboard_layout);
+        let keyboard_layout_state = KeyboardLayoutState::from_config(
+            &config.keyboard_layouts,
+            &config.current_keyboard_layout,
+        );
 
         app.insert_resource(config)
             .insert_resource(keyboard_layout_state)

@@ -582,8 +582,7 @@ cursor_theme = "default"
         rewrite_config(&temp_config.path, KEYBOARD_LAYOUT_CONFIG);
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
-        let Some(keyboard_layout_state) =
-            app.inner().world().get_resource::<KeyboardLayoutState>()
+        let Some(keyboard_layout_state) = app.inner().world().get_resource::<KeyboardLayoutState>()
         else {
             panic!("keyboard layout state should remain available");
         };

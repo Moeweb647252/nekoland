@@ -2052,7 +2052,8 @@ impl SmithayProtocolRuntime {
             return false;
         };
 
-        if let Err(error) = keyboard.set_xkb_config(&mut self.state, xkb_config_for_layout(keyboard_layout))
+        if let Err(error) =
+            keyboard.set_xkb_config(&mut self.state, xkb_config_for_layout(keyboard_layout))
         {
             tracing::warn!(
                 layout = %keyboard_layout.name,
@@ -2084,12 +2085,10 @@ impl SmithayProtocolRuntime {
                 .entry(window.surface_id)
                 .or_insert_with(|| {
                     changed = true;
-                    self.state
-                        ._foreign_toplevel_list_state
-                        .new_toplevel::<ProtocolRuntimeState>(
-                            window.title.clone(),
-                            window.app_id.clone(),
-                        )
+                    self.state._foreign_toplevel_list_state.new_toplevel::<ProtocolRuntimeState>(
+                        window.title.clone(),
+                        window.app_id.clone(),
+                    )
                 })
                 .clone();
 
@@ -2345,7 +2344,8 @@ impl ProtocolRuntimeState {
             SUPPORTED_XDG_WM_CAPABILITIES,
         );
         let xdg_decoration_state = SmithayXdgDecorationState::new::<Self>(display_handle);
-        let foreign_toplevel_list_state = SmithayForeignToplevelListState::new::<Self>(display_handle);
+        let foreign_toplevel_list_state =
+            SmithayForeignToplevelListState::new::<Self>(display_handle);
         let xdg_activation_state = SmithayXdgActivationState::new::<Self>(display_handle);
         let xwayland_shell_state = SmithayXWaylandShellState::new::<Self>(display_handle);
         let layer_shell_state = WlrLayerShellState::new::<Self>(display_handle);
@@ -2462,7 +2462,9 @@ impl ProtocolRuntimeState {
     }
 
     fn known_surface_id(&self, surface: &WlSurface) -> Option<u64> {
-        compositor::with_states(surface, |states| states.data_map.get::<SurfaceIdentity>().map(|identity| identity.0))
+        compositor::with_states(surface, |states| {
+            states.data_map.get::<SurfaceIdentity>().map(|identity| identity.0)
+        })
     }
 
     fn validate_interactive_request(
@@ -4229,8 +4231,7 @@ mod tests {
     use super::{
         DEFAULT_KEYBOARD_REPEAT_RATE, ForeignToplevelSnapshot, PointerFocusInputs,
         PointerHitTestState, ProtocolClientState, ProtocolEvent, ProtocolRuntimeState,
-        SmithayProtocolRuntime, XdgSurfaceRole,
-        pointer_focus_target,
+        SmithayProtocolRuntime, XdgSurfaceRole, pointer_focus_target,
     };
 
     #[derive(Debug)]

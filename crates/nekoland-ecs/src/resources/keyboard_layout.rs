@@ -72,11 +72,8 @@ impl KeyboardLayoutState {
             return false;
         }
 
-        let prev_index = if self.active_index == 0 {
-            self.layouts.len() - 1
-        } else {
-            self.active_index - 1
-        };
+        let prev_index =
+            if self.active_index == 0 { self.layouts.len() - 1 } else { self.active_index - 1 };
         self.activate_index(prev_index)
     }
 
