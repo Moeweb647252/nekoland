@@ -155,6 +155,12 @@ const MONOTONIC_CLOCK_ID: u32 = Monotonic::ID as u32;
 const DEFAULT_KEYBOARD_REPEAT_DELAY_MS: i32 = 200;
 const DEFAULT_KEYBOARD_REPEAT_RATE: u16 = 25;
 const MAX_PERSISTED_SELECTION_BYTES: usize = 1024 * 1024;
+const SUPPORTED_XDG_WM_CAPABILITIES: [xdg_toplevel::WmCapabilities; 4] = [
+    xdg_toplevel::WmCapabilities::Fullscreen,
+    xdg_toplevel::WmCapabilities::Maximize,
+    xdg_toplevel::WmCapabilities::Minimize,
+    xdg_toplevel::WmCapabilities::WindowMenu,
+];
 
 /// Installs the Smithay runtime and bridges its callback-driven world into the compositor's ECS
 /// schedules.
@@ -2079,7 +2085,10 @@ impl ProtocolRuntimeState {
         repeat_rate: u16,
     ) -> Self {
         let compositor_state = SmithayCompositorState::new::<Self>(display_handle);
-        let xdg_shell_state = SmithayXdgShellState::new::<Self>(display_handle);
+        let xdg_shell_state = SmithayXdgShellState::new_with_capabilities::<Self>(
+            display_handle,
+            SUPPORTED_XDG_WM_CAPABILITIES,
+        );
         let xdg_decoration_state = SmithayXdgDecorationState::new::<Self>(display_handle);
         let xwayland_shell_state = SmithayXWaylandShellState::new::<Self>(display_handle);
         let layer_shell_state = WlrLayerShellState::new::<Self>(display_handle);
@@ -3927,6 +3936,7 @@ mod tests {
     struct ClientSummary {
         globals: Vec<String>,
         configure_serial: u32,
+        wm_capabilities: Vec<xdg_toplevel::WmCapabilities>,
     }
 
     #[derive(Debug, Default)]
@@ -3936,6 +3946,7 @@ mod tests {
         wm_base: Option<xdg_wm_base::XdgWmBase>,
         xdg_surface: Option<(xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel)>,
         configure_serial: Option<u32>,
+        wm_capabilities: Vec<xdg_toplevel::WmCapabilities>,
     }
 
     #[test]
@@ -3984,6 +3995,16 @@ mod tests {
             .expect("server should emit a toplevel configure request");
 
         assert_globals_present(&summary.globals);
+        assert!(
+            summary.wm_capabilities.contains(&xdg_toplevel::WmCapabilities::Maximize),
+            "client should see maximize advertised in wm_capabilities: {:?}",
+            summary.wm_capabilities
+        );
+        assert!(
+            summary.wm_capabilities.contains(&xdg_toplevel::WmCapabilities::Minimize),
+            "client should see minimize advertised in wm_capabilities: {:?}",
+            summary.wm_capabilities
+        );
         assert!(
             events.iter().any(|event| matches!(
                 event,
@@ -4207,6 +4228,7 @@ mod tests {
             configure_serial: state
                 .configure_serial
                 .ok_or_else(|| "client never received xdg_surface.configure".to_owned())?,
+            wm_capabilities: state.wm_capabilities,
         })
     }
 
@@ -4313,7 +4335,7 @@ mod tests {
                     }
                     "xdg_wm_base" => {
                         state.wm_base =
-                            Some(registry.bind::<xdg_wm_base::XdgWmBase, _, _>(name, 1, qh, ()));
+                            Some(registry.bind::<xdg_wm_base::XdgWmBase, _, _>(name, 6, qh, ()));
                         state.maybe_init_toplevel(qh);
                     }
                     _ => {}
@@ -4358,7 +4380,20 @@ mod tests {
 
     delegate_noop!(TestClientState: ignore wl_compositor::WlCompositor);
     delegate_noop!(TestClientState: ignore wl_surface::WlSurface);
-    delegate_noop!(TestClientState: ignore xdg_toplevel::XdgToplevel);
+    impl Dispatch<xdg_toplevel::XdgToplevel, ()> for TestClientState {
+        fn event(
+            state: &mut Self,
+            _toplevel: &xdg_toplevel::XdgToplevel,
+            event: xdg_toplevel::Event,
+            _data: &(),
+            _conn: &Connection,
+            _qh: &QueueHandle<Self>,
+        ) {
+            if let xdg_toplevel::Event::WmCapabilities { capabilities } = event {
+                state.wm_capabilities = decode_xdg_wm_capabilities(&capabilities);
+            }
+        }
+    }
 
     impl TestClientState {
         fn maybe_init_toplevel(&mut self, qh: &QueueHandle<Self>) {
@@ -4376,5 +4411,13 @@ mod tests {
             surface.commit();
             self.xdg_surface = Some((xdg_surface, toplevel));
         }
+    }
+
+    fn decode_xdg_wm_capabilities(raw: &[u8]) -> Vec<xdg_toplevel::WmCapabilities> {
+        raw.chunks_exact(4)
+            .flat_map(TryInto::<[u8; 4]>::try_into)
+            .map(u32::from_ne_bytes)
+            .flat_map(xdg_toplevel::WmCapabilities::try_from)
+            .collect::<Vec<_>>()
     }
 }
