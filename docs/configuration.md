@@ -36,6 +36,25 @@ Important top-level fields:
 
 - `focus_follows_mouse`
 - `repeat_rate`
+- `[input.keyboard]`
+
+`[input.keyboard]` fields:
+
+- `current`
+- `[[input.keyboard.layouts]]`
+
+Each keyboard layout entry supports:
+
+- `name`
+- `layout`
+- `rules`
+- `model`
+- `variant`
+- `options`
+
+If `[input.keyboard]` is omitted, nekoland falls back to one `us` layout. `current` names the
+layout that should be active after startup or config reload; runtime layout switching over IPC may
+temporarily diverge from the configured default until the config changes again.
 
 `[startup]` fields:
 
@@ -125,4 +144,23 @@ actions = [{ exec = ["swaybg", "-o", "eDP-1", "-i", "/path/to/wallpaper.png", "-
 [[window_rules]]
 app_id = "swaybg"
 background = "eDP-1"
+```
+
+Keyboard layout example:
+
+```toml
+[input]
+focus_follows_mouse = true
+repeat_rate = 30
+
+[input.keyboard]
+current = "us"
+
+[[input.keyboard.layouts]]
+name = "us"
+layout = "us"
+
+[[input.keyboard.layouts]]
+name = "de"
+layout = "de"
 ```

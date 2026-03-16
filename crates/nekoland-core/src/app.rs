@@ -7,6 +7,7 @@ use calloop::EventLoop;
 
 use crate::calloop::CalloopSourceRegistry;
 use crate::error::NekolandError;
+use crate::lifecycle::AppLifecycleState;
 use crate::plugin::NekolandPlugin;
 use crate::schedules::{
     ExtractSchedule, InputSchedule, LayoutSchedule, PresentSchedule, ProtocolSchedule,
@@ -57,6 +58,7 @@ impl NekolandApp {
         let mut app = App::new();
         app.set_error_handler(warn);
         app.insert_resource(AppMetadata { name: name.into() });
+        app.insert_resource(AppLifecycleState::default());
         app.insert_resource(RunLoopSettings::default());
         install_core_schedules(&mut app);
 
@@ -121,6 +123,16 @@ impl NekolandApp {
             self.app.world_mut().run_schedule(LayoutSchedule);
             self.app.world_mut().run_schedule(RenderSchedule);
             self.app.world_mut().run_schedule(PresentSchedule);
+
+            if self
+                .app
+                .world()
+                .get_resource::<AppLifecycleState>()
+                .is_some_and(|state| state.quit_requested)
+            {
+                tracing::info!(frame, "stopping nekoland run loop after quit request");
+                break;
+            }
 
             frame += 1;
             tracing::trace!(frame, uptime_ms = started_at.elapsed().as_millis(), "frame complete");

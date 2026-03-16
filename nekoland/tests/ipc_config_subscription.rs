@@ -30,6 +30,13 @@ background_color = "#f5f5f5"
 focus_follows_mouse = false
 repeat_rate = 30
 
+[input.keyboard]
+current = "us"
+
+[[input.keyboard.layouts]]
+name = "us"
+layout = "us"
+
 [ipc]
 command_history_limit = 7
 
@@ -60,6 +67,18 @@ background_color = "#101010"
 [input]
 focus_follows_mouse = true
 repeat_rate = 45
+
+[input.keyboard]
+current = "de"
+
+[[input.keyboard.layouts]]
+name = "us"
+layout = "us"
+
+[[input.keyboard.layouts]]
+name = "de"
+layout = "de"
+variant = "nodeadkeys"
 
 [ipc]
 command_history_limit = 3
@@ -168,6 +187,10 @@ fn config_subscription_reports_hot_reloaded_runtime_config() {
     assert_eq!(config.default_layout, "floating");
     assert_eq!(config.command_history_limit, 3);
     assert!(!config.xwayland_enabled);
+    assert_eq!(config.configured_keyboard_layout, "de");
+    assert_eq!(config.keyboard_layouts.len(), 2);
+    assert_eq!(config.keyboard_layouts[1].name, "de");
+    assert_eq!(config.keyboard_layouts[1].variant, "nodeadkeys");
     assert_eq!(config.viewport_pan_modifiers, vec!["Ctrl".to_owned(), "Shift".to_owned()]);
     assert_eq!(config.outputs.len(), 1);
     assert_eq!(config.outputs[0].name, "HDMI-A-1");

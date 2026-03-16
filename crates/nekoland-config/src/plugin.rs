@@ -4,7 +4,7 @@ use std::time::SystemTime;
 use bevy_app::App;
 use bevy_ecs::prelude::Resource;
 use nekoland_core::plugin::NekolandPlugin;
-use nekoland_ecs::resources::CompositorConfig;
+use nekoland_ecs::resources::{CompositorConfig, KeyboardLayoutState};
 
 use crate::{hot_reload, loader, schema::NekolandConfigFile};
 
@@ -16,6 +16,12 @@ pub struct LoadedConfigSource {
     pub last_observed_modified: Option<SystemTime>,
     pub successful_reloads: u64,
     pub last_reload_error: Option<String>,
+}
+
+/// External request flag used to force one config reload on the next extract tick.
+#[derive(Debug, Clone, Default, Resource)]
+pub struct ConfigReloadRequest {
+    pub requested: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +88,12 @@ impl NekolandPlugin for ConfigPlugin {
                 }
             };
 
+        let keyboard_layout_state =
+            KeyboardLayoutState::from_config(&config.keyboard_layouts, &config.current_keyboard_layout);
+
         app.insert_resource(config)
+            .insert_resource(keyboard_layout_state)
+            .insert_resource(ConfigReloadRequest::default())
             .insert_resource(LoadedConfigSource {
                 path: self.path.clone(),
                 loaded_from_disk,

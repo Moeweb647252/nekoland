@@ -41,7 +41,7 @@ use nekoland_ecs::components::{
 use nekoland_ecs::resources::{
     BackendInputAction, ClipboardSelectionState, CompositorClock, CompositorConfig,
     DragAndDropState, FramePacingState, GlobalPointerPosition, KeyboardFocusState,
-    OutputPresentationState, PendingLayerRequests, PendingOutputEvents,
+    KeyboardLayoutState, OutputPresentationState, PendingLayerRequests, PendingOutputEvents,
     PendingPopupServerRequests, PendingProtocolInputEvents, PendingWindowServerRequests,
     PendingX11Requests, PendingXdgRequests, PopupPlacement, PopupServerAction, PrimaryOutputState,
     ResizeEdges, PrimarySelectionState, RenderList, SurfaceExtent, SurfacePresentationRole,
@@ -529,12 +529,18 @@ impl NekolandPlugin for ProtocolPlugin {
             .get_resource::<CompositorConfig>()
             .map(|config| config.repeat_rate)
             .unwrap_or(DEFAULT_KEYBOARD_REPEAT_RATE);
+        let initial_keyboard_layout = app
+            .world()
+            .get_resource::<KeyboardLayoutState>()
+            .map(|state| state.active_layout().clone())
+            .unwrap_or_default();
         let xwayland_enabled = app
             .world()
             .get_resource::<CompositorConfig>()
             .map(|config| config.xwayland.enabled)
             .unwrap_or(true);
-        let (server, server_state) = SmithayProtocolServer::new(repeat_rate, xwayland_enabled);
+        let (server, server_state) =
+            SmithayProtocolServer::new(repeat_rate, initial_keyboard_layout, xwayland_enabled);
         register_calloop_sources(app, &server);
 
         app.insert_resource(state)
@@ -563,6 +569,7 @@ impl NekolandPlugin for ProtocolPlugin {
                     sync_protocol_dmabuf_support_system,
                     sync_xwayland_server_state_system,
                     sync_keyboard_repeat_config_system,
+                    sync_keyboard_layout_config_system,
                     dispatch_xwayland_runtime_system,
                     dispatch_window_server_requests_system,
                     dispatch_popup_server_requests_system,
@@ -967,13 +974,21 @@ fn dispatch_seat_input_system(
 }
 
 impl SmithayProtocolServer {
-    fn new(repeat_rate: u16, xwayland_enabled: bool) -> (Self, ProtocolServerState) {
+    fn new(
+        repeat_rate: u16,
+        initial_keyboard_layout: nekoland_ecs::resources::ConfiguredKeyboardLayout,
+        xwayland_enabled: bool,
+    ) -> (Self, ProtocolServerState) {
         let mut server_state = ProtocolServerState::default();
 
         let runtime = match Display::new() {
             Ok(display) => {
                 let display_handle = display.handle();
-                let state = ProtocolRuntimeState::new(&display_handle, repeat_rate);
+                let state = ProtocolRuntimeState::new(
+                    &display_handle,
+                    repeat_rate,
+                    &initial_keyboard_layout,
+                );
                 let socket = match bind_wayland_socket() {
                     Ok((socket, socket_name)) => {
                         let socket_name = socket_name.to_string_lossy().into_owned();
@@ -1287,6 +1302,25 @@ fn sync_keyboard_repeat_config_system(
 
     runtime.borrow_mut().sync_keyboard_repeat_info(config.repeat_rate);
     *last_repeat_rate = Some(config.repeat_rate);
+}
+
+fn sync_keyboard_layout_config_system(
+    server: NonSendMut<SmithayProtocolServer>,
+    keyboard_layout_state: Res<KeyboardLayoutState>,
+    mut last_layout: Local<Option<nekoland_ecs::resources::ConfiguredKeyboardLayout>>,
+) {
+    let active_layout = keyboard_layout_state.active_layout().clone();
+    if last_layout.as_ref() == Some(&active_layout) {
+        return;
+    }
+
+    let Some(runtime) = server.runtime.as_ref() else {
+        return;
+    };
+
+    if runtime.borrow_mut().sync_keyboard_layout(&active_layout) {
+        *last_layout = Some(active_layout);
+    }
 }
 
 impl SmithayProtocolRuntime {
@@ -1956,6 +1990,36 @@ impl SmithayProtocolRuntime {
         }
     }
 
+    fn sync_keyboard_layout(
+        &mut self,
+        keyboard_layout: &nekoland_ecs::resources::ConfiguredKeyboardLayout,
+    ) -> bool {
+        let seat = self.state.seat.clone();
+        let Some(keyboard) = seat.get_keyboard() else {
+            return false;
+        };
+
+        if let Err(error) = keyboard.set_xkb_config(&mut self.state, xkb_config_for_layout(keyboard_layout))
+        {
+            tracing::warn!(
+                layout = %keyboard_layout.name,
+                error = %error,
+                "failed to apply keyboard layout to Smithay seat"
+            );
+            return false;
+        }
+
+        if let Err(error) = self.display.flush_clients() {
+            remember_protocol_error(
+                &mut self.last_dispatch_error,
+                error,
+                "failed to flush Wayland clients after updating keyboard layout",
+            );
+        }
+
+        true
+    }
+
     fn sync_keyboard_repeat_info(&mut self, repeat_rate: u16) {
         let seat = self.state.seat.clone();
         let Some(keyboard) = seat.get_keyboard() else {
@@ -2145,10 +2209,23 @@ impl SmithayProtocolRuntime {
     }
 }
 
+fn xkb_config_for_layout(
+    keyboard_layout: &nekoland_ecs::resources::ConfiguredKeyboardLayout,
+) -> XkbConfig<'_> {
+    XkbConfig {
+        rules: keyboard_layout.rules.as_str(),
+        model: keyboard_layout.model.as_str(),
+        layout: keyboard_layout.layout.as_str(),
+        variant: keyboard_layout.variant.as_str(),
+        options: (!keyboard_layout.options.is_empty()).then(|| keyboard_layout.options.clone()),
+    }
+}
+
 impl ProtocolRuntimeState {
     fn new(
         display_handle: &smithay::reexports::wayland_server::DisplayHandle,
         repeat_rate: u16,
+        initial_keyboard_layout: &nekoland_ecs::resources::ConfiguredKeyboardLayout,
     ) -> Self {
         let compositor_state = SmithayCompositorState::new::<Self>(display_handle);
         let xdg_shell_state = SmithayXdgShellState::new_with_capabilities::<Self>(
@@ -2177,7 +2254,7 @@ impl ProtocolRuntimeState {
         let mut seat = seat_state.new_wl_seat(display_handle, "seat-0");
         seat.add_pointer();
         let _ = seat.add_keyboard(
-            XkbConfig::default(),
+            xkb_config_for_layout(initial_keyboard_layout),
             DEFAULT_KEYBOARD_REPEAT_DELAY_MS,
             i32::from(repeat_rate),
         );
@@ -4194,7 +4271,11 @@ mod tests {
             panic!("server display");
         };
         let mut display_handle = display.handle();
-        let state = ProtocolRuntimeState::new(&display_handle, DEFAULT_KEYBOARD_REPEAT_RATE);
+        let state = ProtocolRuntimeState::new(
+            &display_handle,
+            DEFAULT_KEYBOARD_REPEAT_RATE,
+            &nekoland_ecs::resources::ConfiguredKeyboardLayout::default(),
+        );
         let Ok(client) = display_handle
             .insert_client(server_stream, std::sync::Arc::new(ProtocolClientState::default()))
         else {

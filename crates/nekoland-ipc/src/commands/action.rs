@@ -7,6 +7,12 @@ pub enum ActionCommand {
     FocusWindow { id: u64 },
     CloseWindow { id: u64 },
     Spawn { command: Vec<String> },
+    SwitchKeyboardLayoutNext,
+    SwitchKeyboardLayoutPrev,
+    SwitchKeyboardLayoutByName { name: String },
+    SwitchKeyboardLayoutByIndex { index: usize },
+    ReloadConfig,
+    Quit,
     PowerOffMonitors,
     PowerOnMonitors,
 }

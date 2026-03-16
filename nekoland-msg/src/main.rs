@@ -20,7 +20,7 @@ use nekoland_ipc::{
 
 const USAGE: &str = "usage:
   nekoland-msg <query|window|popup|workspace|output|action> ...
-  nekoland-msg subscribe <window|popup|workspace|output|command|config|clipboard|primary-selection|focus|tree|all> [--pretty|--jsonl] [--no-payloads] [--event <name|prefix*>]...";
+  nekoland-msg subscribe <window|popup|workspace|output|command|config|keyboard-layout|clipboard|primary-selection|focus|tree|all> [--pretty|--jsonl] [--no-payloads] [--event <name|prefix*>]...";
 const SUBSCRIPTION_HELP_EXAMPLES: &[&str] = &[
     "nekoland-msg subscribe workspace",
     "nekoland-msg subscribe command --event command_*",
@@ -61,6 +61,8 @@ enum RootCommand {
     GetCommands,
     #[command(name = "get_config", hide = true)]
     GetConfig,
+    #[command(name = "get_keyboard_layouts", hide = true)]
+    GetKeyboardLayouts,
     #[command(name = "get_clipboard", hide = true)]
     GetClipboard,
     #[command(name = "get_primary_selection", hide = true)]
@@ -83,6 +85,7 @@ enum QueryTarget {
     Outputs,
     Workspaces,
     Windows,
+    KeyboardLayouts,
     Commands,
     Config,
     Clipboard,
@@ -239,6 +242,16 @@ enum ActionAction {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    SwitchKeyboardLayoutNext,
+    SwitchKeyboardLayoutPrev,
+    SwitchKeyboardLayoutName {
+        name: String,
+    },
+    SwitchKeyboardLayoutIndex {
+        index: usize,
+    },
+    ReloadConfig,
+    Quit,
     PowerOffMonitors,
     PowerOnMonitors,
 }
@@ -311,6 +324,7 @@ enum SubscriptionTopicArg {
     Output,
     Command,
     Config,
+    KeyboardLayout,
     Clipboard,
     PrimarySelection,
     Focus,
@@ -391,6 +405,7 @@ where
             QueryTarget::Outputs => IpcCommand::Query(QueryCommand::GetOutputs),
             QueryTarget::Workspaces => IpcCommand::Query(QueryCommand::GetWorkspaces),
             QueryTarget::Windows => IpcCommand::Query(QueryCommand::GetWindows),
+            QueryTarget::KeyboardLayouts => IpcCommand::Query(QueryCommand::GetKeyboardLayouts),
             QueryTarget::Commands => IpcCommand::Query(QueryCommand::GetCommands),
             QueryTarget::Config => IpcCommand::Query(QueryCommand::GetConfig),
             QueryTarget::Clipboard => IpcCommand::Query(QueryCommand::GetClipboard),
@@ -464,6 +479,20 @@ where
                 IpcCommand::Action(ActionCommand::CloseWindow { id })
             }
             ActionAction::Spawn { command } => IpcCommand::Action(ActionCommand::Spawn { command }),
+            ActionAction::SwitchKeyboardLayoutNext => {
+                IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutNext)
+            }
+            ActionAction::SwitchKeyboardLayoutPrev => {
+                IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutPrev)
+            }
+            ActionAction::SwitchKeyboardLayoutName { name } => {
+                IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutByName { name })
+            }
+            ActionAction::SwitchKeyboardLayoutIndex { index } => {
+                IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutByIndex { index })
+            }
+            ActionAction::ReloadConfig => IpcCommand::Action(ActionCommand::ReloadConfig),
+            ActionAction::Quit => IpcCommand::Action(ActionCommand::Quit),
             ActionAction::PowerOffMonitors => IpcCommand::Action(ActionCommand::PowerOffMonitors),
             ActionAction::PowerOnMonitors => IpcCommand::Action(ActionCommand::PowerOnMonitors),
         })),
@@ -494,6 +523,9 @@ where
         RootCommand::GetConfig => {
             Ok(ParsedAction::Request(IpcCommand::Query(QueryCommand::GetConfig)))
         }
+        RootCommand::GetKeyboardLayouts => Ok(ParsedAction::Request(IpcCommand::Query(
+            QueryCommand::GetKeyboardLayouts,
+        ))),
         RootCommand::GetClipboard => {
             Ok(ParsedAction::Request(IpcCommand::Query(QueryCommand::GetClipboard)))
         }
@@ -561,6 +593,7 @@ impl From<SubscriptionTopicArg> for SubscriptionTopic {
             SubscriptionTopicArg::Output => SubscriptionTopic::Output,
             SubscriptionTopicArg::Command => SubscriptionTopic::Command,
             SubscriptionTopicArg::Config => SubscriptionTopic::Config,
+            SubscriptionTopicArg::KeyboardLayout => SubscriptionTopic::KeyboardLayout,
             SubscriptionTopicArg::Clipboard => SubscriptionTopic::Clipboard,
             SubscriptionTopicArg::PrimarySelection => SubscriptionTopic::PrimarySelection,
             SubscriptionTopicArg::Focus => SubscriptionTopic::Focus,
@@ -765,6 +798,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_query_keyboard_layouts_alias() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "query", "keyboard-layouts"]),
+            ParsedAction::Request(IpcCommand::Query(QueryCommand::GetKeyboardLayouts))
+        );
+        assert_eq!(
+            parse_ok(["nekoland-msg", "get_keyboard_layouts"]),
+            ParsedAction::Request(IpcCommand::Query(QueryCommand::GetKeyboardLayouts))
+        );
+    }
+
+    #[test]
     fn parses_query_config_alias() {
         assert_eq!(
             parse_ok(["nekoland-msg", "query", "config"]),
@@ -886,6 +931,46 @@ mod tests {
     }
 
     #[test]
+    fn parses_action_switch_keyboard_layout_variants() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "action", "switch-keyboard-layout-next"]),
+            ParsedAction::Request(IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutNext))
+        );
+        assert_eq!(
+            parse_ok(["nekoland-msg", "action", "switch-keyboard-layout-prev"]),
+            ParsedAction::Request(IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutPrev))
+        );
+        assert_eq!(
+            parse_ok(["nekoland-msg", "action", "switch-keyboard-layout-name", "de"]),
+            ParsedAction::Request(IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutByName {
+                name: "de".to_owned(),
+            }))
+        );
+        assert_eq!(
+            parse_ok(["nekoland-msg", "action", "switch-keyboard-layout-index", "2"]),
+            ParsedAction::Request(IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutByIndex {
+                index: 2,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_action_reload_config() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "action", "reload-config"]),
+            ParsedAction::Request(IpcCommand::Action(ActionCommand::ReloadConfig))
+        );
+    }
+
+    #[test]
+    fn parses_action_quit() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "action", "quit"]),
+            ParsedAction::Request(IpcCommand::Action(ActionCommand::Quit))
+        );
+    }
+
+    #[test]
     fn parses_popup_dismiss() {
         assert_eq!(
             parse_ok(["nekoland-msg", "popup", "dismiss", "9"]),
@@ -900,6 +985,21 @@ mod tests {
             ParsedAction::Subscribe(SubscriptionCommand {
                 subscription: IpcSubscription {
                     topic: SubscriptionTopic::Popup,
+                    include_payloads: true,
+                    events: Vec::new(),
+                },
+                output_mode: SubscriptionOutputMode::Pretty,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_keyboard_layout_subscription() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "subscribe", "keyboard-layout"]),
+            ParsedAction::Subscribe(SubscriptionCommand {
+                subscription: IpcSubscription {
+                    topic: SubscriptionTopic::KeyboardLayout,
                     include_payloads: true,
                     events: Vec::new(),
                 },

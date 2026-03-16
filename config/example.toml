@@ -10,6 +10,17 @@ background_color = "#e5e9f0"
 focus_follows_mouse = false
 repeat_rate = 40
 
+[input.keyboard]
+current = "us"
+
+[[input.keyboard.layouts]]
+name = "us"
+layout = "us"
+
+[[input.keyboard.layouts]]
+name = "de"
+layout = "de"
+
 [ipc]
 command_history_limit = 128
 

@@ -8,5 +8,5 @@ pub mod plugin;
 pub mod schema;
 pub mod theme;
 
-pub use plugin::{ConfigPlugin, LoadedConfigSource};
+pub use plugin::{ConfigPlugin, ConfigReloadRequest, LoadedConfigSource};
 pub use schema::NekolandConfigFile;

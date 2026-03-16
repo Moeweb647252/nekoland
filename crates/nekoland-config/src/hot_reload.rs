@@ -11,11 +11,14 @@ use calloop::generic::Generic;
 use calloop::{Interest, Mode, PostAction};
 use nekoland_core::calloop::CalloopSourceRegistry;
 use nekoland_core::error::NekolandError;
-use nekoland_ecs::resources::CompositorConfig;
+use nekoland_ecs::resources::{CompositorConfig, KeyboardLayoutState};
 use nix::errno::Errno;
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
 
-use crate::{loader, plugin::LoadedConfigSource};
+use crate::{
+    loader,
+    plugin::{ConfigReloadRequest, LoadedConfigSource},
+};
 
 /// Bridges file-system notifications into ECS so config reload stays a normal scheduled system
 /// instead of mutating resources inside the watcher callback.
@@ -101,10 +104,13 @@ pub(crate) fn install_config_watch_source(
 /// error channel.
 pub fn hot_reload_system(
     mut config: ResMut<CompositorConfig>,
+    mut keyboard_layout_state: ResMut<KeyboardLayoutState>,
     mut config_source: ResMut<LoadedConfigSource>,
+    mut reload_request: ResMut<ConfigReloadRequest>,
     reload_source: NonSendMut<ConfigHotReloadSource>,
 ) -> BevyResult {
-    let current_modified = if reload_source.watcher_active() {
+    let force_reload = std::mem::take(&mut reload_request.requested);
+    let current_modified = if reload_source.watcher_active() && !force_reload {
         let Some(current_modified) = reload_source.take_pending_modified() else {
             tracing::trace!(
                 path = %config_source.path.display(),
@@ -119,7 +125,7 @@ pub fn hot_reload_system(
         // Tests and unsupported environments can run without an inotify source, so keep a
         // metadata-based fallback for correctness.
         let current_modified = observed_modified_at(&config_source.path);
-        if current_modified == config_source.last_observed_modified {
+        if !force_reload && current_modified == config_source.last_observed_modified {
             tracing::trace!(
                 path = %config_source.path.display(),
                 loaded_from_disk = config_source.loaded_from_disk,
@@ -137,12 +143,19 @@ pub fn hot_reload_system(
 
     match loader::load_from_path(&config_source.path) {
         Ok(next_config) => {
-            *config = CompositorConfig::try_from(next_config).map_err(|error| {
+            let next_config = CompositorConfig::try_from(next_config).map_err(|error| {
                 NekolandError::Config(format!(
                     "keeping previous compositor config after reload failure for {}: {error}",
                     config_source.path.display()
                 ))
             })?;
+            let previous_layout_name = keyboard_layout_state.active_name().to_owned();
+            keyboard_layout_state.apply_layouts(
+                &next_config.keyboard_layouts,
+                Some(next_config.current_keyboard_layout.as_str()),
+                Some(previous_layout_name.as_str()),
+            );
+            *config = next_config;
             config_source.loaded_from_disk = true;
             config_source.successful_reloads += 1;
             config_source.last_reload_error = None;
@@ -284,7 +297,7 @@ mod tests {
     use nekoland_core::calloop::CalloopSourceRegistry;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::ExtractSchedule;
-    use nekoland_ecs::resources::{CompositorConfig, ConfiguredAction};
+    use nekoland_ecs::resources::{CompositorConfig, ConfiguredAction, KeyboardLayoutState};
 
     use crate::{ConfigPlugin, LoadedConfigSource};
 
@@ -335,6 +348,38 @@ enabled = true
 [keybinds.bindings]
 "Ctrl+Shift" = { viewport_pan_mode = true }
 "Super+P" = { exec = ["wlogout", "--protocol", "layer-shell"] }
+"##;
+
+    const KEYBOARD_LAYOUT_CONFIG: &str = r##"
+[theme]
+name = "latte"
+cursor_theme = "breeze"
+border_color = "#111111"
+background_color = "#f5f5f5"
+
+[input]
+focus_follows_mouse = true
+repeat_rate = 30
+
+[input.keyboard]
+current = "us"
+
+[[input.keyboard.layouts]]
+name = "us"
+layout = "us"
+
+[[input.keyboard.layouts]]
+name = "de"
+layout = "de"
+
+[[outputs]]
+name = "eDP-1"
+mode = "1920x1080@60"
+scale = 1
+enabled = true
+
+[keybinds.bindings]
+"Super+Return" = { exec = ["foot"] }
 "##;
 
     const INVALID_CONFIG: &str = r##"
@@ -515,6 +560,36 @@ cursor_theme = "default"
                 .is_some_and(|message| message.contains("parse error")),
             "invalid config should still record the last reload failure in ECS state"
         );
+    }
+
+    #[test]
+    fn hot_reload_preserves_runtime_keyboard_layout_selection_when_still_available() {
+        let temp_config = TempConfigFile { path: unique_temp_path("keyboard-layout-hot-reload") };
+        write_config(&temp_config.path, KEYBOARD_LAYOUT_CONFIG);
+
+        let mut app = NekolandApp::new("config-keyboard-layout-hot-reload-test");
+        app.add_plugin(ConfigPlugin::new(&temp_config.path));
+
+        {
+            let Some(mut keyboard_layout_state) =
+                app.inner_mut().world_mut().get_resource_mut::<KeyboardLayoutState>()
+            else {
+                panic!("keyboard layout state should be initialized");
+            };
+            assert!(keyboard_layout_state.activate_name("de"));
+        }
+
+        rewrite_config(&temp_config.path, KEYBOARD_LAYOUT_CONFIG);
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+
+        let Some(keyboard_layout_state) =
+            app.inner().world().get_resource::<KeyboardLayoutState>()
+        else {
+            panic!("keyboard layout state should remain available");
+        };
+
+        assert_eq!(keyboard_layout_state.active_name(), "de");
+        assert_eq!(keyboard_layout_state.layouts.len(), 2);
     }
 
     #[test]

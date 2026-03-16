@@ -13,7 +13,9 @@ use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, NonSendMut, Query, Res, ResMut, Resource, With};
 use bevy_ecs::query::Allow;
 use bevy_ecs::system::SystemParam;
+use nekoland_config::ConfigReloadRequest;
 use nekoland_config::LoadedConfigSource;
+use nekoland_core::lifecycle::AppLifecycleState;
 use nekoland_ecs::control::{OutputControlApi, WindowControlApi, WorkspaceControlApi};
 use nekoland_ecs::selectors::{
     OutputName, SurfaceId, WorkspaceLookup, WorkspaceName, WorkspaceSelector,
@@ -22,8 +24,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::query::{
     ClipboardSnapshot, CommandSnapshot, CommandStatusSnapshot, ConfigOutputSnapshot,
-    ConfigSnapshot, OutputSnapshot, PopupSnapshot, PrimarySelectionSnapshot, QueryCommand,
-    SelectionOwnerSnapshot, TreeSnapshot, WindowSnapshot, WorkspaceSnapshot,
+    ConfigSnapshot, KeyboardLayoutEntrySnapshot, KeyboardLayoutsSnapshot, OutputSnapshot,
+    PopupSnapshot, PrimarySelectionSnapshot, QueryCommand, SelectionOwnerSnapshot, TreeSnapshot,
+    WindowSnapshot, WorkspaceSnapshot,
 };
 use crate::commands::{
     ActionCommand, OutputCommand, PopupCommand, WindowCommand, WorkspaceCommand,
@@ -36,11 +39,11 @@ use nekoland_ecs::components::{
     WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgPopup,
 };
 use nekoland_ecs::resources::{
-    ClipboardSelectionState, CommandExecutionStatus, CommandHistoryState, CompositorClock,
-    CompositorConfig, EntityIndex, ExternalCommandRequest, KeyboardFocusState,
-    PendingExternalCommandRequests, PendingOutputControls, PendingPopupServerRequests,
-    PendingWindowControls, PendingWorkspaceControls, PopupServerAction, PopupServerRequest,
-    PrimarySelectionState, RenderList, SelectionOwner,
+    BackendOutputRegistry, ClipboardSelectionState, CommandExecutionStatus, CommandHistoryState,
+    CompositorClock, CompositorConfig, EntityIndex, ExternalCommandRequest, KeyboardFocusState,
+    KeyboardLayoutState, PendingExternalCommandRequests, PendingOutputControls,
+    PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls,
+    PopupServerAction, PopupServerRequest, PrimarySelectionState, RenderList, SelectionOwner,
 };
 use nekoland_ecs::views::{
     OutputRuntime, PopupSnapshotRuntime, WindowSnapshotRuntime, WorkspaceRuntime,
@@ -106,6 +109,9 @@ type IpcSurfaceQuery<'w, 's> = Query<'w, 's, &'static WlSurfaceHandle, Allow<Dis
 
 struct IpcRequestDispatchCtx<'a> {
     query_cache: &'a IpcQueryCache,
+    app_lifecycle: &'a mut AppLifecycleState,
+    config_reload: &'a mut ConfigReloadRequest,
+    keyboard_layout_state: &'a mut KeyboardLayoutState,
     pending_external_commands: &'a mut PendingExternalCommandRequests,
     pending_popup_requests: &'a mut PendingPopupServerRequests,
     pending_window_controls: &'a mut PendingWindowControls,
@@ -117,6 +123,9 @@ struct IpcRequestDispatchCtx<'a> {
 pub(crate) struct IpcPumpParams<'w, 's> {
     server_state: ResMut<'w, IpcServerState>,
     query_cache: Res<'w, IpcQueryCache>,
+    app_lifecycle: ResMut<'w, AppLifecycleState>,
+    config_reload: Option<ResMut<'w, ConfigReloadRequest>>,
+    keyboard_layout_state: ResMut<'w, KeyboardLayoutState>,
     pending_subscription_events: ResMut<'w, PendingSubscriptionEvents>,
     pending_external_commands: ResMut<'w, PendingExternalCommandRequests>,
     pending_popup_requests: ResMut<'w, PendingPopupServerRequests>,
@@ -138,6 +147,8 @@ pub(crate) struct IpcQuerySnapshotInputs<'w, 's> {
     clock: Res<'w, CompositorClock>,
     command_history: Res<'w, CommandHistoryState>,
     config: Res<'w, CompositorConfig>,
+    keyboard_layout_state: Res<'w, KeyboardLayoutState>,
+    backend_outputs: Option<Res<'w, BackendOutputRegistry>>,
     clipboard_selection: Res<'w, ClipboardSelectionState>,
     primary_selection: Res<'w, PrimarySelectionState>,
     config_source: Option<Res<'w, LoadedConfigSource>>,
@@ -149,6 +160,7 @@ pub struct IpcQueryCache {
     pub tree: TreeSnapshot,
     pub outputs: Vec<OutputSnapshot>,
     pub workspaces: Vec<WorkspaceSnapshot>,
+    pub keyboard_layouts: KeyboardLayoutsSnapshot,
     pub commands: Vec<CommandSnapshot>,
     pub config: ConfigSnapshot,
     pub clipboard: ClipboardSnapshot,
@@ -164,6 +176,7 @@ impl IpcQueryCache {
             QueryCommand::GetOutputs => serde_json::to_value(&self.outputs),
             QueryCommand::GetWorkspaces => serde_json::to_value(&self.workspaces),
             QueryCommand::GetWindows => serde_json::to_value(&self.tree.windows),
+            QueryCommand::GetKeyboardLayouts => serde_json::to_value(&self.keyboard_layouts),
             QueryCommand::GetCommands => serde_json::to_value(&self.commands),
             QueryCommand::GetConfig => serde_json::to_value(&self.config),
             QueryCommand::GetClipboard => serde_json::to_value(&self.clipboard),
@@ -316,6 +329,9 @@ impl IpcConnection {
                     Ok(request) => reply_for_request(
                         request,
                         request_ctx.query_cache,
+                        request_ctx.app_lifecycle,
+                        request_ctx.config_reload,
+                        request_ctx.keyboard_layout_state,
                         request_ctx.pending_external_commands,
                         request_ctx.pending_popup_requests,
                         request_ctx.pending_window_controls,
@@ -496,6 +512,9 @@ pub(crate) fn accept_connections_system(
     let IpcPumpParams {
         mut server_state,
         query_cache,
+        mut app_lifecycle,
+        mut config_reload,
+        mut keyboard_layout_state,
         mut pending_subscription_events,
         mut pending_external_commands,
         mut pending_popup_requests,
@@ -506,6 +525,9 @@ pub(crate) fn accept_connections_system(
     } = params;
     let mut request_ctx = IpcRequestDispatchCtx {
         query_cache: &query_cache,
+        app_lifecycle: &mut app_lifecycle,
+        config_reload: config_reload.as_deref_mut().expect("config reload resource should exist"),
+        keyboard_layout_state: &mut keyboard_layout_state,
         pending_external_commands: &mut pending_external_commands,
         pending_popup_requests: &mut pending_popup_requests,
         pending_window_controls: &mut pending_window_controls,
@@ -541,12 +563,26 @@ pub(crate) fn refresh_query_cache_system(
         clock,
         command_history,
         config,
+        keyboard_layout_state,
+        backend_outputs,
         clipboard_selection,
         primary_selection,
         config_source,
         entity_index,
     } = inputs;
 
+    let connected_output_names = backend_outputs
+        .as_deref()
+        .map(|registry| {
+            registry.connected_outputs.iter().cloned().collect::<std::collections::BTreeSet<_>>()
+        })
+        .unwrap_or_else(|| outputs.iter().map(|output| output.device.name.clone()).collect());
+    let enabled_output_names = backend_outputs
+        .as_deref()
+        .map(|registry| {
+            registry.enabled_outputs.iter().cloned().collect::<std::collections::BTreeSet<_>>()
+        })
+        .unwrap_or_else(|| outputs.iter().map(|output| output.device.name.clone()).collect());
     let mut output_snapshots = outputs
         .iter()
         .map(|output| OutputSnapshot {
@@ -554,8 +590,8 @@ pub(crate) fn refresh_query_cache_system(
             kind: output.device.kind.clone(),
             make: output.device.make.clone(),
             model: output.device.model.clone(),
-            connected: true,
-            enabled: true,
+            connected: connected_output_names.contains(&output.device.name),
+            enabled: enabled_output_names.contains(&output.device.name),
             width: output.properties.width,
             height: output.properties.height,
             refresh_millihz: output.properties.refresh_millihz,
@@ -579,8 +615,43 @@ pub(crate) fn refresh_query_cache_system(
                 .map(|current_workspace| current_workspace.workspace.0),
         })
         .collect::<Vec<_>>();
+    for configured_output in config.outputs.iter() {
+        if output_snapshots.iter().any(|output| output.name == configured_output.name) {
+            continue;
+        }
+
+        let (width, height, refresh_millihz) = parse_output_mode_string(&configured_output.mode);
+        output_snapshots.push(OutputSnapshot {
+            name: configured_output.name.clone(),
+            kind: nekoland_ecs::components::OutputKind::Physical,
+            make: String::new(),
+            model: String::new(),
+            connected: connected_output_names.contains(&configured_output.name),
+            enabled: enabled_output_names.contains(&configured_output.name),
+            width,
+            height,
+            refresh_millihz,
+            scale: configured_output.scale,
+            x: 0,
+            y: 0,
+            viewport_origin_x: 0,
+            viewport_origin_y: 0,
+            work_area_x: 0,
+            work_area_y: 0,
+            work_area_width: width,
+            work_area_height: height,
+            mode: configured_output.mode.clone(),
+            current_workspace: None,
+        });
+    }
     output_snapshots.sort_by(|left, right| {
-        (left.y, left.x, left.name.as_str()).cmp(&(right.y, right.x, right.name.as_str()))
+        (!left.connected, !left.enabled, left.y, left.x, left.name.as_str()).cmp(&(
+            !right.connected,
+            !right.enabled,
+            right.y,
+            right.x,
+            right.name.as_str(),
+        ))
     });
 
     let render_indices = render_list
@@ -676,6 +747,16 @@ pub(crate) fn refresh_query_cache_system(
         })
         .collect();
     query_cache.outputs = output_snapshots;
+    query_cache.keyboard_layouts = KeyboardLayoutsSnapshot {
+        seat_name: keyboard_layout_state.seat_name.clone(),
+        active_index: keyboard_layout_state.active_index,
+        active_name: keyboard_layout_state.active_name().to_owned(),
+        layouts: keyboard_layout_state
+            .layouts
+            .iter()
+            .map(keyboard_layout_entry_snapshot)
+            .collect(),
+    };
 
     query_cache.commands = command_history
         .items
@@ -708,6 +789,12 @@ pub(crate) fn refresh_query_cache_system(
         default_layout: config.default_layout.to_string(),
         focus_follows_mouse: config.focus_follows_mouse,
         repeat_rate: config.repeat_rate,
+        configured_keyboard_layout: config.current_keyboard_layout.clone(),
+        keyboard_layouts: config
+            .keyboard_layouts
+            .iter()
+            .map(keyboard_layout_entry_snapshot)
+            .collect(),
         viewport_pan_modifiers: config.viewport_pan_modifiers.config_tokens(),
         command_history_limit: config.command_history_limit,
         startup_actions: config.startup_actions.clone(),
@@ -803,6 +890,19 @@ fn selection_owner_snapshot(owner: SelectionOwner) -> SelectionOwnerSnapshot {
     }
 }
 
+fn keyboard_layout_entry_snapshot(
+    layout: &nekoland_ecs::resources::ConfiguredKeyboardLayout,
+) -> KeyboardLayoutEntrySnapshot {
+    KeyboardLayoutEntrySnapshot {
+        name: layout.name.clone(),
+        rules: layout.rules.clone(),
+        model: layout.model.clone(),
+        layout: layout.layout.clone(),
+        variant: layout.variant.clone(),
+        options: layout.options.clone(),
+    }
+}
+
 fn window_state_label(layout: WindowLayout, mode: WindowMode) -> String {
     WindowDisplayState::from_layout_mode(layout, mode).label().to_owned()
 }
@@ -827,6 +927,29 @@ fn format_output_mode(width: u32, height: u32, refresh_millihz: u32) -> String {
     } else {
         format!("{}x{}@{:.1}", width, height, refresh_millihz as f64 / 1000.0)
     }
+}
+
+fn parse_output_mode_string(mode: &str) -> (u32, u32, u32) {
+    let Some((size, refresh)) = mode.split_once('@') else {
+        return (0, 0, 0);
+    };
+    let Some((width, height)) = size.split_once('x') else {
+        return (0, 0, 0);
+    };
+    let width = width.parse::<u32>().unwrap_or(0);
+    let height = height.parse::<u32>().unwrap_or(0);
+    let refresh_millihz = if let Some((whole, frac)) = refresh.split_once('.') {
+        let whole = whole.parse::<u32>().unwrap_or(0);
+        let mut frac = frac.chars().take(3).collect::<String>();
+        while frac.len() < 3 {
+            frac.push('0');
+        }
+        whole.saturating_mul(1000).saturating_add(frac.parse::<u32>().unwrap_or(0))
+    } else {
+        refresh.parse::<u32>().unwrap_or(0).saturating_mul(1000)
+    };
+
+    (width, height, refresh_millihz)
 }
 
 fn popup_parent_surface_id(
@@ -935,6 +1058,9 @@ fn event_filter_matches(pattern: &str, event_name: &str) -> bool {
 fn reply_for_request(
     request: IpcRequest,
     query_cache: &IpcQueryCache,
+    app_lifecycle: &mut AppLifecycleState,
+    config_reload: &mut ConfigReloadRequest,
+    keyboard_layout_state: &mut KeyboardLayoutState,
     pending_external_commands: &mut PendingExternalCommandRequests,
     pending_popup_requests: &mut PendingPopupServerRequests,
     pending_window_controls: &mut PendingWindowControls,
@@ -990,6 +1116,90 @@ fn reply_for_request(
                     payload: None,
                 })
             }
+        }
+        IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutNext) => {
+            let changed = keyboard_layout_state.activate_next();
+            let active_name = keyboard_layout_state.active_name().to_owned();
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: if changed {
+                    format!("switched keyboard layout to `{active_name}`")
+                } else {
+                    format!("keyboard layout already on `{active_name}`")
+                },
+                payload: None,
+            })
+        }
+        IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutPrev) => {
+            let changed = keyboard_layout_state.activate_prev();
+            let active_name = keyboard_layout_state.active_name().to_owned();
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: if changed {
+                    format!("switched keyboard layout to `{active_name}`")
+                } else {
+                    format!("keyboard layout already on `{active_name}`")
+                },
+                payload: None,
+            })
+        }
+        IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutByName { name }) => {
+            if keyboard_layout_state.activate_name(&name) {
+                RequestDisposition::Reply(IpcReply {
+                    ok: true,
+                    message: format!("switched keyboard layout to `{name}`"),
+                    payload: None,
+                })
+            } else if keyboard_layout_state.layouts.iter().any(|layout| layout.name == name) {
+                RequestDisposition::Reply(IpcReply {
+                    ok: true,
+                    message: format!("keyboard layout already on `{name}`"),
+                    payload: None,
+                })
+            } else {
+                RequestDisposition::Reply(IpcReply {
+                    ok: false,
+                    message: format!("unknown keyboard layout `{name}`"),
+                    payload: None,
+                })
+            }
+        }
+        IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutByIndex { index }) => {
+            if index >= keyboard_layout_state.layouts.len() {
+                RequestDisposition::Reply(IpcReply {
+                    ok: false,
+                    message: format!("keyboard layout index {index} is out of range"),
+                    payload: None,
+                })
+            } else {
+                let changed = keyboard_layout_state.activate_index(index);
+                let active_name = keyboard_layout_state.active_name().to_owned();
+                RequestDisposition::Reply(IpcReply {
+                    ok: true,
+                    message: if changed {
+                        format!("switched keyboard layout to `{active_name}`")
+                    } else {
+                        format!("keyboard layout already on `{active_name}`")
+                    },
+                    payload: None,
+                })
+            }
+        }
+        IpcCommand::Action(ActionCommand::ReloadConfig) => {
+            config_reload.requested = true;
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: "queued config reload request".to_owned(),
+                payload: None,
+            })
+        }
+        IpcCommand::Action(ActionCommand::Quit) => {
+            app_lifecycle.quit_requested = true;
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: "queued compositor quit request".to_owned(),
+                payload: None,
+            })
         }
         IpcCommand::Action(ActionCommand::PowerOffMonitors) => {
             let output_names = query_cache
@@ -1189,6 +1399,8 @@ fn remember_server_error(slot: &mut Option<String>, error: impl std::fmt::Displa
 mod tests {
     use bevy_ecs::hierarchy::ChildOf;
     use bevy_ecs::schedule::Schedule;
+    use nekoland_config::ConfigReloadRequest;
+    use nekoland_core::lifecycle::AppLifecycleState;
     use nekoland_ecs::bundles::WindowBundle;
     use nekoland_ecs::components::{
         BufferState, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode, WlSurfaceHandle,
@@ -1197,16 +1409,16 @@ mod tests {
     use nekoland_ecs::resources::SplitAxis;
     use nekoland_ecs::resources::{
         ClipboardSelectionState, CompositorClock, CompositorConfig, EntityIndex,
-        KeyboardFocusState, PendingExternalCommandRequests, PendingOutputControls,
-        PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls,
-        PrimarySelectionState, RenderList,
+        KeyboardFocusState, KeyboardLayoutState, PendingExternalCommandRequests,
+        PendingOutputControls, PendingPopupServerRequests, PendingWindowControls,
+        PendingWorkspaceControls, PrimarySelectionState, RenderList,
     };
 
     use super::{RequestDisposition, refresh_query_cache_system, reply_for_request};
     use super::{event_filter_matches, subscription_matches};
     use crate::commands::{ActionCommand, WindowCommand};
     use crate::subscribe::{IpcSubscription, IpcSubscriptionEvent, SubscriptionTopic};
-    use crate::{IpcCommand, IpcQueryCache, IpcRequest};
+    use crate::{IpcCommand, IpcQueryCache, IpcReply, IpcRequest};
 
     #[test]
     fn event_filter_matches_exact_names() {
@@ -1251,6 +1463,7 @@ mod tests {
         world.insert_resource(CompositorClock::default());
         world.insert_resource(nekoland_ecs::resources::CommandHistoryState::default());
         world.insert_resource(CompositorConfig::default());
+        world.insert_resource(KeyboardLayoutState::default());
         world.insert_resource(ClipboardSelectionState::default());
         world.insert_resource(PrimarySelectionState::default());
         world.insert_resource(EntityIndex::default());
@@ -1306,18 +1519,28 @@ mod tests {
 
         let cache = world.resource::<IpcQueryCache>();
         assert_eq!(cache.tree.windows.len(), 1, "expected one window snapshot");
+        assert_eq!(cache.keyboard_layouts.active_name, "us");
+        assert_eq!(cache.keyboard_layouts.layouts.len(), 1);
         assert_eq!(
             cache.tree.windows[0].workspace,
             Some(1),
             "window snapshot should derive workspace from ChildOf",
         );
-        assert_eq!(cache.outputs.len(), 1, "expected one output snapshot");
-        assert_eq!(cache.outputs[0].current_workspace, Some(1));
+        let live_output = cache
+            .outputs
+            .iter()
+            .find(|output| output.name == "Virtual-1")
+            .expect("expected live Virtual-1 output snapshot");
+        assert!(live_output.connected);
+        assert_eq!(live_output.current_workspace, Some(1));
     }
 
     #[test]
     fn reply_for_request_stages_window_split_control() {
         let mut pending_popup_requests = PendingPopupServerRequests::default();
+        let mut app_lifecycle = AppLifecycleState::default();
+        let mut config_reload = ConfigReloadRequest::default();
+        let mut keyboard_layout_state = KeyboardLayoutState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
@@ -1332,6 +1555,9 @@ mod tests {
                 }),
             },
             &IpcQueryCache::default(),
+            &mut app_lifecycle,
+            &mut config_reload,
+            &mut keyboard_layout_state,
             &mut pending_external_commands,
             &mut pending_popup_requests,
             &mut pending_window_controls,
@@ -1340,6 +1566,8 @@ mod tests {
         );
 
         assert!(matches!(disposition, RequestDisposition::Reply(_)));
+        assert!(!app_lifecycle.quit_requested);
+        assert!(!config_reload.requested);
         assert!(pending_external_commands.is_empty());
         assert!(pending_popup_requests.is_empty());
         assert!(pending_workspace_controls.is_empty());
@@ -1352,6 +1580,9 @@ mod tests {
     #[test]
     fn reply_for_request_stages_window_background_control() {
         let mut pending_popup_requests = PendingPopupServerRequests::default();
+        let mut app_lifecycle = AppLifecycleState::default();
+        let mut config_reload = ConfigReloadRequest::default();
+        let mut keyboard_layout_state = KeyboardLayoutState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
@@ -1366,6 +1597,9 @@ mod tests {
                 }),
             },
             &IpcQueryCache::default(),
+            &mut app_lifecycle,
+            &mut config_reload,
+            &mut keyboard_layout_state,
             &mut pending_external_commands,
             &mut pending_popup_requests,
             &mut pending_window_controls,
@@ -1374,6 +1608,8 @@ mod tests {
         );
 
         assert!(matches!(disposition, RequestDisposition::Reply(_)));
+        assert!(!app_lifecycle.quit_requested);
+        assert!(!config_reload.requested);
         assert!(pending_external_commands.is_empty());
         assert!(pending_popup_requests.is_empty());
         assert!(pending_workspace_controls.is_empty());
@@ -1389,6 +1625,9 @@ mod tests {
     #[test]
     fn reply_for_request_stages_spawn_action() {
         let mut pending_popup_requests = PendingPopupServerRequests::default();
+        let mut app_lifecycle = AppLifecycleState::default();
+        let mut config_reload = ConfigReloadRequest::default();
+        let mut keyboard_layout_state = KeyboardLayoutState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
@@ -1402,6 +1641,9 @@ mod tests {
                 }),
             },
             &IpcQueryCache::default(),
+            &mut app_lifecycle,
+            &mut config_reload,
+            &mut keyboard_layout_state,
             &mut pending_external_commands,
             &mut pending_popup_requests,
             &mut pending_window_controls,
@@ -1419,5 +1661,133 @@ mod tests {
         assert!(pending_workspace_controls.is_empty());
         assert!(pending_output_controls.is_empty());
         assert!(pending_popup_requests.is_empty());
+        assert!(!app_lifecycle.quit_requested);
+        assert!(!config_reload.requested);
+    }
+
+    #[test]
+    fn reply_for_request_marks_reload_and_quit_actions() {
+        let mut pending_popup_requests = PendingPopupServerRequests::default();
+        let mut app_lifecycle = AppLifecycleState::default();
+        let mut config_reload = ConfigReloadRequest::default();
+        let mut keyboard_layout_state = KeyboardLayoutState::default();
+        let mut pending_external_commands = PendingExternalCommandRequests::default();
+        let mut pending_window_controls = PendingWindowControls::default();
+        let mut pending_workspace_controls = PendingWorkspaceControls::default();
+        let mut pending_output_controls = PendingOutputControls::default();
+
+        let reload = reply_for_request(
+            IpcRequest {
+                correlation_id: 4,
+                command: IpcCommand::Action(ActionCommand::ReloadConfig),
+            },
+            &IpcQueryCache::default(),
+            &mut app_lifecycle,
+            &mut config_reload,
+            &mut keyboard_layout_state,
+            &mut pending_external_commands,
+            &mut pending_popup_requests,
+            &mut pending_window_controls,
+            &mut pending_workspace_controls,
+            &mut pending_output_controls,
+        );
+        assert!(matches!(reload, RequestDisposition::Reply(_)));
+        assert!(config_reload.requested);
+        assert!(!app_lifecycle.quit_requested);
+
+        let quit = reply_for_request(
+            IpcRequest { correlation_id: 5, command: IpcCommand::Action(ActionCommand::Quit) },
+            &IpcQueryCache::default(),
+            &mut app_lifecycle,
+            &mut config_reload,
+            &mut keyboard_layout_state,
+            &mut pending_external_commands,
+            &mut pending_popup_requests,
+            &mut pending_window_controls,
+            &mut pending_workspace_controls,
+            &mut pending_output_controls,
+        );
+        assert!(matches!(quit, RequestDisposition::Reply(_)));
+        assert!(app_lifecycle.quit_requested);
+    }
+
+    #[test]
+    fn reply_for_request_switches_keyboard_layout_state() {
+        let mut pending_popup_requests = PendingPopupServerRequests::default();
+        let mut app_lifecycle = AppLifecycleState::default();
+        let mut config_reload = ConfigReloadRequest::default();
+        let mut keyboard_layout_state = KeyboardLayoutState::from_config(
+            &[
+                nekoland_ecs::resources::ConfiguredKeyboardLayout::default(),
+                nekoland_ecs::resources::ConfiguredKeyboardLayout {
+                    name: "de".to_owned(),
+                    layout: "de".to_owned(),
+                    ..nekoland_ecs::resources::ConfiguredKeyboardLayout::default()
+                },
+            ],
+            "us",
+        );
+        let mut pending_external_commands = PendingExternalCommandRequests::default();
+        let mut pending_window_controls = PendingWindowControls::default();
+        let mut pending_workspace_controls = PendingWorkspaceControls::default();
+        let mut pending_output_controls = PendingOutputControls::default();
+
+        let next = reply_for_request(
+            IpcRequest {
+                correlation_id: 6,
+                command: IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutNext),
+            },
+            &IpcQueryCache::default(),
+            &mut app_lifecycle,
+            &mut config_reload,
+            &mut keyboard_layout_state,
+            &mut pending_external_commands,
+            &mut pending_popup_requests,
+            &mut pending_window_controls,
+            &mut pending_workspace_controls,
+            &mut pending_output_controls,
+        );
+        assert!(matches!(next, RequestDisposition::Reply(IpcReply { ok: true, .. })));
+        assert_eq!(keyboard_layout_state.active_name(), "de");
+
+        let by_name = reply_for_request(
+            IpcRequest {
+                correlation_id: 7,
+                command: IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutByName {
+                    name: "us".to_owned(),
+                }),
+            },
+            &IpcQueryCache::default(),
+            &mut app_lifecycle,
+            &mut config_reload,
+            &mut keyboard_layout_state,
+            &mut pending_external_commands,
+            &mut pending_popup_requests,
+            &mut pending_window_controls,
+            &mut pending_workspace_controls,
+            &mut pending_output_controls,
+        );
+        assert!(matches!(by_name, RequestDisposition::Reply(IpcReply { ok: true, .. })));
+        assert_eq!(keyboard_layout_state.active_name(), "us");
+
+        let invalid = reply_for_request(
+            IpcRequest {
+                correlation_id: 8,
+                command: IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutByIndex {
+                    index: 9,
+                }),
+            },
+            &IpcQueryCache::default(),
+            &mut app_lifecycle,
+            &mut config_reload,
+            &mut keyboard_layout_state,
+            &mut pending_external_commands,
+            &mut pending_popup_requests,
+            &mut pending_window_controls,
+            &mut pending_workspace_controls,
+            &mut pending_output_controls,
+        );
+        assert!(matches!(invalid, RequestDisposition::Reply(IpcReply { ok: false, .. })));
+        assert_eq!(keyboard_layout_state.active_name(), "us");
     }
 }

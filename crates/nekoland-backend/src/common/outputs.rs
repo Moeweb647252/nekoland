@@ -13,9 +13,9 @@ use nekoland_ecs::components::{
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::kinds::{BackendEvent, FrameQueue};
 use nekoland_ecs::resources::{
-    CompositorConfig, ConfiguredOutput, EntityIndex, FocusedOutputState, OutputServerAction,
-    OutputServerRequest, PendingOutputControl, PendingOutputControls, PendingOutputServerRequests,
-    PrimaryOutputState,
+    BackendOutputRegistry, CompositorConfig, ConfiguredOutput, EntityIndex, FocusedOutputState,
+    OutputServerAction, OutputServerRequest, PendingOutputControl, PendingOutputControls,
+    PendingOutputServerRequests, PrimaryOutputState,
 };
 use nekoland_ecs::selectors::OutputSelector;
 use nekoland_ecs::views::OutputRuntime;
@@ -24,13 +24,6 @@ use serde::{Deserialize, Serialize};
 use crate::components::OutputBackend;
 use crate::manager::BackendManager;
 use crate::traits::{BackendId, OutputSnapshot};
-
-/// Tracks the output names that are currently materialized as ECS entities.
-#[derive(Debug, Clone, Default, Resource, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BackendOutputRegistry {
-    /// Output names currently materialized as ECS entities, sorted for stable queries.
-    pub connected_outputs: Vec<String>,
-}
 
 /// Remembers output-local viewport origins across output disable/enable and reconnect cycles.
 #[derive(Debug, Clone, Default, Resource, Serialize, Deserialize, PartialEq, Eq)]
@@ -383,7 +376,9 @@ pub fn synchronize_backend_outputs_system(
         }
     }
 
-    output_registry.connected_outputs = known_outputs.into_iter().collect();
+    let known_outputs = known_outputs.into_iter().collect::<Vec<_>>();
+    output_registry.connected_outputs = known_outputs.clone();
+    output_registry.enabled_outputs = known_outputs;
 }
 
 /// Applies backend-originated property refreshes to already-materialized ECS output entities.
@@ -486,6 +481,10 @@ pub(crate) fn apply_output_server_requests_system(ctx: OutputServerRequestCtx<'_
                     output_registry.connected_outputs.push(output.clone());
                     output_registry.connected_outputs.sort();
                 }
+                if !output_registry.enabled_outputs.iter().any(|name| name == &output) {
+                    output_registry.enabled_outputs.push(output.clone());
+                    output_registry.enabled_outputs.sort();
+                }
                 output_connected.write(OutputConnected { name: output });
             }
             OutputServerAction::Disable { output } => {
@@ -496,7 +495,7 @@ pub(crate) fn apply_output_server_requests_system(ctx: OutputServerRequestCtx<'_
                 };
 
                 commands.entity(entity).despawn();
-                output_registry.connected_outputs.retain(|name| name != &output);
+                output_registry.enabled_outputs.retain(|name| name != &output);
                 output_disconnected.write(OutputDisconnected { name: output });
             }
             OutputServerAction::Configure { output, mode, scale } => {

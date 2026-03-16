@@ -398,7 +398,10 @@ fn run_ipc_control_sequence(socket_path: &Path) -> Result<IpcControlSummary, com
         IpcCommand::Window(WindowCommand::Focus { surface_id: TARGET_SURFACE_ID }),
     )?;
 
-    let outputs = wait_for_outputs(socket_path, |outputs| !outputs.is_empty())?;
+    let outputs =
+        wait_for_outputs(socket_path, |outputs| !outputs.is_empty()).map_err(|error| {
+            annotate_test_control(error, "while waiting for the first output snapshot")
+        })?;
     let output_name = outputs[0].name.clone();
 
     send_command(
@@ -423,14 +426,16 @@ fn run_ipc_control_sequence(socket_path: &Path) -> Result<IpcControlSummary, com
                 && output.viewport_origin_x == 320
                 && output.viewport_origin_y == 480
         })
-    })?;
+    })
+    .map_err(|error| annotate_test_control(error, "after viewport move/pan"))?;
     send_command(
         socket_path,
         IpcCommand::Output(OutputCommand::Disable { output: output_name.clone() }),
     )?;
     let _ = wait_for_outputs(socket_path, |outputs| {
-        outputs.iter().all(|output| output.name != output_name)
-    })?;
+        outputs.iter().any(|output| output.name == output_name && !output.enabled)
+    })
+    .map_err(|error| annotate_test_control(error, "after output disable"))?;
     send_command(
         socket_path,
         IpcCommand::Output(OutputCommand::Enable { output: output_name.clone() }),
@@ -441,7 +446,8 @@ fn run_ipc_control_sequence(socket_path: &Path) -> Result<IpcControlSummary, com
                 && output.viewport_origin_x == 320
                 && output.viewport_origin_y == 480
         })
-    })?;
+    })
+    .map_err(|error| annotate_test_control(error, "after output enable"))?;
     send_command(
         socket_path,
         IpcCommand::Output(OutputCommand::Configure {
@@ -458,7 +464,8 @@ fn run_ipc_control_sequence(socket_path: &Path) -> Result<IpcControlSummary, com
                 && output.refresh_millihz == 75_000
                 && output.scale == 2
         })
-    })?;
+    })
+    .map_err(|error| annotate_test_control(error, "after output reconfigure"))?;
 
     Ok(IpcControlSummary { output_name })
 }
@@ -623,4 +630,15 @@ fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
 /// Classify environment restrictions that should skip, rather than fail, the test.
 fn ipc_error_is_skippable(error: &std::io::Error) -> bool {
     error.kind() == ErrorKind::PermissionDenied || error.raw_os_error() == Some(1)
+}
+
+fn annotate_test_control(control: common::TestControl, context: &str) -> common::TestControl {
+    match control {
+        common::TestControl::Skip(reason) => {
+            common::TestControl::Skip(format!("{context}: {reason}"))
+        }
+        common::TestControl::Fail(reason) => {
+            common::TestControl::Fail(format!("{context}: {reason}"))
+        }
+    }
 }

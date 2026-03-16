@@ -13,6 +13,18 @@ background_color = "#f5f7ff"
 focus_follows_mouse = true
 repeat_rate = 30
 
+# Optional runtime keyboard-layout list. If omitted, nekoland defaults to a single `us` layout.
+# [input.keyboard]
+# current = "us"
+#
+# [[input.keyboard.layouts]]
+# name = "us"
+# layout = "us"
+#
+# [[input.keyboard.layouts]]
+# name = "de"
+# layout = "de"
+
 [ipc]
 command_history_limit = 64
 

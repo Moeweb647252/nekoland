@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use nekoland_ecs::resources::{
-    CompositorConfig, ConfiguredAction, ConfiguredOutput, ConfiguredWindowRule,
-    DEFAULT_COMMAND_HISTORY_LIMIT, DefaultLayout, ModifierMask, XWaylandConfig,
+    CompositorConfig, ConfiguredAction, ConfiguredKeyboardLayout, ConfiguredOutput,
+    ConfiguredWindowRule, DEFAULT_COMMAND_HISTORY_LIMIT, DefaultLayout, ModifierMask,
+    XWaylandConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -105,11 +106,57 @@ impl Default for XWaylandSection {
 pub struct InputConfig {
     pub focus_follows_mouse: bool,
     pub repeat_rate: u16,
+    #[serde(default)]
+    pub keyboard: KeyboardConfig,
 }
 
 impl Default for InputConfig {
     fn default() -> Self {
-        Self { focus_follows_mouse: true, repeat_rate: 30 }
+        Self { focus_follows_mouse: true, repeat_rate: 30, keyboard: KeyboardConfig::default() }
+    }
+}
+
+/// Keyboard-layout configuration loaded from disk before normalization.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KeyboardConfig {
+    #[serde(default)]
+    pub current: Option<String>,
+    #[serde(default = "default_keyboard_layouts")]
+    pub layouts: Vec<KeyboardLayoutConfig>,
+}
+
+impl Default for KeyboardConfig {
+    fn default() -> Self {
+        Self { current: None, layouts: default_keyboard_layouts() }
+    }
+}
+
+/// One keyboard layout stanza inside `[input.keyboard]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KeyboardLayoutConfig {
+    #[serde(default)]
+    pub name: Option<String>,
+    pub layout: String,
+    #[serde(default)]
+    pub rules: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub variant: String,
+    #[serde(default)]
+    pub options: String,
+}
+
+impl Default for KeyboardLayoutConfig {
+    fn default() -> Self {
+        Self {
+            name: Some("us".to_owned()),
+            layout: "us".to_owned(),
+            rules: String::new(),
+            model: String::new(),
+            variant: String::new(),
+            options: String::new(),
+        }
     }
 }
 
@@ -136,6 +183,8 @@ impl TryFrom<NekolandConfigFile> for CompositorConfig {
         let mut viewport_pan_modifiers = CompositorConfig::default().viewport_pan_modifiers;
         let mut viewport_pan_mode_binding = None::<String>;
         let mut keybindings = BTreeMap::new();
+        let (keyboard_layouts, current_keyboard_layout) =
+            normalize_keyboard_layouts(value.input.keyboard)?;
 
         for (binding, actions) in value.keybinds.bindings {
             match actions.into_keybind_entry()? {
@@ -162,6 +211,8 @@ impl TryFrom<NekolandConfigFile> for CompositorConfig {
             window_rules: value.window_rules,
             focus_follows_mouse: value.input.focus_follows_mouse,
             repeat_rate: value.input.repeat_rate,
+            current_keyboard_layout,
+            keyboard_layouts,
             viewport_pan_modifiers,
             command_history_limit: value.ipc.command_history_limit,
             startup_actions: value
@@ -186,8 +237,59 @@ impl TryFrom<NekolandConfigFile> for CompositorConfig {
     }
 }
 
+fn normalize_keyboard_layouts(
+    keyboard: KeyboardConfig,
+) -> Result<(Vec<ConfiguredKeyboardLayout>, String), String> {
+    let KeyboardConfig { current, layouts } = keyboard;
+    let layouts = if layouts.is_empty() {
+        vec![ConfiguredKeyboardLayout::default()]
+    } else {
+        layouts
+            .into_iter()
+            .map(|layout| {
+                let name = layout.name.unwrap_or_else(|| layout.layout.clone());
+                let name = name.trim().to_owned();
+                if name.is_empty() {
+                    return Err("keyboard layout name must not be empty".to_owned());
+                }
+                if layout.layout.trim().is_empty() {
+                    return Err(format!("keyboard layout `{name}` must set a non-empty layout"));
+                }
+
+                Ok(ConfiguredKeyboardLayout {
+                    name,
+                    rules: layout.rules,
+                    model: layout.model,
+                    layout: layout.layout,
+                    variant: layout.variant,
+                    options: layout.options,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    let mut seen = std::collections::BTreeSet::new();
+    for layout in &layouts {
+        if !seen.insert(layout.name.clone()) {
+            return Err(format!("keyboard layout names must be unique, duplicate `{}`", layout.name));
+        }
+    }
+
+    let current = current
+        .unwrap_or_else(|| layouts.first().map(|layout| layout.name.clone()).unwrap_or("us".to_owned()));
+    if layouts.iter().all(|layout| layout.name != current) {
+        return Err(format!("keyboard current layout `{current}` was not found in input.keyboard.layouts"));
+    }
+
+    Ok((layouts, current))
+}
+
 fn default_layout_name() -> DefaultLayout {
     DefaultLayout::Floating
+}
+
+fn default_keyboard_layouts() -> Vec<KeyboardLayoutConfig> {
+    vec![KeyboardLayoutConfig::default()]
 }
 
 fn parse_viewport_pan_mode_binding(binding: &str) -> Result<ModifierMask, String> {
@@ -338,5 +440,54 @@ enabled = true
             nekoland_ecs::resources::CompositorConfig::try_from(config),
             Err("invalid viewport pan mode binding `Super+H`: unsupported modifier `H`".to_owned())
         );
+    }
+
+    #[test]
+    fn keyboard_layouts_normalize_and_validate_current_layout() {
+        let Ok(config) = toml::from_str::<NekolandConfigFile>(
+            r##"
+[theme]
+name = "latte"
+cursor_theme = "breeze"
+border_color = "#112233"
+background_color = "#ffffff"
+
+[input]
+focus_follows_mouse = true
+repeat_rate = 30
+
+[input.keyboard]
+current = "de"
+
+[[input.keyboard.layouts]]
+layout = "us"
+
+[[input.keyboard.layouts]]
+name = "de"
+layout = "de"
+variant = "nodeadkeys"
+
+[[outputs]]
+name = "eDP-1"
+mode = "1920x1080@60"
+scale = 1
+enabled = true
+
+[keybinds.bindings]
+"Super+Return" = { exec = ["foot"] }
+"##,
+        ) else {
+            panic!("config should parse");
+        };
+
+        let Ok(runtime) = nekoland_ecs::resources::CompositorConfig::try_from(config) else {
+            panic!("config should normalize");
+        };
+
+        assert_eq!(runtime.current_keyboard_layout, "de");
+        assert_eq!(runtime.keyboard_layouts.len(), 2);
+        assert_eq!(runtime.keyboard_layouts[0].name, "us");
+        assert_eq!(runtime.keyboard_layouts[1].name, "de");
+        assert_eq!(runtime.keyboard_layouts[1].variant, "nodeadkeys");
     }
 }

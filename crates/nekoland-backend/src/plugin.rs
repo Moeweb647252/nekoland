@@ -16,11 +16,11 @@ use nekoland_ecs::components::{
 };
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::resources::{
-    CompositorClock, CompositorConfig, CursorRenderState, FocusedOutputState,
-    GlobalPointerPosition, OutputDamageRegions, OutputPresentationState, PendingBackendInputEvents,
-    PendingOutputControls, PendingOutputPresentationEvents, PendingOutputServerRequests,
-    PendingProtocolInputEvents, PrimaryOutputState, RenderList, SurfacePresentationRole,
-    SurfacePresentationSnapshot, VirtualOutputCaptureState,
+    BackendOutputRegistry, CompositorClock, CompositorConfig, CursorRenderState,
+    FocusedOutputState, GlobalPointerPosition, OutputDamageRegions, OutputPresentationState,
+    PendingBackendInputEvents, PendingOutputControls, PendingOutputPresentationEvents,
+    PendingOutputServerRequests, PendingProtocolInputEvents, PrimaryOutputState, RenderList,
+    SurfacePresentationRole, SurfacePresentationSnapshot, VirtualOutputCaptureState,
 };
 use nekoland_ecs::views::OutputRuntime;
 use nekoland_protocol::{
@@ -28,10 +28,10 @@ use nekoland_protocol::{
 };
 
 use crate::common::outputs::{
-    BackendOutputRegistry, PendingBackendOutputEvents, PendingBackendOutputUpdates,
-    RememberedOutputViewportState, apply_backend_output_updates_system,
-    apply_output_control_requests_system, apply_output_server_requests_system,
-    collect_output_snapshots, remember_output_viewports_system, sync_configured_outputs_system,
+    PendingBackendOutputEvents, PendingBackendOutputUpdates, RememberedOutputViewportState,
+    apply_backend_output_updates_system, apply_output_control_requests_system,
+    apply_output_server_requests_system, collect_output_snapshots,
+    remember_output_viewports_system, sync_configured_outputs_system,
     sync_output_layout_state_system, sync_primary_output_state_system,
     synchronize_backend_outputs_system,
 };

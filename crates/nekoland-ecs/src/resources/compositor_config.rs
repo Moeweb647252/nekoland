@@ -25,6 +25,30 @@ impl Default for ConfiguredOutput {
     }
 }
 
+/// Keyboard layout configuration after normalization from the on-disk config schema.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfiguredKeyboardLayout {
+    pub name: String,
+    pub rules: String,
+    pub model: String,
+    pub layout: String,
+    pub variant: String,
+    pub options: String,
+}
+
+impl Default for ConfiguredKeyboardLayout {
+    fn default() -> Self {
+        Self {
+            name: "us".to_owned(),
+            rules: String::new(),
+            model: String::new(),
+            layout: "us".to_owned(),
+            variant: String::new(),
+            options: String::new(),
+        }
+    }
+}
+
 /// Configured action after normalization from the config schema.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -204,6 +228,8 @@ pub struct CompositorConfig {
     pub window_rules: Vec<ConfiguredWindowRule>,
     pub focus_follows_mouse: bool,
     pub repeat_rate: u16,
+    pub current_keyboard_layout: String,
+    pub keyboard_layouts: Vec<ConfiguredKeyboardLayout>,
     pub viewport_pan_modifiers: ModifierMask,
     pub command_history_limit: usize,
     pub startup_actions: Vec<ConfiguredAction>,
@@ -234,6 +260,8 @@ impl Default for CompositorConfig {
             window_rules: Vec::new(),
             focus_follows_mouse: true,
             repeat_rate: 30,
+            current_keyboard_layout: "us".to_owned(),
+            keyboard_layouts: vec![ConfiguredKeyboardLayout::default()],
             viewport_pan_modifiers: ModifierMask::new(false, true, false, true),
             command_history_limit: DEFAULT_COMMAND_HISTORY_LIMIT,
             startup_actions: Vec::new(),

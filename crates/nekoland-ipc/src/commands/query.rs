@@ -11,6 +11,7 @@ pub enum QueryCommand {
     GetOutputs,
     GetWorkspaces,
     GetWindows,
+    GetKeyboardLayouts,
     GetCommands,
     GetConfig,
     GetClipboard,
@@ -53,6 +54,26 @@ pub struct WorkspaceSnapshot {
     pub occupied: bool,
     pub urgent: bool,
     pub output: Option<String>,
+}
+
+/// One keyboard layout entry exported through IPC.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KeyboardLayoutEntrySnapshot {
+    pub name: String,
+    pub rules: String,
+    pub model: String,
+    pub layout: String,
+    pub variant: String,
+    pub options: String,
+}
+
+/// Runtime keyboard-layout state for the compositor seat.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KeyboardLayoutsSnapshot {
+    pub seat_name: String,
+    pub active_index: usize,
+    pub active_name: String,
+    pub layouts: Vec<KeyboardLayoutEntrySnapshot>,
 }
 
 /// Window tree entry returned by `get_tree`.
@@ -148,6 +169,8 @@ pub struct ConfigSnapshot {
     pub default_layout: String,
     pub focus_follows_mouse: bool,
     pub repeat_rate: u16,
+    pub configured_keyboard_layout: String,
+    pub keyboard_layouts: Vec<KeyboardLayoutEntrySnapshot>,
     pub viewport_pan_modifiers: Vec<String>,
     pub command_history_limit: usize,
     pub startup_actions: Vec<ConfiguredAction>,

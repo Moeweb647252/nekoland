@@ -3,8 +3,8 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, RenderSchedule};
 use nekoland_ecs::resources::{
-    PendingExternalCommandRequests, PendingOutputControls, PendingPopupServerRequests,
-    PendingWindowControls, PendingWorkspaceControls,
+    KeyboardLayoutState, PendingExternalCommandRequests, PendingOutputControls,
+    PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls,
 };
 
 use crate::{server, subscribe};
@@ -21,6 +21,7 @@ impl NekolandPlugin for IpcPlugin {
         app.insert_resource(server_state)
             .insert_resource(server::IpcQueryCache::default())
             .insert_non_send_resource(runtime)
+            .init_resource::<KeyboardLayoutState>()
             .init_resource::<subscribe::PendingSubscriptionEvents>()
             .init_resource::<PendingExternalCommandRequests>()
             .init_resource::<PendingPopupServerRequests>()

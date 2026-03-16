@@ -13,15 +13,16 @@ use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::{Local, Res, ResMut};
 use bevy_ecs::system::SystemParam;
 use nekoland_ecs::events::{
-    ExternalCommandFailed, ExternalCommandLaunched, WindowClosed, WindowCreated, WindowMoved,
+    ExternalCommandFailed, ExternalCommandLaunched, OutputConnected, OutputDisconnected,
+    WindowClosed, WindowCreated, WindowMoved,
 };
 use nekoland_ecs::kinds::SubscriptionEventQueue;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::commands::{
-    ClipboardSnapshot, ConfigSnapshot, PopupSnapshot, PrimarySelectionSnapshot, TreeSnapshot,
-    WindowSnapshot, WorkspaceSnapshot,
+    ClipboardSnapshot, ConfigSnapshot, KeyboardLayoutsSnapshot, PopupSnapshot,
+    PrimarySelectionSnapshot, TreeSnapshot, WindowSnapshot, WorkspaceSnapshot,
 };
 use crate::server::{IpcQueryCache, default_socket_path};
 use crate::{IpcCommand, IpcReply, IpcRequest};
@@ -35,6 +36,7 @@ pub const SUPPORTED_SUBSCRIPTION_TOPIC_NAMES: &[&str] = &[
     "output",
     "command",
     "config",
+    "keyboard-layout",
     "clipboard",
     "primary-selection",
     "focus",
@@ -54,12 +56,16 @@ pub const KNOWN_SUBSCRIPTION_EVENT_NAMES: &[&str] = &[
     "popup_dismissed",
     "popup_geometry_changed",
     "popup_grab_changed",
+    "output_connected",
+    "output_disconnected",
     "outputs_changed",
     "workspaces_changed",
     "workspace_activated",
     "command_launched",
     "command_failed",
     "config_changed",
+    "keyboard_layouts_changed",
+    "keyboard_layout_switched",
     "clipboard_changed",
     "primary_selection_changed",
     "focus_changed",
@@ -75,6 +81,7 @@ pub enum SubscriptionTopic {
     Output,
     Command,
     Config,
+    KeyboardLayout,
     Clipboard,
     PrimarySelection,
     Focus,
@@ -189,6 +196,7 @@ pub(crate) struct SubscriptionSnapshotState {
     last_tree: Option<TreeSnapshot>,
     last_popups: BTreeMap<u64, PopupSnapshot>,
     last_config: Option<ConfigSnapshot>,
+    last_keyboard_layouts: Option<KeyboardLayoutsSnapshot>,
     last_clipboard: Option<ClipboardSnapshot>,
     last_primary_selection: Option<PrimarySelectionSnapshot>,
 }
@@ -198,6 +206,8 @@ pub(crate) struct SubscriptionDispatchMessages<'w, 's> {
     window_created: MessageReader<'w, 's, WindowCreated>,
     window_closed: MessageReader<'w, 's, WindowClosed>,
     window_moved: MessageReader<'w, 's, WindowMoved>,
+    output_connected: MessageReader<'w, 's, OutputConnected>,
+    output_disconnected: MessageReader<'w, 's, OutputDisconnected>,
     command_launched: MessageReader<'w, 's, ExternalCommandLaunched>,
     command_failed: MessageReader<'w, 's, ExternalCommandFailed>,
     pending_events: ResMut<'w, PendingSubscriptionEvents>,
@@ -272,6 +282,8 @@ pub(crate) fn subscription_dispatch_system(
         mut window_created,
         mut window_closed,
         mut window_moved,
+        mut output_connected,
+        mut output_disconnected,
         mut command_launched,
         mut command_failed,
         mut pending_events,
@@ -297,6 +309,22 @@ pub(crate) fn subscription_dispatch_system(
         pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Window,
             event: "window_moved".to_owned(),
+            payload: serde_json::to_value(event).ok(),
+        });
+    }
+
+    for event in output_connected.read() {
+        pending_events.push(IpcSubscriptionEvent {
+            topic: SubscriptionTopic::Output,
+            event: "output_connected".to_owned(),
+            payload: serde_json::to_value(event).ok(),
+        });
+    }
+
+    for event in output_disconnected.read() {
+        pending_events.push(IpcSubscriptionEvent {
+            topic: SubscriptionTopic::Output,
+            event: "output_disconnected".to_owned(),
             payload: serde_json::to_value(event).ok(),
         });
     }
@@ -339,6 +367,7 @@ pub(crate) fn subscription_dispatch_system(
         snapshots.last_tree = Some(query_cache.tree.clone());
         snapshots.last_popups = current_popups;
         snapshots.last_config = Some(query_cache.config.clone());
+        snapshots.last_keyboard_layouts = Some(query_cache.keyboard_layouts.clone());
         snapshots.last_clipboard = Some(query_cache.clipboard.clone());
         snapshots.last_primary_selection = Some(query_cache.primary_selection.clone());
         return;
@@ -414,6 +443,7 @@ pub(crate) fn subscription_dispatch_system(
         snapshots.last_tree = Some(query_cache.tree.clone());
         snapshots.last_popups = current_popups;
         snapshots.last_config = Some(query_cache.config.clone());
+        snapshots.last_keyboard_layouts = Some(query_cache.keyboard_layouts.clone());
         snapshots.last_clipboard = Some(query_cache.clipboard.clone());
         snapshots.last_primary_selection = Some(query_cache.primary_selection.clone());
         return;
@@ -549,6 +579,32 @@ pub(crate) fn subscription_dispatch_system(
         });
     }
 
+    if snapshots.last_keyboard_layouts.as_ref() != Some(&query_cache.keyboard_layouts) {
+        pending_events.push(IpcSubscriptionEvent {
+            topic: SubscriptionTopic::KeyboardLayout,
+            event: "keyboard_layouts_changed".to_owned(),
+            payload: serde_json::to_value(&query_cache.keyboard_layouts).ok(),
+        });
+    }
+
+    let previous_active_keyboard_layout = snapshots
+        .last_keyboard_layouts
+        .as_ref()
+        .map(|keyboard_layouts| {
+            (keyboard_layouts.active_index, keyboard_layouts.active_name.as_str())
+        });
+    let active_keyboard_layout = (
+        query_cache.keyboard_layouts.active_index,
+        query_cache.keyboard_layouts.active_name.as_str(),
+    );
+    if previous_active_keyboard_layout != Some(active_keyboard_layout) {
+        pending_events.push(IpcSubscriptionEvent {
+            topic: SubscriptionTopic::KeyboardLayout,
+            event: "keyboard_layout_switched".to_owned(),
+            payload: serde_json::to_value(&query_cache.keyboard_layouts).ok(),
+        });
+    }
+
     if snapshots.last_clipboard.as_ref() != Some(&query_cache.clipboard) {
         pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Clipboard,
@@ -597,6 +653,7 @@ pub(crate) fn subscription_dispatch_system(
     snapshots.last_tree = Some(query_cache.tree.clone());
     snapshots.last_popups = current_popups;
     snapshots.last_config = Some(query_cache.config.clone());
+    snapshots.last_keyboard_layouts = Some(query_cache.keyboard_layouts.clone());
     snapshots.last_clipboard = Some(query_cache.clipboard.clone());
     snapshots.last_primary_selection = Some(query_cache.primary_selection.clone());
 }
