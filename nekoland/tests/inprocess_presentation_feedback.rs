@@ -10,10 +10,10 @@ use nekoland::build_app;
 use nekoland_backend::BackendStatus;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ipc::commands::{OutputCommand, OutputSnapshot, QueryCommand, WorkspaceCommand};
-use nekoland_ipc::{send_request_to_path, IpcCommand, IpcReply, IpcRequest, IpcServerState};
+use nekoland_ipc::{IpcCommand, IpcReply, IpcRequest, IpcServerState, send_request_to_path};
 use nekoland_protocol::ProtocolServerState;
 use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
-use wayland_client::{delegate_noop, Connection, Dispatch, QueueHandle};
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 

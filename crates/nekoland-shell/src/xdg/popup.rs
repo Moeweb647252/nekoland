@@ -15,6 +15,36 @@ use nekoland_ecs::resources::{
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PopupManager;
 
+type PopupParentGeometries<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static WlSurfaceHandle, &'static SurfaceGeometry),
+    (With<XdgWindow>, Without<XdgPopup>, Allow<Disabled>),
+>;
+type PopupManagementQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static WlSurfaceHandle,
+        &'static mut SurfaceGeometry,
+        &'static mut BufferState,
+        &'static mut SurfaceContentVersion,
+        &'static mut XdgPopup,
+        &'static mut PopupGrab,
+        &'static ChildOf,
+    ),
+    (Without<XdgWindow>, Allow<Disabled>),
+>;
+type PopupProjectionParents<'w, 's> =
+    Query<'w, 's, &'static SurfaceGeometry, (With<XdgWindow>, Without<XdgPopup>, Allow<Disabled>)>;
+type PopupProjectionQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut SurfaceGeometry, &'static XdgPopup, &'static ChildOf),
+    (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>),
+>;
+
 /// Owns popup lifecycle requests after they have been bridged out of protocol callbacks.
 ///
 /// Popup creation is deferred until the parent toplevel can be resolved so the popup enters the
@@ -23,23 +53,8 @@ pub fn popup_management_system(
     mut commands: Commands,
     mut pending_xdg_requests: ResMut<PendingXdgRequests>,
     entity_index: bevy_ecs::prelude::Res<EntityIndex>,
-    parent_geometries: Query<
-        (Entity, &WlSurfaceHandle, &SurfaceGeometry),
-        (With<XdgWindow>, Without<XdgPopup>, Allow<Disabled>),
-    >,
-    mut popups: Query<
-        (
-            Entity,
-            &WlSurfaceHandle,
-            &mut SurfaceGeometry,
-            &mut BufferState,
-            &mut SurfaceContentVersion,
-            &mut XdgPopup,
-            &mut PopupGrab,
-            &ChildOf,
-        ),
-        (Without<XdgWindow>, Allow<Disabled>),
-    >,
+    parent_geometries: PopupParentGeometries<'_, '_>,
+    mut popups: PopupManagementQuery<'_, '_>,
 ) {
     let mut known_popups =
         popups.iter_mut().map(|(_, surface, _, _, _, _, _, _)| surface.id).collect::<BTreeSet<_>>();
@@ -184,14 +199,8 @@ pub fn popup_management_system(
 }
 
 pub fn popup_projection_system(
-    parent_geometries: Query<
-        &SurfaceGeometry,
-        (With<XdgWindow>, Without<XdgPopup>, Allow<Disabled>),
-    >,
-    mut popups: Query<
-        (&mut SurfaceGeometry, &XdgPopup, &ChildOf),
-        (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>),
-    >,
+    parent_geometries: PopupProjectionParents<'_, '_>,
+    mut popups: PopupProjectionQuery<'_, '_>,
 ) {
     for (mut geometry, popup, child_of) in &mut popups {
         let Ok(parent_geometry) = parent_geometries.get(child_of.parent()) else {
@@ -212,10 +221,7 @@ pub fn popup_projection_system(
 fn popup_geometry_for(
     parent_entity: Entity,
     placement: PopupPlacement,
-    parent_geometries: &Query<
-        (Entity, &WlSurfaceHandle, &SurfaceGeometry),
-        (With<XdgWindow>, Without<XdgPopup>, Allow<Disabled>),
-    >,
+    parent_geometries: &PopupParentGeometries<'_, '_>,
 ) -> Option<SurfaceGeometry> {
     let (_, _, parent_geometry) = parent_geometries.get(parent_entity).ok()?;
 
@@ -232,10 +238,7 @@ fn popup_geometry_for(
 fn popup_parent_entity(
     parent_surface_id: u64,
     entity_index: &EntityIndex,
-    parent_geometries: &Query<
-        (Entity, &WlSurfaceHandle, &SurfaceGeometry),
-        (With<XdgWindow>, Without<XdgPopup>, Allow<Disabled>),
-    >,
+    parent_geometries: &PopupParentGeometries<'_, '_>,
 ) -> Option<Entity> {
     entity_index
         .entity_for_surface(parent_surface_id)

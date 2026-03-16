@@ -149,11 +149,7 @@ fn run_primary_selection_scenario() -> Option<(PrimarySelectionClientSummary, Pr
         panic!("nekoland app should complete the configured frame budget: {error}");
     }
 
-    let selection_state = app
-        .inner()
-        .world()
-        .get_resource::<PrimarySelectionState>()
-        .cloned();
+    let selection_state = app.inner().world().get_resource::<PrimarySelectionState>().cloned();
     let Some(selection_state) = selection_state else {
         panic!("primary selection resource should be initialized");
     };
@@ -351,10 +347,11 @@ impl Dispatch<wl_seat::WlSeat, ()> for PrimarySelectionClientState {
         _conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event {
-            if capabilities.contains(wl_seat::Capability::Keyboard) && state.keyboard.is_none() {
-                state.keyboard = Some(seat.get_keyboard(qh, ()));
-            }
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event
+            && capabilities.contains(wl_seat::Capability::Keyboard)
+            && state.keyboard.is_none()
+        {
+            state.keyboard = Some(seat.get_keyboard(qh, ()));
         }
     }
 }

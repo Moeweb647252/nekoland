@@ -75,16 +75,11 @@ impl Default for WinitWindowState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum WinitPresentDriver {
+    #[default]
     TimerFallback,
     HostEventLoop,
-}
-
-impl Default for WinitPresentDriver {
-    fn default() -> Self {
-        Self::TimerFallback
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -273,15 +268,14 @@ impl Backend for WinitRuntime {
         let owned_outputs = self.owned_outputs(cx.outputs).cloned().collect::<Vec<_>>();
         if owned_outputs.is_empty()
             && self.seeded_output_name.as_deref() != Some(desired_output_name.as_str())
+            && let Some(blueprint) = self.seed_output(&desired_output_name)
         {
-            if let Some(blueprint) = self.seed_output(&desired_output_name) {
-                cx.output_events.push(BackendOutputEventRecord {
-                    backend_id: self.id(),
-                    output_name: desired_output_name.clone(),
-                    change: BackendOutputChange::Connected(blueprint),
-                });
-                self.seeded_output_name = Some(desired_output_name);
-            }
+            cx.output_events.push(BackendOutputEventRecord {
+                backend_id: self.id(),
+                output_name: desired_output_name.clone(),
+                change: BackendOutputChange::Connected(blueprint),
+            });
+            self.seeded_output_name = Some(desired_output_name);
         }
 
         let mut shared = self.shared.borrow_mut();
@@ -914,13 +908,15 @@ mod tests {
     #[test]
     fn desired_window_spec_uses_configured_output_and_app_name() {
         let metadata = AppMetadata { name: "nekoland".to_owned() };
-        let mut config = CompositorConfig::default();
-        config.outputs = vec![ConfiguredOutput {
-            name: "HDMI-A-1".to_owned(),
-            mode: "1600x900@75".to_owned(),
-            scale: 2,
-            enabled: true,
-        }];
+        let config = CompositorConfig {
+            outputs: vec![ConfiguredOutput {
+                name: "HDMI-A-1".to_owned(),
+                mode: "1600x900@75".to_owned(),
+                scale: 2,
+                enabled: true,
+            }],
+            ..CompositorConfig::default()
+        };
 
         let spec = desired_window_spec(Some(&metadata), Some(&config), &[]);
 

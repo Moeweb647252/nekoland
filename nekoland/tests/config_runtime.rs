@@ -249,7 +249,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
         .iter(world)
         .find(|(surface, _, _, _)| surface.id == 303)
         .map(|(_, layout, mode, border)| {
-            (WindowDisplayState::from_layout_mode(layout.clone(), mode.clone()), border.clone())
+            (WindowDisplayState::from_layout_mode(*layout, *mode), border.clone())
         })
         .unwrap_or_else(|| panic!("committed toplevel should spawn a new shell window"));
 

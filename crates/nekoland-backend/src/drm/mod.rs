@@ -88,16 +88,16 @@ impl Backend for DrmRuntime {
         &mut self,
         cx: &mut BackendExtractCtx<'_>,
     ) -> Result<(), nekoland_core::error::NekolandError> {
-        session::extract_session(
-            &mut self.descriptor,
-            &self.session_state,
-            &self.device_state,
-            &self.gbm_state,
-            &self.input_state,
-            &mut self.render_state,
-            cx.backend_input_events,
-            cx.protocol_input_events,
-        );
+        session::extract_session(session::DrmSessionExtractCtx {
+            descriptor: &mut self.descriptor,
+            session_state: &self.session_state,
+            drm_state: &self.device_state,
+            gbm_state: &self.gbm_state,
+            input_state: &self.input_state,
+            render_state: &mut self.render_state,
+            pending_backend_inputs: cx.backend_input_events,
+            pending_protocol_inputs: cx.protocol_input_events,
+        });
 
         let connected_connectors =
             device::ensure_drm_device(&self.session_state, &self.device_state);
@@ -148,20 +148,20 @@ impl Backend for DrmRuntime {
         cx: &mut BackendPresentCtx<'_>,
     ) -> Result<(), nekoland_core::error::NekolandError> {
         let owned_outputs = self.owned_outputs(cx.outputs).cloned().collect::<Vec<_>>();
-        surface::render_drm_outputs(
-            owned_outputs.iter(),
-            cx.config,
-            cx.cursor_render,
-            cx.cursor_image,
-            cx.output_damage_regions,
-            cx.render_list,
-            cx.surfaces,
-            cx.surface_registry,
-            &self.session_state,
-            &self.device_state,
-            &self.gbm_state,
-            &mut self.render_state,
-        );
+        surface::render_drm_outputs(surface::DrmPresentCtx {
+            outputs: &owned_outputs,
+            config: cx.config,
+            cursor_render: cx.cursor_render,
+            cursor_image: cx.cursor_image,
+            output_damage_regions: cx.output_damage_regions,
+            render_list: cx.render_list,
+            surfaces: cx.surfaces,
+            surface_registry: cx.surface_registry,
+            session_state: &self.session_state,
+            drm_shared: &self.device_state,
+            gbm_shared: &self.gbm_state,
+            render_state: &mut self.render_state,
+        });
         Ok(())
     }
 }

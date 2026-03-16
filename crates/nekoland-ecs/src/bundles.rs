@@ -66,19 +66,33 @@ pub struct LayerSurfaceBundle {
     pub animation: WindowAnimation,
 }
 
+#[derive(Clone, Debug)]
+pub struct LayerSurfaceBundleSpec {
+    pub surface_id: u64,
+    pub namespace: String,
+    pub output: Option<String>,
+    pub layer: LayerLevel,
+    pub anchor: LayerAnchor,
+    pub desired_width: u32,
+    pub desired_height: u32,
+    pub exclusive_zone: i32,
+    pub margins: LayerMargins,
+}
+
 impl LayerSurfaceBundle {
     /// Builds a layer bundle directly from the protocol create request payload.
-    pub fn new(
-        surface_id: u64,
-        namespace: String,
-        output: Option<String>,
-        layer: LayerLevel,
-        anchor: LayerAnchor,
-        desired_width: u32,
-        desired_height: u32,
-        exclusive_zone: i32,
-        margins: LayerMargins,
-    ) -> Self {
+    pub fn new(spec: LayerSurfaceBundleSpec) -> Self {
+        let LayerSurfaceBundleSpec {
+            surface_id,
+            namespace,
+            output,
+            layer,
+            anchor,
+            desired_width,
+            desired_height,
+            exclusive_zone,
+            margins,
+        } = spec;
         Self {
             surface: WlSurfaceHandle { id: surface_id },
             geometry: SurfaceGeometry {

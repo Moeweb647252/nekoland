@@ -1,6 +1,7 @@
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
 use bevy_ecs::query::Allow;
+use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{WindowLayout, WindowMode, WindowRestoreState, XdgPopup, XdgWindow};
 use nekoland_ecs::resources::{
     EntityIndex, GlobalPointerPosition, KeyboardFocusState, PendingXdgRequests,
@@ -20,35 +21,43 @@ type XdgWindows<'w, 's> =
 type XdgPopups<'w, 's> =
     Query<'w, 's, (Entity, PopupConfigureRuntime), (With<XdgPopup>, Allow<Disabled>)>;
 
-pub fn configure_sequence_system(
-    mut pending_xdg_requests: ResMut<PendingXdgRequests>,
-    entity_index: Res<EntityIndex>,
-    pointer: Res<GlobalPointerPosition>,
-    mut active_grab: ResMut<ActiveWindowGrab>,
-    mut keyboard_focus: ResMut<KeyboardFocusState>,
-    mut windows: XdgWindows<'_, '_>,
-    outputs: Query<OutputRuntime>,
-    mut popups: XdgPopups<'_, '_>,
-) {
+#[derive(SystemParam)]
+pub struct ConfigureSequenceParams<'w, 's> {
+    pending_xdg_requests: ResMut<'w, PendingXdgRequests>,
+    entity_index: Res<'w, EntityIndex>,
+    pointer: Res<'w, GlobalPointerPosition>,
+    active_grab: ResMut<'w, ActiveWindowGrab>,
+    keyboard_focus: ResMut<'w, KeyboardFocusState>,
+    windows: XdgWindows<'w, 's>,
+    outputs: Query<'w, 's, OutputRuntime>,
+    popups: XdgPopups<'w, 's>,
+}
+
+pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>) {
     let mut deferred = Vec::new();
-    let output_geometry = outputs
+    let output_geometry = configure
+        .outputs
         .iter()
         .next()
         .map(|output| (output.properties.width.max(1), output.properties.height.max(1)));
 
-    for request in pending_xdg_requests.drain() {
+    for request in configure.pending_xdg_requests.drain() {
         match request.action.clone() {
             WindowLifecycleAction::ConfigureRequested { role: XdgSurfaceRole::Toplevel } => {
                 tracing::trace!(surface_id = request.surface_id, "toplevel configure requested");
             }
             WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Toplevel, serial } => {
                 let Some(entity) =
-                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                    resolve_xdg_window_entity(
+                        request.surface_id,
+                        &configure.entity_index,
+                        &mut configure.windows,
+                    )
                 else {
                     deferred.push(request);
                     continue;
                 };
-                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                let Ok((_, mut window)) = configure.windows.get_mut(entity) else {
                     deferred.push(request);
                     continue;
                 };
@@ -64,12 +73,16 @@ pub fn configure_sequence_system(
             }
             WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Popup, serial } => {
                 let Some(entity) =
-                    resolve_xdg_popup_entity(request.surface_id, &entity_index, &mut popups)
+                    resolve_xdg_popup_entity(
+                        request.surface_id,
+                        &configure.entity_index,
+                        &mut configure.popups,
+                    )
                 else {
                     deferred.push(request);
                     continue;
                 };
-                let Ok((_, mut popup)) = popups.get_mut(entity) else {
+                let Ok((_, mut popup)) = configure.popups.get_mut(entity) else {
                     deferred.push(request);
                     continue;
                 };
@@ -78,12 +91,16 @@ pub fn configure_sequence_system(
             }
             WindowLifecycleAction::InteractiveMove { seat_name, serial } => {
                 let Some(entity) =
-                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                    resolve_xdg_window_entity(
+                        request.surface_id,
+                        &configure.entity_index,
+                        &mut configure.windows,
+                    )
                 else {
                     deferred.push(request);
                     continue;
                 };
-                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                let Ok((_, mut window)) = configure.windows.get_mut(entity) else {
                     deferred.push(request);
                     continue;
                 };
@@ -94,12 +111,12 @@ pub fn configure_sequence_system(
                 *window.layout = WindowLayout::Floating;
                 *window.mode = WindowMode::Normal;
                 lock_window_policy(*window.layout, *window.mode, &mut window.policy_state);
-                keyboard_focus.focused_surface = Some(window.surface_id());
+                configure.keyboard_focus.focused_surface = Some(window.surface_id());
                 begin_window_grab(
-                    &mut active_grab,
+                    &mut configure.active_grab,
                     window.surface_id(),
                     WindowGrabMode::Move,
-                    &pointer,
+                    &configure.pointer,
                     &window.scene_geometry,
                 );
                 tracing::trace!(
@@ -113,12 +130,16 @@ pub fn configure_sequence_system(
             }
             WindowLifecycleAction::InteractiveResize { seat_name, serial, edges } => {
                 let Some(entity) =
-                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                    resolve_xdg_window_entity(
+                        request.surface_id,
+                        &configure.entity_index,
+                        &mut configure.windows,
+                    )
                 else {
                     deferred.push(request);
                     continue;
                 };
-                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                let Ok((_, mut window)) = configure.windows.get_mut(entity) else {
                     deferred.push(request);
                     continue;
                 };
@@ -129,12 +150,12 @@ pub fn configure_sequence_system(
                 *window.layout = WindowLayout::Floating;
                 *window.mode = WindowMode::Normal;
                 lock_window_policy(*window.layout, *window.mode, &mut window.policy_state);
-                keyboard_focus.focused_surface = Some(window.surface_id());
+                configure.keyboard_focus.focused_surface = Some(window.surface_id());
                 begin_window_grab(
-                    &mut active_grab,
+                    &mut configure.active_grab,
                     window.surface_id(),
-                    WindowGrabMode::Resize { edges: edges.clone() },
-                    &pointer,
+                    WindowGrabMode::Resize { edges },
+                    &configure.pointer,
                     &window.scene_geometry,
                 );
                 tracing::trace!(
@@ -149,32 +170,40 @@ pub fn configure_sequence_system(
             }
             WindowLifecycleAction::Maximize => {
                 let Some(entity) =
-                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                    resolve_xdg_window_entity(
+                        request.surface_id,
+                        &configure.entity_index,
+                        &mut configure.windows,
+                    )
                 else {
                     deferred.push(request);
                     continue;
                 };
-                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                let Ok((_, mut window)) = configure.windows.get_mut(entity) else {
                     deferred.push(request);
                     continue;
                 };
 
                 window.restore.snapshot = Some(WindowRestoreState {
                     geometry: window.scene_geometry.clone(),
-                    layout: (*window.layout).clone(),
-                    mode: (*window.mode).clone(),
+                    layout: *window.layout,
+                    mode: *window.mode,
                 });
                 *window.mode = WindowMode::Maximized;
-                keyboard_focus.focused_surface = Some(window.surface_id());
+                configure.keyboard_focus.focused_surface = Some(window.surface_id());
             }
             WindowLifecycleAction::UnMaximize => {
                 let Some(entity) =
-                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                    resolve_xdg_window_entity(
+                        request.surface_id,
+                        &configure.entity_index,
+                        &mut configure.windows,
+                    )
                 else {
                     deferred.push(request);
                     continue;
                 };
-                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                let Ok((_, mut window)) = configure.windows.get_mut(entity) else {
                     deferred.push(request);
                     continue;
                 };
@@ -193,20 +222,24 @@ pub fn configure_sequence_system(
             }
             WindowLifecycleAction::Fullscreen { output_name } => {
                 let Some(entity) =
-                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                    resolve_xdg_window_entity(
+                        request.surface_id,
+                        &configure.entity_index,
+                        &mut configure.windows,
+                    )
                 else {
                     deferred.push(request);
                     continue;
                 };
-                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                let Ok((_, mut window)) = configure.windows.get_mut(entity) else {
                     deferred.push(request);
                     continue;
                 };
 
                 window.restore.snapshot = Some(WindowRestoreState {
                     geometry: window.scene_geometry.clone(),
-                    layout: (*window.layout).clone(),
-                    mode: (*window.mode).clone(),
+                    layout: *window.layout,
+                    mode: *window.mode,
                 });
                 *window.mode = WindowMode::Fullscreen;
                 if let Some((width, height)) = output_geometry {
@@ -215,7 +248,7 @@ pub fn configure_sequence_system(
                     window.geometry.width = width;
                     window.geometry.height = height;
                 }
-                keyboard_focus.focused_surface = Some(window.surface_id());
+                configure.keyboard_focus.focused_surface = Some(window.surface_id());
                 tracing::trace!(
                     surface_id = window.surface_id(),
                     output_name = ?output_name,
@@ -224,12 +257,16 @@ pub fn configure_sequence_system(
             }
             WindowLifecycleAction::UnFullscreen => {
                 let Some(entity) =
-                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                    resolve_xdg_window_entity(
+                        request.surface_id,
+                        &configure.entity_index,
+                        &mut configure.windows,
+                    )
                 else {
                     deferred.push(request);
                     continue;
                 };
-                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                let Ok((_, mut window)) = configure.windows.get_mut(entity) else {
                     deferred.push(request);
                     continue;
                 };
@@ -248,26 +285,30 @@ pub fn configure_sequence_system(
             }
             WindowLifecycleAction::Minimize => {
                 let Some(entity) =
-                    resolve_xdg_window_entity(request.surface_id, &entity_index, &mut windows)
+                    resolve_xdg_window_entity(
+                        request.surface_id,
+                        &configure.entity_index,
+                        &mut configure.windows,
+                    )
                 else {
                     deferred.push(request);
                     continue;
                 };
-                let Ok((_, mut window)) = windows.get_mut(entity) else {
+                let Ok((_, mut window)) = configure.windows.get_mut(entity) else {
                     deferred.push(request);
                     continue;
                 };
 
                 *window.mode = WindowMode::Hidden;
-                if keyboard_focus.focused_surface == Some(window.surface_id()) {
-                    keyboard_focus.focused_surface = None;
+                if configure.keyboard_focus.focused_surface == Some(window.surface_id()) {
+                    configure.keyboard_focus.focused_surface = None;
                 }
             }
             _ => deferred.push(request),
         }
     }
 
-    pending_xdg_requests.replace(deferred);
+    configure.pending_xdg_requests.replace(deferred);
     tracing::trace!("xdg configure sequencing system tick");
 }
 

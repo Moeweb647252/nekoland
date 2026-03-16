@@ -131,8 +131,7 @@ mod tests {
         let Some(pending_input_events) = world.get_resource::<PendingInputEvents>() else {
             panic!("pending input events should be initialized");
         };
-        let Some(pending_backend_input_events) =
-            world.get_resource::<PendingBackendInputEvents>()
+        let Some(pending_backend_input_events) = world.get_resource::<PendingBackendInputEvents>()
         else {
             panic!("backend input queue should be initialized");
         };

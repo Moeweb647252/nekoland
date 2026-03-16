@@ -1,5 +1,6 @@
 use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::{Local, Query, Res, ResMut};
+use bevy_ecs::system::SystemParam;
 use nekoland_ecs::events::{PointerButton, PointerMotion};
 use nekoland_ecs::resources::{
     BackendInputAction, CompositorConfig, FocusedOutputState, GlobalPointerPosition, KeyShortcut,
@@ -18,6 +19,17 @@ pub(crate) struct ViewportPointerPanGestureState {
 }
 
 const POINTER_BOUNDS_EPSILON: f64 = 0.001;
+
+#[derive(SystemParam)]
+pub(crate) struct ViewportPointerPanParams<'w, 's> {
+    pressed_keys: Res<'w, PressedKeys>,
+    focused_output: Res<'w, FocusedOutputState>,
+    pointer_delta: ResMut<'w, PointerDelta>,
+    viewport_pan: ResMut<'w, ViewportPointerPanState>,
+    pending_output_controls: ResMut<'w, PendingOutputControls>,
+    pending_input_events: ResMut<'w, PendingInputEvents>,
+    gesture: Local<'s, ViewportPointerPanGestureState>,
+}
 
 /// Consumes pointer-related backend input records into raw pointer state, pointer deltas, and
 /// higher-level button messages.
@@ -214,14 +226,18 @@ fn pointer_within_output(
 /// the focused output.
 pub(crate) fn viewport_pointer_pan_system(
     config: Res<CompositorConfig>,
-    pressed_keys: Res<PressedKeys>,
-    focused_output: Res<FocusedOutputState>,
-    mut pointer_delta: ResMut<PointerDelta>,
-    mut viewport_pan: ResMut<ViewportPointerPanState>,
-    mut pending_output_controls: ResMut<PendingOutputControls>,
-    mut pending_input_events: ResMut<PendingInputEvents>,
-    mut gesture: Local<ViewportPointerPanGestureState>,
+    pan: ViewportPointerPanParams<'_, '_>,
 ) {
+    let ViewportPointerPanParams {
+        pressed_keys,
+        focused_output,
+        mut pointer_delta,
+        mut viewport_pan,
+        mut pending_output_controls,
+        mut pending_input_events,
+        mut gesture,
+    } = pan;
+
     let combo_active =
         pressed_keys.is_pressed(&KeyShortcut::modifier_only(config.viewport_pan_modifiers));
 
@@ -337,8 +353,10 @@ mod tests {
     #[test]
     fn viewport_pointer_pan_uses_configured_modifier_mask() {
         let mut world = World::default();
-        let mut config = CompositorConfig::default();
-        config.viewport_pan_modifiers = ModifierMask::new(true, false, true, false);
+        let config = CompositorConfig {
+            viewport_pan_modifiers: ModifierMask::new(true, false, true, false),
+            ..CompositorConfig::default()
+        };
         world.insert_resource(config);
         world.insert_resource(PointerDelta { dx: 4.0, dy: 7.0 });
         world.insert_resource(PressedKeys::default());

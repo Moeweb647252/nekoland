@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::{Local, Res, ResMut};
+use bevy_ecs::system::SystemParam;
 use nekoland_ecs::events::{
     ExternalCommandFailed, ExternalCommandLaunched, WindowClosed, WindowCreated, WindowMoved,
 };
@@ -174,6 +175,16 @@ pub(crate) struct SubscriptionSnapshotState {
     last_primary_selection: Option<PrimarySelectionSnapshot>,
 }
 
+#[derive(SystemParam)]
+pub(crate) struct SubscriptionDispatchMessages<'w, 's> {
+    window_created: MessageReader<'w, 's, WindowCreated>,
+    window_closed: MessageReader<'w, 's, WindowClosed>,
+    window_moved: MessageReader<'w, 's, WindowMoved>,
+    command_launched: MessageReader<'w, 's, ExternalCommandLaunched>,
+    command_failed: MessageReader<'w, 's, ExternalCommandFailed>,
+    pending_events: ResMut<'w, PendingSubscriptionEvents>,
+}
+
 pub fn subscribe(subscription: &IpcSubscription) -> io::Result<IpcSubscriptionStream> {
     subscribe_to_path(&default_socket_path(), subscription)
 }
@@ -236,14 +247,18 @@ impl IpcSubscriptionStream {
 /// by diffing the current query cache against the previous snapshot baseline.
 pub(crate) fn subscription_dispatch_system(
     query_cache: Res<IpcQueryCache>,
-    mut window_created: MessageReader<WindowCreated>,
-    mut window_closed: MessageReader<WindowClosed>,
-    mut window_moved: MessageReader<WindowMoved>,
-    mut command_launched: MessageReader<ExternalCommandLaunched>,
-    mut command_failed: MessageReader<ExternalCommandFailed>,
-    mut pending_events: ResMut<PendingSubscriptionEvents>,
+    messages: SubscriptionDispatchMessages<'_, '_>,
     mut snapshots: Local<SubscriptionSnapshotState>,
 ) {
+    let SubscriptionDispatchMessages {
+        mut window_created,
+        mut window_closed,
+        mut window_moved,
+        mut command_launched,
+        mut command_failed,
+        mut pending_events,
+    } = messages;
+
     for event in window_created.read() {
         pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Window,

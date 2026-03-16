@@ -104,20 +104,22 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
     ) = {
         let world = app.inner_mut().world_mut();
 
-        let window_state = world
-            .query::<(
-                &WlSurfaceHandle,
-                &WindowLayout,
-                &WindowMode,
-                &WindowSceneGeometry,
-                &SurfaceGeometry,
-            )>()
-            .iter(world)
-            .find(|(surface, _, _, _, _)| surface.id == TARGET_SURFACE_ID)
-            .map(|(_, layout, mode, scene_geometry, screen_geometry)| {
-                (*layout, *mode, scene_geometry.clone(), screen_geometry.clone())
-            });
-        let Some((window_layout, window_mode, scene_geometry, screen_geometry)) = window_state else {
+        let window_state =
+            world
+                .query::<(
+                    &WlSurfaceHandle,
+                    &WindowLayout,
+                    &WindowMode,
+                    &WindowSceneGeometry,
+                    &SurfaceGeometry,
+                )>()
+                .iter(world)
+                .find(|(surface, _, _, _, _)| surface.id == TARGET_SURFACE_ID)
+                .map(|(_, layout, mode, scene_geometry, screen_geometry)| {
+                    (*layout, *mode, scene_geometry.clone(), screen_geometry.clone())
+                });
+        let Some((window_layout, window_mode, scene_geometry, screen_geometry)) = window_state
+        else {
             panic!("target IPC window should remain present");
         };
 

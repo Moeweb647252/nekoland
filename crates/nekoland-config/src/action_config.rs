@@ -237,7 +237,10 @@ mod tests {
         let Ok(action) = ConfiguredAction::try_from(action) else {
             panic!("destroy action should normalize");
         };
-        assert_eq!(action, ConfiguredAction::DestroyWorkspace { workspace: WorkspaceSelector::Active });
+        assert_eq!(
+            action,
+            ConfiguredAction::DestroyWorkspace { workspace: WorkspaceSelector::Active }
+        );
     }
 
     #[test]
@@ -262,8 +265,7 @@ mod tests {
     fn viewport_pan_mode_must_be_alone_in_binding() {
         let Ok(actions) = toml::from_str::<ManyActions>(
             "actions = [{ viewport_pan_mode = true }, { exec = [\"foot\"] }]",
-        )
-        else {
+        ) else {
             panic!("action list should parse");
         };
         let actions = actions.actions;

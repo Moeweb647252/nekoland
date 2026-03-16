@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use bevy_ecs::prelude::{Commands, Entity, Query, ResMut, With};
-use nekoland_ecs::bundles::LayerSurfaceBundle;
+use nekoland_ecs::bundles::{LayerSurfaceBundle, LayerSurfaceBundleSpec};
 use nekoland_ecs::components::{
     BufferState, DesiredOutputName, LayerAnchor, LayerOnOutput, LayerShellSurface, OutputDevice,
     SurfaceContentVersion, SurfaceGeometry, WlSurfaceHandle,
@@ -11,6 +11,52 @@ use nekoland_ecs::resources::{
 };
 use nekoland_ecs::views::OutputRuntime;
 
+type LayerLifecycleSurfaces<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static WlSurfaceHandle,
+        &'static mut SurfaceGeometry,
+        &'static mut BufferState,
+        &'static mut SurfaceContentVersion,
+        &'static mut LayerShellSurface,
+    ),
+    With<LayerShellSurface>,
+>;
+type LayerOutputDevices<'w, 's> = Query<'w, 's, (Entity, &'static OutputDevice)>;
+type LayerRelationshipQuery<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, Option<&'static DesiredOutputName>, Option<&'static LayerOnOutput>),
+    With<LayerShellSurface>,
+>;
+type LayerOutputs<'w, 's> = Query<'w, 's, (Entity, OutputRuntime)>;
+type ArrangedLayers<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static LayerShellSurface,
+        Option<&'static DesiredOutputName>,
+        &'static LayerAnchor,
+        &'static mut SurfaceGeometry,
+        &'static BufferState,
+        Option<&'static LayerOnOutput>,
+    ),
+>;
+type WorkAreaLayers<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static LayerShellSurface,
+        Option<&'static DesiredOutputName>,
+        &'static LayerAnchor,
+        &'static SurfaceGeometry,
+        &'static BufferState,
+        Option<&'static LayerOnOutput>,
+    ),
+>;
+
 /// Materializes layer-shell lifecycle requests into ECS entities and keeps the authoritative layer
 /// geometry/buffer attachment state updated from protocol commits.
 pub fn layer_lifecycle_system(
@@ -18,17 +64,7 @@ pub fn layer_lifecycle_system(
     mut pending_layer_requests: ResMut<PendingLayerRequests>,
     entity_index: bevy_ecs::prelude::Res<EntityIndex>,
     existing_layers: Query<&WlSurfaceHandle, With<LayerShellSurface>>,
-    mut layers: Query<
-        (
-            Entity,
-            &WlSurfaceHandle,
-            &mut SurfaceGeometry,
-            &mut BufferState,
-            &mut SurfaceContentVersion,
-            &mut LayerShellSurface,
-        ),
-        With<LayerShellSurface>,
-    >,
+    mut layers: LayerLifecycleSurfaces<'_, '_>,
 ) {
     let mut known_surface_ids =
         existing_layers.iter().map(|surface| surface.id).collect::<BTreeSet<_>>();
@@ -39,17 +75,17 @@ pub fn layer_lifecycle_system(
             LayerLifecycleAction::Created { spec }
                 if known_surface_ids.insert(request.surface_id) =>
             {
-                commands.spawn(LayerSurfaceBundle::new(
-                    request.surface_id,
-                    spec.namespace,
-                    spec.output_name,
-                    spec.layer,
-                    spec.anchor,
-                    spec.desired_width,
-                    spec.desired_height,
-                    spec.exclusive_zone,
-                    spec.margins,
-                ));
+                commands.spawn(LayerSurfaceBundle::new(LayerSurfaceBundleSpec {
+                    surface_id: request.surface_id,
+                    namespace: spec.namespace,
+                    output: spec.output_name,
+                    layer: spec.layer,
+                    anchor: spec.anchor,
+                    desired_width: spec.desired_width,
+                    desired_height: spec.desired_height,
+                    exclusive_zone: spec.exclusive_zone,
+                    margins: spec.margins,
+                }));
             }
             LayerLifecycleAction::Committed {
                 size,
@@ -126,11 +162,8 @@ pub fn layer_lifecycle_system(
 pub fn sync_layer_output_relationships_system(
     mut commands: Commands,
     entity_index: bevy_ecs::prelude::Res<EntityIndex>,
-    outputs: Query<(Entity, &OutputDevice)>,
-    layers: Query<
-        (Entity, Option<&DesiredOutputName>, Option<&LayerOnOutput>),
-        With<LayerShellSurface>,
-    >,
+    outputs: LayerOutputDevices<'_, '_>,
+    layers: LayerRelationshipQuery<'_, '_>,
 ) {
     for (entity, desired_output_name, layer_output) in &layers {
         let desired_output = resolve_output_entity(
@@ -156,7 +189,7 @@ pub fn sync_layer_output_relationships_system(
 fn resolve_output_entity(
     output_name: Option<&str>,
     entity_index: &EntityIndex,
-    outputs: &Query<(Entity, &OutputDevice)>,
+    outputs: &LayerOutputDevices<'_, '_>,
 ) -> Option<Entity> {
     let output_name = output_name?;
     entity_index.entity_for_output_name(output_name).or_else(|| {
@@ -167,15 +200,8 @@ fn resolve_output_entity(
 /// Computes layer surface rectangles from anchors, desired size, margins, and bound output size.
 pub fn layer_arrangement_system(
     primary_output: Option<bevy_ecs::prelude::Res<PrimaryOutputState>>,
-    outputs: Query<(Entity, OutputRuntime)>,
-    mut layers: Query<(
-        &LayerShellSurface,
-        Option<&DesiredOutputName>,
-        &LayerAnchor,
-        &mut SurfaceGeometry,
-        &BufferState,
-        Option<&LayerOnOutput>,
-    )>,
+    outputs: LayerOutputs<'_, '_>,
+    mut layers: ArrangedLayers<'_, '_>,
 ) {
     let output_sizes = outputs
         .iter()
@@ -257,15 +283,8 @@ pub fn layer_arrangement_system(
 /// output from the full output rectangle.
 pub fn work_area_system(
     primary_output: Option<bevy_ecs::prelude::Res<PrimaryOutputState>>,
-    mut outputs: Query<(Entity, OutputRuntime)>,
-    layers: Query<(
-        &LayerShellSurface,
-        Option<&DesiredOutputName>,
-        &LayerAnchor,
-        &SurfaceGeometry,
-        &BufferState,
-        Option<&LayerOnOutput>,
-    )>,
+    mut outputs: LayerOutputs<'_, '_>,
+    layers: WorkAreaLayers<'_, '_>,
     mut work_area: ResMut<WorkArea>,
 ) {
     let output_sizes = outputs
@@ -409,7 +428,7 @@ fn primary_output_from_sizes(output_sizes: &[(Entity, i32, i32)]) -> Option<(Ent
 fn primary_output_from_state_or_sizes(
     primary_output_state: Option<&PrimaryOutputState>,
     output_sizes: &[(Entity, i32, i32)],
-    outputs: &Query<(Entity, OutputRuntime)>,
+    outputs: &LayerOutputs<'_, '_>,
 ) -> Option<(Entity, i32, i32)> {
     let Some(primary_output_name) =
         primary_output_state.and_then(|primary_output_state| primary_output_state.name.as_deref())
@@ -432,7 +451,7 @@ mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
-    use nekoland_ecs::bundles::{LayerSurfaceBundle, OutputBundle};
+    use nekoland_ecs::bundles::{LayerSurfaceBundle, LayerSurfaceBundleSpec, OutputBundle};
     use nekoland_ecs::components::{
         BufferState, DesiredOutputName, LayerAnchor, LayerLevel, LayerMargins, LayerOnOutput,
         LayerShellSurface, OutputDevice, OutputKind, OutputProperties, SurfaceGeometry,
@@ -890,17 +909,17 @@ mod tests {
         let layer = app
             .inner_mut()
             .world_mut()
-            .spawn(LayerSurfaceBundle::new(
-                77,
-                "panel".to_owned(),
-                Some("Virtual-1".to_owned()),
-                LayerLevel::Top,
-                LayerAnchor { top: true, bottom: false, left: true, right: true },
-                1280,
-                32,
-                32,
-                LayerMargins::default(),
-            ))
+            .spawn(LayerSurfaceBundle::new(LayerSurfaceBundleSpec {
+                surface_id: 77,
+                namespace: "panel".to_owned(),
+                output: Some("Virtual-1".to_owned()),
+                layer: LayerLevel::Top,
+                anchor: LayerAnchor { top: true, bottom: false, left: true, right: true },
+                desired_width: 1280,
+                desired_height: 32,
+                exclusive_zone: 32,
+                margins: LayerMargins::default(),
+            }))
             .id();
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
@@ -968,17 +987,17 @@ mod tests {
             .inner_mut()
             .world_mut()
             .spawn((
-                LayerSurfaceBundle::new(
-                    77,
-                    "panel".to_owned(),
-                    Some("Virtual-1".to_owned()),
-                    LayerLevel::Top,
-                    LayerAnchor { top: true, bottom: false, left: true, right: true },
-                    1280,
-                    32,
-                    32,
-                    LayerMargins::default(),
-                ),
+                LayerSurfaceBundle::new(LayerSurfaceBundleSpec {
+                    surface_id: 77,
+                    namespace: "panel".to_owned(),
+                    output: Some("Virtual-1".to_owned()),
+                    layer: LayerLevel::Top,
+                    anchor: LayerAnchor { top: true, bottom: false, left: true, right: true },
+                    desired_width: 1280,
+                    desired_height: 32,
+                    exclusive_zone: 32,
+                    margins: LayerMargins::default(),
+                }),
                 LayerOnOutput(output),
             ))
             .id();

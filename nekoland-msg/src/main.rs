@@ -1048,9 +1048,7 @@ mod tests {
         };
 
         assert_eq!(help["topics"][0], "window");
-        assert!(
-            known_events.iter().any(|event| event == "window_created")
-        );
+        assert!(known_events.iter().any(|event| event == "window_created"));
         assert_eq!(help["patterns"]["prefix_wildcard_example"], "window_*");
     }
 

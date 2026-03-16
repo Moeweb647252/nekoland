@@ -2,6 +2,7 @@ use std::process::Command;
 
 use bevy_ecs::message::{MessageReader, MessageWriter};
 use bevy_ecs::prelude::{Res, ResMut, Resource};
+use bevy_ecs::system::SystemParam;
 use nekoland_ecs::control::{
     OutputControlApi, OutputOps, WindowControlApi, WindowOps, WorkspaceControlApi, WorkspaceOps,
 };
@@ -9,7 +10,7 @@ use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
 use nekoland_ecs::resources::{
     CommandExecutionRecord, CommandExecutionStatus, CommandHistoryState, CompositorClock,
     CompositorConfig, ConfiguredAction, ExternalCommandRequest, PendingExternalCommandRequests,
-    PendingInputEvents, describe_action_sequence,
+    PendingInputEvents,
 };
 use nekoland_protocol::{ProtocolServerState, XWaylandServerState};
 
@@ -33,6 +34,46 @@ impl ChildCommandEnvironment {
         for (key, value) in &self.vars {
             command.env(key, value);
         }
+    }
+}
+
+#[derive(SystemParam)]
+pub struct StartupActionDispatch<'w, 's> {
+    config: Res<'w, CompositorConfig>,
+    protocol_server: Option<Res<'w, ProtocolServerState>>,
+    xwayland_server: Option<Res<'w, XWaylandServerState>>,
+    startup_actions: ResMut<'w, StartupActionState>,
+    pending_input_events: ResMut<'w, PendingInputEvents>,
+    pending_external_commands: ResMut<'w, PendingExternalCommandRequests>,
+    windows: WindowOps<'w, 's>,
+    workspaces: WorkspaceOps<'w, 's>,
+    outputs: OutputOps<'w, 's>,
+}
+
+struct ActionDispatchContext<'a, 'ops> {
+    source: &'a str,
+    origin: &'a str,
+    pending_input_events: &'a mut PendingInputEvents,
+    pending_external_commands: &'a mut PendingExternalCommandRequests,
+    windows: &'a mut WindowControlApi<'ops>,
+    workspaces: &'a mut WorkspaceControlApi<'ops>,
+    outputs: &'a mut OutputControlApi<'ops>,
+}
+
+impl<'a, 'ops> ActionDispatchContext<'a, 'ops> {
+    fn focused_window(
+        &mut self,
+        action: &ConfiguredAction,
+    ) -> Option<nekoland_ecs::resources::WindowControlHandle<'_>> {
+        if let Some(window) = self.windows.focused() {
+            return Some(window);
+        }
+
+        self.pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+            source: self.source.to_owned(),
+            detail: format!("{} -> {} ignored: no focused surface", self.origin, action.describe()),
+        });
+        None
     }
 }
 
@@ -110,17 +151,19 @@ pub fn external_command_launch_system(
 }
 
 /// Applies startup actions once the nested protocol socket and optional XWayland bridge are ready.
-pub fn startup_action_queue_system(
-    config: Res<CompositorConfig>,
-    protocol_server: Option<Res<ProtocolServerState>>,
-    xwayland_server: Option<Res<XWaylandServerState>>,
-    mut startup_actions: ResMut<StartupActionState>,
-    mut pending_input_events: ResMut<PendingInputEvents>,
-    mut pending_external_commands: ResMut<PendingExternalCommandRequests>,
-    mut windows: WindowOps,
-    mut workspaces: WorkspaceOps,
-    mut outputs: OutputOps,
-) {
+pub fn startup_action_queue_system(startup: StartupActionDispatch<'_, '_>) {
+    let StartupActionDispatch {
+        config,
+        protocol_server,
+        xwayland_server,
+        mut startup_actions,
+        mut pending_input_events,
+        mut pending_external_commands,
+        mut windows,
+        mut workspaces,
+        mut outputs,
+    } = startup;
+
     if startup_actions.queued {
         return;
     }
@@ -138,10 +181,11 @@ pub fn startup_action_queue_system(
         return;
     };
 
-    if let Some(xwayland) = xwayland_server.as_deref() {
-        if xwayland.enabled && !xwayland.ready {
-            return;
-        }
+    if let Some(xwayland) = xwayland_server.as_deref()
+        && xwayland.enabled
+        && !xwayland.ready
+    {
+        return;
     }
 
     startup_actions.queued = true;
@@ -152,18 +196,18 @@ pub fn startup_action_queue_system(
     let mut window_controls = windows.api();
     let mut workspace_controls = workspaces.api();
     let mut output_controls = outputs.api();
+    let mut dispatch = ActionDispatchContext {
+        source: "startup",
+        origin: "startup",
+        pending_input_events: &mut pending_input_events,
+        pending_external_commands: &mut pending_external_commands,
+        windows: &mut window_controls,
+        workspaces: &mut workspace_controls,
+        outputs: &mut output_controls,
+    };
     let mut applied_actions = 0_usize;
     for action in &config.startup_actions {
-        if dispatch_configured_action(
-            "startup",
-            "startup",
-            action,
-            &mut pending_input_events,
-            &mut pending_external_commands,
-            &mut window_controls,
-            &mut workspace_controls,
-            &mut output_controls,
-        ) {
+        if dispatch_configured_action(action, &mut dispatch) {
             applied_actions += 1;
         }
     }
@@ -255,162 +299,95 @@ fn validate_action(action: &ConfiguredAction) -> Result<(), String> {
     }
 }
 
-pub fn dispatch_action_sequence(
-    source: &str,
-    origin: &str,
-    actions: &[ConfiguredAction],
-    pending_input_events: &mut PendingInputEvents,
-    pending_external_commands: &mut PendingExternalCommandRequests,
-    windows: &mut WindowControlApi<'_>,
-    workspaces: &mut WorkspaceControlApi<'_>,
-    outputs: &mut OutputControlApi<'_>,
-) -> bool {
-    for action in actions {
-        if !dispatch_configured_action(
-            source,
-            origin,
-            action,
-            pending_input_events,
-            pending_external_commands,
-            windows,
-            workspaces,
-            outputs,
-        ) {
-            return false;
-        }
-    }
-
-    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
-        source: source.to_owned(),
-        detail: format!("{origin} -> {}", describe_action_sequence(actions)),
-    });
-    true
-}
-
-pub fn dispatch_configured_action(
-    source: &str,
-    origin: &str,
+fn dispatch_configured_action(
     action: &ConfiguredAction,
-    pending_input_events: &mut PendingInputEvents,
-    pending_external_commands: &mut PendingExternalCommandRequests,
-    windows: &mut WindowControlApi<'_>,
-    workspaces: &mut WorkspaceControlApi<'_>,
-    outputs: &mut OutputControlApi<'_>,
+    dispatch: &mut ActionDispatchContext<'_, '_>,
 ) -> bool {
     match action {
         ConfiguredAction::CloseFocusedWindow => {
-            let Some(mut window) =
-                focused_window(source, origin, action, pending_input_events, windows)
-            else {
+            let Some(mut window) = dispatch.focused_window(action) else {
                 return false;
             };
             window.close();
         }
         ConfiguredAction::MoveFocusedWindow { x, y } => {
-            let Some(mut window) =
-                focused_window(source, origin, action, pending_input_events, windows)
-            else {
+            let Some(mut window) = dispatch.focused_window(action) else {
                 return false;
             };
             window.move_to(*x, *y);
         }
         ConfiguredAction::ResizeFocusedWindow { width, height } => {
-            let Some(mut window) =
-                focused_window(source, origin, action, pending_input_events, windows)
-            else {
+            let Some(mut window) = dispatch.focused_window(action) else {
                 return false;
             };
             window.resize_to(*width, *height);
         }
         ConfiguredAction::SplitFocusedWindow { axis } => {
-            let Some(mut window) =
-                focused_window(source, origin, action, pending_input_events, windows)
-            else {
+            let Some(mut window) = dispatch.focused_window(action) else {
                 return false;
             };
             window.split(*axis);
         }
         ConfiguredAction::BackgroundFocusedWindow { output } => {
-            let Some(mut window) =
-                focused_window(source, origin, action, pending_input_events, windows)
-            else {
+            let Some(mut window) = dispatch.focused_window(action) else {
                 return false;
             };
             window.background_on(output.clone());
         }
         ConfiguredAction::ClearFocusedWindowBackground => {
-            let Some(mut window) =
-                focused_window(source, origin, action, pending_input_events, windows)
-            else {
+            let Some(mut window) = dispatch.focused_window(action) else {
                 return false;
             };
             window.clear_background();
         }
         ConfiguredAction::SwitchWorkspace { workspace } => {
-            workspaces.switch_or_create(workspace.clone());
+            dispatch.workspaces.switch_or_create(workspace.clone());
         }
         ConfiguredAction::CreateWorkspace { workspace } => {
-            workspaces.create(workspace.clone());
+            dispatch.workspaces.create(workspace.clone());
         }
         ConfiguredAction::DestroyWorkspace { workspace } => {
-            workspaces.destroy(workspace.clone());
+            dispatch.workspaces.destroy(workspace.clone());
         }
         ConfiguredAction::EnableOutput { output } => {
-            outputs.named(output.clone()).enable();
+            dispatch.outputs.named(output.clone()).enable();
         }
         ConfiguredAction::DisableOutput { output } => {
-            outputs.named(output.clone()).disable();
+            dispatch.outputs.named(output.clone()).disable();
         }
         ConfiguredAction::ConfigureOutput { output, mode, scale } => {
-            outputs.named(output.clone()).configure(mode.clone(), *scale);
+            dispatch.outputs.named(output.clone()).configure(mode.clone(), *scale);
         }
         ConfiguredAction::PanViewport { delta_x, delta_y } => {
-            outputs.focused().pan_viewport_by(*delta_x, *delta_y);
+            dispatch.outputs.focused().pan_viewport_by(*delta_x, *delta_y);
         }
         ConfiguredAction::MoveViewport { x, y } => {
-            outputs.focused().move_viewport_to(*x, *y);
+            dispatch.outputs.focused().move_viewport_to(*x, *y);
         }
         ConfiguredAction::CenterViewportOnFocusedWindow => {
-            let Some(surface_id) = windows.focused_surface_id() else {
-                pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
-                    source: source.to_owned(),
+            let Some(surface_id) = dispatch.windows.focused_surface_id() else {
+                dispatch.pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                    source: dispatch.source.to_owned(),
                     detail: format!(
-                        "{origin} -> {} ignored: no focused surface",
+                        "{} -> {} ignored: no focused surface",
+                        dispatch.origin,
                         action.describe()
                     ),
                 });
                 return false;
             };
-            outputs.focused().center_viewport_on_window(surface_id);
+            dispatch.outputs.focused().center_viewport_on_window(surface_id);
         }
         ConfiguredAction::Exec { argv } => {
             queue_exec_command(
-                format!("{origin} -> {}", action.describe()),
+                format!("{} -> {}", dispatch.origin, action.describe()),
                 argv.clone(),
-                pending_external_commands,
+                dispatch.pending_external_commands,
             );
         }
     }
 
     true
-}
-
-fn focused_window<'a>(
-    source: &str,
-    origin: &str,
-    action: &ConfiguredAction,
-    pending_input_events: &mut PendingInputEvents,
-    windows: &'a mut WindowControlApi<'_>,
-) -> Option<nekoland_ecs::resources::WindowControlHandle<'a>> {
-    if let Some(window) = windows.focused() {
-        return Some(window);
-    }
-
-    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
-        source: source.to_owned(),
-        detail: format!("{origin} -> {} ignored: no focused surface", action.describe()),
-    });
-    None
 }
 
 /// Allows tests or nested sessions to disable startup actions entirely via environment variable.
@@ -538,8 +515,10 @@ mod tests {
 
     #[test]
     fn startup_actions_wait_for_xwayland_ready_when_enabled() {
-        let mut config = CompositorConfig::default();
-        config.startup_actions = vec![ConfiguredAction::Exec { argv: vec!["true".to_owned()] }];
+        let config = CompositorConfig {
+            startup_actions: vec![ConfiguredAction::Exec { argv: vec!["true".to_owned()] }],
+            ..CompositorConfig::default()
+        };
         let mut app = NekolandApp::new("startup-xwayland-test");
         app.insert_resource(CompositorClock::default())
             .insert_resource(config)
@@ -598,8 +577,10 @@ mod tests {
 
     #[test]
     fn startup_actions_run_immediately_when_xwayland_disabled() {
-        let mut config = CompositorConfig::default();
-        config.startup_actions = vec![ConfiguredAction::Exec { argv: vec!["true".to_owned()] }];
+        let config = CompositorConfig {
+            startup_actions: vec![ConfiguredAction::Exec { argv: vec!["true".to_owned()] }],
+            ..CompositorConfig::default()
+        };
         let mut app = NekolandApp::new("startup-xwayland-disabled-test");
         app.insert_resource(CompositorClock::default())
             .insert_resource(config)
@@ -649,8 +630,10 @@ mod tests {
 
     #[test]
     fn startup_actions_run_immediately_when_xwayland_not_present() {
-        let mut config = CompositorConfig::default();
-        config.startup_actions = vec![ConfiguredAction::Exec { argv: vec!["true".to_owned()] }];
+        let config = CompositorConfig {
+            startup_actions: vec![ConfiguredAction::Exec { argv: vec!["true".to_owned()] }],
+            ..CompositorConfig::default()
+        };
         let mut app = NekolandApp::new("startup-no-xwayland-test");
         app.insert_resource(CompositorClock::default())
             .insert_resource(config)

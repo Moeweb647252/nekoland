@@ -47,6 +47,21 @@ pub(crate) struct DrmRenderState {
     pub cursor: SoftwareCursorCache,
 }
 
+pub(crate) struct DrmPresentCtx<'a> {
+    pub outputs: &'a [OutputSnapshot],
+    pub config: Option<&'a CompositorConfig>,
+    pub cursor_render: Option<&'a CursorRenderState>,
+    pub cursor_image: Option<&'a ProtocolCursorState>,
+    pub output_damage_regions: &'a OutputDamageRegions,
+    pub render_list: &'a RenderList,
+    pub surfaces: &'a HashMap<u64, RenderSurfaceSnapshot>,
+    pub surface_registry: Option<&'a ProtocolSurfaceRegistry>,
+    pub session_state: &'a SharedDrmSessionState,
+    pub drm_shared: &'a SharedDrmState,
+    pub gbm_shared: &'a SharedGbmState,
+    pub render_state: &'a mut DrmRenderState,
+}
+
 render_elements! {
     pub(crate) BackendDrmRenderElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
@@ -54,26 +69,26 @@ render_elements! {
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
 
-pub(crate) fn render_drm_outputs<'a>(
-    outputs: impl IntoIterator<Item = &'a OutputSnapshot>,
-    config: Option<&CompositorConfig>,
-    cursor_render: Option<&CursorRenderState>,
-    cursor_image: Option<&ProtocolCursorState>,
-    output_damage_regions: &OutputDamageRegions,
-    render_list: &RenderList,
-    surfaces: &HashMap<u64, RenderSurfaceSnapshot>,
-    surface_registry: Option<&ProtocolSurfaceRegistry>,
-    session_state: &SharedDrmSessionState,
-    drm_shared: &SharedDrmState,
-    gbm_shared: &SharedGbmState,
-    render_state: &mut DrmRenderState,
-) {
+pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
+    let DrmPresentCtx {
+        outputs,
+        config,
+        cursor_render,
+        cursor_image,
+        output_damage_regions,
+        render_list,
+        surfaces,
+        surface_registry,
+        session_state,
+        drm_shared,
+        gbm_shared,
+        render_state,
+    } = ctx;
     if !session_state.borrow().active {
         return;
     }
 
     let Some(surface_registry) = surface_registry else { return };
-    let outputs = outputs.into_iter().collect::<Vec<_>>();
     if outputs.is_empty() {
         return;
     }
@@ -402,7 +417,7 @@ fn pick_mode(
 
 fn mode_refresh_millihz(mode: &smithay::reexports::drm::control::Mode) -> u32 {
     let refresh = mode.vrefresh();
-    if refresh > 0 { refresh as u32 * 1000 } else { 60_000 }
+    if refresh > 0 { refresh * 1000 } else { 60_000 }
 }
 
 fn clear_color(config: Option<&CompositorConfig>) -> Color32F {

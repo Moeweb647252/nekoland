@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageWriter;
-use bevy_ecs::prelude::{Commands, Query, Res, ResMut, Resource, With};
+use bevy_ecs::prelude::{Commands, NonSend, Query, Res, ResMut, Resource, With};
+use bevy_ecs::system::SystemParam;
 use nekoland_core::error::NekolandError;
 use nekoland_ecs::bundles::OutputBundle;
 use nekoland_ecs::components::{
@@ -90,6 +91,40 @@ pub struct BackendOutputPropertyUpdate {
 pub type PendingBackendOutputUpdates =
     FrameQueue<BackendOutputPropertyUpdate, BackendOutputUpdateQueueTag>;
 
+type OutputViewportQuery<'w, 's> =
+    Query<'w, 's, (&'static OutputDevice, &'static OutputProperties, &'static mut OutputViewport)>;
+type OutputWindowSceneQuery<'w, 's> =
+    Query<'w, 's, (&'static WlSurfaceHandle, &'static WindowSceneGeometry), With<XdgWindow>>;
+type ManagedOutputQuery<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static OutputDevice, &'static OutputBackend, &'static mut OutputProperties),
+>;
+
+#[derive(SystemParam)]
+pub(crate) struct OutputControlRequestCtx<'w, 's> {
+    pending_output_controls: ResMut<'w, PendingOutputControls>,
+    pending_output_requests: ResMut<'w, PendingOutputServerRequests>,
+    primary_output: Res<'w, PrimaryOutputState>,
+    focused_output: Res<'w, FocusedOutputState>,
+    entity_index: Res<'w, EntityIndex>,
+    remembered_viewports: ResMut<'w, RememberedOutputViewportState>,
+    outputs: OutputViewportQuery<'w, 's>,
+    windows: OutputWindowSceneQuery<'w, 's>,
+}
+
+#[derive(SystemParam)]
+pub(crate) struct OutputServerRequestCtx<'w, 's> {
+    commands: Commands<'w, 's>,
+    manager: NonSend<'w, BackendManager>,
+    output_registry: ResMut<'w, BackendOutputRegistry>,
+    remembered_viewports: Res<'w, RememberedOutputViewportState>,
+    pending_output_requests: ResMut<'w, PendingOutputServerRequests>,
+    outputs: ManagedOutputQuery<'w, 's>,
+    output_connected: MessageWriter<'w, OutputConnected>,
+    output_disconnected: MessageWriter<'w, OutputDisconnected>,
+}
+
 /// Translates the latest config snapshot into idempotent enable/configure/disable requests for
 /// the backend-facing output controller.
 pub fn sync_configured_outputs_system(
@@ -146,16 +181,17 @@ pub fn sync_configured_outputs_system(
 
 /// Folds high-level output controls from IPC/keybindings into the backend-facing request queue
 /// that config sync and runtime application already use.
-pub fn apply_output_control_requests_system(
-    mut pending_output_controls: ResMut<PendingOutputControls>,
-    mut pending_output_requests: ResMut<PendingOutputServerRequests>,
-    primary_output: Res<PrimaryOutputState>,
-    focused_output: Res<FocusedOutputState>,
-    entity_index: Res<EntityIndex>,
-    mut remembered_viewports: ResMut<RememberedOutputViewportState>,
-    mut outputs: Query<(&OutputDevice, &OutputProperties, &mut OutputViewport)>,
-    windows: Query<(&WlSurfaceHandle, &WindowSceneGeometry), With<XdgWindow>>,
-) {
+pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<'_, '_>) {
+    let OutputControlRequestCtx {
+        mut pending_output_controls,
+        mut pending_output_requests,
+        primary_output,
+        focused_output,
+        entity_index,
+        mut remembered_viewports,
+        mut outputs,
+        windows,
+    } = ctx;
     let mut deferred = Vec::new();
 
     for control in pending_output_controls.take() {
@@ -406,16 +442,17 @@ pub fn sync_output_layout_state_system(
 /// ownership metadata.
 /// Materialize public output-management requests against currently installed
 /// backends, deferring requests that cannot yet be satisfied this frame.
-pub fn apply_output_server_requests_system(
-    mut commands: Commands,
-    manager: bevy_ecs::prelude::NonSend<BackendManager>,
-    mut output_registry: ResMut<BackendOutputRegistry>,
-    remembered_viewports: Res<RememberedOutputViewportState>,
-    mut pending_output_requests: ResMut<PendingOutputServerRequests>,
-    mut outputs: Query<(Entity, &OutputDevice, &OutputBackend, &mut OutputProperties)>,
-    mut output_connected: MessageWriter<OutputConnected>,
-    mut output_disconnected: MessageWriter<OutputDisconnected>,
-) {
+pub(crate) fn apply_output_server_requests_system(ctx: OutputServerRequestCtx<'_, '_>) {
+    let OutputServerRequestCtx {
+        mut commands,
+        manager,
+        mut output_registry,
+        remembered_viewports,
+        mut pending_output_requests,
+        mut outputs,
+        mut output_connected,
+        mut output_disconnected,
+    } = ctx;
     let mut deferred = Vec::new();
 
     for request in pending_output_requests.drain() {

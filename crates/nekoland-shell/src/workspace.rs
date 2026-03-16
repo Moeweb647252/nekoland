@@ -2,6 +2,7 @@ use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::hierarchy::{ChildOf, Children};
 use bevy_ecs::prelude::{Commands, Entity, Has, Query, Res, ResMut, Resource, With};
 use bevy_ecs::query::Allow;
+use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{
     ActiveWorkspace, OutputCurrentWorkspace, OutputDevice, Workspace, WorkspaceId, XdgWindow,
 };
@@ -18,6 +19,22 @@ pub struct WorkspaceManager;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
 pub struct RememberedOutputWorkspaceState {
     pub workspaces: std::collections::BTreeMap<String, WorkspaceId>,
+}
+
+type WorkspaceWindows<'w, 's> =
+    Query<'w, 's, (Entity, Option<&'static ChildOf>), (With<XdgWindow>, Allow<Disabled>)>;
+type WorkspaceOutputs<'w, 's> =
+    Query<'w, 's, (Entity, &'static OutputDevice, Option<&'static OutputCurrentWorkspace>)>;
+
+#[derive(SystemParam)]
+pub struct WorkspaceCommandParams<'w, 's> {
+    pending_workspace_controls: ResMut<'w, PendingWorkspaceControls>,
+    entity_index: ResMut<'w, EntityIndex>,
+    primary_output: Option<Res<'w, PrimaryOutputState>>,
+    focused_output: Option<Res<'w, FocusedOutputState>>,
+    workspaces: Query<'w, 's, (Entity, WorkspaceRuntime), Allow<Disabled>>,
+    outputs: WorkspaceOutputs<'w, 's>,
+    windows: WorkspaceWindows<'w, 's>,
 }
 
 /// Ensures the compositor always has at least one active workspace entity.
@@ -46,21 +63,17 @@ pub fn workspace_switch_system(
 /// workspace disappears.
 pub fn workspace_command_system(
     mut commands: Commands,
-    mut pending_workspace_controls: ResMut<PendingWorkspaceControls>,
-    mut entity_index: ResMut<EntityIndex>,
-    mut workspaces: Query<(Entity, WorkspaceRuntime), Allow<Disabled>>,
-    outputs: Query<(Entity, &OutputDevice, Option<&OutputCurrentWorkspace>)>,
-    primary_output: Option<Res<PrimaryOutputState>>,
-    focused_output: Option<Res<FocusedOutputState>>,
-    windows: Query<(Entity, Option<&ChildOf>), (With<XdgWindow>, Allow<Disabled>)>,
+    mut workspace_commands: WorkspaceCommandParams<'_, '_>,
 ) {
-    let mut snapshot = workspaces
+    let mut snapshot = workspace_commands
+        .workspaces
         .iter_mut()
         .map(|(entity, workspace)| {
             (entity, workspace.id().0, workspace.name().to_owned(), workspace.is_active())
         })
         .collect::<Vec<_>>();
-    let output_snapshot = outputs
+    let output_snapshot = workspace_commands
+        .outputs
         .iter()
         .map(|(entity, output, current_workspace)| {
             (
@@ -71,7 +84,7 @@ pub fn workspace_command_system(
         })
         .collect::<Vec<_>>();
 
-    for control in pending_workspace_controls.take() {
+    for control in workspace_commands.pending_workspace_controls.take() {
         match control {
             WorkspaceControl::Create { target } => {
                 if resolve_workspace_lookup(&snapshot, &target).is_some() {
@@ -86,7 +99,7 @@ pub fn workspace_command_system(
                         active: false,
                     })
                     .id();
-                entity_index.insert_workspace(
+                workspace_commands.entity_index.insert_workspace(
                     workspace_entity,
                     workspace_id,
                     workspace_name.clone(),
@@ -107,7 +120,7 @@ pub fn workspace_command_system(
                                 active: true,
                             })
                             .id();
-                        entity_index.insert_workspace(
+                        workspace_commands.entity_index.insert_workspace(
                             workspace_entity,
                             workspace_id,
                             workspace_name.clone(),
@@ -117,14 +130,14 @@ pub fn workspace_command_system(
 
                 if let Some(target_output_entity) = resolve_workspace_control_output_entity(
                     &output_snapshot,
-                    focused_output.as_deref(),
-                    primary_output.as_deref(),
+                    workspace_commands.focused_output.as_deref(),
+                    workspace_commands.primary_output.as_deref(),
                 ) {
                     commands
                         .entity(target_output_entity)
                         .insert(OutputCurrentWorkspace { workspace: WorkspaceId(target_id) });
                 } else {
-                    for (entity, mut active_workspace) in &mut workspaces {
+                    for (entity, mut active_workspace) in &mut workspace_commands.workspaces {
                         active_workspace.workspace.active = entity == target_entity;
                     }
                 }
@@ -159,7 +172,7 @@ pub fn workspace_command_system(
                             .unwrap_or((None, 1))
                     });
 
-                for (window_entity, child_of) in &windows {
+                for (window_entity, child_of) in &workspace_commands.windows {
                     if !window_in_workspace(child_of, target_entity) {
                         continue;
                     }
@@ -169,29 +182,27 @@ pub fn workspace_command_system(
                     }
                 }
 
-                for (output_entity, _, current_workspace) in &outputs {
+                for (output_entity, _, current_workspace) in &workspace_commands.outputs {
                     if current_workspace
                         .is_some_and(|current_workspace| current_workspace.workspace.0 == target_id)
+                        && let Some(fallback_entity) = fallback_entity
+                        && let Some((_, fallback_workspace_id, _, _)) =
+                            snapshot.iter().find(|(entity, _, _, _)| *entity == fallback_entity)
                     {
-                        if let Some(fallback_entity) = fallback_entity
-                            && let Some((_, fallback_workspace_id, _, _)) =
-                                snapshot.iter().find(|(entity, _, _, _)| *entity == fallback_entity)
-                        {
-                            commands.entity(output_entity).insert(OutputCurrentWorkspace {
-                                workspace: WorkspaceId(*fallback_workspace_id),
-                            });
-                        }
+                        commands.entity(output_entity).insert(OutputCurrentWorkspace {
+                            workspace: WorkspaceId(*fallback_workspace_id),
+                        });
                     }
                 }
 
-                for (_, mut existing_workspace) in &mut workspaces {
+                for (_, mut existing_workspace) in &mut workspace_commands.workspaces {
                     if existing_workspace.id().0 == target_id {
                         continue;
                     }
                     existing_workspace.workspace.active = existing_workspace.id().0 == fallback_id;
                 }
 
-                entity_index.remove_workspace_entity(target_entity);
+                workspace_commands.entity_index.remove_workspace_entity(target_entity);
                 commands.entity(target_entity).despawn();
 
                 snapshot.retain(|(_, id, _, _)| *id != target_id);
@@ -697,12 +708,12 @@ mod tests {
         let Some(stale_workspace) = world.get::<Workspace>(stale_active_workspace) else {
             panic!("stale workspace should remain present");
         };
-        assert_eq!(stale_workspace.active, false);
+        assert!(!stale_workspace.active);
         assert!(world.get::<ActiveWorkspace>(stale_active_workspace).is_none());
         let Some(preferred_workspace_state) = world.get::<Workspace>(preferred_workspace) else {
             panic!("preferred workspace should remain present");
         };
-        assert_eq!(preferred_workspace_state.active, true);
+        assert!(preferred_workspace_state.active);
         assert!(world.get::<ActiveWorkspace>(preferred_workspace).is_some());
     }
 

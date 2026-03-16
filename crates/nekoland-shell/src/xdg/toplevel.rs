@@ -5,6 +5,7 @@ use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With, Without};
 use bevy_ecs::query::Allow;
+use bevy_ecs::system::SystemParam;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, ServerDecoration, SurfaceContentVersion, SurfaceGeometry,
@@ -23,10 +24,36 @@ use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_tar
 use crate::layout::floating::{
     centre_x, centre_y, placement_work_area, should_auto_place_floating_window,
 };
-use crate::window_policy::{refresh_window_policy, sync_window_background_role};
+use crate::window_policy::{
+    WindowBackgroundState, refresh_window_policy, sync_window_background_role,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToplevelManager;
+
+type ToplevelPopups<'w, 's> =
+    Query<'w, 's, PopupRuntime, (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>)>;
+type ToplevelSurfaces<'w, 's> =
+    Query<'w, 's, &'static WlSurfaceHandle, (With<XdgWindow>, Allow<Disabled>)>;
+type ToplevelOutputs<'w, 's> = Query<'w, 's, (Entity, OutputRuntime)>;
+type ToplevelWindows<'w, 's> =
+    Query<'w, 's, (Entity, WindowRuntime), (With<XdgWindow>, Allow<Disabled>)>;
+
+#[derive(SystemParam)]
+pub struct ToplevelLifecycleParams<'w, 's> {
+    pending_xdg_requests: ResMut<'w, PendingXdgRequests>,
+    pending_popup_requests: ResMut<'w, PendingPopupServerRequests>,
+    entity_index: Res<'w, EntityIndex>,
+    existing_surfaces: ToplevelSurfaces<'w, 's>,
+    outputs: ToplevelOutputs<'w, 's>,
+    primary_output: Option<Res<'w, PrimaryOutputState>>,
+    focused_output: Option<Res<'w, FocusedOutputState>>,
+    windows: ToplevelWindows<'w, 's>,
+    popups: ToplevelPopups<'w, 's>,
+    _workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
+    window_created: MessageWriter<'w, WindowCreated>,
+    window_closed: MessageWriter<'w, WindowClosed>,
+}
 
 /// Owns the XDG toplevel lifecycle bridge from protocol requests into ECS window entities.
 ///
@@ -36,19 +63,23 @@ pub fn toplevel_lifecycle_system(
     mut commands: Commands,
     config: Res<CompositorConfig>,
     work_area: Res<WorkArea>,
-    mut pending_xdg_requests: ResMut<PendingXdgRequests>,
-    mut pending_popup_requests: ResMut<PendingPopupServerRequests>,
-    entity_index: Res<EntityIndex>,
-    existing_surfaces: Query<&WlSurfaceHandle, (With<XdgWindow>, Allow<Disabled>)>,
-    outputs: Query<(Entity, OutputRuntime)>,
-    primary_output: Option<Res<PrimaryOutputState>>,
-    focused_output: Option<Res<FocusedOutputState>>,
-    mut windows: Query<(Entity, WindowRuntime), (With<XdgWindow>, Allow<Disabled>)>,
-    popups: Query<PopupRuntime, (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>)>,
-    _workspaces: Query<(Entity, WorkspaceRuntime)>,
-    mut window_created: MessageWriter<WindowCreated>,
-    mut window_closed: MessageWriter<WindowClosed>,
+    toplevel: ToplevelLifecycleParams<'_, '_>,
 ) {
+    let ToplevelLifecycleParams {
+        mut pending_xdg_requests,
+        mut pending_popup_requests,
+        entity_index,
+        existing_surfaces,
+        outputs,
+        primary_output,
+        focused_output,
+        mut windows,
+        popups,
+        _workspaces,
+        mut window_created,
+        mut window_closed,
+    } = toplevel;
+
     let mut known_surfaces =
         existing_surfaces.iter().map(|surface| surface.id).collect::<BTreeSet<_>>();
     let mut deferred = Vec::new();
@@ -117,10 +148,12 @@ pub fn toplevel_lifecycle_system(
                     &mut commands,
                     window_entity,
                     background,
-                    &mut role,
-                    &mut scene_geometry,
-                    &mut layout,
-                    &mut mode,
+                    WindowBackgroundState::new(
+                        &mut role,
+                        &mut scene_geometry,
+                        &mut layout,
+                        &mut mode,
+                    ),
                     None,
                 );
                 commands.entity(window_entity).insert((scene_geometry.clone(), layout, mode, role));
@@ -261,15 +294,21 @@ pub fn toplevel_lifecycle_system(
                 );
                 let background =
                     config.resolve_window_background(&window_app_id, &window_title, false);
+                let current_background = window_runtime
+                    .background
+                    .as_ref()
+                    .map(|background| (*background).clone());
                 sync_window_background_role(
                     &mut commands,
                     entity,
                     background,
-                    &mut window_runtime.role,
-                    &mut window_runtime.scene_geometry,
-                    &mut window_runtime.layout,
-                    &mut window_runtime.mode,
-                    window_runtime.background.as_ref().map(|background| (*background).clone()),
+                    WindowBackgroundState::new(
+                        &mut window_runtime.role,
+                        &mut window_runtime.scene_geometry,
+                        &mut window_runtime.layout,
+                        &mut window_runtime.mode,
+                    ),
+                    current_background,
                 );
             }
             _ => deferred.push(request),
@@ -376,7 +415,7 @@ fn _trace_unhandled_request(request: &WindowLifecycleRequest) {
 fn enqueue_popup_dismissals(
     parent_surface_id: u64,
     entity_index: &EntityIndex,
-    popups: &Query<PopupRuntime, (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>)>,
+    popups: &ToplevelPopups<'_, '_>,
     pending_popup_requests: &mut PendingPopupServerRequests,
 ) {
     let Some(parent_entity) = entity_index.entity_for_surface(parent_surface_id) else {
@@ -579,9 +618,7 @@ mod tests {
 
         let world = app.inner_mut().world_mut();
         let mut windows = world.query::<(&WlSurfaceHandle, &WindowLayout, &WindowMode)>();
-        let window_state = windows
-            .iter(world)
-            .find(|(surface, _, _)| surface.id == 21);
+        let window_state = windows.iter(world).find(|(surface, _, _)| surface.id == 21);
         let Some((_, layout, mode)) = window_state else {
             panic!("toplevel window should still exist");
         };

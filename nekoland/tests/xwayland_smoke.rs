@@ -109,10 +109,7 @@ fn record_xwayland_display_system(
     xwayland_state: Res<XWaylandServerState>,
     display_probe: Res<XWaylandDisplayProbe>,
 ) {
-    let mut slot = display_probe
-        .0
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut slot = display_probe.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if slot.is_some() {
         return;
     }
@@ -202,10 +199,7 @@ fn wait_for_xwayland_display(
     let deadline = Instant::now() + Duration::from_secs(3);
 
     loop {
-        let state = display_probe
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+        let state = display_probe.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
 
         if let Some(state) = state {
             return match state {

@@ -22,8 +22,8 @@ use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_tar
 
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
 use crate::window_policy::{
-    apply_window_policy, lock_window_policy, refresh_window_policy, restore_window_policy,
-    sync_window_background_role,
+    WindowBackgroundState, apply_window_policy, lock_window_policy, refresh_window_policy,
+    restore_window_policy, sync_window_background_role,
 };
 
 /// Bridges XWayland lifecycle requests into the same ECS window model used by native XDG windows.
@@ -32,36 +32,87 @@ use crate::window_policy::{
 /// focus, layout, restore-state, and popup-dismiss flows.
 type X11Windows<'w, 's> =
     Query<'w, 's, (Entity, WindowRuntime), (With<X11Window>, Allow<Disabled>)>;
+type X11PopupQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static WlSurfaceHandle, &'static ChildOf),
+    (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>),
+>;
 
 #[derive(SystemParam)]
 pub struct X11PopupDismissals<'w, 's> {
-    popups: Query<
-        'w,
-        's,
-        (&'static WlSurfaceHandle, &'static ChildOf),
-        (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>),
-    >,
+    popups: X11PopupQuery<'w, 's>,
     requests: ResMut<'w, PendingPopupServerRequests>,
+}
+
+#[derive(SystemParam)]
+pub struct X11BridgeParams<'w, 's> {
+    pending_x11_requests: ResMut<'w, PendingX11Requests>,
+    entity_index: Res<'w, EntityIndex>,
+    pointer: Res<'w, GlobalPointerPosition>,
+    active_grab: ResMut<'w, ActiveWindowGrab>,
+    keyboard_focus: ResMut<'w, KeyboardFocusState>,
+    _workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
+    outputs: Query<'w, 's, (Entity, OutputRuntime)>,
+    primary_output: Option<Res<'w, PrimaryOutputState>>,
+    focused_output: Option<Res<'w, FocusedOutputState>>,
+    windows: X11Windows<'w, 's>,
+    popup_dismissals: X11PopupDismissals<'w, 's>,
+    window_created: MessageWriter<'w, WindowCreated>,
+    window_closed: MessageWriter<'w, WindowClosed>,
+    window_moved: MessageWriter<'w, WindowMoved>,
+}
+
+struct X11MutationContext<'a, 'w, 's> {
+    config: &'a CompositorConfig,
+    entity_index: &'a EntityIndex,
+    windows: &'a mut X11Windows<'w, 's>,
+}
+
+struct MappedX11WindowRequest {
+    surface_id: u64,
+    window_id: u32,
+    override_redirect: bool,
+    popup: bool,
+    transient_for: Option<u32>,
+    window_type: Option<nekoland_ecs::components::X11WindowType>,
+    title: String,
+    app_id: String,
+    geometry: nekoland_ecs::resources::X11WindowGeometry,
+}
+
+struct ReconfiguredX11WindowRequest {
+    surface_id: u64,
+    title: String,
+    app_id: String,
+    popup: bool,
+    transient_for: Option<u32>,
+    window_type: Option<nekoland_ecs::components::X11WindowType>,
+    geometry: nekoland_ecs::resources::X11WindowGeometry,
 }
 
 pub fn xwayland_bridge_system(
     mut commands: Commands,
     config: Res<CompositorConfig>,
-    mut pending_x11_requests: ResMut<PendingX11Requests>,
-    entity_index: Res<EntityIndex>,
-    pointer: Res<GlobalPointerPosition>,
-    mut active_grab: ResMut<ActiveWindowGrab>,
-    mut keyboard_focus: ResMut<KeyboardFocusState>,
-    _workspaces: Query<(Entity, WorkspaceRuntime)>,
-    outputs: Query<(Entity, OutputRuntime)>,
-    primary_output: Option<Res<PrimaryOutputState>>,
-    focused_output: Option<Res<FocusedOutputState>>,
-    mut windows: X11Windows<'_, '_>,
-    mut popup_dismissals: X11PopupDismissals<'_, '_>,
-    mut window_created: MessageWriter<WindowCreated>,
-    mut window_closed: MessageWriter<WindowClosed>,
-    mut window_moved: MessageWriter<WindowMoved>,
+    bridge: X11BridgeParams<'_, '_>,
 ) {
+    let X11BridgeParams {
+        mut pending_x11_requests,
+        entity_index,
+        pointer,
+        mut active_grab,
+        mut keyboard_focus,
+        _workspaces,
+        outputs,
+        primary_output,
+        focused_output,
+        mut windows,
+        mut popup_dismissals,
+        mut window_created,
+        mut window_closed,
+        mut window_moved,
+    } = bridge;
+
     let active_workspace_entity = focused_or_primary_workspace_runtime_target(
         &outputs,
         focused_output.as_deref(),
@@ -87,20 +138,25 @@ pub fn xwayland_bridge_system(
                 app_id,
                 geometry,
             } => {
+                let mut context = X11MutationContext {
+                    config: &config,
+                    entity_index: &entity_index,
+                    windows: &mut windows,
+                };
                 map_x11_window(
-                    request.surface_id,
-                    window_id,
-                    override_redirect,
-                    popup,
-                    transient_for,
-                    window_type,
-                    title,
-                    app_id,
-                    geometry,
+                    MappedX11WindowRequest {
+                        surface_id: request.surface_id,
+                        window_id,
+                        override_redirect,
+                        popup,
+                        transient_for,
+                        window_type,
+                        title,
+                        app_id,
+                        geometry,
+                    },
                     active_workspace_entity,
-                    &config,
-                    &entity_index,
-                    &mut windows,
+                    &mut context,
                     &mut commands,
                     &mut window_created,
                     &mut window_moved,
@@ -114,17 +170,22 @@ pub fn xwayland_bridge_system(
                 window_type,
                 geometry,
             } => {
+                let mut context = X11MutationContext {
+                    config: &config,
+                    entity_index: &entity_index,
+                    windows: &mut windows,
+                };
                 if !reconfigure_x11_window(
-                    request.surface_id,
-                    title,
-                    app_id,
-                    popup,
-                    transient_for,
-                    window_type,
-                    geometry,
-                    &config,
-                    &entity_index,
-                    &mut windows,
+                    ReconfiguredX11WindowRequest {
+                        surface_id: request.surface_id,
+                        title,
+                        app_id,
+                        popup,
+                        transient_for,
+                        window_type,
+                        geometry,
+                    },
+                    &mut context,
                     &mut commands,
                     &mut window_moved,
                 ) {
@@ -241,97 +302,91 @@ fn resolve_x11_window_entity(
 }
 
 fn map_x11_window(
-    surface_id: u64,
-    window_id: u32,
-    override_redirect: bool,
-    popup: bool,
-    transient_for: Option<u32>,
-    window_type: Option<nekoland_ecs::components::X11WindowType>,
-    title: String,
-    app_id: String,
-    geometry: nekoland_ecs::resources::X11WindowGeometry,
+    request: MappedX11WindowRequest,
     active_workspace_entity: Option<Entity>,
-    config: &CompositorConfig,
-    entity_index: &EntityIndex,
-    windows: &mut X11Windows<'_, '_>,
+    context: &mut X11MutationContext<'_, '_, '_>,
     commands: &mut Commands,
     window_created: &mut MessageWriter<WindowCreated>,
     window_moved: &mut MessageWriter<WindowMoved>,
 ) {
-    let policy = config.resolve_window_policy(&app_id, &title, override_redirect);
-    let background = config.resolve_window_background(&app_id, &title, override_redirect);
-    if let Some(entity) = resolve_x11_window_entity(surface_id, entity_index, windows) {
-        if let Ok((entity, mut window)) = windows.get_mut(entity) {
-            let moved = window.geometry.x != geometry.x || window.geometry.y != geometry.y;
-            *window.geometry = SurfaceGeometry {
-                x: geometry.x,
-                y: geometry.y,
-                width: geometry.width.max(1),
-                height: geometry.height.max(1),
-            };
-            *window.scene_geometry = WindowSceneGeometry {
-                x: geometry.x as isize,
-                y: geometry.y as isize,
-                width: geometry.width.max(1),
-                height: geometry.height.max(1),
-            };
-            let Some(buffer) = window.buffer.as_mut() else {
-                tracing::warn!(
-                    surface_id,
-                    "skipping mapped x11 window update without buffer state"
-                );
-                return;
-            };
-            buffer.attached = true;
-            let Some(xdg_window) = window.xdg_window.as_mut() else {
-                tracing::warn!(
-                    surface_id,
-                    "skipping mapped x11 window update without xdg metadata"
-                );
-                return;
-            };
-            xdg_window.title = title.clone();
-            xdg_window.app_id = app_id.clone();
-            apply_window_policy(
-                policy,
-                &mut window.layout,
-                &mut window.mode,
-                &mut window.policy_state,
-            );
-            sync_window_background_role(
-                commands,
-                entity,
-                background,
+    let MappedX11WindowRequest {
+        surface_id,
+        window_id,
+        override_redirect,
+        popup,
+        transient_for,
+        window_type,
+        title,
+        app_id,
+        geometry,
+    } = request;
+    let policy = context
+        .config
+        .resolve_window_policy(&app_id, &title, override_redirect);
+    let background = context
+        .config
+        .resolve_window_background(&app_id, &title, override_redirect);
+    if let Some(entity) = resolve_x11_window_entity(surface_id, context.entity_index, context.windows)
+        && let Ok((entity, mut window)) = context.windows.get_mut(entity)
+    {
+        let moved = window.geometry.x != geometry.x || window.geometry.y != geometry.y;
+        *window.geometry = SurfaceGeometry {
+            x: geometry.x,
+            y: geometry.y,
+            width: geometry.width.max(1),
+            height: geometry.height.max(1),
+        };
+        *window.scene_geometry = WindowSceneGeometry {
+            x: geometry.x as isize,
+            y: geometry.y as isize,
+            width: geometry.width.max(1),
+            height: geometry.height.max(1),
+        };
+        let Some(buffer) = window.buffer.as_mut() else {
+            tracing::warn!(surface_id, "skipping mapped x11 window update without buffer state");
+            return;
+        };
+        buffer.attached = true;
+        let Some(xdg_window) = window.xdg_window.as_mut() else {
+            tracing::warn!(surface_id, "skipping mapped x11 window update without xdg metadata");
+            return;
+        };
+        xdg_window.title = title.clone();
+        xdg_window.app_id = app_id.clone();
+        apply_window_policy(policy, &mut window.layout, &mut window.mode, &mut window.policy_state);
+        let current_background =
+            window.background.as_ref().map(|background| (*background).clone());
+        sync_window_background_role(
+            commands,
+            entity,
+            background,
+            WindowBackgroundState::new(
                 &mut window.role,
                 &mut window.scene_geometry,
                 &mut window.layout,
                 &mut window.mode,
-                window.background.as_ref().map(|background| (*background).clone()),
-            );
-            if matches!(*window.layout, WindowLayout::Floating)
-                && *window.mode == WindowMode::Normal
-            {
-                window.placement.set_explicit_position(WindowPosition {
-                    x: geometry.x as isize,
-                    y: geometry.y as isize,
-                });
-                window.placement.floating_size = Some(WindowSize {
-                    width: geometry.width.max(1),
-                    height: geometry.height.max(1),
-                });
-            }
-            if let Some(active_workspace_entity) = active_workspace_entity {
-                commands.entity(entity).insert(ChildOf(active_workspace_entity));
-            }
-            if moved {
-                window_moved.write(WindowMoved {
-                    surface_id,
-                    x: geometry.x as i64,
-                    y: geometry.y as i64,
-                });
-            }
-            return;
+            ),
+            current_background,
+        );
+        if matches!(*window.layout, WindowLayout::Floating) && *window.mode == WindowMode::Normal {
+            window.placement.set_explicit_position(WindowPosition {
+                x: geometry.x as isize,
+                y: geometry.y as isize,
+            });
+            window.placement.floating_size =
+                Some(WindowSize { width: geometry.width.max(1), height: geometry.height.max(1) });
         }
+        if let Some(active_workspace_entity) = active_workspace_entity {
+            commands.entity(entity).insert(ChildOf(active_workspace_entity));
+        }
+        if moved {
+            window_moved.write(WindowMoved {
+                surface_id,
+                x: geometry.x as i64,
+                y: geometry.y as i64,
+            });
+        }
+        return;
     }
 
     let window_entity = commands
@@ -370,7 +425,7 @@ fn map_x11_window(
                 decoration: ServerDecoration { enabled: true },
                 border_theme: BorderTheme {
                     width: policy.layout.border_width(),
-                    color: config.border_color.clone(),
+                    color: context.config.border_color.clone(),
                 },
                 animation: WindowAnimation::default(),
             },
@@ -400,10 +455,7 @@ fn map_x11_window(
         commands,
         window_entity,
         background,
-        &mut role,
-        &mut scene_geometry,
-        &mut layout,
-        &mut mode,
+        WindowBackgroundState::new(&mut role, &mut scene_geometry, &mut layout, &mut mode),
         None,
     );
     commands.entity(window_entity).insert((scene_geometry.clone(), layout, mode, role));
@@ -414,23 +466,26 @@ fn map_x11_window(
 }
 
 fn reconfigure_x11_window(
-    surface_id: u64,
-    title: String,
-    app_id: String,
-    popup: bool,
-    transient_for: Option<u32>,
-    window_type: Option<nekoland_ecs::components::X11WindowType>,
-    geometry: nekoland_ecs::resources::X11WindowGeometry,
-    config: &CompositorConfig,
-    entity_index: &EntityIndex,
-    windows: &mut X11Windows<'_, '_>,
+    request: ReconfiguredX11WindowRequest,
+    context: &mut X11MutationContext<'_, '_, '_>,
     commands: &mut Commands,
     window_moved: &mut MessageWriter<WindowMoved>,
 ) -> bool {
-    let Some(entity) = resolve_x11_window_entity(surface_id, entity_index, windows) else {
+    let ReconfiguredX11WindowRequest {
+        surface_id,
+        title,
+        app_id,
+        popup,
+        transient_for,
+        window_type,
+        geometry,
+    } = request;
+    let Some(entity) =
+        resolve_x11_window_entity(surface_id, context.entity_index, context.windows)
+    else {
         return false;
     };
-    let Ok((_, mut window)) = windows.get_mut(entity) else {
+    let Ok((_, mut window)) = context.windows.get_mut(entity) else {
         return false;
     };
 
@@ -459,9 +514,10 @@ fn reconfigure_x11_window(
         x11_window.override_redirect
     };
     let policy =
-        config.resolve_window_policy(&resolved_app_id, &resolved_title, override_redirect);
-    let background =
-        config.resolve_window_background(&resolved_app_id, &resolved_title, override_redirect);
+        context.config.resolve_window_policy(&resolved_app_id, &resolved_title, override_redirect);
+    let background = context
+        .config
+        .resolve_window_background(&resolved_app_id, &resolved_title, override_redirect);
     refresh_window_policy(
         policy,
         &mut window.layout,
@@ -469,15 +525,18 @@ fn reconfigure_x11_window(
         &mut window.restore,
         &mut window.policy_state,
     );
+    let current_background = window.background.as_ref().map(|background| (*background).clone());
     sync_window_background_role(
         commands,
         entity,
         background,
-        &mut window.role,
-        &mut window.scene_geometry,
-        &mut window.layout,
-        &mut window.mode,
-        window.background.as_ref().map(|background| (*background).clone()),
+        WindowBackgroundState::new(
+            &mut window.role,
+            &mut window.scene_geometry,
+            &mut window.layout,
+            &mut window.mode,
+        ),
+        current_background,
     );
 
     let moved = window.geometry.x != geometry.x || window.geometry.y != geometry.y;
@@ -528,8 +587,8 @@ fn enter_x11_window_state(
 
     window.restore.snapshot = Some(WindowRestoreState {
         geometry: window.scene_geometry.clone(),
-        layout: (*window.layout).clone(),
-        mode: (*window.mode).clone(),
+        layout: *window.layout,
+        mode: *window.mode,
     });
     *window.mode = target_mode;
     if let Some((width, height)) = output_geometry {
@@ -599,10 +658,7 @@ fn start_x11_window_grab(
     }
 
     let Some(x11_window) = window.x11_window.as_ref() else {
-        tracing::warn!(
-            surface_id,
-            "skipping interactive x11 grab for window without x11 metadata"
-        );
+        tracing::warn!(surface_id, "skipping interactive x11 grab for window without x11 metadata");
         return true;
     };
     let override_redirect = x11_window.override_redirect;
@@ -644,10 +700,7 @@ fn destroy_x11_window(
 fn popup_dismissal_surface_ids(
     parent_surface_id: u64,
     entity_index: &EntityIndex,
-    popups: &Query<
-        (&WlSurfaceHandle, &ChildOf),
-        (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>),
-    >,
+    popups: &X11PopupQuery<'_, '_>,
 ) -> Vec<u64> {
     let Some(parent_entity) = entity_index.entity_for_surface(parent_surface_id) else {
         return Vec::new();
@@ -945,9 +998,7 @@ mod tests {
 
         let world = app.inner_mut().world_mut();
         let mut windows = world.query::<(&WlSurfaceHandle, &WindowLayout, &WindowMode)>();
-        let window_state = windows
-            .iter(world)
-            .find(|(surface, _, _)| surface.id == 88);
+        let window_state = windows.iter(world).find(|(surface, _, _)| surface.id == 88);
         let Some((_, layout, mode)) = window_state else {
             panic!("mapped X11 window should exist");
         };

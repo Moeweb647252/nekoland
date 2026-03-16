@@ -266,12 +266,9 @@ fn layer_shell_surface_reaches_ecs_and_render_list() {
     let (surface_id, geometry, namespace, render_elements, wl_surface) = {
         let world = app.inner_mut().world_mut();
         let mut layers = world.query::<(&WlSurfaceHandle, &SurfaceGeometry, &LayerShellSurface)>();
-        let layer_row = layers
-            .iter(world)
-            .next()
-            .map(|(surface, geometry, layer_surface)| {
-                (surface.id, geometry.clone(), layer_surface.namespace.clone())
-            });
+        let layer_row = layers.iter(world).next().map(|(surface, geometry, layer_surface)| {
+            (surface.id, geometry.clone(), layer_surface.namespace.clone())
+        });
         let Some((surface_id, geometry, namespace)) = layer_row else {
             panic!("layer-shell client should create a layer entity");
         };
@@ -333,7 +330,9 @@ fn output_bound_layer_shell_surface_resolves_to_a_real_output_entity() {
         Ok(result) => match result {
             Ok(summary) => summary,
             Err(common::TestControl::Skip(reason)) => {
-                eprintln!("skipping output-bound layer-shell test in restricted environment: {reason}");
+                eprintln!(
+                    "skipping output-bound layer-shell test in restricted environment: {reason}"
+                );
                 return;
             }
             Err(common::TestControl::Fail(reason)) => {

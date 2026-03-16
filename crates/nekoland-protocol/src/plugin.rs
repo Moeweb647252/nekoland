@@ -24,6 +24,7 @@ use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, Has, Local, NonSend, NonSendMut, Query, Res, ResMut, Resource, With};
 use bevy_ecs::query::Allow;
 use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
+use bevy_ecs::system::SystemParam;
 use calloop::generic::{FdWrapper, Generic};
 use calloop::{Interest, Mode, PostAction};
 use nekoland_core::bridge::WaylandBridge;
@@ -146,8 +147,8 @@ use smithay::{
 };
 
 use crate::{
-    ProtocolEvent, ProtocolRegistry, ProtocolState, ProtocolSurfaceEntry, ProtocolSurfaceKind,
-    ProtocolSurfaceRegistry,
+    ProtocolEvent, ProtocolFlushTargets, ProtocolRegistry, ProtocolState, ProtocolSurfaceEntry,
+    ProtocolSurfaceKind, ProtocolSurfaceRegistry,
 };
 
 type PresentationKind = wp_presentation_feedback::Kind;
@@ -357,6 +358,79 @@ impl Default for SeatInputSyncState {
             pointer_location: (0.0, 0.0).into(),
         }
     }
+}
+
+type WorkspaceVisibilityWindows<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, WindowVisibilityRuntime, Has<Disabled>),
+    (With<XdgWindow>, Allow<Disabled>),
+>;
+type WorkspaceVisibilityPopups<'w, 's> =
+    Query<'w, 's, (PopupRuntime, Has<Disabled>), (With<XdgPopup>, Allow<Disabled>)>;
+type ProtocolOutputQuery<'w, 's> =
+    Query<'w, 's, (Entity, &'static OutputDevice, &'static OutputPlacement)>;
+type PointerWindows<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        SurfaceRuntime,
+        &'static WindowRole,
+        Option<&'static WindowViewportVisibility>,
+        Option<&'static OutputBackgroundWindow>,
+    ),
+    With<XdgWindow>,
+>;
+type PointerPopups<'w, 's> = Query<'w, 's, (SurfaceRuntime, &'static ChildOf), With<XdgPopup>>;
+type PointerLayers<'w, 's> = Query<
+    'w,
+    's,
+    (SurfaceRuntime, Option<&'static LayerOnOutput>, Option<&'static DesiredOutputName>),
+    With<LayerShellSurface>,
+>;
+#[cfg(test)]
+type PointerHitTestState<'w, 's> = (
+    ProtocolOutputQuery<'w, 's>,
+    PointerWindows<'w, 's>,
+    PointerPopups<'w, 's>,
+    PointerLayers<'w, 's>,
+);
+
+#[derive(SystemParam)]
+struct FlushProtocolQueueParams<'w> {
+    pending_xdg_requests: ResMut<'w, PendingXdgRequests>,
+    pending_layer_requests: ResMut<'w, PendingLayerRequests>,
+    pending_x11_requests: ResMut<'w, PendingX11Requests>,
+    pending_output_events: ResMut<'w, PendingOutputEvents>,
+    clipboard_selection: ResMut<'w, ClipboardSelectionState>,
+    drag_and_drop: ResMut<'w, DragAndDropState>,
+    primary_selection: ResMut<'w, PrimarySelectionState>,
+}
+
+#[derive(SystemParam)]
+struct DispatchSeatInputParams<'w, 's> {
+    clock: Res<'w, CompositorClock>,
+    keyboard_focus: Option<Res<'w, KeyboardFocusState>>,
+    pointer: Option<Res<'w, GlobalPointerPosition>>,
+    render_list: Option<Res<'w, RenderList>>,
+    surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
+    primary_output: Option<Res<'w, PrimaryOutputState>>,
+    pending_protocol_input_events: ResMut<'w, PendingProtocolInputEvents>,
+    outputs: ProtocolOutputQuery<'w, 's>,
+    windows: PointerWindows<'w, 's>,
+    popups: PointerPopups<'w, 's>,
+    layers: PointerLayers<'w, 's>,
+}
+
+struct PointerFocusInputs<'a, 'w, 's> {
+    render_list: Option<&'a RenderList>,
+    surface_presentation: Option<&'a SurfacePresentationSnapshot>,
+    primary_output: Option<&'a PrimaryOutputState>,
+    outputs: &'a ProtocolOutputQuery<'w, 's>,
+    windows: &'a PointerWindows<'w, 's>,
+    popups: &'a PointerPopups<'w, 's>,
+    layers: &'a PointerLayers<'w, 's>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -658,32 +732,24 @@ fn dispatch_surface_frame_callbacks_system(
 
 fn flush_protocol_queue_system(
     mut protocol_state: ResMut<ProtocolState>,
-    mut pending_xdg_requests: ResMut<PendingXdgRequests>,
-    mut pending_layer_requests: ResMut<PendingLayerRequests>,
-    mut pending_x11_requests: ResMut<PendingX11Requests>,
-    mut pending_output_events: ResMut<PendingOutputEvents>,
-    mut clipboard_selection: ResMut<ClipboardSelectionState>,
-    mut drag_and_drop: ResMut<DragAndDropState>,
-    mut primary_selection: ResMut<PrimarySelectionState>,
+    mut params: FlushProtocolQueueParams<'_>,
 ) {
-    protocol_state.flush_into_ecs(
-        &mut pending_xdg_requests,
-        &mut pending_layer_requests,
-        &mut pending_x11_requests,
-        &mut pending_output_events,
-        &mut clipboard_selection,
-        &mut drag_and_drop,
-        &mut primary_selection,
-    );
+    let mut targets = ProtocolFlushTargets {
+        pending_xdg_requests: &mut params.pending_xdg_requests,
+        pending_layer_requests: &mut params.pending_layer_requests,
+        pending_x11_requests: &mut params.pending_x11_requests,
+        pending_output_events: &mut params.pending_output_events,
+        clipboard_selection: &mut params.clipboard_selection,
+        drag_and_drop: &mut params.drag_and_drop,
+        primary_selection: &mut params.primary_selection,
+    };
+    protocol_state.flush_into_ecs(&mut targets);
 }
 
 fn sync_workspace_visibility_system(
     workspaces: Query<(Entity, WorkspaceRuntime)>,
-    windows: Query<
-        (Entity, WindowVisibilityRuntime, Has<Disabled>),
-        (With<XdgWindow>, Allow<Disabled>),
-    >,
-    popups: Query<(PopupRuntime, Has<Disabled>), (With<XdgPopup>, Allow<Disabled>)>,
+    windows: WorkspaceVisibilityWindows<'_, '_>,
+    popups: WorkspaceVisibilityPopups<'_, '_>,
     surface_presentation: Option<Res<SurfacePresentationSnapshot>>,
     mut visibility: Local<WorkspaceVisibilityState>,
     mut server: NonSendMut<SmithayProtocolServer>,
@@ -797,29 +863,7 @@ fn popup_parent_visible(child_of: &ChildOf, visible_toplevel_entities: &BTreeSet
 }
 
 fn dispatch_seat_input_system(
-    clock: Res<CompositorClock>,
-    keyboard_focus: Option<Res<KeyboardFocusState>>,
-    pointer: Option<Res<GlobalPointerPosition>>,
-    render_list: Option<Res<RenderList>>,
-    surface_presentation: Option<Res<SurfacePresentationSnapshot>>,
-    primary_output: Option<Res<PrimaryOutputState>>,
-    mut pending_protocol_input_events: ResMut<PendingProtocolInputEvents>,
-    outputs: Query<(Entity, &OutputDevice, &OutputPlacement)>,
-    windows: Query<
-        (
-            Entity,
-            SurfaceRuntime,
-            &WindowRole,
-            Option<&WindowViewportVisibility>,
-            Option<&OutputBackgroundWindow>,
-        ),
-        With<XdgWindow>,
-    >,
-    popups: Query<(SurfaceRuntime, &ChildOf), With<XdgPopup>>,
-    layers: Query<
-        (SurfaceRuntime, Option<&LayerOnOutput>, Option<&DesiredOutputName>),
-        With<LayerShellSurface>,
-    >,
+    params: DispatchSeatInputParams<'_, '_>,
     mut seat_sync: Local<SeatInputSyncState>,
     mut server: NonSendMut<SmithayProtocolServer>,
 ) {
@@ -828,11 +872,31 @@ fn dispatch_seat_input_system(
         seat_sync.host_focused = true;
     }
 
+    let DispatchSeatInputParams {
+        clock,
+        keyboard_focus,
+        pointer,
+        render_list,
+        surface_presentation,
+        primary_output,
+        mut pending_protocol_input_events,
+        outputs,
+        windows,
+        popups,
+        layers,
+    } = params;
     let time = compositor_time_millis(&clock);
     let keyboard_focus = keyboard_focus.as_deref();
     let pointer = pointer.as_deref();
-    let render_list = render_list.as_deref();
-    let surface_presentation = surface_presentation.as_deref();
+    let focus_inputs = PointerFocusInputs {
+        render_list: render_list.as_deref(),
+        surface_presentation: surface_presentation.as_deref(),
+        primary_output: primary_output.as_deref(),
+        outputs: &outputs,
+        windows: &windows,
+        popups: &popups,
+        layers: &layers,
+    };
 
     for event in pending_protocol_input_events.drain() {
         sync_keyboard_focus_if_needed(&mut server, &mut seat_sync, keyboard_focus);
@@ -845,13 +909,7 @@ fn dispatch_seat_input_system(
                     &mut server,
                     &mut seat_sync,
                     pointer,
-                    render_list,
-                    surface_presentation,
-                    primary_output.as_deref(),
-                    &outputs,
-                    &windows,
-                    &popups,
-                    &layers,
+                    &focus_inputs,
                     time,
                 );
             }
@@ -866,13 +924,7 @@ fn dispatch_seat_input_system(
                     &mut server,
                     &mut seat_sync,
                     pointer,
-                    render_list,
-                    surface_presentation,
-                    primary_output.as_deref(),
-                    &outputs,
-                    &windows,
-                    &popups,
-                    &layers,
+                    &focus_inputs,
                     time,
                 );
             }
@@ -881,13 +933,7 @@ fn dispatch_seat_input_system(
                     &mut server,
                     &mut seat_sync,
                     pointer,
-                    render_list,
-                    surface_presentation,
-                    primary_output.as_deref(),
-                    &outputs,
-                    &windows,
-                    &popups,
-                    &layers,
+                    &focus_inputs,
                     time,
                 );
                 if seat_sync.host_focused {
@@ -904,13 +950,7 @@ fn dispatch_seat_input_system(
                     &mut server,
                     &mut seat_sync,
                     pointer,
-                    render_list,
-                    surface_presentation,
-                    primary_output.as_deref(),
-                    &outputs,
-                    &windows,
-                    &popups,
-                    &layers,
+                    &focus_inputs,
                     time,
                 );
                 if seat_sync.host_focused {
@@ -921,19 +961,7 @@ fn dispatch_seat_input_system(
     }
 
     sync_keyboard_focus_if_needed(&mut server, &mut seat_sync, keyboard_focus);
-    sync_pointer_focus_if_needed(
-        &mut server,
-        &mut seat_sync,
-        pointer,
-        render_list,
-        surface_presentation,
-        primary_output.as_deref(),
-        &outputs,
-        &windows,
-        &popups,
-        &layers,
-        time,
-    );
+    sync_pointer_focus_if_needed(&mut server, &mut seat_sync, pointer, &focus_inputs, time);
 }
 
 impl SmithayProtocolServer {
@@ -1185,11 +1213,11 @@ fn sync_protocol_output_timing_system(
     mut last_output_timing: Local<Option<OutputTiming>>,
     mut server: NonSendMut<SmithayProtocolServer>,
 ) {
-    if let Some(output_timing) = current_output_timing(&outputs) {
-        if last_output_timing.as_ref() != Some(&output_timing) {
-            server.sync_output_timing(output_timing.clone());
-            *last_output_timing = Some(output_timing);
-        }
+    if let Some(output_timing) = current_output_timing(&outputs)
+        && last_output_timing.as_ref() != Some(&output_timing)
+    {
+        server.sync_output_timing(output_timing.clone());
+        *last_output_timing = Some(output_timing);
     }
 }
 
@@ -1612,14 +1640,12 @@ impl SmithayProtocolRuntime {
             false
         };
 
-        if handled {
-            if let Err(error) = self.display.flush_clients() {
-                remember_protocol_error(
-                    &mut self.last_dispatch_error,
-                    error,
-                    "failed to flush Wayland clients after sending close",
-                );
-            }
+        if handled && let Err(error) = self.display.flush_clients() {
+            remember_protocol_error(
+                &mut self.last_dispatch_error,
+                error,
+                "failed to flush Wayland clients after sending close",
+            );
         }
 
         handled
@@ -1657,14 +1683,12 @@ impl SmithayProtocolRuntime {
             false
         };
 
-        if handled {
-            if let Err(error) = self.display.flush_clients() {
-                remember_protocol_error(
-                    &mut self.last_dispatch_error,
-                    error,
-                    "failed to flush Wayland clients after syncing XDG toplevel state",
-                );
-            }
+        if handled && let Err(error) = self.display.flush_clients() {
+            remember_protocol_error(
+                &mut self.last_dispatch_error,
+                error,
+                "failed to flush Wayland clients after syncing XDG toplevel state",
+            );
         }
 
         handled
@@ -1719,14 +1743,12 @@ impl SmithayProtocolRuntime {
             false
         };
 
-        if handled {
-            if let Err(error) = self.display.flush_clients() {
-                remember_protocol_error(
-                    &mut self.last_dispatch_error,
-                    error,
-                    "failed to flush Wayland clients after syncing X11 window presentation",
-                );
-            }
+        if handled && let Err(error) = self.display.flush_clients() {
+            remember_protocol_error(
+                &mut self.last_dispatch_error,
+                error,
+                "failed to flush Wayland clients after syncing X11 window presentation",
+            );
         }
 
         handled
@@ -1923,14 +1945,12 @@ impl SmithayProtocolRuntime {
             sent_protocol_update = true;
         }
 
-        if sent_protocol_update {
-            if let Err(error) = self.display.flush_clients() {
-                remember_protocol_error(
-                    &mut self.last_dispatch_error,
-                    error,
-                    "failed to flush Wayland clients after syncing workspace visibility",
-                );
-            }
+        if sent_protocol_update && let Err(error) = self.display.flush_clients() {
+            remember_protocol_error(
+                &mut self.last_dispatch_error,
+                error,
+                "failed to flush Wayland clients after syncing workspace visibility",
+            );
         }
     }
 
@@ -1965,14 +1985,12 @@ impl SmithayProtocolRuntime {
             sent_callbacks = true;
         }
 
-        if sent_callbacks {
-            if let Err(error) = self.display.flush_clients() {
-                remember_protocol_error(
-                    &mut self.last_dispatch_error,
-                    error,
-                    "failed to flush Wayland clients after sending frame callbacks",
-                );
-            }
+        if sent_callbacks && let Err(error) = self.display.flush_clients() {
+            remember_protocol_error(
+                &mut self.last_dispatch_error,
+                error,
+                "failed to flush Wayland clients after sending frame callbacks",
+            );
         }
     }
 
@@ -2006,14 +2024,12 @@ impl SmithayProtocolRuntime {
             sent_feedback = true;
         }
 
-        if sent_feedback {
-            if let Err(error) = self.display.flush_clients() {
-                remember_protocol_error(
-                    &mut self.last_dispatch_error,
-                    error,
-                    "failed to flush Wayland clients after sending presentation feedback",
-                );
-            }
+        if sent_feedback && let Err(error) = self.display.flush_clients() {
+            remember_protocol_error(
+                &mut self.last_dispatch_error,
+                error,
+                "failed to flush Wayland clients after sending presentation feedback",
+            );
         }
     }
 
@@ -3519,25 +3535,7 @@ fn sync_pointer_focus_if_needed(
     server: &mut SmithayProtocolServer,
     seat_sync: &mut SeatInputSyncState,
     pointer: Option<&GlobalPointerPosition>,
-    render_list: Option<&RenderList>,
-    surface_presentation: Option<&SurfacePresentationSnapshot>,
-    primary_output: Option<&PrimaryOutputState>,
-    outputs: &Query<(Entity, &OutputDevice, &OutputPlacement)>,
-    windows: &Query<
-        (
-            Entity,
-            SurfaceRuntime,
-            &WindowRole,
-            Option<&WindowViewportVisibility>,
-            Option<&OutputBackgroundWindow>,
-        ),
-        With<XdgWindow>,
-    >,
-    popups: &Query<(SurfaceRuntime, &ChildOf), With<XdgPopup>>,
-    layers: &Query<
-        (SurfaceRuntime, Option<&LayerOnOutput>, Option<&DesiredOutputName>),
-        With<LayerShellSurface>,
-    >,
+    focus_inputs: &PointerFocusInputs<'_, '_, '_>,
     time: u32,
 ) {
     let location = pointer
@@ -3545,19 +3543,7 @@ fn sync_pointer_focus_if_needed(
         .unwrap_or(seat_sync.pointer_location);
     let desired_focus = if seat_sync.host_focused {
         pointer.and_then(|pointer| {
-            pointer_focus_target(
-                pointer.x,
-                pointer.y,
-                Some(&*server),
-                location,
-                render_list,
-                surface_presentation,
-                primary_output,
-                outputs,
-                windows,
-                popups,
-                layers,
-            )
+            pointer_focus_target(pointer.x, pointer.y, Some(&*server), location, focus_inputs)
         })
     } else {
         None
@@ -3578,29 +3564,12 @@ fn pointer_focus_target(
     pointer_y: f64,
     server: Option<&SmithayProtocolServer>,
     location: Point<f64, Logical>,
-    render_list: Option<&RenderList>,
-    surface_presentation: Option<&SurfacePresentationSnapshot>,
-    primary_output: Option<&PrimaryOutputState>,
-    outputs: &Query<(Entity, &OutputDevice, &OutputPlacement)>,
-    windows: &Query<
-        (
-            Entity,
-            SurfaceRuntime,
-            &WindowRole,
-            Option<&WindowViewportVisibility>,
-            Option<&OutputBackgroundWindow>,
-        ),
-        With<XdgWindow>,
-    >,
-    popups: &Query<(SurfaceRuntime, &ChildOf), With<XdgPopup>>,
-    layers: &Query<
-        (SurfaceRuntime, Option<&LayerOnOutput>, Option<&DesiredOutputName>),
-        With<LayerShellSurface>,
-    >,
+    focus_inputs: &PointerFocusInputs<'_, '_, '_>,
 ) -> Option<PointerSurfaceFocus> {
-    let render_list = render_list?;
-    if let Some(surface_presentation) = surface_presentation {
-        let output_offsets = outputs
+    let render_list = focus_inputs.render_list?;
+    if let Some(surface_presentation) = focus_inputs.surface_presentation {
+        let output_offsets = focus_inputs
+            .outputs
             .iter()
             .map(|(_, output, placement)| (output.name.clone(), (placement.x, placement.y)))
             .collect::<HashMap<_, _>>();
@@ -3640,19 +3609,21 @@ fn pointer_focus_target(
         return None;
     }
     let primary_output_name =
-        primary_output.and_then(|primary_output| primary_output.name.as_deref());
-    let output_names = outputs
+        focus_inputs.primary_output.and_then(|primary_output| primary_output.name.as_deref());
+    let output_names = focus_inputs
+        .outputs
         .iter()
         .map(|(entity, output, _)| (entity, output.name.clone()))
         .collect::<HashMap<_, _>>();
-    let output_offsets = outputs
+    let output_offsets = focus_inputs
+        .outputs
         .iter()
         .map(|(_, output, placement)| (output.name.clone(), (placement.x, placement.y)))
         .collect::<HashMap<_, _>>();
     let mut surface_bounds = HashMap::new();
     let mut window_target_outputs_by_entity = HashMap::new();
 
-    for (entity, surface, role, viewport_visibility, background) in windows.iter() {
+    for (entity, surface, role, viewport_visibility, background) in focus_inputs.windows.iter() {
         if role.is_output_background() {
             continue;
         }
@@ -3666,7 +3637,7 @@ fn pointer_focus_target(
         );
     }
 
-    for (surface, child_of) in popups.iter() {
+    for (surface, child_of) in focus_inputs.popups.iter() {
         let target_output = window_target_outputs_by_entity
             .get(&child_of.parent())
             .and_then(|target_output| target_output.as_deref());
@@ -3676,7 +3647,7 @@ fn pointer_focus_target(
         );
     }
 
-    for (surface, layer_output, desired_output_name) in layers.iter() {
+    for (surface, layer_output, desired_output_name) in focus_inputs.layers.iter() {
         let target_output = layer_output
             .and_then(|layer_output| output_names.get(&layer_output.0).map(String::as_str))
             .or_else(|| {
@@ -3992,26 +3963,23 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use bevy_ecs::hierarchy::ChildOf;
-    use bevy_ecs::prelude::{Entity, Query, World};
-    use bevy_ecs::query::With;
+    use bevy_ecs::prelude::World;
     use bevy_ecs::system::SystemState;
     use nekoland_ecs::bundles::OutputBundle;
     use nekoland_ecs::components::{
-        DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow, OutputDevice,
-        OutputPlacement, OutputProperties, SurfaceGeometry, WindowRole, WindowViewportVisibility,
-        WlSurfaceHandle, XdgWindow,
+        LayerShellSurface, OutputDevice, OutputPlacement, OutputProperties, SurfaceGeometry,
+        WindowViewportVisibility, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{PrimaryOutputState, RenderElement, RenderList};
-    use nekoland_ecs::views::SurfaceRuntime;
     use smithay::reexports::wayland_server::Display;
     use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
     use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
     use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
     use super::{
-        DEFAULT_KEYBOARD_REPEAT_RATE, ProtocolClientState, ProtocolEvent, ProtocolRuntimeState,
-        SmithayProtocolRuntime, XdgSurfaceRole, pointer_focus_target,
+        DEFAULT_KEYBOARD_REPEAT_RATE, PointerFocusInputs, PointerHitTestState, ProtocolClientState,
+        ProtocolEvent, ProtocolRuntimeState, SmithayProtocolRuntime, XdgSurfaceRole,
+        pointer_focus_target,
     };
 
     #[derive(Debug)]
@@ -4071,16 +4039,12 @@ mod tests {
         }
 
         let events = runtime.drain_events();
-        let Some(surface_id) = events
-            .iter()
-            .find_map(|event| match event {
-                ProtocolEvent::ConfigureRequested {
-                    surface_id,
-                    role: XdgSurfaceRole::Toplevel,
-                } => Some(*surface_id),
-                _ => None,
-            })
-        else {
+        let Some(surface_id) = events.iter().find_map(|event| match event {
+            ProtocolEvent::ConfigureRequested { surface_id, role: XdgSurfaceRole::Toplevel } => {
+                Some(*surface_id)
+            }
+            _ => None,
+        }) else {
             panic!("server should emit a toplevel configure request");
         };
 
@@ -4139,39 +4103,21 @@ mod tests {
                 RenderElement { surface_id: 22, z_index: 1, opacity: 1.0 },
             ],
         };
-        let mut system_state: SystemState<(
-            Query<(Entity, &OutputDevice, &OutputPlacement)>,
-            Query<
-                (
-                    Entity,
-                    SurfaceRuntime,
-                    &WindowRole,
-                    Option<&WindowViewportVisibility>,
-                    Option<&OutputBackgroundWindow>,
-                ),
-                With<XdgWindow>,
-            >,
-            Query<(SurfaceRuntime, &ChildOf), With<nekoland_ecs::components::XdgPopup>>,
-            Query<
-                (SurfaceRuntime, Option<&LayerOnOutput>, Option<&DesiredOutputName>),
-                With<LayerShellSurface>,
-            >,
-        )> = SystemState::new(&mut world);
+        let mut system_state = SystemState::<PointerHitTestState<'_, '_>>::new(&mut world);
         let (outputs, windows, popups, layers) = system_state.get(&world);
+        let focus_inputs = PointerFocusInputs {
+            render_list: Some(&render_list),
+            surface_presentation: None,
+            primary_output: None,
+            outputs: &outputs,
+            windows: &windows,
+            popups: &popups,
+            layers: &layers,
+        };
 
-        let Some(target) = pointer_focus_target(
-            16.0,
-            16.0,
-            None,
-            (16.0, 16.0).into(),
-            Some(&render_list),
-            None,
-            None,
-            &outputs,
-            &windows,
-            &popups,
-            &layers,
-        ) else {
+        let Some(target) =
+            pointer_focus_target(16.0, 16.0, None, (16.0, 16.0).into(), &focus_inputs)
+        else {
             panic!("pointer focus target should exist");
         };
 
@@ -4214,59 +4160,29 @@ mod tests {
         let render_list = RenderList {
             elements: vec![RenderElement { surface_id: 42, z_index: 0, opacity: 1.0 }],
         };
-        let mut system_state: SystemState<(
-            Query<(Entity, &OutputDevice, &OutputPlacement)>,
-            Query<
-                (
-                    Entity,
-                    SurfaceRuntime,
-                    &WindowRole,
-                    Option<&WindowViewportVisibility>,
-                    Option<&OutputBackgroundWindow>,
-                ),
-                With<XdgWindow>,
-            >,
-            Query<(SurfaceRuntime, &ChildOf), With<nekoland_ecs::components::XdgPopup>>,
-            Query<
-                (SurfaceRuntime, Option<&LayerOnOutput>, Option<&DesiredOutputName>),
-                With<LayerShellSurface>,
-            >,
-        )> = SystemState::new(&mut world);
+        let mut system_state = SystemState::<PointerHitTestState<'_, '_>>::new(&mut world);
         let (outputs, windows, popups, layers) = system_state.get(&world);
+        let primary_output = PrimaryOutputState { name: Some("DP-1".to_owned()) };
+        let focus_inputs = PointerFocusInputs {
+            render_list: Some(&render_list),
+            surface_presentation: None,
+            primary_output: Some(&primary_output),
+            outputs: &outputs,
+            windows: &windows,
+            popups: &popups,
+            layers: &layers,
+        };
 
-        let Some(target) = pointer_focus_target(
-            110.0,
-            10.0,
-            None,
-            (110.0, 10.0).into(),
-            Some(&render_list),
-            None,
-            Some(&PrimaryOutputState { name: Some("DP-1".to_owned()) }),
-            &outputs,
-            &windows,
-            &popups,
-            &layers,
-        ) else {
+        let Some(target) =
+            pointer_focus_target(110.0, 10.0, None, (110.0, 10.0).into(), &focus_inputs)
+        else {
             panic!("window on the second output should receive pointer focus");
         };
 
         assert_eq!(target.surface_id, 42);
         assert_eq!(target.surface_origin, (100.0, 0.0).into());
         assert!(
-            pointer_focus_target(
-                10.0,
-                10.0,
-                None,
-                (10.0, 10.0).into(),
-                Some(&render_list),
-                None,
-                Some(&PrimaryOutputState { name: Some("DP-1".to_owned()) }),
-                &outputs,
-                &windows,
-                &popups,
-                &layers,
-            )
-            .is_none(),
+            pointer_focus_target(10.0, 10.0, None, (10.0, 10.0).into(), &focus_inputs).is_none(),
             "output-local geometry should not be hit-tested at the wrong global origin",
         );
     }

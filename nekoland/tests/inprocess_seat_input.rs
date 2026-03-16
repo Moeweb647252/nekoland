@@ -184,8 +184,8 @@ fn pump_protocol_seat_input(
 
     keyboard_focus.focused_surface = Some(surface.id);
 
-    let x_offset: f64 = if pump.tick % 2 == 0 { 24.0 } else { 40.0 };
-    let y_offset: f64 = if pump.tick % 2 == 0 { 28.0 } else { 44.0 };
+    let x_offset: f64 = if pump.tick.is_multiple_of(2) { 24.0 } else { 40.0 };
+    let y_offset: f64 = if pump.tick.is_multiple_of(2) { 28.0 } else { 44.0 };
     let x = f64::from(geometry.x) + x_offset.min(f64::from(geometry.width.saturating_sub(1)));
     let y = f64::from(geometry.y) + y_offset.min(f64::from(geometry.height.saturating_sub(1)));
     pointer.x = x;

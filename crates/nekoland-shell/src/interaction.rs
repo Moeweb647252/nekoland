@@ -1,5 +1,6 @@
 use bevy_ecs::message::{MessageReader, MessageWriter};
 use bevy_ecs::prelude::{Query, Res, ResMut, Resource, With};
+use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{
     WindowLayout, WindowPosition, WindowSceneGeometry, WindowSize, XdgWindow,
 };
@@ -14,6 +15,24 @@ use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 use crate::viewport::{project_scene_geometry, resolve_output_state_for_workspace};
 
 const MIN_WINDOW_SIZE: i32 = 32;
+
+type GrabWindows<'w, 's> = Query<'w, 's, WindowRuntime, With<XdgWindow>>;
+type GrabOutputs<'w, 's> = Query<'w, 's, (bevy_ecs::prelude::Entity, OutputRuntime)>;
+type GrabWorkspaces<'w, 's> = Query<'w, 's, (bevy_ecs::prelude::Entity, WorkspaceRuntime)>;
+
+#[derive(SystemParam)]
+pub struct WindowGrabParams<'w, 's> {
+    entity_index: Res<'w, EntityIndex>,
+    pointer: Res<'w, GlobalPointerPosition>,
+    active_grab: ResMut<'w, ActiveWindowGrab>,
+    keyboard_focus: ResMut<'w, KeyboardFocusState>,
+    stacking: ResMut<'w, WindowStackingState>,
+    primary_output: Option<Res<'w, PrimaryOutputState>>,
+    window_moved: MessageWriter<'w, WindowMoved>,
+    windows: GrabWindows<'w, 's>,
+    outputs: GrabOutputs<'w, 's>,
+    workspaces: GrabWorkspaces<'w, 's>,
+}
 
 /// Interactive grab mode currently applied to a floating window.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,37 +60,29 @@ pub struct ActiveWindowGrab {
 /// Advances the active floating-window grab from pointer motion/button events and applies the
 /// resulting geometry updates in real time.
 pub fn window_grab_system(
-    entity_index: Res<EntityIndex>,
-    pointer: Res<GlobalPointerPosition>,
     mut pointer_buttons: MessageReader<PointerButton>,
-    mut active_grab: ResMut<ActiveWindowGrab>,
-    mut keyboard_focus: ResMut<KeyboardFocusState>,
-    mut stacking: ResMut<WindowStackingState>,
-    mut windows: Query<WindowRuntime, With<XdgWindow>>,
-    outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
-    primary_output: Option<Res<PrimaryOutputState>>,
-    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
-    mut window_moved: MessageWriter<WindowMoved>,
+    mut grab: WindowGrabParams<'_, '_>,
 ) {
     let release_detected = pointer_buttons.read().any(|event| !event.pressed);
-    let Some(grab_state) = active_grab.state.clone() else {
+    let Some(grab_state) = grab.active_grab.state.clone() else {
         return;
     };
 
-    let Some(mut window) = entity_index
+    let Some(mut window) = grab
+        .entity_index
         .entity_for_surface(grab_state.surface_id)
-        .and_then(|entity| windows.get_mut(entity).ok())
+        .and_then(|entity| grab.windows.get_mut(entity).ok())
     else {
-        active_grab.state = None;
+        grab.active_grab.state = None;
         return;
     };
 
     if *window.layout != WindowLayout::Floating {
-        active_grab.state = None;
+        grab.active_grab.state = None;
         return;
     }
 
-    let next_geometry = geometry_for_pointer(&grab_state, &pointer);
+    let next_geometry = geometry_for_pointer(&grab_state, &grab.pointer);
     let moved =
         window.scene_geometry.x != next_geometry.x || window.scene_geometry.y != next_geometry.y;
     let resized = window.scene_geometry.width != next_geometry.width
@@ -79,12 +90,12 @@ pub fn window_grab_system(
 
     if moved || resized {
         *window.scene_geometry = next_geometry.clone();
-        let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces)
+        let workspace_id = window_workspace_runtime_id(window.child_of, &grab.workspaces)
             .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID);
         if let Some((_, _, viewport, _)) = resolve_output_state_for_workspace(
-            &outputs,
+            &grab.outputs,
             Some(workspace_id),
-            primary_output.as_deref(),
+            grab.primary_output.as_deref(),
         ) {
             *window.geometry = project_scene_geometry(&next_geometry, viewport);
         } else {
@@ -97,7 +108,7 @@ pub fn window_grab_system(
             window
                 .placement
                 .set_explicit_position(WindowPosition { x: next_geometry.x, y: next_geometry.y });
-            window_moved.write(WindowMoved {
+            grab.window_moved.write(WindowMoved {
                 surface_id: grab_state.surface_id,
                 x: next_geometry.x as i64,
                 y: next_geometry.y as i64,
@@ -115,15 +126,15 @@ pub fn window_grab_system(
         }
     }
 
-    keyboard_focus.focused_surface = Some(grab_state.surface_id);
-    stacking.raise(
-        window_workspace_runtime_id(window.child_of, &workspaces)
+    grab.keyboard_focus.focused_surface = Some(grab_state.surface_id);
+    grab.stacking.raise(
+        window_workspace_runtime_id(window.child_of, &grab.workspaces)
             .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID),
         grab_state.surface_id,
     );
 
     if release_detected {
-        active_grab.state = None;
+        grab.active_grab.state = None;
     }
 }
 

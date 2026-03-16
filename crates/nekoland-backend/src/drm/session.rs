@@ -48,6 +48,17 @@ impl Default for DrmSessionState {
 
 pub type SharedDrmSessionState = Rc<RefCell<DrmSessionState>>;
 
+pub(crate) struct DrmSessionExtractCtx<'a> {
+    pub descriptor: &'a mut BackendDescriptor,
+    pub session_state: &'a SharedDrmSessionState,
+    pub drm_state: &'a SharedDrmState,
+    pub gbm_state: &'a SharedGbmState,
+    pub input_state: &'a SharedDrmInputState,
+    pub render_state: &'a mut DrmRenderState,
+    pub pending_backend_inputs: &'a mut PendingBackendInputEvents,
+    pub pending_protocol_inputs: &'a mut PendingProtocolInputEvents,
+}
+
 pub(crate) fn install_drm_session_source(app: &mut App, session_state: SharedDrmSessionState) {
     if app.world().get_non_send_resource::<CalloopSourceRegistry>().is_none() {
         app.insert_non_send_resource(CalloopSourceRegistry::default());
@@ -105,16 +116,17 @@ pub(crate) fn install_drm_session_source(app: &mut App, session_state: SharedDrm
     });
 }
 
-pub(crate) fn extract_session(
-    descriptor: &mut BackendDescriptor,
-    session_state: &SharedDrmSessionState,
-    drm_state: &SharedDrmState,
-    gbm_state: &SharedGbmState,
-    input_state: &SharedDrmInputState,
-    render_state: &mut DrmRenderState,
-    pending_backend_inputs: &mut PendingBackendInputEvents,
-    pending_protocol_inputs: &mut PendingProtocolInputEvents,
-) {
+pub(crate) fn extract_session(ctx: DrmSessionExtractCtx<'_>) {
+    let DrmSessionExtractCtx {
+        descriptor,
+        session_state,
+        drm_state,
+        gbm_state,
+        input_state,
+        render_state,
+        pending_backend_inputs,
+        pending_protocol_inputs,
+    } = ctx;
     let mut session_state = session_state.borrow_mut();
     match &session_state.status {
         DrmSessionStatus::Uninitialized => {
@@ -194,8 +206,7 @@ mod tests {
 
     #[test]
     fn ignores_activity_transition_when_session_not_ready() {
-        let mut state = DrmSessionState::default();
-        state.active = true;
+        let mut state = DrmSessionState { active: true, ..DrmSessionState::default() };
 
         assert_eq!(take_activity_transition(&mut state), None);
         assert_eq!(state.was_active, None);

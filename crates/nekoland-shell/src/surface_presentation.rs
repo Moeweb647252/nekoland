@@ -14,21 +14,25 @@ use nekoland_ecs::resources::{
 };
 use nekoland_ecs::views::{OutputRuntime, PopupSnapshotRuntime, WindowSnapshotRuntime};
 
+type LayerPresentationQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static WlSurfaceHandle,
+        &'static SurfaceGeometry,
+        &'static BufferState,
+        Option<&'static LayerOnOutput>,
+        Option<&'static DesiredOutputName>,
+    ),
+    With<LayerShellSurface>,
+>;
+
 pub fn surface_presentation_snapshot_system(
     outputs: Query<(Entity, OutputRuntime)>,
     primary_output: Option<Res<PrimaryOutputState>>,
     windows: Query<(Entity, WindowSnapshotRuntime), With<XdgWindow>>,
     popups: Query<PopupSnapshotRuntime, With<XdgPopup>>,
-    layers: Query<
-        (
-            &WlSurfaceHandle,
-            &SurfaceGeometry,
-            &BufferState,
-            Option<&LayerOnOutput>,
-            Option<&DesiredOutputName>,
-        ),
-        With<LayerShellSurface>,
-    >,
+    layers: LayerPresentationQuery<'_, '_>,
     mut snapshot: ResMut<SurfacePresentationSnapshot>,
 ) {
     let live_output_names =

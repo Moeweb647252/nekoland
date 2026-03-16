@@ -159,7 +159,9 @@ fn ipc_reports_primary_selection_query_and_subscription_updates() {
         Ok(result) => match result {
             Ok(summary) => summary,
             Err(common::TestControl::Skip(reason)) => {
-                eprintln!("skipping IPC primary-selection test in restricted environment: {reason}");
+                eprintln!(
+                    "skipping IPC primary-selection test in restricted environment: {reason}"
+                );
                 return;
             }
             Err(common::TestControl::Fail(reason)) => {
@@ -172,7 +174,9 @@ fn ipc_reports_primary_selection_query_and_subscription_updates() {
         Ok(result) => match result {
             Ok(result) => result,
             Err(common::TestControl::Skip(reason)) => {
-                eprintln!("skipping IPC primary-selection test in restricted environment: {reason}");
+                eprintln!(
+                    "skipping IPC primary-selection test in restricted environment: {reason}"
+                );
                 return;
             }
             Err(common::TestControl::Fail(reason)) => {
@@ -502,10 +506,11 @@ impl Dispatch<wl_seat::WlSeat, ()> for PrimarySelectionClientState {
         _conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event {
-            if capabilities.contains(wl_seat::Capability::Keyboard) && state.keyboard.is_none() {
-                state.keyboard = Some(seat.get_keyboard(qh, ()));
-            }
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event
+            && capabilities.contains(wl_seat::Capability::Keyboard)
+            && state.keyboard.is_none()
+        {
+            state.keyboard = Some(seat.get_keyboard(qh, ()));
         }
     }
 }

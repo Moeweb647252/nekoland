@@ -224,7 +224,8 @@ fn run_clipboard_transfer_scenario()
         panic!("nekoland app should complete the configured frame budget: {error}");
     }
 
-    let Some(selection_state) = app.inner().world().get_resource::<ClipboardSelectionState>() else {
+    let Some(selection_state) = app.inner().world().get_resource::<ClipboardSelectionState>()
+    else {
         panic!("clipboard selection resource should be initialized");
     };
     let selection_state = selection_state.clone();
@@ -327,7 +328,8 @@ fn run_clipboard_persistence_scenario()
         panic!("nekoland app should complete the configured frame budget: {error}");
     }
 
-    let Some(selection_state) = app.inner().world().get_resource::<ClipboardSelectionState>() else {
+    let Some(selection_state) = app.inner().world().get_resource::<ClipboardSelectionState>()
+    else {
         panic!("clipboard selection resource should be initialized");
     };
     let selection_state = selection_state.clone();
@@ -336,7 +338,9 @@ fn run_clipboard_persistence_scenario()
         Ok(result) => match result {
             Ok(summary) => summary,
             Err(common::TestControl::Skip(reason)) => {
-                eprintln!("skipping clipboard persistence test in restricted environment: {reason}");
+                eprintln!(
+                    "skipping clipboard persistence test in restricted environment: {reason}"
+                );
                 return None;
             }
             Err(common::TestControl::Fail(reason)) => panic!("target client failed: {reason}"),
@@ -347,7 +351,9 @@ fn run_clipboard_persistence_scenario()
         Ok(result) => match result {
             Ok(summary) => summary,
             Err(common::TestControl::Skip(reason)) => {
-                eprintln!("skipping clipboard persistence test in restricted environment: {reason}");
+                eprintln!(
+                    "skipping clipboard persistence test in restricted environment: {reason}"
+                );
                 return None;
             }
             Err(common::TestControl::Fail(reason)) => panic!("source client failed: {reason}"),
@@ -682,10 +688,11 @@ impl Dispatch<wl_seat::WlSeat, ()> for SourceClientState {
         _conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event {
-            if capabilities.contains(wl_seat::Capability::Keyboard) && state.keyboard.is_none() {
-                state.keyboard = Some(seat.get_keyboard(qh, ()));
-            }
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event
+            && capabilities.contains(wl_seat::Capability::Keyboard)
+            && state.keyboard.is_none()
+        {
+            state.keyboard = Some(seat.get_keyboard(qh, ()));
         }
     }
 }
@@ -699,10 +706,11 @@ impl Dispatch<wl_seat::WlSeat, ()> for TargetClientState {
         _conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event {
-            if capabilities.contains(wl_seat::Capability::Keyboard) && state.keyboard.is_none() {
-                state.keyboard = Some(seat.get_keyboard(qh, ()));
-            }
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event
+            && capabilities.contains(wl_seat::Capability::Keyboard)
+            && state.keyboard.is_none()
+        {
+            state.keyboard = Some(seat.get_keyboard(qh, ()));
         }
     }
 }

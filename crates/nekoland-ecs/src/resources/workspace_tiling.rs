@@ -139,11 +139,8 @@ impl WorkspaceTileTree {
             self.root = Some(new_leaf);
             return;
         };
-        let Some(tail_leaf) = self
-            .surface_nodes
-            .get(&existing_tail_surface)
-            .copied()
-            .or_else(|| {
+        let Some(tail_leaf) =
+            self.surface_nodes.get(&existing_tail_surface).copied().or_else(|| {
                 self.nodes.iter().find_map(|(node_id, node)| match node {
                     TileNode::Leaf { surface_id } if *surface_id == existing_tail_surface => {
                         Some(*node_id)

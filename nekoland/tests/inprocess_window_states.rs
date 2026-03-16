@@ -121,6 +121,18 @@ struct ScenarioClientState {
     terminal_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PopupPositionerSpec {
+    width: i32,
+    height: i32,
+    anchor_x: i32,
+    anchor_y: i32,
+    anchor_width: i32,
+    anchor_height: i32,
+    offset_x: i32,
+    offset_y: i32,
+}
+
 /// Records `WindowClosed` messages emitted during scenarios that destroy/close toplevels.
 #[derive(Debug, Default, Resource)]
 struct ClosedWindowAudit {
@@ -201,11 +213,7 @@ fn fullscreen_and_popup_requests_populate_popup_entity_and_render_list() {
         let windows = window_query
             .iter(world)
             .map(|(surface, layout, mode, geometry, _)| {
-                (
-                    surface.id,
-                    WindowDisplayState::from_layout_mode(layout.clone(), mode.clone()),
-                    geometry.clone(),
-                )
+                (surface.id, WindowDisplayState::from_layout_mode(*layout, *mode), geometry.clone())
             })
             .collect::<Vec<_>>();
         assert_eq!(windows.len(), 1, "scenario should create exactly one toplevel window");
@@ -327,11 +335,11 @@ fn minimize_request_hides_window_clears_focus_and_removes_render_entry() {
         let windows = window_query
             .iter(world)
             .map(|(surface, layout, mode, _)| {
-                (surface.id, WindowDisplayState::from_layout_mode(layout.clone(), mode.clone()))
+                (surface.id, WindowDisplayState::from_layout_mode(*layout, *mode))
             })
             .collect::<Vec<_>>();
         assert_eq!(windows.len(), 1, "scenario should create exactly one toplevel window");
-        let (surface_id, state) = windows[0].clone();
+        let (surface_id, state) = windows[0];
 
         let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
             panic!("keyboard focus state should be initialized");
@@ -380,11 +388,7 @@ fn interactive_move_request_switches_window_to_floating_geometry() {
         let windows = window_query
             .iter(world)
             .map(|(surface, layout, mode, geometry, _)| {
-                (
-                    surface.id,
-                    WindowDisplayState::from_layout_mode(layout.clone(), mode.clone()),
-                    geometry.clone(),
-                )
+                (surface.id, WindowDisplayState::from_layout_mode(*layout, *mode), geometry.clone())
             })
             .collect::<Vec<_>>();
         assert_eq!(windows.len(), 1, "scenario should create exactly one toplevel window");
@@ -1367,8 +1371,8 @@ fn pump_interactive_seat_input(
             }
         }
     } else {
-        let x_offset: f64 = if pump.tick % 2 == 0 { 24.0 } else { 40.0 };
-        let y_offset: f64 = if pump.tick % 2 == 0 { 28.0 } else { 44.0 };
+        let x_offset: f64 = if pump.tick.is_multiple_of(2) { 24.0 } else { 40.0 };
+        let y_offset: f64 = if pump.tick.is_multiple_of(2) { 28.0 } else { 44.0 };
         (
             f64::from(geometry.x) + x_offset.min(f64::from(geometry.width.saturating_sub(1))),
             f64::from(geometry.y) + y_offset.min(f64::from(geometry.height.saturating_sub(1))),
@@ -1405,7 +1409,7 @@ fn snapshot_window_output_and_work_area(
     let windows = window_query
         .iter(world)
         .map(|(layout, mode, geometry, _)| {
-            (WindowDisplayState::from_layout_mode(layout.clone(), mode.clone()), geometry.clone())
+            (WindowDisplayState::from_layout_mode(*layout, *mode), geometry.clone())
         })
         .collect::<Vec<_>>();
     assert_eq!(windows.len(), 1, "scenario should create exactly one toplevel window");
@@ -1849,10 +1853,11 @@ impl Dispatch<wl_seat::WlSeat, ()> for ScenarioClientState {
         _conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event {
-            if capabilities.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
-                state.pointer = Some(seat.get_pointer(qh, ()));
-            }
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event
+            && capabilities.contains(wl_seat::Capability::Pointer)
+            && state.pointer.is_none()
+        {
+            state.pointer = Some(seat.get_pointer(qh, ()));
         }
     }
 }
@@ -1891,20 +1896,20 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for ScenarioClientState {
             {
                 state.popup_configure_serial = Some(serial);
                 xdg_surface.ack_configure(serial);
-                if let Some(surface) = state.popup_surface.as_ref() {
-                    if !state.popup_buffer_attached {
-                        let Some(shm) = state.shm.as_ref() else {
-                            panic!("wl_shm should be bound before the popup is configured");
-                        };
-                        let Ok((file, pool, buffer)) = create_test_buffer(shm, qh) else {
-                            panic!("window state client should create a popup wl_shm buffer");
-                        };
-                        surface.attach(Some(&buffer), 0, 0);
-                        state.popup_backing_file = Some(file);
-                        state.popup_pool = Some(pool);
-                        state.popup_buffer = Some(buffer);
-                        state.popup_buffer_attached = true;
-                    }
+                if let Some(surface) = state.popup_surface.as_ref()
+                    && !state.popup_buffer_attached
+                {
+                    let Some(shm) = state.shm.as_ref() else {
+                        panic!("wl_shm should be bound before the popup is configured");
+                    };
+                    let Ok((file, pool, buffer)) = create_test_buffer(shm, qh) else {
+                        panic!("window state client should create a popup wl_shm buffer");
+                    };
+                    surface.attach(Some(&buffer), 0, 0);
+                    state.popup_backing_file = Some(file);
+                    state.popup_pool = Some(pool);
+                    state.popup_buffer = Some(buffer);
+                    state.popup_buffer_attached = true;
                 }
                 if let Some(surface) = state.popup_surface.as_ref() {
                     surface.commit();
@@ -2182,7 +2187,19 @@ impl ScenarioClientState {
                 let Some(popup) = self.popup.as_ref() else {
                     panic!("popup reposition scenario requires xdg_popup");
                 };
-                let positioner = self.make_positioner(qh, 300, 140, 80, 48, 96, 40, 20, 16);
+                let positioner = self.make_positioner(
+                    qh,
+                    PopupPositionerSpec {
+                        width: 300,
+                        height: 140,
+                        anchor_x: 80,
+                        anchor_y: 48,
+                        anchor_width: 96,
+                        anchor_height: 40,
+                        offset_x: 20,
+                        offset_y: 16,
+                    },
+                );
                 popup.reposition(&positioner, 91);
                 self.scenario_stage = 2;
                 self.final_request_sent = true;
@@ -2255,7 +2272,19 @@ impl ScenarioClientState {
 
         let popup_surface = compositor.create_surface(qh, ());
         let popup_xdg_surface = wm_base.get_xdg_surface(&popup_surface, qh, ());
-        let positioner = self.make_positioner(qh, 240, 120, 24, 24, 64, 32, 16, 12);
+        let positioner = self.make_positioner(
+            qh,
+            PopupPositionerSpec {
+                width: 240,
+                height: 120,
+                anchor_x: 24,
+                anchor_y: 24,
+                anchor_width: 64,
+                anchor_height: 32,
+                offset_x: 16,
+                offset_y: 12,
+            },
+        );
         let popup = popup_xdg_surface.get_popup(Some(parent), &positioner, qh, ());
         if let Some(serial) = grab_serial {
             let Some(seat) = self.seat.as_ref() else {
@@ -2310,18 +2339,21 @@ impl ScenarioClientState {
     fn make_positioner(
         &self,
         qh: &QueueHandle<Self>,
-        width: i32,
-        height: i32,
-        anchor_x: i32,
-        anchor_y: i32,
-        anchor_width: i32,
-        anchor_height: i32,
-        offset_x: i32,
-        offset_y: i32,
+        spec: PopupPositionerSpec,
     ) -> xdg_positioner::XdgPositioner {
         let Some(wm_base) = self.wm_base.as_ref() else {
             panic!("positioner creation requires xdg_wm_base");
         };
+        let PopupPositionerSpec {
+            width,
+            height,
+            anchor_x,
+            anchor_y,
+            anchor_width,
+            anchor_height,
+            offset_x,
+            offset_y,
+        } = spec;
         let positioner = wm_base.create_positioner(qh, ());
         positioner.set_size(width, height);
         positioner.set_anchor_rect(anchor_x, anchor_y, anchor_width, anchor_height);

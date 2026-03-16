@@ -92,7 +92,7 @@ fn nekoland_binary_accepts_wayland_client_roundtrip() {
 
 /// Spawns the compositor binary with a short bounded runtime for end-to-end testing.
 fn spawn_nekoland(runtime_dir: &Path) -> Child {
-    let child = Command::new(env!("CARGO_BIN_EXE_nekoland"))
+    Command::new(env!("CARGO_BIN_EXE_nekoland"))
         .current_dir(workspace_root())
         .env("NEKOLAND_RUNTIME_DIR", runtime_dir)
         .env("NEKOLAND_CONFIG", workspace_root().join("config/default.toml"))
@@ -102,8 +102,7 @@ fn spawn_nekoland(runtime_dir: &Path) -> Child {
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
-        .unwrap_or_else(|error| panic!("nekoland binary should spawn: {error}"));
-    child
+        .unwrap_or_else(|error| panic!("nekoland binary should spawn: {error}"))
 }
 
 /// Preflight check that the environment allows Unix-socket bind operations in the runtime dir.
@@ -214,8 +213,9 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Option<ChildOutp
 /// Force-terminates the child process and collects any buffered stderr.
 fn terminate_child(child: &mut Child) -> ChildOutput {
     let _ = child.kill();
-    let status =
-        child.wait().unwrap_or_else(|error| panic!("child wait after kill should succeed: {error}"));
+    let status = child
+        .wait()
+        .unwrap_or_else(|error| panic!("child wait after kill should succeed: {error}"));
     ChildOutput { status, stderr: take_child_stderr(child) }
 }
 

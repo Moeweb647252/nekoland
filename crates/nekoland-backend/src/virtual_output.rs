@@ -111,15 +111,16 @@ impl Backend for VirtualRuntime {
         let desired_output_name = self.desired_output_name(cx.config);
         let has_output =
             self.owned_outputs(cx.outputs).any(|output| output.device.name == desired_output_name);
-        if !has_output && self.seeded_output_name.as_deref() != Some(desired_output_name.as_str()) {
-            if let Some(blueprint) = self.seed_output(&desired_output_name) {
-                cx.output_events.push(BackendOutputEventRecord {
-                    backend_id: self.id(),
-                    output_name: desired_output_name.clone(),
-                    change: BackendOutputChange::Connected(blueprint),
-                });
-                self.seeded_output_name = Some(desired_output_name);
-            }
+        if !has_output
+            && self.seeded_output_name.as_deref() != Some(desired_output_name.as_str())
+            && let Some(blueprint) = self.seed_output(&desired_output_name)
+        {
+            cx.output_events.push(BackendOutputEventRecord {
+                backend_id: self.id(),
+                output_name: desired_output_name.clone(),
+                change: BackendOutputChange::Connected(blueprint),
+            });
+            self.seeded_output_name = Some(desired_output_name);
         }
 
         let owned_outputs = self.owned_outputs(cx.outputs).cloned().collect::<Vec<_>>();

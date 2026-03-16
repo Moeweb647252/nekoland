@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, Local, Query, Res, ResMut, With};
+use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{
     BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputDevice,
     SurfaceContentVersion, SurfaceGeometry, WlSurfaceHandle, XdgPopup, XdgWindow,
@@ -29,32 +30,54 @@ pub(crate) struct DamageTrackerState {
     previous_snapshot: Option<OutputDamageSnapshot>,
 }
 
+type DamageLayers<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static WlSurfaceHandle,
+        &'static SurfaceGeometry,
+        &'static BufferState,
+        &'static SurfaceContentVersion,
+        Option<&'static LayerOnOutput>,
+        Option<&'static DesiredOutputName>,
+    ),
+    With<LayerShellSurface>,
+>;
+type DamageWindows<'w, 's> = Query<'w, 's, (Entity, WindowSnapshotRuntime), With<XdgWindow>>;
+type DamagePopups<'w, 's> = Query<'w, 's, PopupSnapshotRuntime, With<XdgPopup>>;
+type DamageOutputs<'w, 's> = Query<'w, 's, (Entity, &'static OutputDevice)>;
+
+#[derive(SystemParam)]
+pub(crate) struct DamageTrackingParams<'w, 's> {
+    layers: DamageLayers<'w, 's>,
+    windows: DamageWindows<'w, 's>,
+    popups: DamagePopups<'w, 's>,
+    outputs: DamageOutputs<'w, 's>,
+    primary_output: Option<Res<'w, PrimaryOutputState>>,
+    surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
+    damage_state: ResMut<'w, DamageState>,
+    output_damage_regions: ResMut<'w, OutputDamageRegions>,
+    tracker_state: Local<'s, DamageTrackerState>,
+}
+
 /// Derives per-output scene damage from changes in the visible compositor scene graph.
 ///
 /// The tracker keeps the previous output-local geometry plus a content-commit version for each
 /// visible surface. Geometry-only changes emit a symmetric difference; content commits emit the
 /// full current rect, and disappearing geometry emits the previous rect.
-pub(crate) fn damage_tracking_system(
-    layers: Query<
-        (
-            &WlSurfaceHandle,
-            &SurfaceGeometry,
-            &BufferState,
-            &SurfaceContentVersion,
-            Option<&LayerOnOutput>,
-            Option<&DesiredOutputName>,
-        ),
-        With<LayerShellSurface>,
-    >,
-    windows: Query<(Entity, WindowSnapshotRuntime), With<XdgWindow>>,
-    popups: Query<PopupSnapshotRuntime, With<XdgPopup>>,
-    outputs: Query<(Entity, &OutputDevice)>,
-    primary_output: Option<Res<PrimaryOutputState>>,
-    surface_presentation: Option<Res<SurfacePresentationSnapshot>>,
-    mut damage_state: ResMut<DamageState>,
-    mut output_damage_regions: ResMut<OutputDamageRegions>,
-    mut tracker_state: Local<DamageTrackerState>,
-) {
+pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
+    let DamageTrackingParams {
+        layers,
+        windows,
+        popups,
+        outputs,
+        primary_output,
+        surface_presentation,
+        mut damage_state,
+        mut output_damage_regions,
+        mut tracker_state,
+    } = damage;
+
     let live_output_names =
         outputs.iter().map(|(_, output)| output.name.clone()).collect::<BTreeSet<_>>();
     let output_names_by_entity = outputs
@@ -537,10 +560,8 @@ mod tests {
             }));
         }
 
-        let Some(mut visibility) = app
-            .inner_mut()
-            .world_mut()
-            .get_mut::<WindowViewportVisibility>(secondary_window)
+        let Some(mut visibility) =
+            app.inner_mut().world_mut().get_mut::<WindowViewportVisibility>(secondary_window)
         else {
             panic!("window viewport visibility should remain present");
         };
@@ -690,10 +711,8 @@ mod tests {
         app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();
         app.inner_mut().world_mut().resource_mut::<DamageState>().full_redraw = false;
 
-        let Some(mut content_version) = app
-            .inner_mut()
-            .world_mut()
-            .get_mut::<SurfaceContentVersion>(window)
+        let Some(mut content_version) =
+            app.inner_mut().world_mut().get_mut::<SurfaceContentVersion>(window)
         else {
             panic!("surface content version should remain present");
         };

@@ -103,7 +103,9 @@ fn shm_buffer_commit_populates_renderer_surface_state() {
         Ok(result) => match result {
             Ok(summary) => summary,
             Err(common::TestControl::Skip(reason)) => {
-                eprintln!("skipping in-process shm renderer test in restricted environment: {reason}");
+                eprintln!(
+                    "skipping in-process shm renderer test in restricted environment: {reason}"
+                );
                 return;
             }
             Err(common::TestControl::Fail(reason)) => {
@@ -122,32 +124,22 @@ fn shm_buffer_commit_populates_renderer_surface_state() {
             (&WlSurfaceHandle, &SurfaceGeometry),
             bevy_ecs::query::With<XdgWindow>,
         >();
-        let window = windows
-            .iter(world)
-            .next()
-            .map(|(surface, geometry)| (surface.id, geometry.clone()));
+        let window =
+            windows.iter(world).next().map(|(surface, geometry)| (surface.id, geometry.clone()));
         let Some((surface_id, geometry)) = window else {
             panic!("shm client should produce an XdgWindow entity");
         };
         let Some(registry) = world.get_non_send_resource::<ProtocolSurfaceRegistry>() else {
             panic!("protocol surface registry should be initialized");
         };
-        let wl_surface = registry
-            .surface(surface_id)
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!("tracked window surface should remain available in protocol registry")
-            });
+        let wl_surface = registry.surface(surface_id).cloned().unwrap_or_else(|| {
+            panic!("tracked window surface should remain available in protocol registry")
+        });
         (surface_id, geometry, wl_surface)
     };
 
     let renderer_state = with_renderer_surface_state(&wl_surface, |state| {
-        (
-            state.buffer().is_some(),
-            state.buffer_size(),
-            state.surface_size(),
-            state.buffer_scale(),
-        )
+        (state.buffer().is_some(), state.buffer_size(), state.surface_size(), state.buffer_scale())
     });
     let Some((buffer_present, buffer_size, surface_size, buffer_scale)) = renderer_state else {
         panic!("wl_shm commit should initialize renderer surface state");

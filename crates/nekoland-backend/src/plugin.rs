@@ -1,10 +1,12 @@
 use bevy_ecs::hierarchy::ChildOf;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 
 use bevy_app::App;
 use bevy_ecs::error::Result as BevyResult;
 use bevy_ecs::prelude::{Entity, NonSend, NonSendMut, Query, Res, ResMut};
 use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
+use bevy_ecs::system::SystemParam;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::prelude::AppMetadata;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule};
@@ -45,6 +47,55 @@ pub struct BackendPlugin;
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct BackendPresentSet;
+
+type BackendOutputQuery<'w, 's> =
+    Query<'w, 's, (Entity, OutputRuntime, Option<&'static OutputBackend>)>;
+type BackendPresentSurfaceQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static WlSurfaceHandle,
+        &'static SurfaceGeometry,
+        Option<&'static XdgWindow>,
+        Option<&'static XdgPopup>,
+        Option<&'static LayerShellSurface>,
+        Option<&'static WindowViewportVisibility>,
+        Option<&'static OutputBackgroundWindow>,
+        Option<&'static ChildOf>,
+        Option<&'static LayerOnOutput>,
+        Option<&'static DesiredOutputName>,
+    ),
+>;
+
+#[derive(SystemParam)]
+struct BackendExtractState<'w, 's> {
+    app_metadata: Option<Res<'w, AppMetadata>>,
+    config: Option<Res<'w, CompositorConfig>>,
+    pending_backend_inputs: ResMut<'w, PendingBackendInputEvents>,
+    pending_protocol_inputs: ResMut<'w, PendingProtocolInputEvents>,
+    pending_output_events: ResMut<'w, PendingBackendOutputEvents>,
+    pending_output_updates: ResMut<'w, PendingBackendOutputUpdates>,
+    pending_presentation_events: ResMut<'w, PendingOutputPresentationEvents>,
+    winit_window_state: Option<ResMut<'w, crate::winit::backend::WinitWindowState>>,
+    _marker: PhantomData<&'s ()>,
+}
+
+#[derive(SystemParam)]
+struct BackendPresentState<'w, 's> {
+    config: Option<Res<'w, CompositorConfig>>,
+    clock: Option<Res<'w, CompositorClock>>,
+    pointer: Option<Res<'w, GlobalPointerPosition>>,
+    cursor_render: Option<Res<'w, CursorRenderState>>,
+    primary_output: Option<Res<'w, PrimaryOutputState>>,
+    output_damage_regions: Res<'w, OutputDamageRegions>,
+    surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
+    render_list: Res<'w, RenderList>,
+    protocol_cursor: Option<NonSend<'w, ProtocolCursorState>>,
+    surface_registry: Option<NonSend<'w, ProtocolSurfaceRegistry>>,
+    virtual_output_capture: ResMut<'w, VirtualOutputCaptureState>,
+    _marker: PhantomData<&'s ()>,
+}
 
 impl NekolandPlugin for BackendPlugin {
     /// Register backend resources plus the extract/apply/present pipeline that
@@ -114,18 +165,21 @@ fn sync_protocol_dmabuf_support_system(
 /// Collect backend-originated events and state updates into ECS pending queues.
 fn backend_extract_system(
     mut manager: NonSendMut<BackendManager>,
-    app_metadata: Option<Res<AppMetadata>>,
-    config: Option<Res<CompositorConfig>>,
-    outputs: Query<(Entity, OutputRuntime, Option<&OutputBackend>)>,
-    mut pending_backend_inputs: ResMut<PendingBackendInputEvents>,
-    mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
-    mut pending_output_events: ResMut<PendingBackendOutputEvents>,
-    mut pending_output_updates: ResMut<PendingBackendOutputUpdates>,
-    mut pending_presentation_events: ResMut<PendingOutputPresentationEvents>,
-    winit_window_state: Option<ResMut<crate::winit::backend::WinitWindowState>>,
+    outputs: BackendOutputQuery<'_, '_>,
+    state: BackendExtractState<'_, '_>,
 ) -> BevyResult {
+    let BackendExtractState {
+        app_metadata,
+        config,
+        mut pending_backend_inputs,
+        mut pending_protocol_inputs,
+        mut pending_output_events,
+        mut pending_output_updates,
+        mut pending_presentation_events,
+        mut winit_window_state,
+        ..
+    } = state;
     let output_snapshots = collect_output_snapshots(&outputs);
-    let mut winit_window_state = winit_window_state;
     let mut ctx = BackendExtractCtx {
         app_metadata: app_metadata.as_deref(),
         config: config.as_deref(),
@@ -135,7 +189,7 @@ fn backend_extract_system(
         output_events: &mut pending_output_events,
         output_updates: &mut pending_output_updates,
         presentation_events: &mut pending_presentation_events,
-        winit_window_state: winit_window_state.as_mut().map(|state| &mut **state),
+        winit_window_state: winit_window_state.as_deref_mut(),
     };
 
     manager.extract_all(&mut ctx).map_err(Into::into)
@@ -146,7 +200,7 @@ fn backend_apply_system(
     mut manager: NonSendMut<BackendManager>,
     app_metadata: Option<Res<AppMetadata>>,
     config: Option<Res<CompositorConfig>>,
-    outputs: Query<(Entity, OutputRuntime, Option<&OutputBackend>)>,
+    outputs: BackendOutputQuery<'_, '_>,
     winit_window_state: Option<ResMut<crate::winit::backend::WinitWindowState>>,
 ) -> BevyResult {
     let output_snapshots = collect_output_snapshots(&outputs);
@@ -155,7 +209,7 @@ fn backend_apply_system(
         app_metadata: app_metadata.as_deref(),
         config: config.as_deref(),
         outputs: &output_snapshots,
-        winit_window_state: winit_window_state.as_mut().map(|state| &mut **state),
+        winit_window_state: winit_window_state.as_deref_mut(),
     };
 
     manager.apply_all(&mut ctx).map_err(Into::into)
@@ -164,32 +218,24 @@ fn backend_apply_system(
 /// Let backends present the current render list using backend-specific surfaces.
 fn backend_present_system(
     mut manager: NonSendMut<BackendManager>,
-    config: Option<Res<CompositorConfig>>,
-    clock: Option<Res<CompositorClock>>,
-    pointer: Option<Res<GlobalPointerPosition>>,
-    cursor_render: Option<Res<CursorRenderState>>,
-    primary_output: Option<Res<PrimaryOutputState>>,
-    output_damage_regions: Res<OutputDamageRegions>,
-    outputs: Query<(Entity, OutputRuntime, Option<&OutputBackend>)>,
-    surfaces: Query<(
-        Entity,
-        &WlSurfaceHandle,
-        &SurfaceGeometry,
-        Option<&XdgWindow>,
-        Option<&XdgPopup>,
-        Option<&LayerShellSurface>,
-        Option<&WindowViewportVisibility>,
-        Option<&OutputBackgroundWindow>,
-        Option<&ChildOf>,
-        Option<&LayerOnOutput>,
-        Option<&DesiredOutputName>,
-    )>,
-    surface_presentation: Option<Res<SurfacePresentationSnapshot>>,
-    render_list: Res<RenderList>,
-    protocol_cursor: Option<NonSend<ProtocolCursorState>>,
-    surface_registry: Option<NonSend<ProtocolSurfaceRegistry>>,
-    mut virtual_output_capture: ResMut<VirtualOutputCaptureState>,
+    outputs: BackendOutputQuery<'_, '_>,
+    surfaces: BackendPresentSurfaceQuery<'_, '_>,
+    state: BackendPresentState<'_, '_>,
 ) -> BevyResult {
+    let BackendPresentState {
+        config,
+        clock,
+        pointer,
+        cursor_render,
+        primary_output,
+        output_damage_regions,
+        surface_presentation,
+        render_list,
+        protocol_cursor,
+        surface_registry,
+        mut virtual_output_capture,
+        ..
+    } = state;
     let output_snapshots = collect_output_snapshots(&outputs);
     let surface_snapshots = if let Some(surface_presentation) = surface_presentation.as_deref() {
         surfaces
@@ -321,6 +367,11 @@ fn render_surface_role_from_presentation(role: SurfacePresentationRole) -> Rende
     }
 }
 
+/// Refresh the public backend-status resource from the installed backend manager.
+fn sync_backend_status_system(manager: NonSend<BackendManager>, mut status: ResMut<BackendStatus>) {
+    status.refresh_from_manager(&manager);
+}
+
 #[cfg(test)]
 mod tests {
     use bevy_app::App;
@@ -359,9 +410,4 @@ mod tests {
         };
         assert_eq!(audit.0, vec!["protocol", "backend"]);
     }
-}
-
-/// Refresh the public backend-status resource from the installed backend manager.
-fn sync_backend_status_system(manager: NonSend<BackendManager>, mut status: ResMut<BackendStatus>) {
-    status.refresh_from_manager(&manager);
 }

@@ -11,6 +11,7 @@ use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, NonSendMut, Query, Res, ResMut, Resource, With};
 use bevy_ecs::query::Allow;
+use bevy_ecs::system::SystemParam;
 use nekoland_config::LoadedConfigSource;
 use nekoland_ecs::control::{OutputControlApi, WindowControlApi, WorkspaceControlApi};
 use nekoland_ecs::selectors::{
@@ -94,6 +95,49 @@ enum RequestDisposition {
     Subscribe(IpcSubscription),
 }
 
+type IpcWorkspaceQuery<'w, 's> = Query<'w, 's, (Entity, WorkspaceRuntime), Allow<Disabled>>;
+type IpcWindowQuery<'w, 's> = Query<'w, 's, WindowSnapshotRuntime, Allow<Disabled>>;
+type IpcPopupQuery<'w, 's> = Query<'w, 's, PopupSnapshotRuntime, (With<XdgPopup>, Allow<Disabled>)>;
+type IpcSurfaceQuery<'w, 's> = Query<'w, 's, &'static WlSurfaceHandle, Allow<Disabled>>;
+
+struct IpcRequestDispatchCtx<'a> {
+    query_cache: &'a IpcQueryCache,
+    pending_popup_requests: &'a mut PendingPopupServerRequests,
+    pending_window_controls: &'a mut PendingWindowControls,
+    pending_workspace_controls: &'a mut PendingWorkspaceControls,
+    pending_output_controls: &'a mut PendingOutputControls,
+}
+
+#[derive(SystemParam)]
+pub(crate) struct IpcPumpParams<'w, 's> {
+    server_state: ResMut<'w, IpcServerState>,
+    query_cache: Res<'w, IpcQueryCache>,
+    pending_subscription_events: ResMut<'w, PendingSubscriptionEvents>,
+    pending_popup_requests: ResMut<'w, PendingPopupServerRequests>,
+    pending_window_controls: ResMut<'w, PendingWindowControls>,
+    pending_workspace_controls: ResMut<'w, PendingWorkspaceControls>,
+    pending_output_controls: ResMut<'w, PendingOutputControls>,
+    _marker: std::marker::PhantomData<&'s ()>,
+}
+
+#[derive(SystemParam)]
+pub(crate) struct IpcQuerySnapshotInputs<'w, 's> {
+    outputs: Query<'w, 's, OutputRuntime>,
+    workspaces: IpcWorkspaceQuery<'w, 's>,
+    windows: IpcWindowQuery<'w, 's>,
+    popups: IpcPopupQuery<'w, 's>,
+    surfaces: IpcSurfaceQuery<'w, 's>,
+    render_list: Res<'w, RenderList>,
+    keyboard_focus: Res<'w, KeyboardFocusState>,
+    clock: Res<'w, CompositorClock>,
+    command_history: Res<'w, CommandHistoryState>,
+    config: Res<'w, CompositorConfig>,
+    clipboard_selection: Res<'w, ClipboardSelectionState>,
+    primary_selection: Res<'w, PrimarySelectionState>,
+    config_source: Option<Res<'w, LoadedConfigSource>>,
+    entity_index: Option<Res<'w, EntityIndex>>,
+}
+
 #[derive(Resource, Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IpcQueryCache {
     pub tree: TreeSnapshot,
@@ -158,35 +202,15 @@ impl IpcServerRuntime {
     fn pump(
         &mut self,
         server_state: &mut IpcServerState,
-        query_cache: &IpcQueryCache,
+        request_ctx: &mut IpcRequestDispatchCtx<'_>,
         pending_subscription_events: &mut PendingSubscriptionEvents,
-        pending_popup_requests: &mut PendingPopupServerRequests,
-        pending_window_controls: &mut PendingWindowControls,
-        pending_workspace_controls: &mut PendingWorkspaceControls,
-        pending_output_controls: &mut PendingOutputControls,
     ) {
         // Run the request/response state machine twice: once to accept/process new input, then a
         // second time after subscription fan-out so queued replies flush in the same frame.
         self.accept_connections(server_state);
-        self.process_connections(
-            server_state,
-            query_cache,
-            pending_subscription_events,
-            pending_popup_requests,
-            pending_window_controls,
-            pending_workspace_controls,
-            pending_output_controls,
-        );
+        self.process_connections(server_state, request_ctx);
         self.dispatch_subscription_events(pending_subscription_events);
-        self.process_connections(
-            server_state,
-            query_cache,
-            pending_subscription_events,
-            pending_popup_requests,
-            pending_window_controls,
-            pending_workspace_controls,
-            pending_output_controls,
-        );
+        self.process_connections(server_state, request_ctx);
     }
 
     fn accept_connections(&mut self, server_state: &mut IpcServerState) {
@@ -224,25 +248,12 @@ impl IpcServerRuntime {
     fn process_connections(
         &mut self,
         server_state: &mut IpcServerState,
-        query_cache: &IpcQueryCache,
-        pending_subscription_events: &mut PendingSubscriptionEvents,
-        pending_popup_requests: &mut PendingPopupServerRequests,
-        pending_window_controls: &mut PendingWindowControls,
-        pending_workspace_controls: &mut PendingWorkspaceControls,
-        pending_output_controls: &mut PendingOutputControls,
+        request_ctx: &mut IpcRequestDispatchCtx<'_>,
     ) {
         let mut keep = Vec::with_capacity(self.connections.len());
 
         for mut connection in self.connections.drain(..) {
-            let should_close = connection.pump(
-                server_state,
-                query_cache,
-                pending_subscription_events,
-                pending_popup_requests,
-                pending_window_controls,
-                pending_workspace_controls,
-                pending_output_controls,
-            );
+            let should_close = connection.pump(server_state, request_ctx);
             if !should_close {
                 keep.push(connection);
             }
@@ -289,12 +300,7 @@ impl IpcConnection {
     fn pump(
         &mut self,
         server_state: &mut IpcServerState,
-        query_cache: &IpcQueryCache,
-        _pending_subscription_events: &mut PendingSubscriptionEvents,
-        pending_popup_requests: &mut PendingPopupServerRequests,
-        pending_window_controls: &mut PendingWindowControls,
-        pending_workspace_controls: &mut PendingWorkspaceControls,
-        pending_output_controls: &mut PendingOutputControls,
+        request_ctx: &mut IpcRequestDispatchCtx<'_>,
     ) -> bool {
         if !self.request_processed {
             self.read_request(server_state);
@@ -302,11 +308,11 @@ impl IpcConnection {
                 let disposition = match parse_request_frame(&frame) {
                     Ok(request) => reply_for_request(
                         request,
-                        query_cache,
-                        pending_popup_requests,
-                        pending_window_controls,
-                        pending_workspace_controls,
-                        pending_output_controls,
+                        request_ctx.query_cache,
+                        request_ctx.pending_popup_requests,
+                        request_ctx.pending_window_controls,
+                        request_ctx.pending_workspace_controls,
+                        request_ctx.pending_output_controls,
                     ),
                     Err(error) => RequestDisposition::Reply(IpcReply {
                         ok: false,
@@ -477,23 +483,27 @@ pub fn send_request_to_path(socket_path: &Path, request: &IpcRequest) -> io::Res
 
 pub(crate) fn accept_connections_system(
     mut runtime: NonSendMut<IpcServerRuntime>,
-    mut server_state: ResMut<IpcServerState>,
-    query_cache: Res<IpcQueryCache>,
-    mut pending_subscription_events: ResMut<PendingSubscriptionEvents>,
-    mut pending_popup_requests: ResMut<PendingPopupServerRequests>,
-    mut pending_window_controls: ResMut<PendingWindowControls>,
-    mut pending_workspace_controls: ResMut<PendingWorkspaceControls>,
-    mut pending_output_controls: ResMut<PendingOutputControls>,
+    params: IpcPumpParams<'_, '_>,
 ) {
-    runtime.pump(
-        &mut server_state,
-        &query_cache,
-        &mut pending_subscription_events,
-        &mut pending_popup_requests,
-        &mut pending_window_controls,
-        &mut pending_workspace_controls,
-        &mut pending_output_controls,
-    );
+    let IpcPumpParams {
+        mut server_state,
+        query_cache,
+        mut pending_subscription_events,
+        mut pending_popup_requests,
+        mut pending_window_controls,
+        mut pending_workspace_controls,
+        mut pending_output_controls,
+        ..
+    } = params;
+    let mut request_ctx = IpcRequestDispatchCtx {
+        query_cache: &query_cache,
+        pending_popup_requests: &mut pending_popup_requests,
+        pending_window_controls: &mut pending_window_controls,
+        pending_workspace_controls: &mut pending_workspace_controls,
+        pending_output_controls: &mut pending_output_controls,
+    };
+
+    runtime.pump(&mut server_state, &mut request_ctx, &mut pending_subscription_events);
 
     tracing::trace!(
         socket = %server_state.socket_path.display(),
@@ -506,23 +516,27 @@ pub(crate) fn accept_connections_system(
     );
 }
 
-pub fn refresh_query_cache_system(
-    outputs: Query<OutputRuntime>,
-    workspaces: Query<(Entity, WorkspaceRuntime), Allow<Disabled>>,
-    windows: Query<WindowSnapshotRuntime, Allow<Disabled>>,
-    popups: Query<PopupSnapshotRuntime, (With<XdgPopup>, Allow<Disabled>)>,
-    surfaces: Query<&WlSurfaceHandle, Allow<Disabled>>,
-    render_list: Res<RenderList>,
-    keyboard_focus: Res<KeyboardFocusState>,
-    clock: Res<CompositorClock>,
-    command_history: Res<CommandHistoryState>,
-    config: Res<CompositorConfig>,
-    clipboard_selection: Res<ClipboardSelectionState>,
-    primary_selection: Res<PrimarySelectionState>,
-    config_source: Option<Res<LoadedConfigSource>>,
-    entity_index: Option<Res<EntityIndex>>,
+pub(crate) fn refresh_query_cache_system(
+    inputs: IpcQuerySnapshotInputs<'_, '_>,
     mut query_cache: ResMut<IpcQueryCache>,
 ) {
+    let IpcQuerySnapshotInputs {
+        outputs,
+        workspaces,
+        windows,
+        popups,
+        surfaces,
+        render_list,
+        keyboard_focus,
+        clock,
+        command_history,
+        config,
+        clipboard_selection,
+        primary_selection,
+        config_source,
+        entity_index,
+    } = inputs;
+
     query_cache.outputs = outputs
         .iter()
         .map(|output| OutputSnapshot {
@@ -661,7 +675,7 @@ pub fn refresh_query_cache_system(
             screen_y: window.geometry.y,
             width: window.geometry.width,
             height: window.geometry.height,
-            state: window_state_label(window.layout.clone(), window.mode.clone()),
+            state: window_state_label(*window.layout, *window.mode),
             workspace: window_workspace_runtime_id(window.child_of, &workspaces),
             output: window.viewport_visibility.output.clone(),
             focused: keyboard_focus.focused_surface == Some(window.surface_id()),

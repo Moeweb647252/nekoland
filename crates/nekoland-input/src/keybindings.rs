@@ -903,12 +903,13 @@ mod tests {
     fn config_with_bindings<const N: usize>(
         bindings: [(&str, ConfiguredAction); N],
     ) -> CompositorConfig {
-        let mut config = CompositorConfig::default();
-        config.keybindings = bindings
-            .into_iter()
-            .map(|(binding, action)| (binding.to_owned(), vec![action]))
-            .collect::<BTreeMap<_, _>>();
-        config
+        CompositorConfig {
+            keybindings: bindings
+                .into_iter()
+                .map(|(binding, action)| (binding.to_owned(), vec![action]))
+                .collect::<BTreeMap<_, _>>(),
+            ..CompositorConfig::default()
+        }
     }
 
     fn close_focused_window() -> ConfiguredAction {

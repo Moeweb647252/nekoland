@@ -113,10 +113,10 @@ fn udev_primary_drm_node(seat_name: &str) -> Option<PathBuf> {
     use smithay::backend::udev::UdevBackend;
     let udev = UdevBackend::new(seat_name).ok()?;
     for (_, path) in udev.device_list() {
-        if let Ok(node) = DrmNode::from_path(&path) {
-            if node.ty() == smithay::backend::drm::NodeType::Primary {
-                return Some(path.to_path_buf());
-            }
+        if let Ok(node) = DrmNode::from_path(path)
+            && node.ty() == smithay::backend::drm::NodeType::Primary
+        {
+            return Some(path.to_path_buf());
         }
     }
     None
@@ -199,11 +199,7 @@ fn preferred_output_properties(info: &connector::Info) -> OutputProperties {
         return OutputProperties {
             width: width.max(1) as u32,
             height: height.max(1) as u32,
-            refresh_millihz: if mode.vrefresh() > 0 {
-                mode.vrefresh() as u32 * 1000
-            } else {
-                60_000
-            },
+            refresh_millihz: if mode.vrefresh() > 0 { mode.vrefresh() * 1000 } else { 60_000 },
             scale: 1,
         };
     }

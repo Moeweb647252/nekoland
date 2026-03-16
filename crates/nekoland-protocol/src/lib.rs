@@ -262,16 +262,14 @@ pub struct ProtocolState {
 impl ProtocolState {
     /// Moves buffered protocol events into the typed ECS request/resources that downstream systems
     /// consume during layout, focus, selection, and output handling.
-    pub fn flush_into_ecs(
-        &mut self,
-        pending_xdg_requests: &mut PendingXdgRequests,
-        pending_layer_requests: &mut PendingLayerRequests,
-        pending_x11_requests: &mut PendingX11Requests,
-        pending_output_events: &mut PendingOutputEvents,
-        clipboard_selection: &mut ClipboardSelectionState,
-        drag_and_drop: &mut DragAndDropState,
-        primary_selection: &mut PrimarySelectionState,
-    ) {
+    pub fn flush_into_ecs(&mut self, targets: &mut ProtocolFlushTargets<'_>) {
+        let pending_xdg_requests = &mut *targets.pending_xdg_requests;
+        let pending_layer_requests = &mut *targets.pending_layer_requests;
+        let pending_x11_requests = &mut *targets.pending_x11_requests;
+        let pending_output_events = &mut *targets.pending_output_events;
+        let clipboard_selection = &mut *targets.clipboard_selection;
+        let drag_and_drop = &mut *targets.drag_and_drop;
+        let primary_selection = &mut *targets.primary_selection;
         for event in self.bridge.drain() {
             match event {
                 ProtocolEvent::SurfaceCommitted { surface_id, role, size } => {
@@ -583,17 +581,17 @@ impl ProtocolState {
                     drag_and_drop.active_session = None;
                 }
                 ProtocolEvent::DragAccepted { seat_name, mime_type } => {
-                    if let Some(session) = drag_and_drop.active_session.as_mut() {
-                        if session.seat_name == seat_name {
-                            session.accepted_mime_type = mime_type;
-                        }
+                    if let Some(session) = drag_and_drop.active_session.as_mut()
+                        && session.seat_name == seat_name
+                    {
+                        session.accepted_mime_type = mime_type;
                     }
                 }
                 ProtocolEvent::DragActionSelected { seat_name, action } => {
-                    if let Some(session) = drag_and_drop.active_session.as_mut() {
-                        if session.seat_name == seat_name {
-                            session.chosen_action = Some(action);
-                        }
+                    if let Some(session) = drag_and_drop.active_session.as_mut()
+                        && session.seat_name == seat_name
+                    {
+                        session.chosen_action = Some(action);
                     }
                 }
                 ProtocolEvent::ClipboardSelectionPersisted { persisted_mime_types } => {
@@ -639,6 +637,16 @@ impl ProtocolState {
         globals.extend(["wl_shm", "wl_seat", "wl_output", "zxdg_output_manager_v1"]);
         globals
     }
+}
+
+pub struct ProtocolFlushTargets<'a> {
+    pub pending_xdg_requests: &'a mut PendingXdgRequests,
+    pub pending_layer_requests: &'a mut PendingLayerRequests,
+    pub pending_x11_requests: &'a mut PendingX11Requests,
+    pub pending_output_events: &'a mut PendingOutputEvents,
+    pub clipboard_selection: &'a mut ClipboardSelectionState,
+    pub drag_and_drop: &'a mut DragAndDropState,
+    pub primary_selection: &'a mut PrimarySelectionState,
 }
 
 impl WaylandBridge for ProtocolState {

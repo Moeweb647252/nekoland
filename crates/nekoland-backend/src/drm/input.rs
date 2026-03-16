@@ -263,21 +263,23 @@ mod tests {
 
     #[test]
     fn configured_output_bounds_follow_enabled_output_mode() {
-        let mut config = CompositorConfig::default();
-        config.outputs = vec![
-            nekoland_ecs::resources::ConfiguredOutput {
-                name: "DP-1".to_owned(),
-                mode: "1920x1080@60".to_owned(),
-                scale: 1,
-                enabled: true,
-            },
-            nekoland_ecs::resources::ConfiguredOutput {
-                name: "HDMI-A-1".to_owned(),
-                mode: "1280x720@60".to_owned(),
-                scale: 1,
-                enabled: false,
-            },
-        ];
+        let config = CompositorConfig {
+            outputs: vec![
+                nekoland_ecs::resources::ConfiguredOutput {
+                    name: "DP-1".to_owned(),
+                    mode: "1920x1080@60".to_owned(),
+                    scale: 1,
+                    enabled: true,
+                },
+                nekoland_ecs::resources::ConfiguredOutput {
+                    name: "HDMI-A-1".to_owned(),
+                    mode: "1280x720@60".to_owned(),
+                    scale: 1,
+                    enabled: false,
+                },
+            ],
+            ..CompositorConfig::default()
+        };
 
         let Some(bounds) = configured_output_bounds(&config) else {
             panic!("enabled output should produce bounds");
@@ -288,14 +290,14 @@ mod tests {
 
     #[test]
     fn relative_motion_stays_inside_output_bounds() {
-        let mut input = DrmInputState::default();
-        input.bounds = live_output_bounds([OutputProperties {
+        let input_bounds = live_output_bounds([OutputProperties {
             width: 800,
             height: 600,
             refresh_millihz: 60_000,
             scale: 1,
         }])
         .unwrap_or_else(|| panic!("one live output should define bounds"));
+        let mut input = DrmInputState { bounds: input_bounds, ..DrmInputState::default() };
 
         let (x, y) = input.apply_relative_motion(999.0, 999.0);
         assert_eq!(x, 799.0);

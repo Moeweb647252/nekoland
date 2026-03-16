@@ -529,10 +529,8 @@ cursor_theme = "default"
             panic!("calloop event loop should initialize for config tests");
         };
         {
-            let Some(mut registry) = app
-                .inner_mut()
-                .world_mut()
-                .get_non_send_resource_mut::<CalloopSourceRegistry>()
+            let Some(mut registry) =
+                app.inner_mut().world_mut().get_non_send_resource_mut::<CalloopSourceRegistry>()
             else {
                 panic!("config plugin should install a calloop source registry");
             };

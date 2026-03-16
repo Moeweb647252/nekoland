@@ -39,11 +39,12 @@ pub fn refresh_window_policy(
         policy.apply(layout, mode);
     }
 
-    if let Some(snapshot) = restore.snapshot.as_mut() {
-        if snapshot.layout == previous.layout && snapshot.mode == previous.mode {
-            snapshot.layout = policy.layout;
-            snapshot.mode = policy.mode;
-        }
+    if let Some(snapshot) = restore.snapshot.as_mut()
+        && snapshot.layout == previous.layout
+        && snapshot.mode == previous.mode
+    {
+        snapshot.layout = policy.layout;
+        snapshot.mode = policy.mode;
     }
 
     policy_state.applied = policy;
@@ -68,16 +69,32 @@ pub fn restore_window_policy(
     policy_state.applied.apply(layout, mode);
 }
 
+pub struct WindowBackgroundState<'a> {
+    pub role: &'a mut WindowRole,
+    pub scene_geometry: &'a mut WindowSceneGeometry,
+    pub layout: &'a mut WindowLayout,
+    pub mode: &'a mut WindowMode,
+}
+
+impl<'a> WindowBackgroundState<'a> {
+    pub fn new(
+        role: &'a mut WindowRole,
+        scene_geometry: &'a mut WindowSceneGeometry,
+        layout: &'a mut WindowLayout,
+        mode: &'a mut WindowMode,
+    ) -> Self {
+        Self { role, scene_geometry, layout, mode }
+    }
+}
+
 pub fn sync_window_background_role(
     commands: &mut Commands,
     entity: Entity,
     desired_output: Option<OutputName>,
-    role: &mut WindowRole,
-    scene_geometry: &mut WindowSceneGeometry,
-    layout: &mut WindowLayout,
-    mode: &mut WindowMode,
+    window: WindowBackgroundState<'_>,
     current_background: Option<OutputBackgroundWindow>,
 ) {
+    let WindowBackgroundState { role, scene_geometry, layout, mode } = window;
     let desired_output = desired_output.map(|output| output.as_str().to_owned());
     let current_output = current_background.as_ref().map(|background| background.output.clone());
 
@@ -119,8 +136,8 @@ mod tests {
     use nekoland_ecs::selectors::OutputName;
 
     use super::{
-        WindowLayout, WindowMode, WindowPolicy, WindowPolicyState, WindowRestoreSnapshot,
-        apply_window_policy, lock_window_policy, refresh_window_policy,
+        WindowBackgroundState, WindowLayout, WindowMode, WindowPolicy, WindowPolicyState,
+        WindowRestoreSnapshot, apply_window_policy, lock_window_policy, refresh_window_policy,
         sync_window_background_role,
     };
 
@@ -231,10 +248,12 @@ mod tests {
                 &mut commands,
                 entity,
                 Some(OutputName::from("Virtual-1")),
-                &mut role,
-                &mut scene_geometry,
-                &mut layout,
-                &mut mode,
+                WindowBackgroundState::new(
+                    &mut role,
+                    &mut scene_geometry,
+                    &mut layout,
+                    &mut mode,
+                ),
                 None,
             );
         }
@@ -254,10 +273,12 @@ mod tests {
                 &mut commands,
                 entity,
                 None,
-                &mut role,
-                &mut scene_geometry,
-                &mut layout,
-                &mut mode,
+                WindowBackgroundState::new(
+                    &mut role,
+                    &mut scene_geometry,
+                    &mut layout,
+                    &mut mode,
+                ),
                 Some(background),
             );
         }

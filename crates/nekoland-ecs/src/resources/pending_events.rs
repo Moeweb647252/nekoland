@@ -104,16 +104,10 @@ impl Default for WindowLifecycleAction {
 }
 
 /// One queued lifecycle request targeting a surface id.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowLifecycleRequest {
     pub surface_id: u64,
     pub action: WindowLifecycleAction,
-}
-
-impl Default for WindowLifecycleRequest {
-    fn default() -> Self {
-        Self { surface_id: 0, action: WindowLifecycleAction::default() }
-    }
 }
 
 /// Protocol-to-shell mailbox for XDG lifecycle events.

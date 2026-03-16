@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use bevy_ecs::prelude::{Query, Res, ResMut, Resource, With};
 use bevy_ecs::schedule::IntoScheduleConfigs;
+use bevy_ecs::system::SystemParam;
 use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::LayoutSchedule;
@@ -89,6 +90,27 @@ struct DndTransferPump {
     source_focus_attempts: u8,
     /// Retry counter while waiting for the target offer negotiation to settle.
     target_offer_attempts: u8,
+}
+
+#[derive(SystemParam)]
+struct DndTransferPumpParams<'w, 's> {
+    clock: Res<'w, CompositorClock>,
+    dnd_state: Res<'w, DragAndDropState>,
+    pump: ResMut<'w, DndTransferPump>,
+    keyboard_focus: ResMut<'w, KeyboardFocusState>,
+    pointer: ResMut<'w, GlobalPointerPosition>,
+    pending_protocol_inputs: ResMut<'w, PendingProtocolInputEvents>,
+    pending_window_controls: ResMut<'w, PendingWindowControls>,
+    windows: Query<
+        'w,
+        's,
+        (
+            &'static WlSurfaceHandle,
+            &'static mut SurfaceGeometry,
+            &'static XdgWindow,
+        ),
+        With<XdgWindow>,
+    >,
 }
 
 /// Summary returned by the source DnD client.
@@ -352,16 +374,18 @@ fn run_dnd_transfer_scenario()
 
 /// Drives the synthetic pointer/button choreography that causes the two test clients to perform
 /// a drag-and-drop transfer.
-fn pump_dnd_transfer_input(
-    clock: Res<CompositorClock>,
-    dnd_state: Res<DragAndDropState>,
-    mut pump: ResMut<DndTransferPump>,
-    mut keyboard_focus: ResMut<KeyboardFocusState>,
-    mut pointer: ResMut<GlobalPointerPosition>,
-    mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
-    mut pending_window_controls: ResMut<PendingWindowControls>,
-    mut windows: Query<(&WlSurfaceHandle, &mut SurfaceGeometry, &XdgWindow), With<XdgWindow>>,
-) {
+fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
+    let DndTransferPumpParams {
+        clock,
+        dnd_state,
+        mut pump,
+        mut keyboard_focus,
+        mut pointer,
+        mut pending_protocol_inputs,
+        mut pending_window_controls,
+        mut windows,
+    } = transfer;
+
     if clock.frame < INPUT_PUMP_START_FRAME || pump.phase == DndPumpPhase::Done {
         return;
     }
@@ -948,10 +972,11 @@ impl Dispatch<wl_seat::WlSeat, ()> for SourceClientState {
         _conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event {
-            if capabilities.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
-                state.pointer = Some(seat.get_pointer(qh, ()));
-            }
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event
+            && capabilities.contains(wl_seat::Capability::Pointer)
+            && state.pointer.is_none()
+        {
+            state.pointer = Some(seat.get_pointer(qh, ()));
         }
     }
 }

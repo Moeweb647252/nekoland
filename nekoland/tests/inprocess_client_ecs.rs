@@ -64,7 +64,9 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
                 assert!(summary.configure_serial > 0, "client should ack a configure");
             }
             Err(common::TestControl::Skip(reason)) => {
-                eprintln!("skipping in-process ECS protocol test in restricted environment: {reason}");
+                eprintln!(
+                    "skipping in-process ECS protocol test in restricted environment: {reason}"
+                );
                 return;
             }
             Err(common::TestControl::Fail(reason)) => {
@@ -84,7 +86,7 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
                 (
                     surface.id,
                     window.title.clone(),
-                    WindowDisplayState::from_layout_mode(layout.clone(), mode.clone()),
+                    WindowDisplayState::from_layout_mode(*layout, *mode),
                 )
             })
             .collect::<Vec<_>>();

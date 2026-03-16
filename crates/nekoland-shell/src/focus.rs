@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use bevy_ecs::message::MessageReader;
-use bevy_ecs::prelude::{Local, Query, Res, ResMut, With};
+use bevy_ecs::prelude::{Entity, Local, Query, Res, ResMut, With};
+use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{SurfaceGeometry, WindowLayout, WindowMode, XdgWindow};
 use nekoland_ecs::events::PointerButton;
 use nekoland_ecs::resources::{
@@ -20,6 +21,21 @@ pub struct FocusManager;
 pub struct FocusHoverState {
     initialized: bool,
     hovered_surface: Option<u64>,
+}
+
+type FocusWindows<'w, 's> = Query<'w, 's, WindowFocusRuntime, With<XdgWindow>>;
+type FocusOutputs<'w, 's> = Query<'w, 's, OutputRuntime>;
+type FocusWorkspaces<'w, 's> = Query<'w, 's, (Entity, WorkspaceRuntime)>;
+
+#[derive(SystemParam)]
+pub struct FocusManagementParams<'w, 's> {
+    active_grab: Option<Res<'w, ActiveWindowGrab>>,
+    keyboard_focus: ResMut<'w, KeyboardFocusState>,
+    stacking: Res<'w, WindowStackingState>,
+    viewport_pan: Option<Res<'w, ViewportPointerPanState>>,
+    windows: FocusWindows<'w, 's>,
+    outputs: FocusOutputs<'w, 's>,
+    workspaces: FocusWorkspaces<'w, 's>,
 }
 
 /// Maintains keyboard focus from the current visible window stack.
@@ -72,36 +88,34 @@ pub fn pointer_button_focus_system(
 pub fn focus_management_system(
     config: Res<CompositorConfig>,
     pointer: Res<GlobalPointerPosition>,
-    active_grab: Option<Res<ActiveWindowGrab>>,
-    mut keyboard_focus: ResMut<KeyboardFocusState>,
-    stacking: Res<WindowStackingState>,
-    viewport_pan: Option<Res<ViewportPointerPanState>>,
     mut hover_state: Local<FocusHoverState>,
-    windows: Query<WindowFocusRuntime, With<XdgWindow>>,
-    outputs: Query<OutputRuntime>,
-    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
+    mut focus: FocusManagementParams<'_, '_>,
 ) {
-    let visible_windows = visible_window_geometries(&windows, &workspaces);
-    let output_context = pointer_output_context(&pointer, &outputs);
-    let visible_surfaces = stacking.ordered_surfaces(
+    let visible_windows = visible_window_geometries(&focus.windows, &focus.workspaces);
+    let output_context = pointer_output_context(&pointer, &focus.outputs);
+    let visible_surfaces = focus.stacking.ordered_surfaces(
         visible_windows
             .iter()
             .map(|(surface_id, (_, workspace_id, _, _))| (*workspace_id, *surface_id)),
     );
 
     if let Some(grabbed_surface) =
-        active_grab.and_then(|grab| grab.state.as_ref().map(|state| state.surface_id))
+        focus.active_grab.and_then(|grab| grab.state.as_ref().map(|state| state.surface_id))
+        && visible_surfaces.contains(&grabbed_surface)
     {
-        if visible_surfaces.contains(&grabbed_surface) {
-            hover_state.initialized = true;
-            hover_state.hovered_surface = Some(grabbed_surface);
-            keyboard_focus.focused_surface = Some(grabbed_surface);
-            tracing::trace!(focused_surface = ?keyboard_focus.focused_surface, "focus management tick");
-            return;
-        }
+        hover_state.initialized = true;
+        hover_state.hovered_surface = Some(grabbed_surface);
+        focus.keyboard_focus.focused_surface = Some(grabbed_surface);
+        tracing::trace!(
+            focused_surface = ?focus.keyboard_focus.focused_surface,
+            "focus management tick"
+        );
+        return;
     }
 
-    if config.focus_follows_mouse && !viewport_pan.as_deref().is_some_and(|state| state.active) {
+    if config.focus_follows_mouse
+        && !focus.viewport_pan.as_deref().is_some_and(|state| state.active)
+    {
         let hovered_surface = visible_surfaces.iter().rev().find_map(|surface_id| {
             visible_windows
                 .get(surface_id)
@@ -122,30 +136,31 @@ pub fn focus_management_system(
             hover_state.initialized = true;
             hover_state.hovered_surface = hovered_surface;
             if let Some(surface_id) = hovered_surface {
-                keyboard_focus.focused_surface = Some(surface_id);
-            } else if keyboard_focus.focused_surface.is_none() {
-                keyboard_focus.focused_surface = hovered_surface;
+                focus.keyboard_focus.focused_surface = Some(surface_id);
+            } else if focus.keyboard_focus.focused_surface.is_none() {
+                focus.keyboard_focus.focused_surface = hovered_surface;
             }
         } else if hovered_surface != hover_state.hovered_surface {
             if let Some(surface_id) = hovered_surface {
-                keyboard_focus.focused_surface = Some(surface_id);
+                focus.keyboard_focus.focused_surface = Some(surface_id);
             }
             hover_state.hovered_surface = hovered_surface;
         }
     }
 
-    if keyboard_focus
+    if focus
+        .keyboard_focus
         .focused_surface
         .is_some_and(|surface_id| !visible_surfaces.contains(&surface_id))
     {
-        keyboard_focus.focused_surface = None;
+        focus.keyboard_focus.focused_surface = None;
     }
 
-    if keyboard_focus.focused_surface.is_none() {
-        keyboard_focus.focused_surface = visible_surfaces.last().copied();
+    if focus.keyboard_focus.focused_surface.is_none() {
+        focus.keyboard_focus.focused_surface = visible_surfaces.last().copied();
     }
 
-    tracing::trace!(focused_surface = ?keyboard_focus.focused_surface, "focus management tick");
+    tracing::trace!(focused_surface = ?focus.keyboard_focus.focused_surface, "focus management tick");
 }
 
 fn visible_window_geometries(
@@ -255,8 +270,7 @@ mod tests {
     #[test]
     fn fallback_focus_uses_topmost_visible_window() {
         let mut app = NekolandApp::new("focus-fallback-stack-test");
-        let mut config = CompositorConfig::default();
-        config.focus_follows_mouse = false;
+        let config = CompositorConfig { focus_follows_mouse: false, ..CompositorConfig::default() };
         app.inner_mut()
             .insert_resource(config)
             .insert_resource(GlobalPointerPosition::default())
