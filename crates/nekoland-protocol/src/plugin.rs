@@ -42,10 +42,11 @@ use nekoland_ecs::resources::{
     BackendInputAction, ClipboardSelectionState, CompositorClock, CompositorConfig,
     DragAndDropState, FramePacingState, GlobalPointerPosition, KeyboardFocusState,
     KeyboardLayoutState, OutputPresentationState, PendingLayerRequests, PendingOutputEvents,
-    PendingPopupServerRequests, PendingProtocolInputEvents, PendingWindowServerRequests,
-    PendingX11Requests, PendingXdgRequests, PopupPlacement, PopupServerAction, PrimaryOutputState,
-    ResizeEdges, PrimarySelectionState, RenderList, SurfaceExtent, SurfacePresentationRole,
-    SurfacePresentationSnapshot, WindowServerAction, X11WindowGeometry, XdgSurfaceRole,
+    PendingPopupServerRequests, PendingProtocolInputEvents, PendingWindowControls,
+    PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests, PopupPlacement,
+    PopupServerAction, PrimaryOutputState, ResizeEdges, PrimarySelectionState, RenderList,
+    SurfaceExtent, SurfacePresentationRole, SurfacePresentationSnapshot, WindowServerAction,
+    X11WindowGeometry, XdgSurfaceRole,
 };
 use nekoland_ecs::views::{
     OutputRuntime, PopupRuntime, SurfaceRuntime, WindowVisibilityRuntime, WorkspaceRuntime,
@@ -62,6 +63,7 @@ use smithay::delegate_presentation;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
 use smithay::delegate_viewporter;
+use smithay::delegate_xdg_activation;
 use smithay::desktop::utils::{
     SurfacePresentationFeedback, send_frames_surface_tree, under_from_surface_tree,
 };
@@ -128,6 +130,10 @@ use smithay::wayland::shell::xdg::{
     Configure, PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler,
     XdgToplevelSurfaceData,
     XdgShellState as SmithayXdgShellState,
+};
+use smithay::wayland::xdg_activation::{
+    XdgActivationHandler, XdgActivationState as SmithayXdgActivationState, XdgActivationToken,
+    XdgActivationTokenData,
 };
 use smithay::wayland::shell::xdg::decoration::{
     XdgDecorationHandler, XdgDecorationState as SmithayXdgDecorationState,
@@ -203,6 +209,7 @@ struct ProtocolRuntimeState {
     compositor_state: SmithayCompositorState,
     xdg_shell_state: SmithayXdgShellState,
     _xdg_decoration_state: SmithayXdgDecorationState,
+    _xdg_activation_state: SmithayXdgActivationState,
     xwayland_shell_state: SmithayXWaylandShellState,
     layer_shell_state: WlrLayerShellState,
     data_device_state: SmithayDataDeviceState,
@@ -402,6 +409,7 @@ type PointerHitTestState<'w, 's> = (
 struct FlushProtocolQueueParams<'w> {
     pending_xdg_requests: ResMut<'w, PendingXdgRequests>,
     pending_layer_requests: ResMut<'w, PendingLayerRequests>,
+    pending_window_controls: ResMut<'w, PendingWindowControls>,
     pending_x11_requests: ResMut<'w, PendingX11Requests>,
     pending_output_events: ResMut<'w, PendingOutputEvents>,
     clipboard_selection: ResMut<'w, ClipboardSelectionState>,
@@ -555,6 +563,7 @@ impl NekolandPlugin for ProtocolPlugin {
             .init_resource::<PendingProtocolInputEvents>()
             .init_resource::<PendingXdgRequests>()
             .init_resource::<PendingX11Requests>()
+            .init_resource::<PendingWindowControls>()
             .init_resource::<PendingWindowServerRequests>()
             .init_resource::<PendingPopupServerRequests>()
             .init_resource::<PendingOutputEvents>()
@@ -745,6 +754,7 @@ fn flush_protocol_queue_system(
     let mut targets = ProtocolFlushTargets {
         pending_xdg_requests: &mut params.pending_xdg_requests,
         pending_layer_requests: &mut params.pending_layer_requests,
+        pending_window_controls: &mut params.pending_window_controls,
         pending_x11_requests: &mut params.pending_x11_requests,
         pending_output_events: &mut params.pending_output_events,
         clipboard_selection: &mut params.clipboard_selection,
@@ -2233,6 +2243,7 @@ impl ProtocolRuntimeState {
             SUPPORTED_XDG_WM_CAPABILITIES,
         );
         let xdg_decoration_state = SmithayXdgDecorationState::new::<Self>(display_handle);
+        let xdg_activation_state = SmithayXdgActivationState::new::<Self>(display_handle);
         let xwayland_shell_state = SmithayXWaylandShellState::new::<Self>(display_handle);
         let layer_shell_state = WlrLayerShellState::new::<Self>(display_handle);
         let data_device_state = SmithayDataDeviceState::new::<Self>(display_handle);
@@ -2282,6 +2293,7 @@ impl ProtocolRuntimeState {
             compositor_state,
             xdg_shell_state,
             _xdg_decoration_state: xdg_decoration_state,
+            _xdg_activation_state: xdg_activation_state,
             xwayland_shell_state,
             layer_shell_state,
             data_device_state,
@@ -2342,6 +2354,10 @@ impl ProtocolRuntimeState {
 
     fn surface_id(&mut self, surface: &WlSurface) -> u64 {
         surface_identity(surface, &mut self.next_surface_id)
+    }
+
+    fn known_surface_id(&self, surface: &WlSurface) -> Option<u64> {
+        compositor::with_states(surface, |states| states.data_map.get::<SurfaceIdentity>().map(|identity| identity.0))
     }
 
     fn validate_interactive_request(
@@ -3039,6 +3055,48 @@ impl XdgShellHandler for ProtocolRuntimeState {
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
         self.queue_toplevel_metadata_changed(&surface);
+    }
+}
+
+impl XdgActivationHandler for ProtocolRuntimeState {
+    fn activation_state(&mut self) -> &mut SmithayXdgActivationState {
+        &mut self._xdg_activation_state
+    }
+
+    fn request_activation(
+        &mut self,
+        token: XdgActivationToken,
+        token_data: XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        let _ = self.activation_state().remove_token(&token);
+
+        if token_data.timestamp.elapsed() > Duration::from_secs(10) {
+            tracing::warn!(
+                token = token.as_str(),
+                "ignoring stale xdg_activation request older than compositor policy window"
+            );
+            return;
+        }
+
+        let Some(surface_id) = self.known_surface_id(&surface) else {
+            tracing::warn!(
+                token = token.as_str(),
+                "ignoring xdg_activation request for an unknown surface"
+            );
+            return;
+        };
+
+        if !self.toplevels.contains_key(&surface_id) {
+            tracing::warn!(
+                token = token.as_str(),
+                surface_id,
+                "ignoring xdg_activation request for a non-toplevel surface"
+            );
+            return;
+        }
+
+        self.queue_event(ProtocolEvent::ActivationRequested { surface_id });
     }
 }
 
@@ -4019,6 +4077,7 @@ impl AsRawFd for RegisteredRawFd {
 delegate_compositor!(ProtocolRuntimeState);
 delegate_xdg_shell!(ProtocolRuntimeState);
 delegate_xdg_decoration!(ProtocolRuntimeState);
+delegate_xdg_activation!(ProtocolRuntimeState);
 delegate_layer_shell!(ProtocolRuntimeState);
 delegate_xwayland_shell!(ProtocolRuntimeState);
 delegate_viewporter!(ProtocolRuntimeState);
@@ -4380,6 +4439,7 @@ mod tests {
             "wl_compositor",
             "wl_subcompositor",
             "xdg_wm_base",
+            "xdg_activation_v1",
             "zxdg_decoration_manager_v1",
             "zwlr_layer_shell_v1",
             "wl_data_device_manager",

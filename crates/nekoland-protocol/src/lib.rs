@@ -16,6 +16,7 @@ pub mod primary_selection;
 pub mod screencopy;
 pub mod session_lock;
 pub mod viewporter;
+pub mod xdg_activation;
 pub mod xdg_decoration;
 pub mod xdg_shell;
 
@@ -23,6 +24,7 @@ use bevy_ecs::prelude::Resource;
 use nekoland_core::bridge::{EventBridge, WaylandBridge};
 use nekoland_ecs::components::{LayerAnchor, LayerLevel, LayerMargins, X11WindowType};
 use nekoland_ecs::kinds::ProtocolEvent as ProtocolEventKind;
+use nekoland_ecs::selectors::SurfaceId;
 use nekoland_ecs::resources::pending_events::{
     OutputEventRecord, PendingOutputEvents, PendingXdgRequests, PopupPlacement, ResizeEdges,
     SurfaceExtent, WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
@@ -30,8 +32,9 @@ use nekoland_ecs::resources::pending_events::{
 use nekoland_ecs::resources::{
     ClipboardSelection, ClipboardSelectionState, DragAndDropDrop, DragAndDropSession,
     DragAndDropState, LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec,
-    PendingLayerRequests, PendingX11Requests, PrimarySelection, PrimarySelectionState,
-    SelectionOwner, X11LifecycleAction, X11LifecycleRequest, X11WindowGeometry,
+    PendingLayerRequests, PendingWindowControls, PendingX11Requests, PrimarySelection,
+    PrimarySelectionState, SelectionOwner, X11LifecycleAction, X11LifecycleRequest,
+    X11WindowGeometry,
 };
 use serde::{Deserialize, Serialize};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -89,6 +92,9 @@ pub enum ProtocolEvent {
         surface_id: u64,
     },
     MinimizeRequested {
+        surface_id: u64,
+    },
+    ActivationRequested {
         surface_id: u64,
     },
     PopupCreated {
@@ -238,12 +244,62 @@ mod kind_tests {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use nekoland_core::bridge::WaylandBridge;
+    use nekoland_ecs::resources::{
+        ClipboardSelectionState, DragAndDropState, PendingLayerRequests, PendingOutputEvents,
+        PendingWindowControls, PendingX11Requests, PendingXdgRequests, PrimarySelectionState,
+    };
+
+    use super::{ProtocolEvent, ProtocolFlushTargets, ProtocolState, supported_protocols};
+
+    #[test]
+    fn supported_protocol_lists_include_xdg_activation() {
+        let state = ProtocolState::default();
+        assert!(state.supported_globals().contains(&"xdg_activation_v1"));
+        assert!(supported_protocols().contains(&"xdg_activation_v1"));
+    }
+
+    #[test]
+    fn activation_request_flushes_into_window_focus_control() {
+        let mut protocol_state = ProtocolState::default();
+        protocol_state.queue_event(ProtocolEvent::ActivationRequested { surface_id: 77 });
+
+        let mut pending_xdg_requests = PendingXdgRequests::default();
+        let mut pending_layer_requests = PendingLayerRequests::default();
+        let mut pending_window_controls = PendingWindowControls::default();
+        let mut pending_x11_requests = PendingX11Requests::default();
+        let mut pending_output_events = PendingOutputEvents::default();
+        let mut clipboard_selection = ClipboardSelectionState::default();
+        let mut drag_and_drop = DragAndDropState::default();
+        let mut primary_selection = PrimarySelectionState::default();
+
+        protocol_state.flush_into_ecs(&mut ProtocolFlushTargets {
+            pending_xdg_requests: &mut pending_xdg_requests,
+            pending_layer_requests: &mut pending_layer_requests,
+            pending_window_controls: &mut pending_window_controls,
+            pending_x11_requests: &mut pending_x11_requests,
+            pending_output_events: &mut pending_output_events,
+            clipboard_selection: &mut clipboard_selection,
+            drag_and_drop: &mut drag_and_drop,
+            primary_selection: &mut primary_selection,
+        });
+
+        assert!(pending_xdg_requests.is_empty());
+        assert_eq!(pending_window_controls.as_slice().len(), 1);
+        assert_eq!(pending_window_controls.as_slice()[0].surface_id.0, 77);
+        assert!(pending_window_controls.as_slice()[0].focus);
+    }
+}
+
 /// Aggregates per-protocol Smithay state together with the bridge that buffers protocol events
 /// until the protocol schedule flushes them into ECS resources.
 #[derive(Debug, Default, Resource)]
 pub struct ProtocolState {
     pub compositor: compositor::CompositorProtocolState,
     pub xdg_shell: xdg_shell::XdgShellState,
+    pub xdg_activation: xdg_activation::XdgActivationState,
     pub layer_shell: layer_shell::LayerShellState,
     pub data_device: data_device::DataDeviceState,
     pub primary_selection: primary_selection::PrimarySelectionProtocolState,
@@ -266,6 +322,7 @@ impl ProtocolState {
         let pending_xdg_requests = &mut *targets.pending_xdg_requests;
         let pending_layer_requests = &mut *targets.pending_layer_requests;
         let pending_x11_requests = &mut *targets.pending_x11_requests;
+        let pending_window_controls = &mut *targets.pending_window_controls;
         let pending_output_events = &mut *targets.pending_output_events;
         let clipboard_selection = &mut *targets.clipboard_selection;
         let drag_and_drop = &mut *targets.drag_and_drop;
@@ -341,6 +398,9 @@ impl ProtocolState {
                         surface_id,
                         action: WindowLifecycleAction::Minimize,
                     });
+                }
+                ProtocolEvent::ActivationRequested { surface_id } => {
+                    pending_window_controls.surface(SurfaceId(surface_id)).focus();
                 }
                 ProtocolEvent::PopupCreated { surface_id, parent_surface_id, placement } => {
                     pending_xdg_requests.push(WindowLifecycleRequest {
@@ -626,6 +686,7 @@ impl ProtocolState {
         let mut globals = Vec::new();
         globals.extend(self.compositor.globals());
         globals.extend(self.xdg_shell.globals());
+        globals.extend(self.xdg_activation.globals());
         globals.extend(self.xdg_decoration.globals());
         globals.extend(self.layer_shell.globals());
         globals.extend(self.data_device.globals());
@@ -642,6 +703,7 @@ impl ProtocolState {
 pub struct ProtocolFlushTargets<'a> {
     pub pending_xdg_requests: &'a mut PendingXdgRequests,
     pub pending_layer_requests: &'a mut PendingLayerRequests,
+    pub pending_window_controls: &'a mut PendingWindowControls,
     pub pending_x11_requests: &'a mut PendingX11Requests,
     pub pending_output_events: &'a mut PendingOutputEvents,
     pub clipboard_selection: &'a mut ClipboardSelectionState,
@@ -696,6 +758,7 @@ pub fn supported_protocols() -> &'static [&'static str] {
         "wl_compositor",
         "wl_subcompositor",
         "xdg_wm_base",
+        "xdg_activation_v1",
         "zxdg_decoration_manager_v1",
         "zwlr_layer_shell_v1",
         "wl_data_device_manager",
