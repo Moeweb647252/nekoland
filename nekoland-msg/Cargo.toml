@@ -14,3 +14,6 @@ serde_json.workspace = true
 [dev-dependencies]
 nekoland = { path = "../nekoland" }
 nekoland-core = { path = "../crates/nekoland-core" }
+
+[lints]
+workspace = true

@@ -19,3 +19,6 @@ tracing.workspace = true
 [dev-dependencies]
 wayland-client = "0.31.10"
 wayland-protocols = { version = "0.32.11", features = ["client"] }
+
+[lints]
+workspace = true

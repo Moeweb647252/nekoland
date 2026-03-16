@@ -19,3 +19,6 @@ smithay.workspace = true
 tracing.workspace = true
 wayland-egl = "0.32"
 xcursor = "0.3"
+
+[lints]
+workspace = true

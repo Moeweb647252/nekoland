@@ -12,3 +12,6 @@ nekoland-core = { path = "../nekoland-core" }
 nekoland-ecs = { path = "../nekoland-ecs" }
 nekoland-protocol = { path = "../nekoland-protocol" }
 tracing.workspace = true
+
+[lints]
+workspace = true

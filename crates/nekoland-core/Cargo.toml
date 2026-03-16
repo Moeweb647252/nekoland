@@ -11,3 +11,6 @@ bevy_ecs.workspace = true
 bevy_utils.workspace = true
 calloop.workspace = true
 tracing.workspace = true
+
+[lints]
+workspace = true

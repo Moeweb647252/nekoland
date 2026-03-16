@@ -9,3 +9,5 @@ rust-version.workspace = true
 bevy_ecs.workspace = true
 serde.workspace = true
 
+[lints]
+workspace = true
