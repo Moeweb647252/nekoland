@@ -47,13 +47,11 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                 tracing::trace!(surface_id = request.surface_id, "toplevel configure requested");
             }
             WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Toplevel, serial } => {
-                let Some(entity) =
-                    resolve_xdg_window_entity(
-                        request.surface_id,
-                        &configure.entity_index,
-                        &mut configure.windows,
-                    )
-                else {
+                let Some(entity) = resolve_xdg_window_entity(
+                    request.surface_id,
+                    &configure.entity_index,
+                    &mut configure.windows,
+                ) else {
                     deferred.push(request);
                     continue;
                 };
@@ -72,13 +70,11 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                 xdg_window.last_acked_configure = Some(serial);
             }
             WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Popup, serial } => {
-                let Some(entity) =
-                    resolve_xdg_popup_entity(
-                        request.surface_id,
-                        &configure.entity_index,
-                        &mut configure.popups,
-                    )
-                else {
+                let Some(entity) = resolve_xdg_popup_entity(
+                    request.surface_id,
+                    &configure.entity_index,
+                    &mut configure.popups,
+                ) else {
                     deferred.push(request);
                     continue;
                 };
@@ -90,13 +86,11 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                 popup.popup.configure_serial = Some(serial);
             }
             WindowLifecycleAction::InteractiveMove { seat_name, serial } => {
-                let Some(entity) =
-                    resolve_xdg_window_entity(
-                        request.surface_id,
-                        &configure.entity_index,
-                        &mut configure.windows,
-                    )
-                else {
+                let Some(entity) = resolve_xdg_window_entity(
+                    request.surface_id,
+                    &configure.entity_index,
+                    &mut configure.windows,
+                ) else {
                     deferred.push(request);
                     continue;
                 };
@@ -129,13 +123,11 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                 );
             }
             WindowLifecycleAction::InteractiveResize { seat_name, serial, edges } => {
-                let Some(entity) =
-                    resolve_xdg_window_entity(
-                        request.surface_id,
-                        &configure.entity_index,
-                        &mut configure.windows,
-                    )
-                else {
+                let Some(entity) = resolve_xdg_window_entity(
+                    request.surface_id,
+                    &configure.entity_index,
+                    &mut configure.windows,
+                ) else {
                     deferred.push(request);
                     continue;
                 };
@@ -169,13 +161,11 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                 );
             }
             WindowLifecycleAction::Maximize => {
-                let Some(entity) =
-                    resolve_xdg_window_entity(
-                        request.surface_id,
-                        &configure.entity_index,
-                        &mut configure.windows,
-                    )
-                else {
+                let Some(entity) = resolve_xdg_window_entity(
+                    request.surface_id,
+                    &configure.entity_index,
+                    &mut configure.windows,
+                ) else {
                     deferred.push(request);
                     continue;
                 };
@@ -193,13 +183,11 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                 configure.keyboard_focus.focused_surface = Some(window.surface_id());
             }
             WindowLifecycleAction::UnMaximize => {
-                let Some(entity) =
-                    resolve_xdg_window_entity(
-                        request.surface_id,
-                        &configure.entity_index,
-                        &mut configure.windows,
-                    )
-                else {
+                let Some(entity) = resolve_xdg_window_entity(
+                    request.surface_id,
+                    &configure.entity_index,
+                    &mut configure.windows,
+                ) else {
                     deferred.push(request);
                     continue;
                 };
@@ -221,13 +209,11 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                 }
             }
             WindowLifecycleAction::Fullscreen { output_name } => {
-                let Some(entity) =
-                    resolve_xdg_window_entity(
-                        request.surface_id,
-                        &configure.entity_index,
-                        &mut configure.windows,
-                    )
-                else {
+                let Some(entity) = resolve_xdg_window_entity(
+                    request.surface_id,
+                    &configure.entity_index,
+                    &mut configure.windows,
+                ) else {
                     deferred.push(request);
                     continue;
                 };
@@ -256,13 +242,11 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                 );
             }
             WindowLifecycleAction::UnFullscreen => {
-                let Some(entity) =
-                    resolve_xdg_window_entity(
-                        request.surface_id,
-                        &configure.entity_index,
-                        &mut configure.windows,
-                    )
-                else {
+                let Some(entity) = resolve_xdg_window_entity(
+                    request.surface_id,
+                    &configure.entity_index,
+                    &mut configure.windows,
+                ) else {
                     deferred.push(request);
                     continue;
                 };
@@ -284,13 +268,11 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                 }
             }
             WindowLifecycleAction::Minimize => {
-                let Some(entity) =
-                    resolve_xdg_window_entity(
-                        request.surface_id,
-                        &configure.entity_index,
-                        &mut configure.windows,
-                    )
-                else {
+                let Some(entity) = resolve_xdg_window_entity(
+                    request.surface_id,
+                    &configure.entity_index,
+                    &mut configure.windows,
+                ) else {
                     deferred.push(request);
                     continue;
                 };

@@ -24,7 +24,7 @@ pub struct TilingLayout;
 pub fn tiling_layout_system(
     mut tiling: ResMut<WorkspaceTilingState>,
     mut windows: Query<WindowRuntime, (With<XdgWindow>, Allow<Disabled>)>,
-    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
+    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime), Allow<Disabled>>,
     outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
     primary_output: Option<Res<PrimaryOutputState>>,
     work_area: Res<WorkArea>,

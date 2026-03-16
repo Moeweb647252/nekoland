@@ -18,8 +18,7 @@ use crate::window_policy::{
     WindowBackgroundState, lock_window_policy, sync_window_background_role,
 };
 
-type ControlledWindows<'w, 's> =
-    Query<'w, 's, WindowRuntime, (With<XdgWindow>, Allow<Disabled>)>;
+type ControlledWindows<'w, 's> = Query<'w, 's, WindowRuntime, (With<XdgWindow>, Allow<Disabled>)>;
 type ControlOutputs<'w, 's> = Query<'w, 's, (bevy_ecs::prelude::Entity, OutputRuntime)>;
 type ControlWorkspaces<'w, 's> = Query<'w, 's, (bevy_ecs::prelude::Entity, WorkspaceRuntime)>;
 
@@ -169,9 +168,7 @@ pub fn window_control_request_system(
                 workspace_id
             };
             controls.tiling.ensure_surface(tiling_workspace_id, window.surface_id());
-            controls
-                .tiling
-                .set_surface_split_axis(tiling_workspace_id, window.surface_id(), axis);
+            controls.tiling.set_surface_split_axis(tiling_workspace_id, window.surface_id(), axis);
         }
 
         if control.focus

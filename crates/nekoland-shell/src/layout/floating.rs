@@ -1,4 +1,6 @@
+use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::{Local, Query, Res, With};
+use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{
     OutputProperties, OutputViewport, SurfaceGeometry, WindowLayout, WindowMode, WindowPlacement,
     WindowPosition, WindowSceneGeometry, XdgWindow,
@@ -33,7 +35,7 @@ pub fn floating_layout_system(
     mut windows: Query<WindowRuntime, With<XdgWindow>>,
     outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
     primary_output: Option<Res<PrimaryOutputState>>,
-    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
+    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime), Allow<Disabled>>,
     work_area: Res<WorkArea>,
 ) {
     let placement_area = placement_work_area(

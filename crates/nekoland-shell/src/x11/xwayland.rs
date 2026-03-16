@@ -320,13 +320,10 @@ fn map_x11_window(
         app_id,
         geometry,
     } = request;
-    let policy = context
-        .config
-        .resolve_window_policy(&app_id, &title, override_redirect);
-    let background = context
-        .config
-        .resolve_window_background(&app_id, &title, override_redirect);
-    if let Some(entity) = resolve_x11_window_entity(surface_id, context.entity_index, context.windows)
+    let policy = context.config.resolve_window_policy(&app_id, &title, override_redirect);
+    let background = context.config.resolve_window_background(&app_id, &title, override_redirect);
+    if let Some(entity) =
+        resolve_x11_window_entity(surface_id, context.entity_index, context.windows)
         && let Ok((entity, mut window)) = context.windows.get_mut(entity)
     {
         let moved = window.geometry.x != geometry.x || window.geometry.y != geometry.y;
@@ -354,8 +351,7 @@ fn map_x11_window(
         xdg_window.title = title.clone();
         xdg_window.app_id = app_id.clone();
         apply_window_policy(policy, &mut window.layout, &mut window.mode, &mut window.policy_state);
-        let current_background =
-            window.background.as_ref().map(|background| (*background).clone());
+        let current_background = window.background.as_ref().map(|background| (*background).clone());
         sync_window_background_role(
             commands,
             entity,
@@ -480,8 +476,7 @@ fn reconfigure_x11_window(
         window_type,
         geometry,
     } = request;
-    let Some(entity) =
-        resolve_x11_window_entity(surface_id, context.entity_index, context.windows)
+    let Some(entity) = resolve_x11_window_entity(surface_id, context.entity_index, context.windows)
     else {
         return false;
     };
@@ -515,9 +510,11 @@ fn reconfigure_x11_window(
     };
     let policy =
         context.config.resolve_window_policy(&resolved_app_id, &resolved_title, override_redirect);
-    let background = context
-        .config
-        .resolve_window_background(&resolved_app_id, &resolved_title, override_redirect);
+    let background = context.config.resolve_window_background(
+        &resolved_app_id,
+        &resolved_title,
+        override_redirect,
+    );
     refresh_window_policy(
         policy,
         &mut window.layout,

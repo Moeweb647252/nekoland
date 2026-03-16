@@ -325,6 +325,7 @@ struct WorkspaceVisibilityState {
     active_workspace: Option<u32>,
     visible_toplevels: BTreeSet<u64>,
     visible_popups: BTreeSet<u64>,
+    hidden_parent_popups: BTreeSet<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -821,9 +822,7 @@ fn sync_workspace_visibility_system(
         .collect::<BTreeSet<_>>();
     let hidden_parent_popups = popups
         .iter()
-        .filter(|(popup, disabled)| {
-            !disabled && !visible_toplevel_entities.contains(&popup.child_of.parent())
-        })
+        .filter(|(popup, _)| !visible_toplevel_entities.contains(&popup.child_of.parent()))
         .map(|(popup, _)| popup.surface_id())
         .collect::<BTreeSet<_>>();
 
@@ -832,6 +831,7 @@ fn sync_workspace_visibility_system(
         visibility.active_workspace = active_workspace;
         visibility.visible_toplevels = visible_toplevels;
         visibility.visible_popups = visible_popups;
+        visibility.hidden_parent_popups = hidden_parent_popups;
         return;
     }
 
@@ -839,7 +839,7 @@ fn sync_workspace_visibility_system(
         .visible_popups
         .difference(&visible_popups)
         .copied()
-        .chain(hidden_parent_popups.iter().copied())
+        .chain(hidden_parent_popups.difference(&visibility.hidden_parent_popups).copied())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
@@ -849,6 +849,7 @@ fn sync_workspace_visibility_system(
     if visibility.active_workspace != active_workspace
         || visibility.visible_toplevels != visible_toplevels
         || visibility.visible_popups != visible_popups
+        || visibility.hidden_parent_popups != hidden_parent_popups
     {
         server.sync_workspace_visibility(&activated_toplevels, &dismissed_popups);
     }
@@ -856,6 +857,7 @@ fn sync_workspace_visibility_system(
     visibility.active_workspace = active_workspace;
     visibility.visible_toplevels = visible_toplevels;
     visibility.visible_popups = visible_popups;
+    visibility.hidden_parent_popups = hidden_parent_popups;
 }
 
 fn popup_parent_visible(child_of: &ChildOf, visible_toplevel_entities: &BTreeSet<Entity>) -> bool {

@@ -1,4 +1,6 @@
+use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::{Query, Res, With};
+use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{WindowMode, XdgWindow};
 use nekoland_ecs::resources::{PrimaryOutputState, WorkArea};
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
@@ -13,7 +15,7 @@ pub struct FullscreenLayout;
 pub fn fullscreen_layout_system(
     outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
     mut windows: Query<WindowRuntime, With<XdgWindow>>,
-    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
+    workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime), Allow<Disabled>>,
     primary_output: Option<Res<PrimaryOutputState>>,
     work_area: Res<WorkArea>,
 ) {

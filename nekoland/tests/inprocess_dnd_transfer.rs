@@ -104,11 +104,7 @@ struct DndTransferPumpParams<'w, 's> {
     windows: Query<
         'w,
         's,
-        (
-            &'static WlSurfaceHandle,
-            &'static mut SurfaceGeometry,
-            &'static XdgWindow,
-        ),
+        (&'static WlSurfaceHandle, &'static mut SurfaceGeometry, &'static XdgWindow),
         With<XdgWindow>,
     >,
 }

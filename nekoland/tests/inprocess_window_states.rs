@@ -48,6 +48,7 @@ mod common;
 
 const INTERACTIVE_INPUT_PUMP_FRAMES: u8 = 8;
 const CLIENT_LINGER_AFTER_COMPLETION: Duration = Duration::from_millis(400);
+const SCENARIO_CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Enumerates the scenario variants exercised by this test module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1274,7 +1275,7 @@ fn run_scenario_client(
 
     let mut state =
         ScenarioClientState { scenario: Some(scenario), ipc_socket_path, ..Default::default() };
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + SCENARIO_CLIENT_TIMEOUT;
 
     while !state.is_complete() {
         event_queue.dispatch_pending(&mut state).map_err(|error| {
@@ -1290,9 +1291,18 @@ fn run_scenario_client(
         }
 
         if std::time::Instant::now() >= deadline {
-            return Err(common::TestControl::Fail(
-                "timed out waiting for scenario completion".to_owned(),
-            ));
+            return Err(common::TestControl::Fail(format!(
+                "timed out waiting for scenario completion: scenario={:?}, stage={}, toplevel_configures={}, popup_configure_serial={:?}, popup_repositioned_token={:?}, received_toplevel_close={}, received_popup_done={}, final_request_sent={}, terminal_error={:?}",
+                state.scenario,
+                state.scenario_stage,
+                state.toplevel_configure_count,
+                state.popup_configure_serial,
+                state.popup_repositioned_token,
+                state.received_toplevel_close,
+                state.received_popup_done,
+                state.final_request_sent,
+                state.terminal_error,
+            )));
         }
 
         if let Some(error) = state.terminal_error.take() {

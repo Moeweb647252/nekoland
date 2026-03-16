@@ -248,12 +248,7 @@ mod tests {
                 &mut commands,
                 entity,
                 Some(OutputName::from("Virtual-1")),
-                WindowBackgroundState::new(
-                    &mut role,
-                    &mut scene_geometry,
-                    &mut layout,
-                    &mut mode,
-                ),
+                WindowBackgroundState::new(&mut role, &mut scene_geometry, &mut layout, &mut mode),
                 None,
             );
         }
@@ -273,12 +268,7 @@ mod tests {
                 &mut commands,
                 entity,
                 None,
-                WindowBackgroundState::new(
-                    &mut role,
-                    &mut scene_geometry,
-                    &mut layout,
-                    &mut mode,
-                ),
+                WindowBackgroundState::new(&mut role, &mut scene_geometry, &mut layout, &mut mode),
                 Some(background),
             );
         }

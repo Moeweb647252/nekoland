@@ -294,10 +294,8 @@ pub fn toplevel_lifecycle_system(
                 );
                 let background =
                     config.resolve_window_background(&window_app_id, &window_title, false);
-                let current_background = window_runtime
-                    .background
-                    .as_ref()
-                    .map(|background| (*background).clone());
+                let current_background =
+                    window_runtime.background.as_ref().map(|background| (*background).clone());
                 sync_window_background_role(
                     &mut commands,
                     entity,

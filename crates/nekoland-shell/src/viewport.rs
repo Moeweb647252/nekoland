@@ -91,20 +91,22 @@ pub(crate) fn resolve_output_state_for_workspace<'w, 's>(
     workspace_id: Option<u32>,
     primary_output: Option<&PrimaryOutputState>,
 ) -> Option<(String, &'w OutputProperties, &'w OutputViewport, &'w OutputWorkArea)> {
-    if let Some(workspace_id) = workspace_id
-        && let Some((_, output)) = outputs.iter().find(|(_, output)| {
+    if let Some(workspace_id) = workspace_id {
+        if let Some((_, output)) = outputs.iter().find(|(_, output)| {
             output
                 .current_workspace
                 .as_ref()
                 .is_some_and(|current_workspace| current_workspace.workspace.0 == workspace_id)
-        })
-    {
-        return Some((
-            output.name().to_owned(),
-            output.properties,
-            output.viewport,
-            output.work_area,
-        ));
+        }) {
+            return Some((
+                output.name().to_owned(),
+                output.properties,
+                output.viewport,
+                output.work_area,
+            ));
+        }
+
+        return None;
     }
 
     if let Some(primary_output_name) = primary_output.and_then(|primary| primary.name.as_deref())
@@ -137,7 +139,7 @@ pub(crate) fn resolve_output_state_by_name<'w, 's>(
 pub fn window_viewport_projection_system(
     outputs: Query<(Entity, OutputRuntime)>,
     primary_output: Option<Res<PrimaryOutputState>>,
-    workspaces: Query<(Entity, WorkspaceRuntime)>,
+    workspaces: Query<(Entity, WorkspaceRuntime), Allow<Disabled>>,
     mut windows: Query<WindowRuntime, (With<XdgWindow>, Allow<Disabled>)>,
 ) {
     for mut window in &mut windows {
@@ -195,13 +197,15 @@ fn saturating_isize_to_i32(value: isize) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use bevy_ecs::hierarchy::ChildOf;
     use bevy_ecs::prelude::With;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
-        OutputDevice, OutputKind, OutputProperties, SurfaceGeometry, WindowLayout, WindowMode,
-        WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
+        OutputCurrentWorkspace, OutputDevice, OutputKind, OutputProperties, SurfaceGeometry,
+        WindowLayout, WindowMode, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle,
+        Workspace, WorkspaceId, XdgWindow,
     };
 
     use super::{OutputViewport, window_viewport_projection_system};
@@ -264,5 +268,65 @@ mod tests {
             panic!("window geometry");
         };
         assert_eq!((geometry.x, geometry.y), (120, 90));
+    }
+
+    #[test]
+    fn viewport_projection_hides_windows_from_workspaces_not_shown_on_any_output() {
+        let mut app = NekolandApp::new("viewport-projection-hidden-workspace-test");
+        app.inner_mut().add_systems(LayoutSchedule, window_viewport_projection_system);
+
+        let workspace = app
+            .inner_mut()
+            .world_mut()
+            .spawn(Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: false })
+            .id();
+        app.inner_mut().world_mut().spawn((
+            OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "Virtual".to_owned(),
+                    model: "test".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 800,
+                    height: 600,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                ..Default::default()
+            },
+            OutputCurrentWorkspace { workspace: WorkspaceId(2) },
+        ));
+
+        let window = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                WindowBundle {
+                    surface: WlSurfaceHandle { id: 11 },
+                    geometry: SurfaceGeometry { x: 0, y: 0, width: 320, height: 240 },
+                    window: XdgWindow::default(),
+                    layout: WindowLayout::Floating,
+                    mode: WindowMode::Normal,
+                    ..Default::default()
+                },
+                ChildOf(workspace),
+            ))
+            .id();
+        app.inner_mut().world_mut().entity_mut(window).insert(WindowSceneGeometry {
+            x: 1120,
+            y: 2090,
+            width: 320,
+            height: 240,
+        });
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let Some(visibility) = app.inner().world().get::<WindowViewportVisibility>(window) else {
+            panic!("window viewport visibility");
+        };
+        assert!(!visibility.visible);
+        assert!(visibility.output.is_none());
     }
 }
