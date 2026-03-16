@@ -36,8 +36,9 @@ impl Default for FadeEffectConfig {
 
 /// Fade effect system — placeholder, not yet implemented.
 ///
-/// When implemented this will advance `WindowAnimation::elapsed_ms` each frame
-/// and update `progress` and `fade` accordingly.
+/// When implemented this will advance `WindowAnimation::elapsed_ms` during the
+/// pre-render schedule and update `progress`/`fade` before
+/// `surface_visual_snapshot_system` projects the result for core rendering.
 pub fn fade_effect_system() {
     // FUTURE: drive WindowAnimation::progress from FadeState — see FadeEffect doc above
     tracing::trace!("fade effect system tick (not yet implemented)");

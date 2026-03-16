@@ -10,8 +10,8 @@ use crate::error::NekolandError;
 use crate::lifecycle::AppLifecycleState;
 use crate::plugin::NekolandPlugin;
 use crate::schedules::{
-    ExtractSchedule, InputSchedule, LayoutSchedule, PresentSchedule, ProtocolSchedule,
-    RenderSchedule, install_core_schedules,
+    ExtractSchedule, InputSchedule, LayoutSchedule, PostRenderSchedule, PreRenderSchedule,
+    PresentSchedule, ProtocolSchedule, RenderSchedule, install_core_schedules,
 };
 
 #[derive(Debug, Clone, Resource)]
@@ -121,7 +121,9 @@ impl NekolandApp {
             self.app.world_mut().run_schedule(ProtocolSchedule);
             self.app.world_mut().run_schedule(InputSchedule);
             self.app.world_mut().run_schedule(LayoutSchedule);
+            self.app.world_mut().run_schedule(PreRenderSchedule);
             self.app.world_mut().run_schedule(RenderSchedule);
+            self.app.world_mut().run_schedule(PostRenderSchedule);
             self.app.world_mut().run_schedule(PresentSchedule);
 
             if self

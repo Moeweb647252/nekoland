@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 /// Per-window animation state.
 ///
 /// `progress` is the primary hook used by the render compositor to set the
-/// surface opacity (0.0 = transparent, 1.0 = fully opaque).  The remaining
-/// fields are reserved for the future animation driver in
+/// surface opacity once the experience layer has projected it into
+/// `SurfaceVisualSnapshot` (0.0 = transparent, 1.0 = fully opaque). The
+/// remaining fields are reserved for the future animation driver in
 /// `nekoland-render/src/effects/fade.rs`:
 ///
 /// - `target_opacity`: the opacity value the animation is moving towards.

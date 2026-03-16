@@ -1,7 +1,8 @@
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
-/// One composed render entry after shell/layout systems have decided visibility and ordering.
+/// One composed render entry after shell/layout and experience systems have decided visibility,
+/// ordering, and visual opacity.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct RenderElement {
     pub surface_id: u64,

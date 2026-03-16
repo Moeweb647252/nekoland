@@ -4,8 +4,8 @@ use bevy_ecs::query::QueryData;
 use crate::components::{
     BufferState, LayerShellSurface, OutputBackgroundWindow, OutputCurrentWorkspace, OutputDevice,
     OutputPlacement, OutputProperties, OutputViewport, OutputWorkArea, PopupGrab,
-    SurfaceContentVersion, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode,
-    WindowPlacement, WindowPolicyState, WindowRestoreSnapshot, WindowRole, WindowSceneGeometry,
+    SurfaceContentVersion, SurfaceGeometry, WindowLayout, WindowMode, WindowPlacement,
+    WindowPolicyState, WindowRestoreSnapshot, WindowRole, WindowSceneGeometry,
     WindowViewportVisibility, WlSurfaceHandle, Workspace, X11Window, XdgPopup, XdgWindow,
 };
 
@@ -177,7 +177,6 @@ impl<'w, 's> PopupSnapshotRuntimeItem<'w, 's> {
 #[derive(QueryData)]
 pub struct WindowRenderRuntime {
     pub surface: &'static WlSurfaceHandle,
-    pub animation: &'static WindowAnimation,
     pub viewport_visibility: &'static WindowViewportVisibility,
     pub role: &'static WindowRole,
     pub background: Option<&'static OutputBackgroundWindow>,
@@ -196,7 +195,6 @@ impl<'w, 's> WindowRenderRuntimeItem<'w, 's> {
 pub struct PopupRenderRuntime {
     pub surface: &'static WlSurfaceHandle,
     pub buffer: &'static BufferState,
-    pub animation: &'static WindowAnimation,
     pub child_of: &'static ChildOf,
 }
 
@@ -210,7 +208,6 @@ impl<'w, 's> PopupRenderRuntimeItem<'w, 's> {
 #[derive(QueryData)]
 pub struct LayerRenderRuntime {
     pub surface: &'static WlSurfaceHandle,
-    pub animation: &'static WindowAnimation,
     pub layer_surface: &'static LayerShellSurface,
     pub buffer: &'static BufferState,
     pub content_version: &'static SurfaceContentVersion,

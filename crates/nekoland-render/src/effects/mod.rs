@@ -1,4 +1,4 @@
-//! Optional visual post-processing effects applied during the render phase.
+//! Optional user-facing visual effects kept separate from core compositor rendering.
 
 pub mod blur;
 pub mod fade;

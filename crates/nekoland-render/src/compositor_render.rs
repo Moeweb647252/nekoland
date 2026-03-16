@@ -8,7 +8,7 @@ use nekoland_ecs::presentation_logic::{
 };
 use nekoland_ecs::resources::{
     RenderElement, RenderList, SurfacePresentationRole, SurfacePresentationSnapshot,
-    UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
+    SurfaceVisualSnapshot, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
 };
 use nekoland_ecs::views::{
     LayerRenderRuntime, PopupRenderRuntime, WindowRenderRuntime, WorkspaceRuntime,
@@ -18,7 +18,7 @@ use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrameComposer;
 
-/// Builds the per-frame render list from already-laid-out surfaces.
+/// Builds the per-frame render list from already-laid-out surfaces plus projected visual state.
 ///
 /// Composition order is deliberate: output backgrounds, background/bottom layers, visible
 /// windows, popups whose parents are still visible, then top/overlay layers.
@@ -29,9 +29,11 @@ pub fn compose_frame_system(
     stacking: bevy_ecs::prelude::Res<WindowStackingState>,
     workspaces: Query<(Entity, WorkspaceRuntime)>,
     surface_presentation: Option<bevy_ecs::prelude::Res<SurfacePresentationSnapshot>>,
+    surface_visual: Option<bevy_ecs::prelude::Res<SurfaceVisualSnapshot>>,
     mut render_list: ResMut<RenderList>,
 ) {
     let surface_presentation = surface_presentation.as_deref();
+    let surface_visual = surface_visual.as_deref();
     let background_windows = windows
         .iter()
         .filter_map(|(_, window)| {
@@ -56,7 +58,7 @@ pub fn compose_frame_system(
                 })?;
             Some((
                 output_name,
-                (window.surface_id(), opacity_for_animation(window.animation.progress)),
+                (window.surface_id(), surface_opacity(window.surface_id(), surface_visual)),
             ))
         })
         .fold(BTreeMap::new(), |mut backgrounds, (output_name, candidate)| {
@@ -92,7 +94,7 @@ pub fn compose_frame_system(
                 window.surface_id(),
                 window_workspace_runtime_id(window.child_of, &workspaces)
                     .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID),
-                opacity_for_animation(window.animation.progress),
+                surface_opacity(window.surface_id(), surface_visual),
             ))
         })
         .collect::<Vec<_>>();
@@ -125,7 +127,9 @@ pub fn compose_frame_system(
                             },
                         )
                 })
-                .map(|layer| (layer.surface_id(), opacity_for_animation(layer.animation.progress))),
+                .map(|layer| {
+                    (layer.surface_id(), surface_opacity(layer.surface_id(), surface_visual))
+                }),
         )
         .chain(ordered_window_surfaces.into_iter().filter_map(|surface_id| {
             active_window_opacity.get(&surface_id).copied().map(|opacity| (surface_id, opacity))
@@ -146,7 +150,9 @@ pub fn compose_frame_system(
                             |state| state.visible && state.role == SurfacePresentationRole::Popup,
                         )
                 })
-                .map(|popup| (popup.surface_id(), opacity_for_animation(popup.animation.progress))),
+                .map(|popup| {
+                    (popup.surface_id(), surface_opacity(popup.surface_id(), surface_visual))
+                }),
         )
         .chain(
             layers
@@ -166,7 +172,9 @@ pub fn compose_frame_system(
                             },
                         )
                 })
-                .map(|layer| (layer.surface_id(), opacity_for_animation(layer.animation.progress))),
+                .map(|layer| {
+                    (layer.surface_id(), surface_opacity(layer.surface_id(), surface_visual))
+                }),
         )
         .enumerate()
         .map(|(z_index, (surface_id, opacity))| RenderElement {
@@ -186,8 +194,11 @@ fn popup_parent_visible(child_of: &ChildOf, active_window_entities: &BTreeSet<En
     active_window_entities.contains(&child_of.parent())
 }
 
-fn opacity_for_animation(animation_progress: f32) -> f32 {
-    if animation_progress == 0.0 { 1.0 } else { animation_progress }
+fn surface_opacity(surface_id: u64, visual_snapshot: Option<&SurfaceVisualSnapshot>) -> f32 {
+    visual_snapshot
+        .and_then(|snapshot| snapshot.surfaces.get(&surface_id))
+        .map(|state| state.opacity)
+        .unwrap_or(1.0)
 }
 
 #[cfg(test)]
@@ -196,9 +207,12 @@ mod tests {
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::bundles::{LayerSurfaceBundle, WindowBundle};
     use nekoland_ecs::components::{
-        LayerLevel, OutputBackgroundWindow, WindowRole, WlSurfaceHandle, XdgWindow,
+        LayerLevel, OutputBackgroundWindow, WindowAnimation, WindowRole, WlSurfaceHandle, XdgWindow,
     };
-    use nekoland_ecs::resources::{RenderList, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState};
+    use nekoland_ecs::resources::{
+        RenderList, SurfaceVisualSnapshot, SurfaceVisualState, UNASSIGNED_WORKSPACE_STACK_ID,
+        WindowStackingState,
+    };
 
     use super::compose_frame_system;
 
@@ -352,6 +366,43 @@ mod tests {
             .map(|element| element.surface_id)
             .collect::<Vec<_>>();
         assert_eq!(render_order, vec![11, 22]);
+    }
+
+    #[test]
+    fn render_uses_surface_visual_snapshot_instead_of_animation_component() {
+        let mut app = NekolandApp::new("render-surface-visual-boundary-test");
+        app.inner_mut()
+            .init_resource::<RenderList>()
+            .init_resource::<SurfaceVisualSnapshot>()
+            .insert_resource(WindowStackingState {
+                workspaces: std::collections::BTreeMap::from([(
+                    UNASSIGNED_WORKSPACE_STACK_ID,
+                    vec![11],
+                )]),
+            })
+            .add_systems(RenderSchedule, compose_frame_system);
+
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 11 },
+            window: XdgWindow {
+                app_id: "org.nekoland.test".to_owned(),
+                title: "window".to_owned(),
+                last_acked_configure: None,
+            },
+            animation: WindowAnimation { progress: 0.9, ..Default::default() },
+            ..Default::default()
+        });
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<SurfaceVisualSnapshot>()
+            .surfaces
+            .insert(11, SurfaceVisualState { opacity: 0.25 });
+
+        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+
+        let render_list = app.inner().world().resource::<RenderList>();
+        assert_eq!(render_list.elements.len(), 1);
+        assert_eq!(render_list.elements[0].opacity, 0.25);
     }
 
     #[test]

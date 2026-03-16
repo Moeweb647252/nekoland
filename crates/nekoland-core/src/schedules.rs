@@ -17,9 +17,17 @@ pub struct InputSchedule;
 #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LayoutSchedule;
 
-/// Frame phase that composes render data, pacing state, and render-side effects.
+/// Frame phase that derives visual state such as animation before core composition.
+#[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PreRenderSchedule;
+
+/// Frame phase that composes render data and compositor-internal pacing state.
 #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RenderSchedule;
+
+/// Frame phase that applies optional visual effects over the composed scene.
+#[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PostRenderSchedule;
 
 /// Final frame phase that submits or presents the rendered frame.
 #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
@@ -31,6 +39,8 @@ pub fn install_core_schedules(app: &mut App) {
         .init_schedule(ProtocolSchedule)
         .init_schedule(InputSchedule)
         .init_schedule(LayoutSchedule)
+        .init_schedule(PreRenderSchedule)
         .init_schedule(RenderSchedule)
+        .init_schedule(PostRenderSchedule)
         .init_schedule(PresentSchedule);
 }

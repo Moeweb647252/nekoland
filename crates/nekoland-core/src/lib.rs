@@ -16,7 +16,7 @@ pub mod prelude {
     pub use crate::lifecycle::AppLifecycleState;
     pub use crate::plugin::NekolandPlugin;
     pub use crate::schedules::{
-        ExtractSchedule, InputSchedule, LayoutSchedule, PresentSchedule, ProtocolSchedule,
-        RenderSchedule,
+        ExtractSchedule, InputSchedule, LayoutSchedule, PostRenderSchedule, PreRenderSchedule,
+        PresentSchedule, ProtocolSchedule, RenderSchedule,
     };
 }
