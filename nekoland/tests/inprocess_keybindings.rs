@@ -93,12 +93,12 @@ fn close_window_keybinding_reaches_real_wayland_client() {
 
     let world = app.inner_mut().world_mut();
     let window_count = world.query::<&XdgWindow>().iter(world).count();
-    let focus = world
-        .get_resource::<KeyboardFocusState>()
-        .expect("keyboard focus state should remain available after the run");
-    let audit = world
-        .get_resource::<ClosedWindowAudit>()
-        .expect("window close audit should be initialized");
+    let Some(focus) = world.get_resource::<KeyboardFocusState>() else {
+        panic!("keyboard focus state should remain available after the run");
+    };
+    let Some(audit) = world.get_resource::<ClosedWindowAudit>() else {
+        panic!("window close audit should be initialized");
+    };
 
     assert_eq!(window_count, 0, "window entity should be cleaned up after the close round-trip");
     assert!(
@@ -110,10 +110,12 @@ fn close_window_keybinding_reaches_real_wayland_client() {
 
 /// Runs the end-to-end keybinding scenario and returns both the app and the helper-client summary.
 fn run_close_window_keybinding_scenario() -> Option<(NekolandApp, KeybindingClientSummary)> {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-keybinding-runtime");
     let config_path = runtime_dir.path.join("keybindings.toml");
-    fs::write(&config_path, test_config()).expect("test config should be writable");
+    if let Err(error) = fs::write(&config_path, test_config()) {
+        panic!("test config should be writable: {error}");
+    }
 
     let mut app = build_app(&config_path);
     app.insert_resource(RunLoopSettings {
@@ -131,9 +133,9 @@ fn run_close_window_keybinding_scenario() -> Option<(NekolandApp, KeybindingClie
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -147,15 +149,20 @@ fn run_close_window_keybinding_scenario() -> Option<(NekolandApp, KeybindingClie
     };
 
     let client_thread = thread::spawn(move || run_keybinding_client(&socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let summary = match client_thread.join().expect("client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping keybinding test in restricted environment: {reason}");
-            return None;
-        }
-        Err(common::TestControl::Fail(reason)) => panic!("keybinding client failed: {reason}"),
+    let summary = match client_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping keybinding test in restricted environment: {reason}");
+                return None;
+            }
+            Err(common::TestControl::Fail(reason)) => panic!("keybinding client failed: {reason}"),
+        },
+        Err(_) => panic!("client thread should exit cleanly"),
     };
 
     drop(runtime_dir);
@@ -408,9 +415,10 @@ impl KeybindingClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(compositor), Some(wm_base)) = (self.compositor.as_ref(), self.wm_base.as_ref())
+        else {
+            return;
+        };
         let surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, qh, ());
         let toplevel = xdg_surface.get_toplevel(qh, ());

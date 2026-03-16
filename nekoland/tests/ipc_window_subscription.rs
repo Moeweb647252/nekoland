@@ -58,9 +58,9 @@ fn window_subscription_reports_geometry_and_state_transitions() {
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -91,21 +91,26 @@ fn window_subscription_reports_geometry_and_state_transitions() {
 
     let command_thread =
         thread::spawn(move || issue_move_command_when_window_is_ready(&ipc_socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let summary = match command_thread.join().expect("window command thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping window subscription test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("window command sequence failed: {reason}");
-        }
+    let summary = match command_thread.join() {
+        Ok(summary) => match summary {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping window subscription test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("window command sequence failed: {reason}");
+            }
+        },
+        Err(_) => panic!("window command thread should exit cleanly"),
     };
 
-    let events =
-        match subscription_thread.join().expect("window subscription thread should exit cleanly") {
+    let events = match subscription_thread.join() {
+        Ok(events) => match events {
             Ok(events) => events,
             Err(common::TestControl::Skip(reason)) => {
                 eprintln!("skipping window subscription test in restricted environment: {reason}");
@@ -114,7 +119,9 @@ fn window_subscription_reports_geometry_and_state_transitions() {
             Err(common::TestControl::Fail(reason)) => {
                 panic!("window subscription failed: {reason}");
             }
-        };
+        },
+        Err(_) => panic!("window subscription thread should exit cleanly"),
+    };
 
     assert_eq!(events.geometry.surface_id, TARGET_SURFACE_ID);
     assert_eq!(events.geometry.previous_x, summary.initial_window.x);

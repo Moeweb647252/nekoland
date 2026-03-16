@@ -61,7 +61,9 @@ fn command_subscription_reports_failed_external_command_invocations() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-command-events");
     let config_path = runtime_dir.path.join("command-events.toml");
-    fs::write(&config_path, TEST_CONFIG).expect("command-events config should be writable");
+    if let Err(error) = fs::write(&config_path, TEST_CONFIG) {
+        panic!("command-events config should be writable: {error}");
+    }
 
     let mut app = build_app(&config_path);
     app.insert_resource(RunLoopSettings {
@@ -74,9 +76,9 @@ fn command_subscription_reports_failed_external_command_invocations() {
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -101,10 +103,12 @@ fn command_subscription_reports_failed_external_command_invocations() {
         let commands = wait_for_command_history(&ipc_socket_path)?;
         Ok::<_, common::TestControl>((event, commands))
     });
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let (event, commands) =
-        match test_thread.join().expect("command test thread should exit cleanly") {
+    let (event, commands) = match test_thread.join() {
+        Ok(result) => match result {
             Ok(result) => result,
             Err(common::TestControl::Skip(reason)) => {
                 eprintln!("skipping command subscription test in restricted environment: {reason}");
@@ -113,12 +117,16 @@ fn command_subscription_reports_failed_external_command_invocations() {
             Err(common::TestControl::Fail(reason)) => {
                 panic!("command subscription test failed: {reason}");
             }
-        };
+        },
+        Err(_) => panic!("command test thread should exit cleanly"),
+    };
 
     assert_eq!(event.topic, SubscriptionTopic::Command);
     assert_eq!(event.event, "command_failed");
 
-    let payload = event.payload.expect("command failure subscription should carry a payload");
+    let Some(payload) = event.payload else {
+        panic!("command failure subscription should carry a payload");
+    };
     assert_eq!(
         payload["origin"].as_str(),
         Some("Super+Space -> /definitely-not-a-real-nekoland-command")
@@ -128,7 +136,9 @@ fn command_subscription_reports_failed_external_command_invocations() {
         Some("/definitely-not-a-real-nekoland-command")
     );
 
-    let error = payload["error"].as_str().expect("failure payload should include an error");
+    let Some(error) = payload["error"].as_str() else {
+        panic!("failure payload should include an error");
+    };
     assert!(
         error.contains("No such file") || error.contains("not found"),
         "spawn failure should surface the OS error message: {error}"
@@ -138,7 +148,9 @@ fn command_subscription_reports_failed_external_command_invocations() {
         !commands.is_empty(),
         "command history query should report at least one command record"
     );
-    let latest = commands.last().expect("non-empty command history should have a last entry");
+    let Some(latest) = commands.last() else {
+        panic!("non-empty command history should have a last entry");
+    };
     assert_eq!(latest.origin, "Super+Space -> /definitely-not-a-real-nekoland-command");
     assert!(
         latest.command.is_none(),

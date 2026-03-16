@@ -19,7 +19,7 @@ mod common;
 /// state, seeded outputs, and IPC server state.
 #[test]
 fn startup_registers_protocol_globals_and_runtime_state() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-runtime");
     let config_path = workspace_config_path();
 
@@ -29,24 +29,26 @@ fn startup_registers_protocol_globals_and_runtime_state() {
         max_frames: Some(1),
     });
 
-    app.run().expect("nekoland should start and complete one frame");
+    if let Err(error) = app.run() {
+        panic!("nekoland should start and complete one frame: {error}");
+    }
 
     let world = app.inner().world();
-    let registry = world
-        .get_resource::<ProtocolRegistry>()
-        .expect("protocol registry should be inserted during startup");
-    let server_state = world
-        .get_resource::<ProtocolServerState>()
-        .expect("protocol server state should be inserted during startup");
-    let outputs = world
-        .get_resource::<BackendOutputRegistry>()
-        .expect("backend output registry should be inserted during startup");
-    let xwayland = world
-        .get_resource::<XWaylandServerState>()
-        .expect("xwayland server state should be inserted during startup");
-    let ipc_server_state = world
-        .get_resource::<IpcServerState>()
-        .expect("IPC server state should be inserted during startup");
+    let Some(registry) = world.get_resource::<ProtocolRegistry>() else {
+        panic!("protocol registry should be inserted during startup");
+    };
+    let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+        panic!("protocol server state should be inserted during startup");
+    };
+    let Some(outputs) = world.get_resource::<BackendOutputRegistry>() else {
+        panic!("backend output registry should be inserted during startup");
+    };
+    let Some(xwayland) = world.get_resource::<XWaylandServerState>() else {
+        panic!("xwayland server state should be inserted during startup");
+    };
+    let Some(ipc_server_state) = world.get_resource::<IpcServerState>() else {
+        panic!("IPC server state should be inserted during startup");
+    };
 
     let actual_globals = registry.globals.iter().copied().collect::<BTreeSet<_>>();
     let expected_globals = supported_protocols().iter().copied().collect::<BTreeSet<_>>();

@@ -53,10 +53,17 @@ pub(crate) fn install_drm_session_source(app: &mut App, session_state: SharedDrm
         app.insert_non_send_resource(CalloopSourceRegistry::default());
     }
 
-    let mut registry = app
-        .world_mut()
-        .get_non_send_resource_mut::<CalloopSourceRegistry>()
-        .expect("calloop registry inserted immediately before access");
+    let Some(mut registry) = app.world_mut().get_non_send_resource_mut::<CalloopSourceRegistry>()
+    else {
+        let message = "calloop registry unavailable during drm session installation".to_owned();
+        tracing::error!(error = %message);
+        let mut state = session_state.borrow_mut();
+        state.status = DrmSessionStatus::Failed(message);
+        state.session = None;
+        state.active = false;
+        state.was_active = Some(false);
+        return;
+    };
 
     registry.push(move |handle| {
         let (session, notifier) = match LibSeatSession::new() {

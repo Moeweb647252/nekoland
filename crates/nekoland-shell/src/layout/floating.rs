@@ -248,7 +248,9 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let geometry = app.inner().world().get::<SurfaceGeometry>(window).expect("window geometry");
+        let Some(geometry) = app.inner().world().get::<SurfaceGeometry>(window) else {
+            panic!("window geometry");
+        };
         assert_eq!(geometry.width, 1280);
         assert_eq!(geometry.height, 720);
     }
@@ -310,11 +312,9 @@ mod tests {
         });
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let geometry = app
-            .inner()
-            .world()
-            .get::<SurfaceGeometry>(entity)
-            .expect("floating layout should keep geometry after work area updates");
+        let Some(geometry) = app.inner().world().get::<SurfaceGeometry>(entity) else {
+            panic!("floating layout should keep geometry after work area updates");
+        };
         assert_eq!((geometry.x, geometry.y), (944, 524));
     }
 
@@ -344,11 +344,9 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let geometry = app
-            .inner()
-            .world()
-            .get::<SurfaceGeometry>(entity)
-            .expect("floating layout should apply explicit placement before first attach");
+        let Some(geometry) = app.inner().world().get::<SurfaceGeometry>(entity) else {
+            panic!("floating layout should apply explicit placement before first attach");
+        };
         assert_eq!((geometry.x, geometry.y, geometry.width, geometry.height), (900, 120, 777, 555));
     }
 
@@ -378,10 +376,9 @@ mod tests {
             .id();
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
-        app.inner()
-            .world()
-            .get::<SurfaceGeometry>(entity)
-            .expect("floating layout should keep the window geometry component")
-            .clone()
+        let Some(geometry) = app.inner().world().get::<SurfaceGeometry>(entity) else {
+            panic!("floating layout should keep the window geometry component");
+        };
+        geometry.clone()
     }
 }

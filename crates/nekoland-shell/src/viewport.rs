@@ -226,12 +226,14 @@ mod tests {
             },
             ..Default::default()
         });
-        let output = app
+        let Ok(output) = app
             .inner_mut()
             .world_mut()
             .query_filtered::<bevy_ecs::prelude::Entity, With<OutputDevice>>()
             .single(app.inner_mut().world_mut())
-            .expect("output entity");
+        else {
+            panic!("output entity");
+        };
         app.inner_mut()
             .world_mut()
             .entity_mut(output)
@@ -258,7 +260,9 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let geometry = app.inner().world().get::<SurfaceGeometry>(window).expect("window geometry");
+        let Some(geometry) = app.inner().world().get::<SurfaceGeometry>(window) else {
+            panic!("window geometry");
+        };
         assert_eq!((geometry.x, geometry.y), (120, 90));
     }
 }

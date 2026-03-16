@@ -283,17 +283,29 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let placement =
-            world.get::<WindowPlacement>(entity).expect("window placement should exist");
-        let geometry =
-            world.get::<nekoland_ecs::components::SurfaceGeometry>(entity).expect("geometry");
-        let layout = world.get::<WindowLayout>(entity).expect("window layout should exist");
-        let mode = world.get::<WindowMode>(entity).expect("window mode should exist");
+        let Some(placement) = world.get::<WindowPlacement>(entity) else {
+            panic!("window placement should exist");
+        };
+        let Some(geometry) = world.get::<nekoland_ecs::components::SurfaceGeometry>(entity) else {
+            panic!("geometry");
+        };
+        let Some(layout) = world.get::<WindowLayout>(entity) else {
+            panic!("window layout should exist");
+        };
+        let Some(mode) = world.get::<WindowMode>(entity) else {
+            panic!("window mode should exist");
+        };
+        let Some(position) = placement.resolved_floating_position() else {
+            panic!("position");
+        };
+        let Some(size) = placement.floating_size else {
+            panic!("size");
+        };
 
-        assert_eq!(placement.resolved_floating_position().expect("position").x, 100);
-        assert_eq!(placement.resolved_floating_position().expect("position").y, 120);
-        assert_eq!(placement.floating_size.expect("size").width, 800);
-        assert_eq!(placement.floating_size.expect("size").height, 600);
+        assert_eq!(position.x, 100);
+        assert_eq!(position.y, 120);
+        assert_eq!(size.width, 800);
+        assert_eq!(size.height, 600);
         assert_eq!((geometry.x, geometry.y, geometry.width, geometry.height), (100, 120, 800, 600));
         assert_eq!(*layout, WindowLayout::Floating);
         assert_eq!(*mode, WindowMode::Normal);
@@ -372,12 +384,13 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let left_geometry = world
-            .get::<nekoland_ecs::components::SurfaceGeometry>(left)
-            .expect("left tiled window should exist");
-        let right_geometry = world
-            .get::<nekoland_ecs::components::SurfaceGeometry>(right)
-            .expect("right tiled window should exist");
+        let Some(left_geometry) = world.get::<nekoland_ecs::components::SurfaceGeometry>(left) else {
+            panic!("left tiled window should exist");
+        };
+        let Some(right_geometry) = world.get::<nekoland_ecs::components::SurfaceGeometry>(right)
+        else {
+            panic!("right tiled window should exist");
+        };
 
         assert_eq!(
             (left_geometry.x, left_geometry.y, left_geometry.width, left_geometry.height),
@@ -418,11 +431,9 @@ mod tests {
             .close();
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let requests = app
-            .inner()
-            .world()
-            .get_resource::<PendingWindowServerRequests>()
-            .expect("window request queue should exist");
+        let Some(requests) = app.inner().world().get_resource::<PendingWindowServerRequests>() else {
+            panic!("window request queue should exist");
+        };
         assert_eq!(requests.len(), 1);
         assert!(matches!(
             requests.as_slice()[0].action,
@@ -457,11 +468,9 @@ mod tests {
             .focus();
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let focus = app
-            .inner()
-            .world()
-            .get_resource::<KeyboardFocusState>()
-            .expect("keyboard focus should exist");
+        let Some(focus) = app.inner().world().get_resource::<KeyboardFocusState>() else {
+            panic!("keyboard focus should exist");
+        };
         assert_eq!(focus.focused_surface, Some(11));
     }
 
@@ -502,9 +511,9 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let background = world
-            .get::<OutputBackgroundWindow>(entity)
-            .expect("background role should be inserted");
+        let Some(background) = world.get::<OutputBackgroundWindow>(entity) else {
+            panic!("background role should be inserted");
+        };
         assert_eq!(background.output, "Virtual-1");
 
         app.inner_mut()

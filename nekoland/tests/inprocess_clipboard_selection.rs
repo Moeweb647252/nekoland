@@ -20,7 +20,7 @@ use wayland_client::protocol::{
     wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
     wl_keyboard, wl_registry, wl_seat, wl_surface,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{delegate_noop, Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 mod common;
@@ -94,9 +94,9 @@ fn clipboard_selection_reaches_ecs_state() {
     assert!(summary.keyboard_enter_count >= 1, "client should receive wl_keyboard.enter");
     assert!(summary.key_press_count >= 1, "client should receive at least one wl_keyboard.key");
 
-    let selection = selection_state
-        .selection
-        .expect("clipboard selection should be tracked after the client sets it");
+    let Some(selection) = selection_state.selection else {
+        panic!("clipboard selection should be tracked after the client sets it");
+    };
     assert_eq!(selection.seat_name, "seat-0");
     assert_eq!(selection.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
 }
@@ -104,7 +104,9 @@ fn clipboard_selection_reaches_ecs_state() {
 /// Runs the clipboard selection scenario and returns both the helper-client summary and the ECS
 /// clipboard selection state.
 fn run_clipboard_selection_scenario() -> Option<(ClipboardClientSummary, ClipboardSelectionState)> {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let Ok(_env_lock) = common::env_lock().lock() else {
+        panic!("environment lock should not be poisoned");
+    };
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-clipboard-runtime");
@@ -126,9 +128,9 @@ fn run_clipboard_selection_scenario() -> Option<(ClipboardClientSummary, Clipboa
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -142,16 +144,20 @@ fn run_clipboard_selection_scenario() -> Option<(ClipboardClientSummary, Clipboa
     };
 
     let client_thread = thread::spawn(move || run_clipboard_client(&socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    let Ok(()) = app.run() else {
+        panic!("nekoland app should complete the configured frame budget");
+    };
 
-    let selection_state = app
-        .inner()
-        .world()
-        .get_resource::<ClipboardSelectionState>()
-        .cloned()
-        .expect("clipboard selection resource should be initialized");
+    let Some(selection_state) =
+        app.inner().world().get_resource::<ClipboardSelectionState>().cloned()
+    else {
+        panic!("clipboard selection resource should be initialized");
+    };
 
-    let summary = match client_thread.join().expect("client thread should exit cleanly") {
+    let Ok(client_result) = client_thread.join() else {
+        panic!("client thread should exit cleanly");
+    };
+    let summary = match client_result {
         Ok(summary) => summary,
         Err(common::TestControl::Skip(reason)) => {
             eprintln!("skipping clipboard selection test in restricted environment: {reason}");
@@ -401,9 +407,10 @@ impl ClipboardClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(compositor), Some(wm_base)) = (self.compositor.as_ref(), self.wm_base.as_ref())
+        else {
+            panic!("compositor and wm_base presence checked immediately above");
+        };
 
         let base_surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&base_surface, qh, ());
@@ -421,11 +428,10 @@ impl ClipboardClientState {
             return;
         }
 
-        let manager = self
-            .data_device_manager
-            .as_ref()
-            .expect("data-device manager presence checked immediately above");
-        let seat = self.seat.as_ref().expect("seat presence checked immediately above");
+        let (Some(manager), Some(seat)) = (self.data_device_manager.as_ref(), self.seat.as_ref())
+        else {
+            panic!("data-device manager and seat presence checked immediately above");
+        };
         self.data_device = Some(manager.get_data_device(seat, qh, ()));
     }
 

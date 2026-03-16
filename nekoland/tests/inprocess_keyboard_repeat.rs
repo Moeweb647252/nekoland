@@ -54,7 +54,7 @@ fn keyboard_repeat_info_comes_from_config() {
 
 /// Runs the helper client scenario and returns the observed repeat parameters.
 fn run_keyboard_repeat_scenario() -> Option<KeyboardRepeatSummary> {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-keyboard-repeat-runtime");
     let mut app = build_app(workspace_config_path());
     app.insert_resource(RunLoopSettings {
@@ -64,9 +64,9 @@ fn run_keyboard_repeat_scenario() -> Option<KeyboardRepeatSummary> {
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -80,15 +80,22 @@ fn run_keyboard_repeat_scenario() -> Option<KeyboardRepeatSummary> {
     };
 
     let client_thread = thread::spawn(move || run_keyboard_repeat_client(&socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let summary = match client_thread.join().expect("client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping keyboard repeat test in restricted environment: {reason}");
-            return None;
-        }
-        Err(common::TestControl::Fail(reason)) => panic!("keyboard repeat client failed: {reason}"),
+    let summary = match client_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping keyboard repeat test in restricted environment: {reason}");
+                return None;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("keyboard repeat client failed: {reason}");
+            }
+        },
+        Err(_) => panic!("client thread should exit cleanly"),
     };
 
     drop(runtime_dir);
@@ -269,9 +276,10 @@ impl KeyboardRepeatClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(compositor), Some(wm_base)) = (self.compositor.as_ref(), self.wm_base.as_ref())
+        else {
+            panic!("compositor and wm_base presence checked immediately above");
+        };
 
         let base_surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&base_surface, qh, ());

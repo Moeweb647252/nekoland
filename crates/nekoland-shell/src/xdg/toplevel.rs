@@ -147,7 +147,14 @@ pub fn toplevel_lifecycle_system(
                     continue;
                 };
 
-                window.buffer.expect("xdg toplevel should have buffer state").attached = true;
+                let Some(buffer) = window.buffer.as_mut() else {
+                    tracing::warn!(
+                        surface_id = request.surface_id,
+                        "skipping xdg commit for window without buffer state"
+                    );
+                    continue;
+                };
+                buffer.attached = true;
                 window.content_version.bump();
                 if !matches!(
                     *window.mode,
@@ -228,14 +235,23 @@ pub fn toplevel_lifecycle_system(
                     continue;
                 };
 
-                let window = window_runtime.xdg_window.as_mut().expect("xdg window should exist");
-                if let Some(title) = &title {
-                    window.title = title.clone();
-                }
-                if let Some(app_id) = &app_id {
-                    window.app_id = app_id.clone();
-                }
-                let policy = config.resolve_window_policy(&window.app_id, &window.title, false);
+                let (window_app_id, window_title) = {
+                    let Some(window) = window_runtime.xdg_window.as_mut() else {
+                        tracing::warn!(
+                            surface_id = request.surface_id,
+                            "skipping xdg metadata update for window without xdg metadata"
+                        );
+                        continue;
+                    };
+                    if let Some(title) = &title {
+                        window.title = title.clone();
+                    }
+                    if let Some(app_id) = &app_id {
+                        window.app_id = app_id.clone();
+                    }
+                    (window.app_id.clone(), window.title.clone())
+                };
+                let policy = config.resolve_window_policy(&window_app_id, &window_title, false);
                 refresh_window_policy(
                     policy,
                     &mut window_runtime.layout,
@@ -244,7 +260,7 @@ pub fn toplevel_lifecycle_system(
                     &mut window_runtime.policy_state,
                 );
                 let background =
-                    config.resolve_window_background(&window.app_id, &window.title, false);
+                    config.resolve_window_background(&window_app_id, &window_title, false);
                 sync_window_background_role(
                     &mut commands,
                     entity,
@@ -436,9 +452,11 @@ mod tests {
             .iter(world)
             .find(|(_, surface)| surface.id == 21)
             .map(|(entity, _)| entity)
-            .expect("created toplevel window should exist");
+            .unwrap_or_else(|| panic!("created toplevel window should exist"));
 
-        let child_of = world.get::<ChildOf>(window_entity).expect("window should have ChildOf");
+        let Some(child_of) = world.get::<ChildOf>(window_entity) else {
+            panic!("window should have ChildOf");
+        };
         assert_eq!(
             child_of.parent(),
             workspace_entity,
@@ -561,10 +579,12 @@ mod tests {
 
         let world = app.inner_mut().world_mut();
         let mut windows = world.query::<(&WlSurfaceHandle, &WindowLayout, &WindowMode)>();
-        let (_, layout, mode) = windows
+        let window_state = windows
             .iter(world)
-            .find(|(surface, _, _)| surface.id == 21)
-            .expect("toplevel window should still exist");
+            .find(|(surface, _, _)| surface.id == 21);
+        let Some((_, layout, mode)) = window_state else {
+            panic!("toplevel window should still exist");
+        };
         assert_eq!(*layout, WindowLayout::Tiled);
         assert_eq!(*mode, WindowMode::Normal);
     }

@@ -97,9 +97,9 @@ mod tests {
             .spawn((LayerShellSurface::default(), DesiredOutputName(None), LayerOnOutput(output)))
             .id();
 
-        let output_layers = world
-            .get::<OutputLayers>(output)
-            .expect("output should track related layers through the relationship target");
+        let Some(output_layers) = world.get::<OutputLayers>(output) else {
+            panic!("output should track related layers through the relationship target");
+        };
         assert!(output_layers.0.contains(&layer), "output target should include the layer entity");
     }
 }

@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn parses_typed_window_rules_from_toml() {
-        let config = toml::from_str::<NekolandConfigFile>(
+        let Ok(config) = toml::from_str::<NekolandConfigFile>(
             r##"
 default_layout = "floating"
 
@@ -250,11 +250,13 @@ enabled = true
 "Super+Return" = { exec = ["foot"] }
 "Super+Alt" = { viewport_pan_mode = true }
 "##,
-        )
-        .expect("config should parse");
+        ) else {
+            panic!("config should parse");
+        };
 
-        let runtime = nekoland_ecs::resources::CompositorConfig::try_from(config)
-            .expect("config should normalize");
+        let Ok(runtime) = nekoland_ecs::resources::CompositorConfig::try_from(config) else {
+            panic!("config should normalize");
+        };
         assert_eq!(runtime.window_rules.len(), 3);
         assert_eq!(
             runtime.resolve_window_policy("org.nekoland.rules", "Notes", false),
@@ -273,7 +275,7 @@ enabled = true
 
     #[test]
     fn keybinding_viewport_pan_mode_normalizes_into_runtime_mask() {
-        let config = toml::from_str::<NekolandConfigFile>(
+        let Ok(config) = toml::from_str::<NekolandConfigFile>(
             r##"
 [theme]
 name = "latte"
@@ -295,17 +297,19 @@ enabled = true
 "Super+Return" = { exec = ["foot"] }
 "Ctrl+Shift" = { viewport_pan_mode = true }
 "##,
-        )
-        .expect("config should parse");
+        ) else {
+            panic!("config should parse");
+        };
 
-        let runtime = nekoland_ecs::resources::CompositorConfig::try_from(config)
-            .expect("config should normalize");
+        let Ok(runtime) = nekoland_ecs::resources::CompositorConfig::try_from(config) else {
+            panic!("config should normalize");
+        };
         assert_eq!(runtime.viewport_pan_modifiers, ModifierMask::new(true, false, true, false));
     }
 
     #[test]
     fn viewport_pan_mode_binding_rejects_non_modifier_keys() {
-        let config = toml::from_str::<NekolandConfigFile>(
+        let Ok(config) = toml::from_str::<NekolandConfigFile>(
             r##"
 [theme]
 name = "latte"
@@ -326,8 +330,9 @@ enabled = true
 [keybinds.bindings]
 "Super+H" = { viewport_pan_mode = true }
 "##,
-        )
-        .expect("config should parse");
+        ) else {
+            panic!("config should parse");
+        };
 
         assert_eq!(
             nekoland_ecs::resources::CompositorConfig::try_from(config),

@@ -81,13 +81,17 @@ pub(crate) fn install_config_watch_source(
 
     let source = ConfigHotReloadSource::new(last_observed_modified);
     let shared = source.shared.clone();
-    let mut registry = app
-        .world_mut()
-        .get_non_send_resource_mut::<CalloopSourceRegistry>()
-        .expect("calloop registry inserted immediately before access");
+    let Some(mut registry) = app.world_mut().get_non_send_resource_mut::<CalloopSourceRegistry>()
+    else {
+        tracing::warn!(
+            path = %path.display(),
+            "config hot reload registry was unavailable; watcher install skipped"
+        );
+        app.insert_non_send_resource(source);
+        return;
+    };
 
     registry.push(move |handle| install_linux_inotify_source(handle, path.clone(), shared.clone()));
-    drop(registry);
 
     app.insert_non_send_resource(source);
 }
@@ -360,11 +364,12 @@ cursor_theme = "default"
 
         {
             let world = app.inner().world();
-            let config =
-                world.get_resource::<CompositorConfig>().expect("config should be initialized");
-            let source = world
-                .get_resource::<LoadedConfigSource>()
-                .expect("config source should be initialized");
+            let Some(config) = world.get_resource::<CompositorConfig>() else {
+                panic!("config should be initialized");
+            };
+            let Some(source) = world.get_resource::<LoadedConfigSource>() else {
+                panic!("config source should be initialized");
+            };
 
             assert_eq!(config.theme, "latte");
             assert_eq!(config.cursor_theme, "breeze");
@@ -386,11 +391,12 @@ cursor_theme = "default"
 
         {
             let world = app.inner().world();
-            let config =
-                world.get_resource::<CompositorConfig>().expect("config should stay available");
-            let source = world
-                .get_resource::<LoadedConfigSource>()
-                .expect("config source should stay available");
+            let Some(config) = world.get_resource::<CompositorConfig>() else {
+                panic!("config should stay available");
+            };
+            let Some(source) = world.get_resource::<LoadedConfigSource>() else {
+                panic!("config source should stay available");
+            };
 
             assert_eq!(config.theme, "frappe");
             assert_eq!(config.cursor_theme, "capitaine");
@@ -417,11 +423,12 @@ cursor_theme = "default"
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
         let world = app.inner().world();
-        let config =
-            world.get_resource::<CompositorConfig>().expect("config should stay available");
-        let source = world
-            .get_resource::<LoadedConfigSource>()
-            .expect("config source should stay available");
+        let Some(config) = world.get_resource::<CompositorConfig>() else {
+            panic!("config should stay available");
+        };
+        let Some(source) = world.get_resource::<LoadedConfigSource>() else {
+            panic!("config source should stay available");
+        };
 
         assert_eq!(config.theme, "frappe");
         assert_eq!(config.cursor_theme, "capitaine");
@@ -447,11 +454,12 @@ cursor_theme = "default"
 
         {
             let world = app.inner().world();
-            let config =
-                world.get_resource::<CompositorConfig>().expect("config should be initialized");
-            let source = world
-                .get_resource::<LoadedConfigSource>()
-                .expect("config source should be initialized");
+            let Some(config) = world.get_resource::<CompositorConfig>() else {
+                panic!("config should be initialized");
+            };
+            let Some(source) = world.get_resource::<LoadedConfigSource>() else {
+                panic!("config source should be initialized");
+            };
 
             assert_eq!(config.theme, "catppuccin-latte");
             assert!(!source.loaded_from_disk);
@@ -463,12 +471,12 @@ cursor_theme = "default"
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
         let world = app.inner().world();
-        let config = world
-            .get_resource::<CompositorConfig>()
-            .expect("config should reload once the file appears");
-        let source = world
-            .get_resource::<LoadedConfigSource>()
-            .expect("config source should stay available");
+        let Some(config) = world.get_resource::<CompositorConfig>() else {
+            panic!("config should reload once the file appears");
+        };
+        let Some(source) = world.get_resource::<LoadedConfigSource>() else {
+            panic!("config source should stay available");
+        };
 
         assert_eq!(config.theme, "latte");
         assert_eq!(config.cursor_theme, "breeze");
@@ -491,11 +499,9 @@ cursor_theme = "default"
         rewrite_config(&temp_config.path, INVALID_CONFIG);
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
-        let source = app
-            .inner()
-            .world()
-            .get_resource::<LoadedConfigSource>()
-            .expect("config source should stay available");
+        let Some(source) = app.inner().world().get_resource::<LoadedConfigSource>() else {
+            panic!("config source should stay available");
+        };
 
         assert_eq!(
             HOT_RELOAD_ERROR_COUNT.load(Ordering::Relaxed),
@@ -519,32 +525,35 @@ cursor_theme = "default"
         let mut app = NekolandApp::new("config-inotify-test");
         app.add_plugin(ConfigPlugin::new(&temp_config.path));
 
-        let mut event_loop =
-            EventLoop::try_new().expect("calloop event loop should initialize for config tests");
+        let Ok(mut event_loop) = EventLoop::try_new() else {
+            panic!("calloop event loop should initialize for config tests");
+        };
         {
-            let mut registry = app
+            let Some(mut registry) = app
                 .inner_mut()
                 .world_mut()
                 .get_non_send_resource_mut::<CalloopSourceRegistry>()
-                .expect("config plugin should install a calloop source registry");
-            registry
-                .install_all(&event_loop.handle())
-                .expect("config watcher sources should register");
+            else {
+                panic!("config plugin should install a calloop source registry");
+            };
+            if let Err(error) = registry.install_all(&event_loop.handle()) {
+                panic!("config watcher sources should register: {error}");
+            }
         }
 
         rewrite_config(&temp_config.path, RELOADED_CONFIG);
-        event_loop
-            .dispatch(Duration::from_millis(50), &mut ())
-            .expect("calloop should dispatch inotify events");
+        if let Err(error) = event_loop.dispatch(Duration::from_millis(50), &mut ()) {
+            panic!("calloop should dispatch inotify events: {error}");
+        }
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
         let world = app.inner().world();
-        let config = world
-            .get_resource::<CompositorConfig>()
-            .expect("config should be available after inotify dispatch");
-        let source = world
-            .get_resource::<LoadedConfigSource>()
-            .expect("config source should stay available");
+        let Some(config) = world.get_resource::<CompositorConfig>() else {
+            panic!("config should be available after inotify dispatch");
+        };
+        let Some(source) = world.get_resource::<LoadedConfigSource>() else {
+            panic!("config source should stay available");
+        };
 
         assert_eq!(config.theme, "frappe");
         assert_eq!(config.cursor_theme, "capitaine");
@@ -553,15 +562,17 @@ cursor_theme = "default"
     }
 
     fn unique_temp_path(prefix: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be after UNIX epoch")
-            .as_nanos();
+        let Ok(duration_since_epoch) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+            panic!("system time should be after UNIX epoch");
+        };
+        let unique = duration_since_epoch.as_nanos();
         std::env::temp_dir().join(format!("nekoland-{prefix}-{unique}.toml"))
     }
 
     fn write_config(path: &Path, contents: &str) {
-        fs::write(path, contents).expect("temporary config should be writable");
+        if let Err(error) = fs::write(path, contents) {
+            panic!("temporary config should be writable: {error}");
+        }
     }
 
     fn rewrite_config(path: &Path, contents: &str) {

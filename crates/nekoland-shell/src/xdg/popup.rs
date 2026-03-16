@@ -304,9 +304,10 @@ mod tests {
             .query::<(bevy_ecs::entity::Entity, &WlSurfaceHandle)>()
             .iter(world)
             .find_map(|(entity, surface)| (surface.id == 100).then_some(entity))
-            .expect("popup entity should be spawned");
-        let popup_parent =
-            world.get::<ChildOf>(popup_entity).expect("popup should have ChildOf relationship");
+            .unwrap_or_else(|| panic!("popup entity should be spawned"));
+        let Some(popup_parent) = world.get::<ChildOf>(popup_entity) else {
+            panic!("popup should have ChildOf relationship");
+        };
 
         assert_eq!(popup_parent.parent(), parent);
     }
@@ -347,16 +348,14 @@ mod tests {
         );
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
-        app.inner_mut()
-            .world_mut()
-            .get_mut::<SurfaceGeometry>(parent)
-            .expect("parent geometry")
-            .x = 120;
-        app.inner_mut()
-            .world_mut()
-            .get_mut::<SurfaceGeometry>(parent)
-            .expect("parent geometry")
-            .y = 230;
+        {
+            let Some(mut geometry) = app.inner_mut().world_mut().get_mut::<SurfaceGeometry>(parent)
+            else {
+                panic!("parent geometry");
+            };
+            geometry.x = 120;
+            geometry.y = 230;
+        }
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner_mut().world_mut();
@@ -364,8 +363,10 @@ mod tests {
             .query::<(&WlSurfaceHandle, &SurfaceGeometry)>()
             .iter(world)
             .find(|(surface, _)| surface.id == 100)
-            .map(|(_, geometry)| geometry.clone())
-            .expect("popup geometry should exist");
+            .map(|(_, geometry)| geometry.clone());
+        let Some(popup_geometry) = popup_geometry else {
+            panic!("popup geometry should exist");
+        };
         assert_eq!(popup_geometry.x, 130);
         assert_eq!(popup_geometry.y, 242);
         assert_eq!(popup_geometry.width, 200);

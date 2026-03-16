@@ -40,7 +40,7 @@ struct IpcControlSummary {
 /// way and that query snapshots reflect the result.
 #[test]
 fn ipc_control_commands_update_window_workspace_and_output_state() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-ipc-control-runtime");
@@ -56,9 +56,9 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -72,17 +72,22 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
     };
 
     let ipc_thread = thread::spawn(move || run_ipc_control_sequence(&ipc_socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let summary = match ipc_thread.join().expect("IPC control thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping IPC control-plane test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("IPC control sequence failed: {reason}");
-        }
+    let summary = match ipc_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping IPC control-plane test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("IPC control sequence failed: {reason}");
+            }
+        },
+        Err(_) => panic!("IPC control thread should exit cleanly"),
     };
 
     let (
@@ -99,26 +104,27 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
     ) = {
         let world = app.inner_mut().world_mut();
 
-        let (window_layout, window_mode, scene_geometry, screen_geometry) =
-            world
-                .query::<(
-                    &WlSurfaceHandle,
-                    &WindowLayout,
-                    &WindowMode,
-                    &WindowSceneGeometry,
-                    &SurfaceGeometry,
-                )>()
-                .iter(world)
-                .find(|(surface, _, _, _, _)| surface.id == TARGET_SURFACE_ID)
-                .map(|(_, layout, mode, scene_geometry, screen_geometry)| {
-                    (layout.clone(), mode.clone(), scene_geometry.clone(), screen_geometry.clone())
-                })
-                .expect("target IPC window should remain present");
+        let window_state = world
+            .query::<(
+                &WlSurfaceHandle,
+                &WindowLayout,
+                &WindowMode,
+                &WindowSceneGeometry,
+                &SurfaceGeometry,
+            )>()
+            .iter(world)
+            .find(|(surface, _, _, _, _)| surface.id == TARGET_SURFACE_ID)
+            .map(|(_, layout, mode, scene_geometry, screen_geometry)| {
+                (*layout, *mode, scene_geometry.clone(), screen_geometry.clone())
+            });
+        let Some((window_layout, window_mode, scene_geometry, screen_geometry)) = window_state else {
+            panic!("target IPC window should remain present");
+        };
 
-        let focused_surface = world
-            .get_resource::<KeyboardFocusState>()
-            .expect("keyboard focus state should remain available")
-            .focused_surface;
+        let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
+            panic!("keyboard focus state should remain available");
+        };
+        let focused_surface = keyboard_focus.focused_surface;
 
         let workspaces = world
             .query::<(&Workspace, Has<Disabled>)>()
@@ -130,23 +136,26 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
             .query::<(&OutputDevice, &OutputProperties)>()
             .iter(world)
             .find(|(output, _)| output.name == summary.output_name)
-            .map(|(_, properties)| properties.clone())
-            .expect("configured output should remain present");
+            .map(|(_, properties)| properties.clone());
+        let Some(output_properties) = output_properties else {
+            panic!("configured output should remain present");
+        };
         let output_viewport = world
             .query::<(&OutputDevice, &OutputViewport)>()
             .iter(world)
             .find(|(output, _)| output.name == summary.output_name)
-            .map(|(_, viewport)| viewport.clone())
-            .expect("configured output viewport should remain present");
-        let render_list = world
-            .get_resource::<RenderList>()
-            .expect("render list should remain available")
-            .elements
-            .clone();
-        let frame_pacing = world
-            .get_resource::<FramePacingState>()
-            .expect("frame pacing state should remain available")
-            .clone();
+            .map(|(_, viewport)| viewport.clone());
+        let Some(output_viewport) = output_viewport else {
+            panic!("configured output viewport should remain present");
+        };
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should remain available");
+        };
+        let render_list = render_list.elements.clone();
+        let Some(frame_pacing) = world.get_resource::<FramePacingState>() else {
+            panic!("frame pacing state should remain available");
+        };
+        let frame_pacing = frame_pacing.clone();
 
         (
             window_layout,
@@ -216,7 +225,7 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
 
 #[test]
 fn ipc_window_split_command_updates_tiled_geometry() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-ipc-window-split-runtime");
@@ -232,9 +241,9 @@ fn ipc_window_split_command_updates_tiled_geometry() {
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -248,29 +257,34 @@ fn ipc_window_split_command_updates_tiled_geometry() {
     };
 
     let ipc_thread = thread::spawn(move || run_ipc_split_sequence(&ipc_socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let summary = match ipc_thread.join().expect("IPC split thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping IPC split test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("IPC split sequence failed: {reason}");
-        }
+    let summary = match ipc_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping IPC split test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("IPC split sequence failed: {reason}");
+            }
+        },
+        Err(_) => panic!("IPC split thread should exit cleanly"),
     };
 
     let first = summary
         .windows
         .iter()
         .find(|window| window.surface_id == SPLIT_PRIMARY_SURFACE_ID)
-        .expect("primary split window should remain present");
+        .unwrap_or_else(|| panic!("primary split window should remain present"));
     let second = summary
         .windows
         .iter()
         .find(|window| window.surface_id == SPLIT_TARGET_SURFACE_ID)
-        .expect("target split window should remain present");
+        .unwrap_or_else(|| panic!("target split window should remain present"));
 
     assert_eq!(first.state, "Tiled");
     assert_eq!(second.state, "Tiled");
@@ -456,12 +470,12 @@ fn run_ipc_split_sequence(socket_path: &Path) -> Result<TreeSnapshot, common::Te
         .windows
         .iter()
         .find(|window| window.surface_id == SPLIT_PRIMARY_SURFACE_ID)
-        .expect("first split window should exist");
+        .unwrap_or_else(|| panic!("first split window should exist"));
     let second = initial
         .windows
         .iter()
         .find(|window| window.surface_id == SPLIT_TARGET_SURFACE_ID)
-        .expect("second split window should exist");
+        .unwrap_or_else(|| panic!("second split window should exist"));
     assert_ne!(first.x, second.x, "initial tiled tree should start as a horizontal split");
     assert_eq!(first.y, second.y, "initial tiled tree should start side by side");
 

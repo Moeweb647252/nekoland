@@ -62,7 +62,8 @@ impl PendingWindowControls {
         } else {
             self.controls
                 .push(PendingWindowControl { surface_id, ..PendingWindowControl::default() });
-            self.controls.last_mut().expect("window control just pushed")
+            let last_index = self.controls.len() - 1;
+            &mut self.controls[last_index]
         };
 
         WindowControlHandle { control }
@@ -191,10 +192,10 @@ mod tests {
         assert_eq!(controls.as_slice().len(), 1);
         let control = &controls.as_slice()[0];
         assert_eq!(control.surface_id, SurfaceId(7));
-        assert_eq!(control.position.expect("position").x, 10);
-        assert_eq!(control.position.expect("position").y, 20);
-        assert_eq!(control.size.expect("size").width, 800);
-        assert_eq!(control.size.expect("size").height, 600);
+        assert_eq!(control.position.map(|position| position.x), Some(10));
+        assert_eq!(control.position.map(|position| position.y), Some(20));
+        assert_eq!(control.size.map(|size| size.width), Some(800));
+        assert_eq!(control.size.map(|size| size.height), Some(600));
         assert_eq!(control.split_axis, Some(SplitAxis::Vertical));
         assert!(matches!(
             control.background,
@@ -209,7 +210,10 @@ mod tests {
     fn focused_uses_keyboard_focus_surface() {
         let mut controls = PendingWindowControls::default();
         let focus = KeyboardFocusState { focused_surface: Some(42) };
-        controls.focused(&focus).expect("focused window").close();
+        let Some(mut focused) = controls.focused(&focus) else {
+            panic!("focused window");
+        };
+        focused.close();
 
         assert_eq!(controls.as_slice()[0].surface_id, SurfaceId(42));
         assert!(controls.as_slice()[0].close);

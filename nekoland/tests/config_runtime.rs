@@ -146,23 +146,23 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
 
     {
         let world = app.inner_mut().world_mut();
-        let focused_surface = world
-            .get_resource::<KeyboardFocusState>()
-            .expect("focus state should exist")
-            .focused_surface;
+        let Some(focus_state) = world.get_resource::<KeyboardFocusState>() else {
+            panic!("focus state should exist");
+        };
+        let focused_surface = focus_state.focused_surface;
         let outputs = world
             .query::<(&OutputDevice, &OutputProperties)>()
             .iter(world)
             .map(|(output, properties)| (output.name.clone(), properties.clone()))
             .collect::<Vec<_>>();
-        let history_limit = world
-            .get_resource::<CommandHistoryState>()
-            .expect("command history state should exist")
-            .limit;
-        let viewport_pan_modifiers = world
-            .get_resource::<CompositorConfig>()
-            .expect("config should exist")
-            .viewport_pan_modifiers;
+        let Some(command_history) = world.get_resource::<CommandHistoryState>() else {
+            panic!("command history state should exist");
+        };
+        let history_limit = command_history.limit;
+        let Some(config) = world.get_resource::<CompositorConfig>() else {
+            panic!("config should exist");
+        };
+        let viewport_pan_modifiers = config.viewport_pan_modifiers;
         let border_colors = world
             .query::<&BorderTheme>()
             .iter(world)
@@ -195,23 +195,23 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
 
     {
         let world = app.inner_mut().world_mut();
-        let focused_surface = world
-            .get_resource::<KeyboardFocusState>()
-            .expect("focus state should exist")
-            .focused_surface;
+        let Some(focus_state) = world.get_resource::<KeyboardFocusState>() else {
+            panic!("focus state should exist");
+        };
+        let focused_surface = focus_state.focused_surface;
         let outputs = world
             .query::<(&OutputDevice, &OutputProperties)>()
             .iter(world)
             .map(|(output, properties)| (output.name.clone(), properties.clone()))
             .collect::<Vec<_>>();
-        let history_limit = world
-            .get_resource::<CommandHistoryState>()
-            .expect("command history state should exist")
-            .limit;
-        let viewport_pan_modifiers = world
-            .get_resource::<CompositorConfig>()
-            .expect("config should exist")
-            .viewport_pan_modifiers;
+        let Some(command_history) = world.get_resource::<CommandHistoryState>() else {
+            panic!("command history state should exist");
+        };
+        let history_limit = command_history.limit;
+        let Some(config) = world.get_resource::<CompositorConfig>() else {
+            panic!("config should exist");
+        };
+        let viewport_pan_modifiers = config.viewport_pan_modifiers;
         let border_colors = world
             .query::<&BorderTheme>()
             .iter(world)
@@ -236,7 +236,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
     app.inner_mut()
         .world_mut()
         .get_resource_mut::<PendingXdgRequests>()
-        .expect("shell plugin should initialize the XDG request queue")
+        .unwrap_or_else(|| panic!("shell plugin should initialize the XDG request queue"))
         .push(WindowLifecycleRequest {
             surface_id: 303,
             action: WindowLifecycleAction::Committed { role: XdgSurfaceRole::Toplevel, size: None },
@@ -251,7 +251,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
         .map(|(_, layout, mode, border)| {
             (WindowDisplayState::from_layout_mode(layout.clone(), mode.clone()), border.clone())
         })
-        .expect("committed toplevel should spawn a new shell window");
+        .unwrap_or_else(|| panic!("committed toplevel should spawn a new shell window"));
 
     assert_eq!(created_window.0, WindowDisplayState::Floating);
     assert_eq!(created_window.1.color, "#445566");
@@ -279,7 +279,7 @@ fn tiling_default_layout_splits_new_windows_across_work_area() {
         .inner_mut()
         .world_mut()
         .get_resource_mut::<PendingXdgRequests>()
-        .expect("shell plugin should initialize the XDG request queue");
+        .unwrap_or_else(|| panic!("shell plugin should initialize the XDG request queue"));
     pending.push(WindowLifecycleRequest {
         surface_id: 401,
         action: WindowLifecycleAction::Committed {
@@ -297,8 +297,10 @@ fn tiling_default_layout_splits_new_windows_across_work_area() {
     app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
     let world = app.inner_mut().world_mut();
-    let work_area =
-        *world.get_resource::<nekoland_ecs::resources::WorkArea>().expect("work area should exist");
+    let Some(work_area) = world.get_resource::<nekoland_ecs::resources::WorkArea>() else {
+        panic!("work area should exist");
+    };
+    let work_area = *work_area;
     let mut windows =
         world.query::<(&WlSurfaceHandle, &SurfaceGeometry, &WindowLayout, &WindowMode)>();
     let window_rows = windows
@@ -314,11 +316,11 @@ fn tiling_default_layout_splits_new_windows_across_work_area() {
     let first = window_rows
         .iter()
         .find(|(surface_id, _, _)| *surface_id == 401)
-        .expect("first tiled window should exist");
+        .unwrap_or_else(|| panic!("first tiled window should exist"));
     let second = window_rows
         .iter()
         .find(|(surface_id, _, _)| *surface_id == 402)
-        .expect("second tiled window should exist");
+        .unwrap_or_else(|| panic!("second tiled window should exist"));
 
     assert_eq!(first.2, WindowDisplayState::Tiled);
     assert_eq!(second.2, WindowDisplayState::Tiled);
@@ -341,14 +343,16 @@ fn tiling_default_layout_splits_new_windows_across_work_area() {
 fn unique_temp_path(prefix: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("system time should be after UNIX epoch")
+        .unwrap_or_else(|_| panic!("system time should be after UNIX epoch"))
         .as_nanos();
     std::env::temp_dir().join(format!("nekoland-{prefix}-{unique}.toml"))
 }
 
 /// Writes the supplied config contents to disk.
 fn write_config(path: &Path, contents: &str) {
-    fs::write(path, contents).expect("temporary config should be writable");
+    if let Err(error) = fs::write(path, contents) {
+        panic!("temporary config should be writable: {error}");
+    }
 }
 
 /// Rewrites the config file and waits until the filesystem modification timestamp changes.

@@ -2353,7 +2353,10 @@ impl ProtocolRuntimeState {
             let Some(attributes) = states.data_map.get::<XdgToplevelSurfaceData>() else {
                 return (None, None);
             };
-            let attributes = attributes.lock().unwrap();
+            let Ok(attributes) = attributes.lock() else {
+                tracing::warn!("failed to lock XDG toplevel attributes");
+                return (None, None);
+            };
             (attributes.title.clone(), attributes.app_id.clone())
         });
 
@@ -3103,7 +3106,13 @@ impl SeatHandler for ProtocolRuntimeState {
                     states
                         .data_map
                         .get::<CursorImageSurfaceData>()
-                        .map(|attributes| attributes.lock().unwrap().hotspot)
+                        .and_then(|attributes| match attributes.lock() {
+                            Ok(attributes) => Some(attributes.hotspot),
+                            Err(_) => {
+                                tracing::warn!("failed to lock cursor image surface attributes");
+                                None
+                            }
+                        })
                         .unwrap_or_default()
                 });
                 ProtocolCursorImage::Surface { surface, hotspot_x: hotspot.x, hotspot_y: hotspot.y }
@@ -3206,7 +3215,9 @@ impl XWaylandShellHandler for ProtocolRuntimeState {
 }
 
 impl XwmHandler for ProtocolRuntimeState {
+    #[allow(clippy::expect_used)]
     fn xwm_state(&mut self, xwm: XwmId) -> &mut X11Wm {
+        // Smithay requires returning `&mut X11Wm` here and provides no fallible callback path.
         self.xwms.get_mut(&xwm).expect("XWayland WM callback referenced an unknown XWM")
     }
 
@@ -3906,10 +3917,11 @@ fn register_calloop_sources(app: &mut App, server: &SmithayProtocolServer) {
     let display_fd = runtime.borrow().display.as_fd().as_raw_fd();
     let socket_fd = runtime.borrow().socket.as_ref().map(AsRawFd::as_raw_fd);
 
-    let mut registry = app
-        .world_mut()
-        .get_non_send_resource_mut::<CalloopSourceRegistry>()
-        .expect("calloop registry inserted immediately before access");
+    let Some(mut registry) = app.world_mut().get_non_send_resource_mut::<CalloopSourceRegistry>()
+    else {
+        tracing::warn!("protocol calloop registry was unavailable; source install skipped");
+        return;
+    };
 
     registry.push(move |handle| {
         let display_runtime = runtime.clone();
@@ -4037,15 +4049,21 @@ mod tests {
             let result = run_test_client(client_socket_path);
             let _ = result_tx.send(result);
         });
-        let (server_stream, _) = listener.accept().expect("test UnixListener accept");
+        let Ok((server_stream, _)) = listener.accept() else {
+            panic!("test UnixListener accept");
+        };
         let _ = fs::remove_file(&socket_path);
         let mut runtime = test_runtime(server_stream);
 
         let Some(summary) = pump_server_until_client_finishes(&mut runtime, &result_rx) else {
-            client_thread.join().expect("client thread should exit cleanly");
+            let Ok(()) = client_thread.join() else {
+                panic!("client thread should exit cleanly");
+            };
             return;
         };
-        client_thread.join().expect("client thread should exit cleanly");
+        let Ok(()) = client_thread.join() else {
+            panic!("client thread should exit cleanly");
+        };
 
         for _ in 0..4 {
             runtime.dispatch_clients();
@@ -4053,7 +4071,7 @@ mod tests {
         }
 
         let events = runtime.drain_events();
-        let surface_id = events
+        let Some(surface_id) = events
             .iter()
             .find_map(|event| match event {
                 ProtocolEvent::ConfigureRequested {
@@ -4062,7 +4080,9 @@ mod tests {
                 } => Some(*surface_id),
                 _ => None,
             })
-            .expect("server should emit a toplevel configure request");
+        else {
+            panic!("server should emit a toplevel configure request");
+        };
 
         assert_globals_present(&summary.globals);
         assert!(
@@ -4139,7 +4159,7 @@ mod tests {
         )> = SystemState::new(&mut world);
         let (outputs, windows, popups, layers) = system_state.get(&world);
 
-        let target = pointer_focus_target(
+        let Some(target) = pointer_focus_target(
             16.0,
             16.0,
             None,
@@ -4151,8 +4171,9 @@ mod tests {
             &windows,
             &popups,
             &layers,
-        )
-        .expect("pointer focus target should exist");
+        ) else {
+            panic!("pointer focus target should exist");
+        };
 
         assert_eq!(target.surface_id, 22);
         assert_eq!(target.surface_origin, (0.0, 0.0).into());
@@ -4213,7 +4234,7 @@ mod tests {
         )> = SystemState::new(&mut world);
         let (outputs, windows, popups, layers) = system_state.get(&world);
 
-        let target = pointer_focus_target(
+        let Some(target) = pointer_focus_target(
             110.0,
             10.0,
             None,
@@ -4225,8 +4246,9 @@ mod tests {
             &windows,
             &popups,
             &layers,
-        )
-        .expect("window on the second output should receive pointer focus");
+        ) else {
+            panic!("window on the second output should receive pointer focus");
+        };
 
         assert_eq!(target.surface_id, 42);
         assert_eq!(target.surface_origin, (100.0, 0.0).into());
@@ -4250,12 +4272,16 @@ mod tests {
     }
 
     fn test_runtime(server_stream: UnixStream) -> SmithayProtocolRuntime {
-        let display = Display::new().expect("server display");
+        let Ok(display) = Display::new() else {
+            panic!("server display");
+        };
         let mut display_handle = display.handle();
         let state = ProtocolRuntimeState::new(&display_handle, DEFAULT_KEYBOARD_REPEAT_RATE);
-        let client = display_handle
+        let Ok(client) = display_handle
             .insert_client(server_stream, std::sync::Arc::new(ProtocolClientState::default()))
-            .expect("server client registration");
+        else {
+            panic!("server client registration");
+        };
 
         SmithayProtocolRuntime {
             display,
@@ -4376,10 +4402,12 @@ mod tests {
 
     fn temporary_socket_path() -> std::path::PathBuf {
         let mut path = env::temp_dir();
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time should be after epoch")
-            .as_nanos();
+        let Ok(duration_since_epoch) =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        else {
+            panic!("system time should be after epoch");
+        };
+        let unique = duration_since_epoch.as_nanos();
         path.push(format!("nekoland-protocol-test-{}-{unique}.sock", std::process::id()));
         path
     }
@@ -4471,10 +4499,12 @@ mod tests {
                 return;
             }
 
-            let surface =
-                self.base_surface.as_ref().expect("surface presence checked immediately above");
-            let wm_base =
-                self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+            let Some(surface) = self.base_surface.as_ref() else {
+                panic!("surface presence checked immediately above");
+            };
+            let Some(wm_base) = self.wm_base.as_ref() else {
+                panic!("wm_base presence checked immediately above");
+            };
 
             let xdg_surface = wm_base.get_xdg_surface(surface, qh, ());
             let toplevel = xdg_surface.get_toplevel(qh, ());

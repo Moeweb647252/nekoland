@@ -95,7 +95,10 @@ pub(crate) fn render_drm_outputs<'a>(
     }
 
     let mut active_connectors = HashSet::new();
-    let renderer = render_state.renderer.as_mut().expect("initialised above");
+    let Some(renderer) = render_state.renderer.as_mut() else {
+        tracing::warn!("gles renderer missing after drm renderer initialization");
+        return;
+    };
     let cursor_cache = &mut render_state.cursor;
 
     for output in outputs {
@@ -435,8 +438,11 @@ mod tests {
 
     #[test]
     fn damage_rects_convert_to_physical_coordinates() {
-        let rect = damage_rect_to_physical(&DamageRect { x: 10, y: -4, width: 30, height: 20 }, 2)
-            .expect("damage rect should convert to physical coordinates");
+        let Some(rect) =
+            damage_rect_to_physical(&DamageRect { x: 10, y: -4, width: 30, height: 20 }, 2)
+        else {
+            panic!("damage rect should convert to physical coordinates");
+        };
         assert_eq!(rect.loc.x, 20);
         assert_eq!(rect.loc.y, -8);
         assert_eq!(rect.size.w, 60);

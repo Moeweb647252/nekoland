@@ -204,7 +204,9 @@ fn drag_and_drop_roundtrips_between_two_real_clients() {
         dnd_state.active_session.is_none(),
         "drag-and-drop session should be inactive after the drop completes"
     );
-    let drop = dnd_state.last_drop.expect("drag-and-drop state should record the completed drop");
+    let Some(drop) = dnd_state.last_drop else {
+        panic!("drag-and-drop state should record the completed drop");
+    };
     assert_eq!(drop.seat_name, "seat-0");
     assert!(drop.validated, "drop should be negotiated and accepted");
     assert_eq!(drop.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
@@ -219,7 +221,9 @@ fn drag_and_drop_roundtrips_between_two_real_clients() {
 /// Runs the full drag-and-drop transfer scenario between a source and a target client.
 fn run_dnd_transfer_scenario()
 -> Option<(SourceClientSummary, TargetClientSummary, DragAndDropState)> {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let Ok(_env_lock) = common::env_lock().lock() else {
+        panic!("environment lock should not be poisoned");
+    };
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-dnd-transfer-runtime");
@@ -255,9 +259,9 @@ fn run_dnd_transfer_scenario()
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -301,17 +305,22 @@ fn run_dnd_transfer_scenario()
         run_target_client(&target_socket_path, target_ready_flag, target_offer_flag)
     });
 
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let dnd_state = app
-        .inner()
-        .world()
-        .get_resource::<DragAndDropState>()
-        .cloned()
-        .expect("drag-and-drop state resource should be initialized");
+    let Some(dnd_state) = app.inner().world().get_resource::<DragAndDropState>().cloned() else {
+        panic!("drag-and-drop state resource should be initialized");
+    };
 
-    let source_result = source_thread.join().expect("source client thread should join");
-    let target_result = target_thread.join().expect("target client thread should join");
+    let source_result = match source_thread.join() {
+        Ok(result) => result,
+        Err(_) => panic!("source client thread should join"),
+    };
+    let target_result = match target_thread.join() {
+        Ok(result) => result,
+        Err(_) => panic!("target client thread should join"),
+    };
 
     if let Err(common::TestControl::Skip(reason)) = &source_result {
         eprintln!("skipping DnD transfer test in restricted environment: {reason}");
@@ -372,8 +381,7 @@ fn pump_dnd_transfer_input(
         .or_else(|| known_windows.first().cloned());
     let target_window =
         known_windows.iter().find(|(_, _, title)| title == "dnd-target").cloned().or_else(|| {
-            (known_windows.len() >= 2)
-                .then(|| known_windows.last().expect("window list not empty").clone())
+            (known_windows.len() >= 2).then(|| known_windows[known_windows.len() - 1].clone())
         });
 
     let (
@@ -1067,8 +1075,9 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for SourceClientState {
         match event {
             wl_data_source::Event::Send { mime_type, fd } if mime_type == TEST_MIME_TYPE => {
                 let mut file = std::fs::File::from(fd);
-                file.write_all(TEST_DND_BYTES)
-                    .expect("source client should write drag-and-drop payload");
+                if let Err(error) = file.write_all(TEST_DND_BYTES) {
+                    panic!("source client should write drag-and-drop payload: {error}");
+                }
                 state.send_requests = state.send_requests.saturating_add(1);
             }
             wl_data_source::Event::Cancelled if state.data_source.as_ref() == Some(source) => {
@@ -1135,9 +1144,12 @@ impl SourceClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let Some(compositor) = self.compositor.as_ref() else {
+            return;
+        };
+        let Some(wm_base) = self.wm_base.as_ref() else {
+            return;
+        };
         let base_surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&base_surface, qh, ());
         let toplevel = xdg_surface.get_toplevel(qh, ());
@@ -1152,11 +1164,12 @@ impl SourceClientState {
     /// Bind the seat-scoped data device once both the seat and manager are known.
     fn maybe_bind_devices(&mut self, qh: &QueueHandle<Self>) {
         if self.data_device.is_none() && self.data_device_manager.is_some() && self.seat.is_some() {
-            let manager = self
-                .data_device_manager
-                .as_ref()
-                .expect("data-device manager presence checked immediately above");
-            let seat = self.seat.as_ref().expect("seat presence checked immediately above");
+            let Some(manager) = self.data_device_manager.as_ref() else {
+                return;
+            };
+            let Some(seat) = self.seat.as_ref() else {
+                return;
+            };
             self.data_device = Some(manager.get_data_device(seat, qh, ()));
         }
     }
@@ -1187,13 +1200,18 @@ impl SourceClientState {
             return;
         }
 
-        let shm = self.shm.as_ref().expect("shm presence checked immediately above");
+        let Some(shm) = self.shm.as_ref() else {
+            return;
+        };
         let width = self.configured_width.unwrap_or(TEST_BUFFER_WIDTH).max(1);
         let height = self.configured_height.unwrap_or(TEST_BUFFER_HEIGHT).max(1);
-        let (file, pool, buffer) = create_test_buffer(shm, qh, width, height)
-            .expect("source DnD client should create a wl_shm buffer");
-        let surface =
-            self.base_surface.as_ref().expect("surface presence checked immediately above");
+        let (file, pool, buffer) = match create_test_buffer(shm, qh, width, height) {
+            Ok(buffer) => buffer,
+            Err(error) => panic!("source DnD client should create a wl_shm buffer: {error:?}"),
+        };
+        let Some(surface) = self.base_surface.as_ref() else {
+            return;
+        };
         surface.attach(Some(&buffer), 0, 0);
         surface.damage(0, 0, width as i32, height as i32);
         self._backing_file = Some(file);
@@ -1210,9 +1228,12 @@ impl TargetClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let Some(compositor) = self.compositor.as_ref() else {
+            return;
+        };
+        let Some(wm_base) = self.wm_base.as_ref() else {
+            return;
+        };
         let base_surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&base_surface, qh, ());
         let toplevel = xdg_surface.get_toplevel(qh, ());
@@ -1230,11 +1251,12 @@ impl TargetClientState {
             return;
         }
 
-        let manager = self
-            .data_device_manager
-            .as_ref()
-            .expect("data-device manager presence checked immediately above");
-        let seat = self.seat.as_ref().expect("seat presence checked immediately above");
+        let Some(manager) = self.data_device_manager.as_ref() else {
+            return;
+        };
+        let Some(seat) = self.seat.as_ref() else {
+            return;
+        };
         self.data_device = Some(manager.get_data_device(seat, qh, ()));
     }
 
@@ -1307,13 +1329,18 @@ impl TargetClientState {
             return;
         }
 
-        let shm = self.shm.as_ref().expect("shm presence checked immediately above");
+        let Some(shm) = self.shm.as_ref() else {
+            return;
+        };
         let width = self.configured_width.unwrap_or(TEST_BUFFER_WIDTH).max(1);
         let height = self.configured_height.unwrap_or(TEST_BUFFER_HEIGHT).max(1);
-        let (file, pool, buffer) = create_test_buffer(shm, qh, width, height)
-            .expect("target DnD client should create a wl_shm buffer");
-        let surface =
-            self.base_surface.as_ref().expect("surface presence checked immediately above");
+        let (file, pool, buffer) = match create_test_buffer(shm, qh, width, height) {
+            Ok(buffer) => buffer,
+            Err(error) => panic!("target DnD client should create a wl_shm buffer: {error:?}"),
+        };
+        let Some(surface) = self.base_surface.as_ref() else {
+            return;
+        };
         surface.attach(Some(&buffer), 0, 0);
         surface.damage(0, 0, width as i32, height as i32);
         self._backing_file = Some(file);

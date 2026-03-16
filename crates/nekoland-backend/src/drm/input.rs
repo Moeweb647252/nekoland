@@ -49,10 +49,11 @@ pub(crate) fn install_drm_input_source(
         app.insert_non_send_resource(CalloopSourceRegistry::default());
     }
 
-    let mut registry = app
-        .world_mut()
-        .get_non_send_resource_mut::<CalloopSourceRegistry>()
-        .expect("calloop registry inserted immediately before access");
+    let Some(mut registry) = app.world_mut().get_non_send_resource_mut::<CalloopSourceRegistry>()
+    else {
+        tracing::error!("calloop registry unavailable during drm input installation");
+        return;
+    };
 
     registry.push(move |handle| {
         let (session, seat_name) = {
@@ -278,8 +279,9 @@ mod tests {
             },
         ];
 
-        let bounds =
-            configured_output_bounds(&config).expect("enabled output should produce bounds");
+        let Some(bounds) = configured_output_bounds(&config) else {
+            panic!("enabled output should produce bounds");
+        };
         assert_eq!(bounds.width, 1920.0);
         assert_eq!(bounds.height, 1080.0);
     }
@@ -293,7 +295,7 @@ mod tests {
             refresh_millihz: 60_000,
             scale: 1,
         }])
-        .expect("one live output should define bounds");
+        .unwrap_or_else(|| panic!("one live output should define bounds"));
 
         let (x, y) = input.apply_relative_motion(999.0, 999.0);
         assert_eq!(x, 799.0);

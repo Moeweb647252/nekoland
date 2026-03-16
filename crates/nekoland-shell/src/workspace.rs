@@ -561,7 +561,9 @@ mod tests {
             "destroyed workspace entity should be removed",
         );
 
-        let child_of = world.get::<ChildOf>(window_entity).expect("window should keep ChildOf");
+        let Some(child_of) = world.get::<ChildOf>(window_entity) else {
+            panic!("window should keep ChildOf");
+        };
         assert_eq!(
             child_of.parent(),
             fallback_workspace,
@@ -692,21 +694,15 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        assert_eq!(
-            world
-                .get::<Workspace>(stale_active_workspace)
-                .expect("stale workspace should remain present")
-                .active,
-            false,
-        );
+        let Some(stale_workspace) = world.get::<Workspace>(stale_active_workspace) else {
+            panic!("stale workspace should remain present");
+        };
+        assert_eq!(stale_workspace.active, false);
         assert!(world.get::<ActiveWorkspace>(stale_active_workspace).is_none());
-        assert_eq!(
-            world
-                .get::<Workspace>(preferred_workspace)
-                .expect("preferred workspace should remain present")
-                .active,
-            true,
-        );
+        let Some(preferred_workspace_state) = world.get::<Workspace>(preferred_workspace) else {
+            panic!("preferred workspace should remain present");
+        };
+        assert_eq!(preferred_workspace_state.active, true);
         assert!(world.get::<ActiveWorkspace>(preferred_workspace).is_some());
     }
 
@@ -900,8 +896,10 @@ mod tests {
             .query::<(&OutputDevice, &OutputCurrentWorkspace)>()
             .iter(world)
             .find(|(output, _)| output.name == "Virtual-1")
-            .map(|(_, current_workspace)| current_workspace.workspace.0)
-            .expect("reconnected output should receive a workspace assignment");
+            .map(|(_, current_workspace)| current_workspace.workspace.0);
+        let Some(assignment) = assignment else {
+            panic!("reconnected output should receive a workspace assignment");
+        };
         assert_eq!(assignment, 2);
     }
 }

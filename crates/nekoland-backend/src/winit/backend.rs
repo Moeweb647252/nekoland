@@ -174,24 +174,28 @@ impl WinitRuntime {
         let shared = Rc::new(RefCell::new(WinitPresentCompletionShared::default()));
         shared.borrow_mut().desired_window_spec = initial_window_spec.clone();
 
-        let mut registry = app
-            .world_mut()
-            .get_non_send_resource_mut::<CalloopSourceRegistry>()
-            .expect("calloop registry inserted immediately before access");
-        let source_shared = shared.clone();
-        registry.push(move |handle| {
-            match install_host_winit_source(handle, source_shared.clone()) {
-                Ok(()) => Ok(()),
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        "failed to initialize nested winit event source; falling back to timer"
-                    );
-                    install_timer_source(handle, source_shared.clone())
+        if let Some(mut registry) =
+            app.world_mut().get_non_send_resource_mut::<CalloopSourceRegistry>()
+        {
+            let source_shared = shared.clone();
+            registry.push(move |handle| {
+                match install_host_winit_source(handle, source_shared.clone()) {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "failed to initialize nested winit event source; falling back to timer"
+                        );
+                        install_timer_source(handle, source_shared.clone())
+                    }
                 }
-            }
-        });
-        drop(registry);
+            });
+        } else {
+            tracing::error!(
+                "calloop registry unavailable during nested winit installation; \
+                 host event source will not be registered"
+            );
+        }
 
         app.insert_resource(WinitWindowState {
             title: initial_window_spec.title.clone(),
@@ -898,7 +902,9 @@ mod tests {
 
     #[test]
     fn parses_hex_clear_color() {
-        let color = parse_hex_color32f("#f5f7ff").expect("hex color should parse");
+        let Some(color) = parse_hex_color32f("#f5f7ff") else {
+            panic!("hex color should parse");
+        };
         assert!((color.r() - 245.0 / 255.0).abs() < 0.0001);
         assert!((color.g() - 247.0 / 255.0).abs() < 0.0001);
         assert!((color.b() - 1.0).abs() < 0.0001);
@@ -988,8 +994,9 @@ mod tests {
             smithay::utils::Rectangle::new((40, 20).into(), (5, 6).into()),
         ];
 
-        let merged = merge_submit_damage(Some(smithay_damage), ecs_damage)
-            .expect("merged damage should remain present");
+        let Some(merged) = merge_submit_damage(Some(smithay_damage), ecs_damage) else {
+            panic!("merged damage should remain present");
+        };
 
         assert_eq!(merged.len(), 2);
         assert!(merged.contains(&smithay::utils::Rectangle::new((0, 0).into(), (10, 10).into())));

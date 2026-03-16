@@ -275,9 +275,21 @@ fn map_x11_window(
                 width: geometry.width.max(1),
                 height: geometry.height.max(1),
             };
-            window.buffer.expect("x11 window should have buffer state").attached = true;
-            let xdg_window =
-                window.xdg_window.as_mut().expect("x11 runtime should expose xdg metadata");
+            let Some(buffer) = window.buffer.as_mut() else {
+                tracing::warn!(
+                    surface_id,
+                    "skipping mapped x11 window update without buffer state"
+                );
+                return;
+            };
+            buffer.attached = true;
+            let Some(xdg_window) = window.xdg_window.as_mut() else {
+                tracing::warn!(
+                    surface_id,
+                    "skipping mapped x11 window update without xdg metadata"
+                );
+                return;
+            };
             xdg_window.title = title.clone();
             xdg_window.app_id = app_id.clone();
             apply_window_policy(
@@ -422,19 +434,34 @@ fn reconfigure_x11_window(
         return false;
     };
 
-    window.buffer.expect("x11 window should have buffer state").attached = true;
-    let xdg_window = window.xdg_window.as_mut().expect("x11 runtime should expose xdg metadata");
-    xdg_window.title = title;
-    xdg_window.app_id = app_id;
-    let x11_window = window.x11_window.as_mut().expect("x11 runtime should expose x11 metadata");
-    x11_window.popup = popup;
-    x11_window.transient_for = transient_for;
-    x11_window.window_type = window_type;
-    let override_redirect = x11_window.override_redirect;
+    let Some(buffer) = window.buffer.as_mut() else {
+        tracing::warn!(surface_id, "skipping x11 reconfigure without buffer state");
+        return true;
+    };
+    buffer.attached = true;
+    let (resolved_title, resolved_app_id) = {
+        let Some(xdg_window) = window.xdg_window.as_mut() else {
+            tracing::warn!(surface_id, "skipping x11 reconfigure without xdg metadata");
+            return true;
+        };
+        xdg_window.title = title;
+        xdg_window.app_id = app_id;
+        (xdg_window.title.clone(), xdg_window.app_id.clone())
+    };
+    let override_redirect = {
+        let Some(x11_window) = window.x11_window.as_mut() else {
+            tracing::warn!(surface_id, "skipping x11 reconfigure without x11 metadata");
+            return true;
+        };
+        x11_window.popup = popup;
+        x11_window.transient_for = transient_for;
+        x11_window.window_type = window_type;
+        x11_window.override_redirect
+    };
     let policy =
-        config.resolve_window_policy(&xdg_window.app_id, &xdg_window.title, override_redirect);
+        config.resolve_window_policy(&resolved_app_id, &resolved_title, override_redirect);
     let background =
-        config.resolve_window_background(&xdg_window.app_id, &xdg_window.title, override_redirect);
+        config.resolve_window_background(&resolved_app_id, &resolved_title, override_redirect);
     refresh_window_policy(
         policy,
         &mut window.layout,
@@ -571,8 +598,14 @@ fn start_x11_window_grab(
         return true;
     }
 
-    let override_redirect =
-        window.x11_window.expect("x11 runtime should expose x11 metadata").override_redirect;
+    let Some(x11_window) = window.x11_window.as_ref() else {
+        tracing::warn!(
+            surface_id,
+            "skipping interactive x11 grab for window without x11 metadata"
+        );
+        return true;
+    };
+    let override_redirect = x11_window.override_redirect;
     restore_window_policy(&window.policy_state, &mut window.layout, &mut window.mode);
     if !override_redirect {
         *window.layout = WindowLayout::Floating;
@@ -730,14 +763,18 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let geometry = world
-            .get::<SurfaceGeometry>(entity)
-            .expect("x11 window geometry should still exist after move");
-        let layout = world.get::<WindowLayout>(entity).expect("x11 window layout should exist");
-        let mode = world.get::<WindowMode>(entity).expect("x11 window mode should exist");
-        let focus = world
-            .get_resource::<KeyboardFocusState>()
-            .expect("keyboard focus state should be initialized");
+        let Some(geometry) = world.get::<SurfaceGeometry>(entity) else {
+            panic!("x11 window geometry should still exist after move");
+        };
+        let Some(layout) = world.get::<WindowLayout>(entity) else {
+            panic!("x11 window layout should exist");
+        };
+        let Some(mode) = world.get::<WindowMode>(entity) else {
+            panic!("x11 window mode should exist");
+        };
+        let Some(focus) = world.get_resource::<KeyboardFocusState>() else {
+            panic!("keyboard focus state should be initialized");
+        };
 
         assert_eq!((geometry.x, geometry.y), (64, 64));
         assert_eq!(*layout, WindowLayout::Floating);
@@ -764,14 +801,18 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let geometry = world
-            .get::<SurfaceGeometry>(entity)
-            .expect("x11 window geometry should still exist after resize");
-        let layout = world.get::<WindowLayout>(entity).expect("x11 window layout should exist");
-        let mode = world.get::<WindowMode>(entity).expect("x11 window mode should exist");
-        let focus = world
-            .get_resource::<KeyboardFocusState>()
-            .expect("keyboard focus state should be initialized");
+        let Some(geometry) = world.get::<SurfaceGeometry>(entity) else {
+            panic!("x11 window geometry should still exist after resize");
+        };
+        let Some(layout) = world.get::<WindowLayout>(entity) else {
+            panic!("x11 window layout should exist");
+        };
+        let Some(mode) = world.get::<WindowMode>(entity) else {
+            panic!("x11 window mode should exist");
+        };
+        let Some(focus) = world.get_resource::<KeyboardFocusState>() else {
+            panic!("keyboard focus state should be initialized");
+        };
 
         assert_eq!((geometry.width, geometry.height), (672, 496));
         assert_eq!(*layout, WindowLayout::Floating);
@@ -834,9 +875,10 @@ mod tests {
             .iter(world)
             .find(|(_, surface)| surface.id == 77)
             .map(|(entity, _)| entity)
-            .expect("mapped X11 window should exist");
-        let child_of =
-            world.get::<ChildOf>(window_entity).expect("mapped X11 window should have ChildOf");
+            .unwrap_or_else(|| panic!("mapped X11 window should exist"));
+        let Some(child_of) = world.get::<ChildOf>(window_entity) else {
+            panic!("mapped X11 window should have ChildOf");
+        };
         assert_eq!(
             child_of.parent(),
             workspace_entity,
@@ -903,10 +945,12 @@ mod tests {
 
         let world = app.inner_mut().world_mut();
         let mut windows = world.query::<(&WlSurfaceHandle, &WindowLayout, &WindowMode)>();
-        let (_, layout, mode) = windows
+        let window_state = windows
             .iter(world)
-            .find(|(surface, _, _)| surface.id == 88)
-            .expect("mapped X11 window should exist");
+            .find(|(surface, _, _)| surface.id == 88);
+        let Some((_, layout, mode)) = window_state else {
+            panic!("mapped X11 window should exist");
+        };
         assert_eq!(*layout, WindowLayout::Tiled);
         assert_eq!(*mode, WindowMode::Normal);
     }

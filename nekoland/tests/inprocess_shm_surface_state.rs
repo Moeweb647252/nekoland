@@ -58,7 +58,7 @@ struct ShmClientState {
 /// corresponding window geometry.
 #[test]
 fn shm_buffer_commit_populates_renderer_surface_state() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-shm-runtime");
     let config_path = workspace_config_path();
 
@@ -67,17 +67,19 @@ fn shm_buffer_commit_populates_renderer_surface_state() {
         frame_timeout: Duration::from_millis(1),
         max_frames: Some(96),
     });
-    app.inner_mut()
-        .world_mut()
-        .get_resource_mut::<CompositorConfig>()
-        .expect("runtime config should be initialized before tests mutate it")
-        .default_layout = nekoland_ecs::resources::DefaultLayout::Floating;
+    {
+        let Some(mut config) = app.inner_mut().world_mut().get_resource_mut::<CompositorConfig>()
+        else {
+            panic!("runtime config should be initialized before tests mutate it");
+        };
+        config.default_layout = nekoland_ecs::resources::DefaultLayout::Floating;
+    }
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -93,17 +95,22 @@ fn shm_buffer_commit_populates_renderer_surface_state() {
     };
 
     let client_thread = thread::spawn(move || run_shm_client(&socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let summary = match client_thread.join().expect("client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping in-process shm renderer test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("in-process shm client failed: {reason}");
-        }
+    let summary = match client_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping in-process shm renderer test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("in-process shm client failed: {reason}");
+            }
+        },
+        Err(_) => panic!("client thread should exit cleanly"),
     };
 
     common::assert_globals_present(&summary.globals);
@@ -115,31 +122,36 @@ fn shm_buffer_commit_populates_renderer_surface_state() {
             (&WlSurfaceHandle, &SurfaceGeometry),
             bevy_ecs::query::With<XdgWindow>,
         >();
-        let (surface_id, geometry) = windows
+        let window = windows
             .iter(world)
             .next()
-            .map(|(surface, geometry)| (surface.id, geometry.clone()))
-            .expect("shm client should produce an XdgWindow entity");
-        let registry = world
-            .get_non_send_resource::<ProtocolSurfaceRegistry>()
-            .expect("protocol surface registry should be initialized");
+            .map(|(surface, geometry)| (surface.id, geometry.clone()));
+        let Some((surface_id, geometry)) = window else {
+            panic!("shm client should produce an XdgWindow entity");
+        };
+        let Some(registry) = world.get_non_send_resource::<ProtocolSurfaceRegistry>() else {
+            panic!("protocol surface registry should be initialized");
+        };
         let wl_surface = registry
             .surface(surface_id)
             .cloned()
-            .expect("tracked window surface should remain available in protocol registry");
+            .unwrap_or_else(|| {
+                panic!("tracked window surface should remain available in protocol registry")
+            });
         (surface_id, geometry, wl_surface)
     };
 
-    let (buffer_present, buffer_size, surface_size, buffer_scale) =
-        with_renderer_surface_state(&wl_surface, |state| {
-            (
-                state.buffer().is_some(),
-                state.buffer_size(),
-                state.surface_size(),
-                state.buffer_scale(),
-            )
-        })
-        .expect("wl_shm commit should initialize renderer surface state");
+    let renderer_state = with_renderer_surface_state(&wl_surface, |state| {
+        (
+            state.buffer().is_some(),
+            state.buffer_size(),
+            state.surface_size(),
+            state.buffer_scale(),
+        )
+    });
+    let Some((buffer_present, buffer_size, surface_size, buffer_scale)) = renderer_state else {
+        panic!("wl_shm commit should initialize renderer surface state");
+    };
 
     assert!(buffer_present, "renderer surface state should retain the attached shm buffer");
     assert_eq!(
@@ -271,9 +283,10 @@ impl ShmClientState {
             return;
         }
 
-        let surface =
-            self.base_surface.as_ref().expect("surface presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(surface), Some(wm_base)) = (self.base_surface.as_ref(), self.wm_base.as_ref())
+        else {
+            return;
+        };
         let xdg_surface = wm_base.get_xdg_surface(surface, qh, ());
         let toplevel = xdg_surface.get_toplevel(qh, ());
         surface.commit();
@@ -287,7 +300,9 @@ impl ShmClientState {
             return Ok(());
         }
 
-        let shm = self.shm.as_ref().expect("presence checked immediately above");
+        let Some(shm) = self.shm.as_ref() else {
+            return Ok(());
+        };
         let (file, pool, buffer) = create_test_buffer(shm, qh)?;
         self._backing_file = Some(file);
         self._pool = Some(pool);

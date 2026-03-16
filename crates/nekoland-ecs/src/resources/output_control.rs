@@ -68,7 +68,8 @@ impl PendingOutputControls {
         } else {
             self.controls
                 .push(PendingOutputControl { selector, ..PendingOutputControl::default() });
-            self.controls.last_mut().expect("output control just pushed")
+            let last_index = self.controls.len() - 1;
+            &mut self.controls[last_index]
         };
 
         OutputControlHandle { control }

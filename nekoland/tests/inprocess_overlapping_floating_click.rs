@@ -98,9 +98,10 @@ impl OverlapClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(compositor), Some(wm_base)) = (self.compositor.as_ref(), self.wm_base.as_ref())
+        else {
+            panic!("compositor and wm_base presence checked immediately above");
+        };
         let base_surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&base_surface, qh, ());
         let toplevel = xdg_surface.get_toplevel(qh, ());
@@ -119,7 +120,7 @@ impl OverlapClientState {
 
 #[test]
 fn overlapping_floating_click_targets_topmost_wayland_client() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _disable_startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-overlap-click-runtime");
@@ -139,9 +140,9 @@ fn overlapping_floating_click_targets_topmost_wayland_client() {
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -159,33 +160,39 @@ fn overlapping_floating_click_targets_topmost_wayland_client() {
     let bottom_thread = thread::spawn(move || run_overlap_client(&bottom_socket, "overlap-bottom"));
     let top_thread = thread::spawn(move || run_overlap_client(&top_socket, "overlap-top"));
 
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let bottom = match bottom_thread.join().expect("bottom client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping overlap click test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => panic!("bottom client failed: {reason}"),
+    let bottom = match bottom_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping overlap click test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => panic!("bottom client failed: {reason}"),
+        },
+        Err(_) => panic!("bottom client thread should exit cleanly"),
     };
-    let top = match top_thread.join().expect("top client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping overlap click test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => panic!("top client failed: {reason}"),
+    let top = match top_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping overlap click test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => panic!("top client failed: {reason}"),
+        },
+        Err(_) => panic!("top client thread should exit cleanly"),
     };
 
     common::assert_globals_present(&bottom.globals);
     common::assert_globals_present(&top.globals);
 
-    let pump = app
-        .inner()
-        .world()
-        .get_resource::<OverlapClickPump>()
-        .expect("overlap click pump should exist");
+    let Some(pump) = app.inner().world().get_resource::<OverlapClickPump>() else {
+        panic!("overlap click pump should exist");
+    };
     assert!(pump.arranged, "test should arrange overlapping floating windows");
     assert!(pump.click_sent, "test should inject a real overlapping click");
     assert_eq!(
@@ -456,12 +463,12 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for OverlapClientState {
             xdg_surface.ack_configure(serial);
             if let Some(surface) = state.base_surface.as_ref() {
                 if !state.buffer_attached {
-                    let shm = state
-                        .shm
-                        .as_ref()
-                        .expect("wl_shm should be bound before the toplevel is configured");
-                    let (file, pool, buffer) = create_test_buffer(shm, qh)
-                        .expect("overlap client should create a wl_shm buffer");
+                    let Some(shm) = state.shm.as_ref() else {
+                        panic!("wl_shm should be bound before the toplevel is configured");
+                    };
+                    let Ok((file, pool, buffer)) = create_test_buffer(shm, qh) else {
+                        panic!("overlap client should create a wl_shm buffer");
+                    };
                     surface.attach(Some(&buffer), 0, 0);
                     state.backing_file = Some(file);
                     state.pool = Some(pool);

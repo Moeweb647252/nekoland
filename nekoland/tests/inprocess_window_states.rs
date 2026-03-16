@@ -212,12 +212,10 @@ fn fullscreen_and_popup_requests_populate_popup_entity_and_render_list() {
         let (window_surface_id, window_state, geometry) = windows[0].clone();
         assert_eq!(window_state, WindowDisplayState::Fullscreen);
 
-        let output = world
-            .query::<&OutputProperties>()
-            .iter(world)
-            .next()
-            .expect("backend should create one output")
-            .clone();
+        let output = world.query::<&OutputProperties>().iter(world).next().cloned();
+        let Some(output) = output else {
+            panic!("backend should create one output");
+        };
 
         let mut popup_query = world.query::<(&WlSurfaceHandle, &PopupGrab, &ChildOf)>();
         let popups = popup_query
@@ -226,19 +224,16 @@ fn fullscreen_and_popup_requests_populate_popup_entity_and_render_list() {
             .collect::<Vec<_>>();
         assert_eq!(popups.len(), 1, "fullscreen popup scenario should create one popup entity");
         let (popup_surface_id, popup_parent_entity, popup_grab_active) = popups[0];
-        let popup_parent = world
-            .get::<WlSurfaceHandle>(popup_parent_entity)
-            .expect("popup parent should expose a surface handle")
-            .id;
+        let Some(popup_parent_surface) = world.get::<WlSurfaceHandle>(popup_parent_entity) else {
+            panic!("popup parent should expose a surface handle");
+        };
+        let popup_parent = popup_parent_surface.id;
 
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be initialized")
-            .elements
-            .iter()
-            .filter(|e| e.surface_id != 0)
-            .cloned()
-            .collect::<Vec<_>>();
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be initialized");
+        };
+        let render_elements =
+            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
 
         (
             window_surface_id,
@@ -338,18 +333,15 @@ fn minimize_request_hides_window_clears_focus_and_removes_render_entry() {
         assert_eq!(windows.len(), 1, "scenario should create exactly one toplevel window");
         let (surface_id, state) = windows[0].clone();
 
-        let focus = world
-            .get_resource::<KeyboardFocusState>()
-            .expect("keyboard focus state should be initialized")
-            .focused_surface;
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be initialized")
-            .elements
-            .iter()
-            .filter(|e| e.surface_id != 0)
-            .cloned()
-            .collect::<Vec<_>>();
+        let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
+            panic!("keyboard focus state should be initialized");
+        };
+        let focus = keyboard_focus.focused_surface;
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be initialized");
+        };
+        let render_elements =
+            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
 
         (surface_id, state, focus, render_elements)
     };
@@ -397,18 +389,19 @@ fn interactive_move_request_switches_window_to_floating_geometry() {
             .collect::<Vec<_>>();
         assert_eq!(windows.len(), 1, "scenario should create exactly one toplevel window");
         let (surface_id, state, geometry) = windows[0].clone();
-        let focus = world
-            .get_resource::<KeyboardFocusState>()
-            .expect("keyboard focus state should be initialized")
-            .focused_surface;
+        let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
+            panic!("keyboard focus state should be initialized");
+        };
+        let focus = keyboard_focus.focused_surface;
         (surface_id, state, geometry, focus)
     };
 
     assert_eq!(state, WindowDisplayState::Floating);
-    let expected_initial = centred_position(
-        app.inner().world().get_resource::<WorkArea>().expect("work area should be initialized"),
-        &SurfaceGeometry { x: 0, y: 0, width: 32, height: 32 },
-    );
+    let Some(work_area) = app.inner().world().get_resource::<WorkArea>() else {
+        panic!("work area should be initialized");
+    };
+    let expected_initial =
+        centred_position(work_area, &SurfaceGeometry { x: 0, y: 0, width: 32, height: 32 });
     assert!(
         geometry.x > expected_initial.0,
         "interactive move should shift the floating window to the right: {geometry:?}"
@@ -470,7 +463,7 @@ fn popup_grab_request_marks_popup_active_and_tracks_serial() {
             .iter(world)
             .map(|(surface, _)| surface.id)
             .next()
-            .expect("scenario should create a toplevel surface");
+            .unwrap_or_else(|| panic!("scenario should create a toplevel surface"));
 
         let mut popup_query = world.query::<(&XdgPopup, &PopupGrab, &ChildOf)>();
         let popups = popup_query
@@ -482,10 +475,10 @@ fn popup_grab_request_marks_popup_active_and_tracks_serial() {
         assert_eq!(popups.len(), 1, "scenario should create exactly one popup");
         let (popup_parent_entity, popup_grab_serial, popup_configure_serial, grab) =
             popups[0].clone();
-        let popup_parent = world
-            .get::<WlSurfaceHandle>(popup_parent_entity)
-            .expect("popup parent should expose a surface handle")
-            .id;
+        let Some(popup_parent_surface) = world.get::<WlSurfaceHandle>(popup_parent_entity) else {
+            panic!("popup parent should expose a surface handle");
+        };
+        let popup_parent = popup_parent_surface.id;
 
         (window_surface_id, popup_parent, popup_grab_serial, popup_configure_serial, grab)
     };
@@ -520,14 +513,11 @@ fn server_dismiss_of_grabbed_popup_sends_popup_done_and_cleans_up_popup_state() 
         let world = app.inner_mut().world_mut();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be initialized")
-            .elements
-            .iter()
-            .filter(|e| e.surface_id != 0)
-            .cloned()
-            .collect::<Vec<_>>();
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be initialized");
+        };
+        let render_elements =
+            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
         (popup_count, window_count, render_elements)
     };
 
@@ -562,14 +552,11 @@ fn ipc_dismiss_of_grabbed_popup_sends_popup_done_and_cleans_up_popup_state() {
         let world = app.inner_mut().world_mut();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be initialized")
-            .elements
-            .iter()
-            .filter(|e| e.surface_id != 0)
-            .cloned()
-            .collect::<Vec<_>>();
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be initialized");
+        };
+        let render_elements =
+            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
         (popup_count, window_count, render_elements)
     };
 
@@ -604,14 +591,11 @@ fn popup_grab_request_with_invalid_serial_is_dismissed() {
         let world = app.inner_mut().world_mut();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be initialized")
-            .elements
-            .iter()
-            .filter(|e| e.surface_id != 0)
-            .cloned()
-            .collect::<Vec<_>>();
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be initialized");
+        };
+        let render_elements =
+            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
         (popup_count, window_count, render_elements)
     };
 
@@ -642,7 +626,7 @@ fn popup_reposition_request_updates_geometry_and_token() {
             .iter(world)
             .map(|(_, geometry, _)| geometry.clone())
             .next()
-            .expect("popup reposition scenario should keep the toplevel alive");
+            .unwrap_or_else(|| panic!("popup reposition scenario should keep the toplevel alive"));
         let mut popup_query = world.query::<(&XdgPopup, &SurfaceGeometry)>();
         let popups = popup_query
             .iter(world)
@@ -673,14 +657,11 @@ fn popup_destroy_request_removes_popup_entity_and_render_entry() {
         let world = app.inner_mut().world_mut();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be initialized")
-            .elements
-            .iter()
-            .filter(|e| e.surface_id != 0)
-            .cloned()
-            .collect::<Vec<_>>();
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be initialized");
+        };
+        let render_elements =
+            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
         (popup_count, render_elements, window_count)
     };
 
@@ -707,23 +688,19 @@ fn toplevel_destroy_removes_window_records_close_and_clears_render_focus() {
         let world = app.inner_mut().world_mut();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
-        let focus = world
-            .get_resource::<KeyboardFocusState>()
-            .expect("keyboard focus state should be initialized")
-            .focused_surface;
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be initialized")
-            .elements
-            .iter()
-            .filter(|e| e.surface_id != 0)
-            .cloned()
-            .collect::<Vec<_>>();
-        let closed_surface_ids = world
-            .get_resource::<ClosedWindowAudit>()
-            .expect("closed window audit should be initialized")
-            .surface_ids
-            .clone();
+        let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
+            panic!("keyboard focus state should be initialized");
+        };
+        let focus = keyboard_focus.focused_surface;
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be initialized");
+        };
+        let render_elements =
+            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
+        let Some(closed_window_audit) = world.get_resource::<ClosedWindowAudit>() else {
+            panic!("closed window audit should be initialized");
+        };
+        let closed_surface_ids = closed_window_audit.surface_ids.clone();
 
         (window_count, popup_count, focus, render_elements, closed_surface_ids)
     };
@@ -753,23 +730,19 @@ fn server_close_request_emits_close_event_and_cleans_up_window() {
     let (window_count, focus, render_elements, closed_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
-        let focus = world
-            .get_resource::<KeyboardFocusState>()
-            .expect("keyboard focus state should be initialized")
-            .focused_surface;
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be initialized")
-            .elements
-            .iter()
-            .filter(|e| e.surface_id != 0)
-            .cloned()
-            .collect::<Vec<_>>();
-        let closed_surface_ids = world
-            .get_resource::<ClosedWindowAudit>()
-            .expect("closed window audit should be initialized")
-            .surface_ids
-            .clone();
+        let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
+            panic!("keyboard focus state should be initialized");
+        };
+        let focus = keyboard_focus.focused_surface;
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be initialized");
+        };
+        let render_elements =
+            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
+        let Some(closed_window_audit) = world.get_resource::<ClosedWindowAudit>() else {
+            panic!("closed window audit should be initialized");
+        };
+        let closed_surface_ids = closed_window_audit.surface_ids.clone();
 
         (window_count, focus, render_elements, closed_surface_ids)
     };
@@ -797,23 +770,19 @@ fn ipc_close_request_emits_close_event_and_cleans_up_window() {
     let (window_count, focus, render_elements, closed_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let window_count = world.query::<(&WlSurfaceHandle, &XdgWindow)>().iter(world).count();
-        let focus = world
-            .get_resource::<KeyboardFocusState>()
-            .expect("keyboard focus should remain available")
-            .focused_surface;
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be initialized")
-            .elements
-            .iter()
-            .filter(|e| e.surface_id != 0)
-            .cloned()
-            .collect::<Vec<_>>();
-        let closed_surface_ids = world
-            .get_resource::<ClosedWindowAudit>()
-            .expect("closed window audit should be initialized")
-            .surface_ids
-            .clone();
+        let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
+            panic!("keyboard focus should remain available");
+        };
+        let focus = keyboard_focus.focused_surface;
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be initialized");
+        };
+        let render_elements =
+            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
+        let Some(closed_window_audit) = world.get_resource::<ClosedWindowAudit>() else {
+            panic!("closed window audit should be initialized");
+        };
+        let closed_surface_ids = closed_window_audit.surface_ids.clone();
 
         (window_count, focus, render_elements, closed_surface_ids)
     };
@@ -846,23 +815,19 @@ fn ipc_close_of_parent_window_dismisses_child_popup_and_cleans_up_everything() {
         let world = app.inner_mut().world_mut();
         let window_count = world.query::<(&WlSurfaceHandle, &XdgWindow)>().iter(world).count();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
-        let focus = world
-            .get_resource::<KeyboardFocusState>()
-            .expect("keyboard focus should remain available")
-            .focused_surface;
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be initialized")
-            .elements
-            .iter()
-            .filter(|e| e.surface_id != 0)
-            .cloned()
-            .collect::<Vec<_>>();
-        let closed_surface_ids = world
-            .get_resource::<ClosedWindowAudit>()
-            .expect("closed window audit should be initialized")
-            .surface_ids
-            .clone();
+        let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
+            panic!("keyboard focus should remain available");
+        };
+        let focus = keyboard_focus.focused_surface;
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be initialized");
+        };
+        let render_elements =
+            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
+        let Some(closed_window_audit) = world.get_resource::<ClosedWindowAudit>() else {
+            panic!("closed window audit should be initialized");
+        };
+        let closed_surface_ids = closed_window_audit.surface_ids.clone();
 
         (window_count, popup_count, focus, render_elements, closed_surface_ids)
     };
@@ -939,24 +904,21 @@ fn workspace_switch_dismisses_popups_and_reconfigures_reactivated_toplevels() {
         let world = app.inner_mut().world_mut();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be initialized")
-            .elements
-            .iter()
-            .filter(|e| e.surface_id != 0)
-            .cloned()
-            .collect::<Vec<_>>();
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be initialized");
+        };
+        let render_elements =
+            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
         let active_workspaces = world
             .query::<&nekoland_ecs::components::Workspace>()
             .iter(world)
             .filter(|workspace| workspace.active)
             .map(|workspace| workspace.id.0)
             .collect::<Vec<_>>();
-        let frame_pacing = world
-            .get_resource::<FramePacingState>()
-            .expect("frame pacing state should be initialized")
-            .clone();
+        let Some(frame_pacing) = world.get_resource::<FramePacingState>() else {
+            panic!("frame pacing state should be initialized");
+        };
+        let frame_pacing = frame_pacing.clone();
 
         (popup_count, window_count, render_elements, active_workspaces, frame_pacing)
     };
@@ -1038,9 +1000,9 @@ fn run_scenario(
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -1055,9 +1017,9 @@ fn run_scenario(
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -1086,28 +1048,36 @@ fn run_scenario(
         }
         _ => None,
     };
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let summary = match client_thread.join().expect("client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping window state test in restricted environment: {reason}");
-            return None;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("scenario client failed: {reason}");
-        }
-    };
-    if let Some(ipc_thread) = ipc_thread {
-        match ipc_thread.join().expect("IPC thread should exit cleanly") {
-            Ok(_) => {}
+    let summary = match client_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
             Err(common::TestControl::Skip(reason)) => {
-                eprintln!("skipping window state IPC test in restricted environment: {reason}");
+                eprintln!("skipping window state test in restricted environment: {reason}");
                 return None;
             }
             Err(common::TestControl::Fail(reason)) => {
-                panic!("IPC scenario client failed: {reason}");
+                panic!("scenario client failed: {reason}");
             }
+        },
+        Err(_) => panic!("client thread should exit cleanly"),
+    };
+    if let Some(ipc_thread) = ipc_thread {
+        match ipc_thread.join() {
+            Ok(result) => match result {
+                Ok(_) => {}
+                Err(common::TestControl::Skip(reason)) => {
+                    eprintln!("skipping window state IPC test in restricted environment: {reason}");
+                    return None;
+                }
+                Err(common::TestControl::Fail(reason)) => {
+                    panic!("IPC scenario client failed: {reason}");
+                }
+            },
+            Err(_) => panic!("IPC thread should exit cleanly"),
         }
     }
 
@@ -1170,9 +1140,9 @@ fn run_scenario_with_subscription(
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -1187,9 +1157,9 @@ fn run_scenario_with_subscription(
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -1221,41 +1191,51 @@ fn run_scenario_with_subscription(
         }
         _ => None,
     };
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let summary = match client_thread.join().expect("client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping window state test in restricted environment: {reason}");
-            return None;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("scenario client failed: {reason}");
-        }
-    };
-    let events = match subscription_thread.join().expect("subscription thread should exit cleanly")
-    {
-        Ok(events) => events,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!(
-                "skipping window state subscription test in restricted environment: {reason}"
-            );
-            return None;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("subscription client failed: {reason}");
-        }
-    };
-    if let Some(ipc_thread) = ipc_thread {
-        match ipc_thread.join().expect("IPC thread should exit cleanly") {
-            Ok(_) => {}
+    let summary = match client_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
             Err(common::TestControl::Skip(reason)) => {
-                eprintln!("skipping window state IPC test in restricted environment: {reason}");
+                eprintln!("skipping window state test in restricted environment: {reason}");
                 return None;
             }
             Err(common::TestControl::Fail(reason)) => {
-                panic!("IPC scenario client failed: {reason}");
+                panic!("scenario client failed: {reason}");
             }
+        },
+        Err(_) => panic!("client thread should exit cleanly"),
+    };
+    let events = match subscription_thread.join() {
+        Ok(result) => match result {
+            Ok(events) => events,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!(
+                    "skipping window state subscription test in restricted environment: {reason}"
+                );
+                return None;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("subscription client failed: {reason}");
+            }
+        },
+        Err(_) => panic!("subscription thread should exit cleanly"),
+    };
+    if let Some(ipc_thread) = ipc_thread {
+        match ipc_thread.join() {
+            Ok(result) => match result {
+                Ok(_) => {}
+                Err(common::TestControl::Skip(reason)) => {
+                    eprintln!("skipping window state IPC test in restricted environment: {reason}");
+                    return None;
+                }
+                Err(common::TestControl::Fail(reason)) => {
+                    panic!("IPC scenario client failed: {reason}");
+                }
+            },
+            Err(_) => panic!("IPC thread should exit cleanly"),
         }
     }
 
@@ -1430,14 +1410,14 @@ fn snapshot_window_output_and_work_area(
         .collect::<Vec<_>>();
     assert_eq!(windows.len(), 1, "scenario should create exactly one toplevel window");
     let (state, geometry) = windows[0].clone();
-    let output = world
-        .query::<&OutputProperties>()
-        .iter(world)
-        .next()
-        .expect("backend should create one output")
-        .clone();
-    let work_area =
-        world.get_resource::<WorkArea>().expect("work area should be initialized").clone();
+    let output = world.query::<&OutputProperties>().iter(world).next().cloned();
+    let Some(output) = output else {
+        panic!("backend should create one output");
+    };
+    let Some(work_area) = world.get_resource::<WorkArea>() else {
+        panic!("work area should be initialized");
+    };
+    let work_area = *work_area;
     (state, geometry, output, work_area)
 }
 
@@ -1913,12 +1893,12 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for ScenarioClientState {
                 xdg_surface.ack_configure(serial);
                 if let Some(surface) = state.popup_surface.as_ref() {
                     if !state.popup_buffer_attached {
-                        let shm = state
-                            .shm
-                            .as_ref()
-                            .expect("wl_shm should be bound before the popup is configured");
-                        let (file, pool, buffer) = create_test_buffer(shm, qh)
-                            .expect("window state client should create a popup wl_shm buffer");
+                        let Some(shm) = state.shm.as_ref() else {
+                            panic!("wl_shm should be bound before the popup is configured");
+                        };
+                        let Ok((file, pool, buffer)) = create_test_buffer(shm, qh) else {
+                            panic!("window state client should create a popup wl_shm buffer");
+                        };
                         surface.attach(Some(&buffer), 0, 0);
                         state.popup_backing_file = Some(file);
                         state.popup_pool = Some(pool);
@@ -1937,12 +1917,12 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for ScenarioClientState {
             xdg_surface.ack_configure(serial);
             if let Some(surface) = state.base_surface.as_ref() {
                 if !state.buffer_attached {
-                    let shm = state
-                        .shm
-                        .as_ref()
-                        .expect("wl_shm should be bound before the toplevel is configured");
-                    let (file, pool, buffer) = create_test_buffer(shm, qh)
-                        .expect("window state client should create a wl_shm buffer");
+                    let Some(shm) = state.shm.as_ref() else {
+                        panic!("wl_shm should be bound before the toplevel is configured");
+                    };
+                    let Ok((file, pool, buffer)) = create_test_buffer(shm, qh) else {
+                        panic!("window state client should create a wl_shm buffer");
+                    };
                     surface.attach(Some(&buffer), 0, 0);
                     state.toplevel_backing_file = Some(file);
                     state.toplevel_pool = Some(pool);
@@ -2070,9 +2050,10 @@ impl ScenarioClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(compositor), Some(wm_base)) = (self.compositor.as_ref(), self.wm_base.as_ref())
+        else {
+            panic!("compositor and wm_base should be present before creating the toplevel");
+        };
 
         let base_surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&base_surface, qh, ());
@@ -2091,9 +2072,12 @@ impl ScenarioClientState {
             return;
         };
 
-        let base_surface =
-            self.base_surface.as_ref().expect("scenario requires an existing base surface");
-        let toplevel = self.toplevel.as_ref().expect("scenario requires a toplevel object");
+        let Some(base_surface) = self.base_surface.as_ref() else {
+            panic!("scenario requires an existing base surface");
+        };
+        let Some(toplevel) = self.toplevel.as_ref() else {
+            panic!("scenario requires a toplevel object");
+        };
 
         match scenario {
             WindowScenario::Maximize if self.scenario_stage == 0 => {
@@ -2141,17 +2125,21 @@ impl ScenarioClientState {
             WindowScenario::MoveResize
                 if self.scenario_stage == 0 && self.latest_pointer_button_serial.is_some() =>
             {
-                let serial = self
-                    .latest_pointer_button_serial
-                    .expect("move+resize scenario requires a real wl_pointer button serial");
-                let seat = self.seat.as_ref().expect("move+resize scenario requires wl_seat");
+                let Some(serial) = self.latest_pointer_button_serial else {
+                    panic!("move+resize scenario requires a real wl_pointer button serial");
+                };
+                let Some(seat) = self.seat.as_ref() else {
+                    panic!("move+resize scenario requires wl_seat");
+                };
                 toplevel._move(seat, serial);
                 self.interactive_request_serial = Some(serial);
                 self.scenario_stage = 1;
                 self.final_request_sent = true;
             }
             WindowScenario::MoveResizeInvalidSerial if self.scenario_stage == 0 => {
-                let seat = self.seat.as_ref().expect("move+resize scenario requires wl_seat");
+                let Some(seat) = self.seat.as_ref() else {
+                    panic!("move+resize scenario requires wl_seat");
+                };
                 toplevel._move(seat, 41);
                 toplevel.resize(seat, 42, xdg_toplevel::ResizeEdge::BottomRight);
                 self.scenario_stage = 1;
@@ -2160,9 +2148,9 @@ impl ScenarioClientState {
             WindowScenario::PopupGrab
                 if self.scenario_stage == 0 && self.latest_pointer_button_serial.is_some() =>
             {
-                let serial = self
-                    .latest_pointer_button_serial
-                    .expect("popup grab scenario requires a real wl_pointer button serial");
+                let Some(serial) = self.latest_pointer_button_serial else {
+                    panic!("popup grab scenario requires a real wl_pointer button serial");
+                };
                 self.create_popup(qh, Some(serial));
                 self.interactive_request_serial = Some(serial);
                 self.scenario_stage = 1;
@@ -2171,9 +2159,9 @@ impl ScenarioClientState {
             WindowScenario::ServerDismissGrabbedPopup | WindowScenario::IpcDismissGrabbedPopup
                 if self.scenario_stage == 0 && self.latest_pointer_button_serial.is_some() =>
             {
-                let serial = self
-                    .latest_pointer_button_serial
-                    .expect("popup dismiss scenario requires a real wl_pointer button serial");
+                let Some(serial) = self.latest_pointer_button_serial else {
+                    panic!("popup dismiss scenario requires a real wl_pointer button serial");
+                };
                 self.create_popup(qh, Some(serial));
                 self.interactive_request_serial = Some(serial);
                 self.scenario_stage = 1;
@@ -2191,8 +2179,9 @@ impl ScenarioClientState {
             WindowScenario::PopupReposition
                 if self.scenario_stage == 1 && self.popup_configure_serial.is_some() =>
             {
-                let popup =
-                    self.popup.as_ref().expect("popup reposition scenario requires xdg_popup");
+                let Some(popup) = self.popup.as_ref() else {
+                    panic!("popup reposition scenario requires xdg_popup");
+                };
                 let positioner = self.make_positioner(qh, 300, 140, 80, 48, 96, 40, 20, 16);
                 popup.reposition(&positioner, 91);
                 self.scenario_stage = 2;
@@ -2205,7 +2194,9 @@ impl ScenarioClientState {
             WindowScenario::PopupDestroy
                 if self.scenario_stage == 1 && self.popup_configure_serial.is_some() =>
             {
-                let popup = self.popup.as_ref().expect("popup destroy scenario requires xdg_popup");
+                let Some(popup) = self.popup.as_ref() else {
+                    panic!("popup destroy scenario requires xdg_popup");
+                };
                 popup.destroy();
                 self.scenario_stage = 2;
                 self.final_request_sent = true;
@@ -2229,14 +2220,12 @@ impl ScenarioClientState {
                 self.scenario_stage = 2;
             }
             WindowScenario::ToplevelDestroy if self.scenario_stage == 0 => {
-                let toplevel = self
-                    .toplevel
-                    .as_ref()
-                    .expect("toplevel destroy scenario requires xdg_toplevel");
-                let xdg_surface = self
-                    .toplevel_xdg_surface
-                    .as_ref()
-                    .expect("toplevel destroy scenario requires xdg_surface");
+                let Some(toplevel) = self.toplevel.as_ref() else {
+                    panic!("toplevel destroy scenario requires xdg_toplevel");
+                };
+                let Some(xdg_surface) = self.toplevel_xdg_surface.as_ref() else {
+                    panic!("toplevel destroy scenario requires xdg_surface");
+                };
                 toplevel.destroy();
                 xdg_surface.destroy();
                 base_surface.destroy();
@@ -2254,20 +2243,24 @@ impl ScenarioClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("popup creation requires a compositor global");
-        let wm_base = self.wm_base.as_ref().expect("popup creation requires xdg_wm_base");
-        let parent = self
-            .toplevel_xdg_surface
-            .as_ref()
-            .expect("popup creation requires a parent xdg_surface");
+        let Some(compositor) = self.compositor.as_ref() else {
+            panic!("popup creation requires a compositor global");
+        };
+        let Some(wm_base) = self.wm_base.as_ref() else {
+            panic!("popup creation requires xdg_wm_base");
+        };
+        let Some(parent) = self.toplevel_xdg_surface.as_ref() else {
+            panic!("popup creation requires a parent xdg_surface");
+        };
 
         let popup_surface = compositor.create_surface(qh, ());
         let popup_xdg_surface = wm_base.get_xdg_surface(&popup_surface, qh, ());
         let positioner = self.make_positioner(qh, 240, 120, 24, 24, 64, 32, 16, 12);
         let popup = popup_xdg_surface.get_popup(Some(parent), &positioner, qh, ());
         if let Some(serial) = grab_serial {
-            let seat = self.seat.as_ref().expect("popup grab scenarios require wl_seat");
+            let Some(seat) = self.seat.as_ref() else {
+                panic!("popup grab scenarios require wl_seat");
+            };
             popup.grab(seat, serial);
         }
         popup_surface.commit();
@@ -2326,7 +2319,9 @@ impl ScenarioClientState {
         offset_x: i32,
         offset_y: i32,
     ) -> xdg_positioner::XdgPositioner {
-        let wm_base = self.wm_base.as_ref().expect("positioner creation requires xdg_wm_base");
+        let Some(wm_base) = self.wm_base.as_ref() else {
+            panic!("positioner creation requires xdg_wm_base");
+        };
         let positioner = wm_base.create_positioner(qh, ());
         positioner.set_size(width, height);
         positioner.set_anchor_rect(anchor_x, anchor_y, anchor_width, anchor_height);

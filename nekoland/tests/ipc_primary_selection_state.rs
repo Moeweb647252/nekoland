@@ -82,7 +82,7 @@ struct PrimarySelectionClientState {
 /// IPC query snapshot.
 #[test]
 fn ipc_reports_primary_selection_query_and_subscription_updates() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-ipc-primary-selection");
@@ -104,12 +104,12 @@ fn ipc_reports_primary_selection_query_and_subscription_updates() {
 
     let (wayland_socket_path, ipc_socket_path) = {
         let world = app.inner().world();
-        let protocol_server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
-        let ipc_server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("ipc server state should be available immediately after build");
+        let Some(protocol_server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
+        let Some(ipc_server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("ipc server state should be available immediately after build");
+        };
 
         let wayland_socket_path =
             match (&protocol_server_state.socket_name, &protocol_server_state.startup_error) {
@@ -151,27 +151,35 @@ fn ipc_reports_primary_selection_query_and_subscription_updates() {
     });
     let client_thread = thread::spawn(move || run_primary_selection_client(&wayland_socket_path));
 
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let client_summary = match client_thread.join().expect("client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping IPC primary-selection test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("primary-selection client failed: {reason}")
-        }
+    let client_summary = match client_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping IPC primary-selection test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("primary-selection client failed: {reason}")
+            }
+        },
+        Err(_) => panic!("client thread should exit cleanly"),
     };
-    let (event, snapshot) = match ipc_thread.join().expect("ipc thread should exit cleanly") {
-        Ok(result) => result,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping IPC primary-selection test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("primary-selection IPC test failed: {reason}")
-        }
+    let (event, snapshot) = match ipc_thread.join() {
+        Ok(result) => match result {
+            Ok(result) => result,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping IPC primary-selection test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("primary-selection IPC test failed: {reason}")
+            }
+        },
+        Err(_) => panic!("ipc thread should exit cleanly"),
     };
 
     common::assert_globals_present(&client_summary.globals);
@@ -179,9 +187,12 @@ fn ipc_reports_primary_selection_query_and_subscription_updates() {
     assert_eq!(event.topic, SubscriptionTopic::PrimarySelection);
     assert_eq!(event.event, "primary_selection_changed");
 
-    let payload = event.payload.expect("primary_selection_changed should include a payload");
-    let event_snapshot = serde_json::from_value::<PrimarySelectionSnapshot>(payload)
-        .expect("primary_selection_changed payload should decode");
+    let Some(payload) = event.payload else {
+        panic!("primary_selection_changed should include a payload");
+    };
+    let Ok(event_snapshot) = serde_json::from_value::<PrimarySelectionSnapshot>(payload) else {
+        panic!("primary_selection_changed payload should decode");
+    };
     assert_eq!(event_snapshot.seat_name.as_deref(), Some("seat-0"));
     assert_eq!(event_snapshot.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
     assert_eq!(event_snapshot.owner, Some(SelectionOwnerSnapshot::Compositor));
@@ -551,9 +562,10 @@ impl PrimarySelectionClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(compositor), Some(wm_base)) = (self.compositor.as_ref(), self.wm_base.as_ref())
+        else {
+            return;
+        };
 
         let base_surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&base_surface, qh, ());
@@ -574,11 +586,11 @@ impl PrimarySelectionClientState {
             return;
         }
 
-        let manager = self
-            .primary_selection_manager
-            .as_ref()
-            .expect("primary-selection manager presence checked immediately above");
-        let seat = self.seat.as_ref().expect("seat presence checked immediately above");
+        let (Some(manager), Some(seat)) =
+            (self.primary_selection_manager.as_ref(), self.seat.as_ref())
+        else {
+            return;
+        };
         self.primary_selection_device = Some(manager.get_device(seat, qh, ()));
     }
 

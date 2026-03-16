@@ -710,20 +710,21 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(InputSchedule);
 
         let world = app.inner().world();
-        let window_controls = world
-            .get_resource::<PendingWindowControls>()
-            .expect("window control queue should exist");
-        let workspace_controls = world
-            .get_resource::<PendingWorkspaceControls>()
-            .expect("workspace control queue should exist");
-        let output_controls = world
-            .get_resource::<PendingOutputControls>()
-            .expect("output control queue should exist");
-        let external_commands = world
-            .get_resource::<PendingExternalCommandRequests>()
-            .expect("external command queue should exist");
-        let compiled =
-            world.get_resource::<CompiledKeybindings>().expect("compiled keybindings should exist");
+        let Some(window_controls) = world.get_resource::<PendingWindowControls>() else {
+            panic!("window control queue should exist");
+        };
+        let Some(workspace_controls) = world.get_resource::<PendingWorkspaceControls>() else {
+            panic!("workspace control queue should exist");
+        };
+        let Some(output_controls) = world.get_resource::<PendingOutputControls>() else {
+            panic!("output control queue should exist");
+        };
+        let Some(external_commands) = world.get_resource::<PendingExternalCommandRequests>() else {
+            panic!("external command queue should exist");
+        };
+        let Some(compiled) = world.get_resource::<CompiledKeybindings>() else {
+            panic!("compiled keybindings should exist");
+        };
 
         assert_eq!(
             window_controls.as_slice(),
@@ -761,8 +762,10 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(InputSchedule);
 
-        let output_controls =
-            app.inner().world().get_resource::<PendingOutputControls>().expect("output controls");
+        let Some(output_controls) = app.inner().world().get_resource::<PendingOutputControls>()
+        else {
+            panic!("output controls");
+        };
         assert_eq!(
             output_controls.as_slice(),
             &[nekoland_ecs::resources::PendingOutputControl {
@@ -791,8 +794,10 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(InputSchedule);
 
-        let window_controls =
-            app.inner().world().get_resource::<PendingWindowControls>().expect("window controls");
+        let Some(window_controls) = app.inner().world().get_resource::<PendingWindowControls>()
+        else {
+            panic!("window controls");
+        };
         assert_eq!(window_controls.as_slice().len(), 1);
         assert!(matches!(
             window_controls.as_slice()[0].background,
@@ -812,11 +817,11 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(InputSchedule);
 
-        let external_commands = app
-            .inner()
-            .world()
-            .get_resource::<PendingExternalCommandRequests>()
-            .expect("external command queue should exist");
+        let Some(external_commands) =
+            app.inner().world().get_resource::<PendingExternalCommandRequests>()
+        else {
+            panic!("external command queue should exist");
+        };
         assert_eq!(external_commands.len(), 1);
         assert_eq!(
             external_commands.as_slice()[0].candidates[0],
@@ -850,12 +855,12 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(InputSchedule);
 
         let world = app.inner().world();
-        let window_controls = world
-            .get_resource::<PendingWindowControls>()
-            .expect("window control queue should exist");
-        let workspace_controls = world
-            .get_resource::<PendingWorkspaceControls>()
-            .expect("workspace control queue should exist");
+        let Some(window_controls) = world.get_resource::<PendingWindowControls>() else {
+            panic!("window control queue should exist");
+        };
+        let Some(workspace_controls) = world.get_resource::<PendingWorkspaceControls>() else {
+            panic!("workspace control queue should exist");
+        };
 
         assert!(
             window_controls.is_empty(),

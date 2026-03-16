@@ -504,14 +504,16 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner_mut().world_mut();
-        let layer_entity = world
+        let Some(layer_entity) = world
             .query::<(Entity, &WlSurfaceHandle, &LayerShellSurface)>()
             .iter(world)
             .find_map(|(entity, surface, _)| (surface.id == 91).then_some(entity))
-            .expect("layer entity should be spawned");
-        let on_output = world
-            .get::<LayerOnOutput>(layer_entity)
-            .expect("created layer should resolve the output relationship");
+        else {
+            panic!("layer entity should be spawned");
+        };
+        let Some(on_output) = world.get::<LayerOnOutput>(layer_entity) else {
+            panic!("created layer should resolve the output relationship");
+        };
 
         assert_eq!(on_output.0, output_entity, "layer should point at the resolved output entity");
     }
@@ -577,11 +579,9 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let geometry = app
-            .inner()
-            .world()
-            .get::<SurfaceGeometry>(layer)
-            .expect("layer should keep geometry after arrangement");
+        let Some(geometry) = app.inner().world().get::<SurfaceGeometry>(layer) else {
+            panic!("layer should keep geometry after arrangement");
+        };
         assert_eq!(
             geometry.width, 800,
             "stretch layer should size itself against the targeted output, not the primary output"
@@ -646,11 +646,10 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let work_area = *app
-            .inner()
-            .world()
-            .get_resource::<WorkArea>()
-            .expect("work area resource should be present");
+        let Some(work_area) = app.inner().world().get_resource::<WorkArea>() else {
+            panic!("work area resource should be present");
+        };
+        let work_area = *work_area;
         assert_eq!(
             work_area,
             WorkArea { x: 0, y: 0, width: 1280, height: 720 },
@@ -699,11 +698,9 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let geometry = app
-            .inner()
-            .world()
-            .get::<SurfaceGeometry>(layer)
-            .expect("detached layer should keep geometry");
+        let Some(geometry) = app.inner().world().get::<SurfaceGeometry>(layer) else {
+            panic!("detached layer should keep geometry");
+        };
         assert_eq!(
             *geometry,
             SurfaceGeometry { x: 17, y: 19, width: 123, height: 32 },
@@ -749,11 +746,10 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let work_area = *app
-            .inner()
-            .world()
-            .get_resource::<WorkArea>()
-            .expect("work area resource should be present");
+        let Some(work_area) = app.inner().world().get_resource::<WorkArea>() else {
+            panic!("work area resource should be present");
+        };
+        let work_area = *work_area;
         assert_eq!(
             work_area,
             WorkArea { x: 0, y: 0, width: 1280, height: 720 },
@@ -820,18 +816,15 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let geometry = app
-            .inner()
-            .world()
-            .get::<SurfaceGeometry>(layer)
-            .expect("unbound layer should be arranged against the selected primary output");
+        let Some(geometry) = app.inner().world().get::<SurfaceGeometry>(layer) else {
+            panic!("unbound layer should be arranged against the selected primary output");
+        };
         assert_eq!(geometry.width, 800);
 
-        let work_area = *app
-            .inner()
-            .world()
-            .get_resource::<WorkArea>()
-            .expect("work area resource should be present");
+        let Some(work_area) = app.inner().world().get_resource::<WorkArea>() else {
+            panic!("work area resource should be present");
+        };
+        let work_area = *work_area;
         assert_eq!(work_area, WorkArea { x: 0, y: 32, width: 800, height: 568 });
     }
 
@@ -876,11 +869,9 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let geometry = app
-            .inner()
-            .world()
-            .get::<SurfaceGeometry>(layer)
-            .expect("layer should keep geometry after arrangement");
+        let Some(geometry) = app.inner().world().get::<SurfaceGeometry>(layer) else {
+            panic!("layer should keep geometry after arrangement");
+        };
         assert_eq!(geometry.width, 1280);
         assert_eq!(
             geometry.height, 32,
@@ -940,11 +931,9 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let relationship = app
-            .inner()
-            .world()
-            .get::<LayerOnOutput>(layer)
-            .expect("relationship should be inserted once the output appears");
+        let Some(relationship) = app.inner().world().get::<LayerOnOutput>(layer) else {
+            panic!("relationship should be inserted once the output appears");
+        };
         assert_eq!(relationship.0, output);
     }
 

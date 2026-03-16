@@ -195,20 +195,26 @@ mod tests {
 
     #[test]
     fn one_or_many_short_actions_normalize_into_runtime_actions() {
-        let one = toml::from_str::<OneAction>("action = { exec = [\"foot\"] }")
-            .expect("single action should parse")
-            .action;
-        let many =
+        let Ok(one) = toml::from_str::<OneAction>("action = { exec = [\"foot\"] }") else {
+            panic!("single action should parse");
+        };
+        let one = one.action;
+        let Ok(many) =
             toml::from_str::<ManyActions>("actions = [{ workspace = 1 }, { exec = [\"foot\"] }]")
-                .expect("action list should parse")
-                .actions;
+        else {
+            panic!("action list should parse");
+        };
+        let many = many.actions;
 
+        let Ok(one_actions) = ActionListConfig::One(one).into_actions() else {
+            panic!("single action should normalize");
+        };
+        assert_eq!(one_actions, vec![ConfiguredAction::Exec { argv: vec!["foot".to_owned()] }]);
+        let Ok(many_actions) = many.into_actions() else {
+            panic!("action list should normalize");
+        };
         assert_eq!(
-            ActionListConfig::One(one).into_actions().expect("single action should normalize"),
-            vec![ConfiguredAction::Exec { argv: vec!["foot".to_owned()] }]
-        );
-        assert_eq!(
-            many.into_actions().expect("action list should normalize"),
+            many_actions,
             vec![
                 ConfiguredAction::SwitchWorkspace {
                     workspace: nekoland_ecs::selectors::WorkspaceLookup::Id(
@@ -222,39 +228,45 @@ mod tests {
 
     #[test]
     fn workspace_destroy_accepts_active_keyword() {
-        let action = toml::from_str::<OneAction>("action = { workspace_destroy = \"active\" }")
-            .expect("destroy action should parse")
-            .action;
+        let Ok(action) = toml::from_str::<OneAction>("action = { workspace_destroy = \"active\" }")
+        else {
+            panic!("destroy action should parse");
+        };
+        let action = action.action;
 
-        assert_eq!(
-            ConfiguredAction::try_from(action).expect("destroy action should normalize"),
-            ConfiguredAction::DestroyWorkspace { workspace: WorkspaceSelector::Active }
-        );
+        let Ok(action) = ConfiguredAction::try_from(action) else {
+            panic!("destroy action should normalize");
+        };
+        assert_eq!(action, ConfiguredAction::DestroyWorkspace { workspace: WorkspaceSelector::Active });
     }
 
     #[test]
     fn viewport_pan_mode_is_keybind_only() {
-        let action = toml::from_str::<OneAction>("action = { viewport_pan_mode = true }")
-            .expect("viewport pan mode action should parse")
-            .action;
+        let Ok(action) = toml::from_str::<OneAction>("action = { viewport_pan_mode = true }")
+        else {
+            panic!("viewport pan mode action should parse");
+        };
+        let action = action.action;
 
         assert_eq!(
             ConfiguredAction::try_from(action.clone()),
             Err("`viewport_pan_mode` is only supported inside `[keybinds.bindings]`".to_owned())
         );
-        assert_eq!(
-            ActionListConfig::One(action).into_keybind_entry().expect("keybind entry should parse"),
-            KeybindEntryConfig::ViewportPanMode
-        );
+        let Ok(keybind_entry) = ActionListConfig::One(action).into_keybind_entry() else {
+            panic!("keybind entry should parse");
+        };
+        assert_eq!(keybind_entry, KeybindEntryConfig::ViewportPanMode);
     }
 
     #[test]
     fn viewport_pan_mode_must_be_alone_in_binding() {
-        let actions = toml::from_str::<ManyActions>(
+        let Ok(actions) = toml::from_str::<ManyActions>(
             "actions = [{ viewport_pan_mode = true }, { exec = [\"foot\"] }]",
         )
-        .expect("action list should parse")
-        .actions;
+        else {
+            panic!("action list should parse");
+        };
+        let actions = actions.actions;
 
         assert_eq!(
             actions.into_keybind_entry(),

@@ -85,7 +85,9 @@ fn config_subscription_reports_hot_reloaded_runtime_config() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-config-subscription");
     let config_path = runtime_dir.path.join("config-subscription.toml");
-    fs::write(&config_path, INITIAL_CONFIG).expect("temporary config should be writable");
+    if let Err(error) = fs::write(&config_path, INITIAL_CONFIG) {
+        panic!("temporary config should be writable: {error}");
+    }
 
     let mut app = build_app(&config_path);
     app.insert_resource(RunLoopSettings {
@@ -95,9 +97,9 @@ fn config_subscription_reports_hot_reloaded_runtime_config() {
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -127,30 +129,42 @@ fn config_subscription_reports_hot_reloaded_runtime_config() {
         fs::write(&config_path, RELOADED_CONFIG).map_err(|error| error.to_string())
     });
 
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    rewrite_thread
-        .join()
-        .expect("config rewrite thread should exit cleanly")
-        .expect("config rewrite should succeed");
+    match rewrite_thread.join() {
+        Ok(result) => {
+            if let Err(error) = result {
+                panic!("config rewrite should succeed: {error}");
+            }
+        }
+        Err(_) => panic!("config rewrite thread should exit cleanly"),
+    }
 
-    let event = match subscription_thread.join().expect("subscription thread should exit cleanly") {
-        Ok(event) => event,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping config subscription test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("config subscription test failed: {reason}");
-        }
+    let event = match subscription_thread.join() {
+        Ok(result) => match result {
+            Ok(event) => event,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping config subscription test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("config subscription test failed: {reason}");
+            }
+        },
+        Err(_) => panic!("subscription thread should exit cleanly"),
     };
 
     assert_eq!(event.topic, SubscriptionTopic::Config);
     assert_eq!(event.event, "config_changed");
 
-    let payload = event.payload.expect("config subscription should include a payload");
-    let config = serde_json::from_value::<ConfigSnapshot>(payload)
-        .expect("config_changed payload should decode");
+    let Some(payload) = event.payload else {
+        panic!("config subscription should include a payload");
+    };
+    let Ok(config) = serde_json::from_value::<ConfigSnapshot>(payload) else {
+        panic!("config_changed payload should decode");
+    };
     assert_eq!(config.default_layout, "floating");
     assert_eq!(config.command_history_limit, 3);
     assert!(!config.xwayland_enabled);

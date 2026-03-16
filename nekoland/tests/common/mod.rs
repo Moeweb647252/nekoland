@@ -89,7 +89,9 @@ impl RuntimeDirGuard {
     /// `NEKOLAND_RUNTIME_DIR`.
     pub fn new(prefix: &str) -> Self {
         let path = temporary_runtime_dir(prefix);
-        fs::create_dir_all(&path).expect("test runtime dir should be creatable");
+        if let Err(error) = fs::create_dir_all(&path) {
+            panic!("test runtime dir should be creatable: {error}");
+        }
         let previous = std::env::var_os("NEKOLAND_RUNTIME_DIR");
 
         unsafe {
@@ -246,10 +248,10 @@ fn classify_io_error(error: std::io::Error) -> TestControl {
 /// Creates a unique temporary runtime directory path without touching the filesystem yet.
 fn temporary_runtime_dir(prefix: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time should be after the unix epoch")
-        .as_nanos();
+    let unique = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_nanos(),
+        Err(error) => panic!("system time should be after the unix epoch: {error}"),
+    };
     path.push(format!("{prefix}-{}-{unique}", std::process::id()));
     path
 }
@@ -266,8 +268,10 @@ pub fn write_default_config_with_extra(
     file_name: &str,
     extra_toml: &str,
 ) -> PathBuf {
-    let mut contents = fs::read_to_string(default_workspace_config_path())
-        .expect("default workspace config should be readable in tests");
+    let mut contents = match fs::read_to_string(default_workspace_config_path()) {
+        Ok(contents) => contents,
+        Err(error) => panic!("default workspace config should be readable in tests: {error}"),
+    };
     if !contents.ends_with('\n') {
         contents.push('\n');
     }
@@ -278,15 +282,19 @@ pub fn write_default_config_with_extra(
     }
 
     let path = runtime_dir.join(file_name);
-    fs::write(&path, contents).expect("temporary test config should be writable");
+    if let Err(error) = fs::write(&path, contents) {
+        panic!("temporary test config should be writable: {error}");
+    }
     path
 }
 
 /// Writes a temporary config based on the default config but with XWayland explicitly disabled.
 pub fn write_default_config_with_xwayland_disabled(runtime_dir: &Path, file_name: &str) -> PathBuf {
     let source = default_workspace_config_path();
-    let mut contents =
-        fs::read_to_string(&source).expect("default workspace config should be readable in tests");
+    let mut contents = match fs::read_to_string(&source) {
+        Ok(contents) => contents,
+        Err(error) => panic!("default workspace config should be readable in tests: {error}"),
+    };
     let enabled_block = "[xwayland]\nenabled = true";
     let disabled_block = "[xwayland]\nenabled = false";
     if contents.contains(enabled_block) {
@@ -301,7 +309,9 @@ pub fn write_default_config_with_xwayland_disabled(runtime_dir: &Path, file_name
     }
 
     let path = runtime_dir.join(file_name);
-    fs::write(&path, contents).expect("temporary test config should be writable");
+    if let Err(error) = fs::write(&path, contents) {
+        panic!("temporary test config should be writable: {error}");
+    }
     path
 }
 
@@ -376,9 +386,10 @@ impl TestClientState {
             return;
         }
 
-        let surface =
-            self.base_surface.as_ref().expect("surface presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(surface), Some(wm_base)) = (self.base_surface.as_ref(), self.wm_base.as_ref())
+        else {
+            return;
+        };
 
         let xdg_surface = wm_base.get_xdg_surface(surface, qh, ());
         let toplevel = xdg_surface.get_toplevel(qh, ());

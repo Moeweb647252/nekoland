@@ -696,7 +696,9 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
-        let viewport = app.inner().world().get::<OutputViewport>(output).expect("output viewport");
+        let Some(viewport) = app.inner().world().get::<OutputViewport>(output) else {
+            panic!("output viewport");
+        };
         assert_eq!((viewport.origin_x, viewport.origin_y), (125, 160));
         let remembered = app.inner().world().resource::<RememberedOutputViewportState>();
         assert_eq!(
@@ -756,7 +758,9 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
-        let viewport = app.inner().world().get::<OutputViewport>(output).expect("output viewport");
+        let Some(viewport) = app.inner().world().get::<OutputViewport>(output) else {
+            panic!("output viewport");
+        };
         assert_eq!((viewport.origin_x, viewport.origin_y), (1150, 700));
     }
 
@@ -800,12 +804,14 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
         let world = app.inner_mut().world_mut();
-        let (viewport, owner) = world
+        let output_state = world
             .query::<(&OutputDevice, &OutputViewport, &OutputBackend)>()
             .iter(world)
             .find(|(output, _, _)| output.name == "Virtual-1")
-            .map(|(_, viewport, owner)| (viewport.clone(), owner.clone()))
-            .expect("reconnected output should be materialized");
+            .map(|(_, viewport, owner)| (viewport.clone(), owner.clone()));
+        let Some((viewport, owner)) = output_state else {
+            panic!("reconnected output should be materialized");
+        };
         assert_eq!(viewport.origin_x, 640);
         assert_eq!(viewport.origin_y, -320);
         assert_eq!(owner.backend_id, BackendId(7));

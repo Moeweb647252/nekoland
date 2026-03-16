@@ -125,9 +125,9 @@ fn clipboard_selection_roundtrips_between_two_real_clients() {
     assert!(source.send_requests >= 1, "source client should serve at least one selection send");
     assert_eq!(target.received_payload, TEST_SELECTION_BYTES);
 
-    let selection = selection_state
-        .selection
-        .expect("clipboard selection should remain tracked after the transfer");
+    let Some(selection) = selection_state.selection else {
+        panic!("clipboard selection should remain tracked after the transfer");
+    };
     assert_eq!(selection.seat_name, "seat-0");
     assert_eq!(selection.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
     assert_eq!(selection.owner, SelectionOwner::Compositor);
@@ -150,9 +150,9 @@ fn clipboard_selection_persists_after_source_client_exits() {
     );
     assert_eq!(target.received_payload, TEST_SELECTION_BYTES);
 
-    let selection = selection_state
-        .selection
-        .expect("clipboard selection should remain tracked after the source exits");
+    let Some(selection) = selection_state.selection else {
+        panic!("clipboard selection should remain tracked after the source exits");
+    };
     assert_eq!(selection.seat_name, "seat-0");
     assert_eq!(selection.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
     assert_eq!(selection.owner, SelectionOwner::Compositor);
@@ -162,7 +162,7 @@ fn clipboard_selection_persists_after_source_client_exits() {
 /// Runs the two-client clipboard transfer scenario.
 fn run_clipboard_transfer_scenario()
 -> Option<(SourceClientSummary, TargetClientSummary, ClipboardSelectionState)> {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-clipboard-transfer-runtime");
@@ -187,9 +187,9 @@ fn run_clipboard_transfer_scenario()
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -220,30 +220,36 @@ fn run_clipboard_transfer_scenario()
         run_target_client(&socket_path)
     });
 
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let selection_state = app
-        .inner()
-        .world()
-        .get_resource::<ClipboardSelectionState>()
-        .cloned()
-        .expect("clipboard selection resource should be initialized");
-
-    let target_summary = match target_thread.join().expect("target client thread should join") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping clipboard transfer test in restricted environment: {reason}");
-            return None;
-        }
-        Err(common::TestControl::Fail(reason)) => panic!("target client failed: {reason}"),
+    let Some(selection_state) = app.inner().world().get_resource::<ClipboardSelectionState>() else {
+        panic!("clipboard selection resource should be initialized");
     };
-    let source_summary = match source_thread.join().expect("source client thread should join") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping clipboard transfer test in restricted environment: {reason}");
-            return None;
-        }
-        Err(common::TestControl::Fail(reason)) => panic!("source client failed: {reason}"),
+    let selection_state = selection_state.clone();
+
+    let target_summary = match target_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping clipboard transfer test in restricted environment: {reason}");
+                return None;
+            }
+            Err(common::TestControl::Fail(reason)) => panic!("target client failed: {reason}"),
+        },
+        Err(_) => panic!("target client thread should join"),
+    };
+    let source_summary = match source_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping clipboard transfer test in restricted environment: {reason}");
+                return None;
+            }
+            Err(common::TestControl::Fail(reason)) => panic!("source client failed: {reason}"),
+        },
+        Err(_) => panic!("source client thread should join"),
     };
 
     drop(runtime_dir);
@@ -253,7 +259,7 @@ fn run_clipboard_transfer_scenario()
 /// Runs the clipboard persistence scenario where the source exits after publishing selection data.
 fn run_clipboard_persistence_scenario()
 -> Option<(SourceClientSummary, TargetClientSummary, ClipboardSelectionState)> {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-clipboard-persistence-runtime");
@@ -279,9 +285,9 @@ fn run_clipboard_persistence_scenario()
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -317,30 +323,36 @@ fn run_clipboard_persistence_scenario()
         run_target_client(&socket_path)
     });
 
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let selection_state = app
-        .inner()
-        .world()
-        .get_resource::<ClipboardSelectionState>()
-        .cloned()
-        .expect("clipboard selection resource should be initialized");
-
-    let target_summary = match target_thread.join().expect("target client thread should join") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping clipboard persistence test in restricted environment: {reason}");
-            return None;
-        }
-        Err(common::TestControl::Fail(reason)) => panic!("target client failed: {reason}"),
+    let Some(selection_state) = app.inner().world().get_resource::<ClipboardSelectionState>() else {
+        panic!("clipboard selection resource should be initialized");
     };
-    let source_summary = match source_thread.join().expect("source client thread should join") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping clipboard persistence test in restricted environment: {reason}");
-            return None;
-        }
-        Err(common::TestControl::Fail(reason)) => panic!("source client failed: {reason}"),
+    let selection_state = selection_state.clone();
+
+    let target_summary = match target_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping clipboard persistence test in restricted environment: {reason}");
+                return None;
+            }
+            Err(common::TestControl::Fail(reason)) => panic!("target client failed: {reason}"),
+        },
+        Err(_) => panic!("target client thread should join"),
+    };
+    let source_summary = match source_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping clipboard persistence test in restricted environment: {reason}");
+                return None;
+            }
+            Err(common::TestControl::Fail(reason)) => panic!("source client failed: {reason}"),
+        },
+        Err(_) => panic!("source client thread should join"),
     };
 
     drop(runtime_dir);
@@ -366,8 +378,10 @@ fn pump_clipboard_transfer_input(
     }
 
     if pump.source_selection_sent.load(Ordering::SeqCst) {
-        keyboard_focus.focused_surface =
-            Some(*surface_ids.get(1).unwrap_or_else(|| surface_ids.first().expect("non-empty")));
+        keyboard_focus.focused_surface = Some(match surface_ids.get(1) {
+            Some(surface_id) => *surface_id,
+            None => surface_ids[0],
+        });
     } else {
         keyboard_focus.focused_surface = Some(surface_ids[0]);
         pending_protocol_inputs.push(BackendInputEvent {
@@ -796,8 +810,9 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for SourceClientState {
         match event {
             wl_data_source::Event::Send { mime_type, fd } if mime_type == TEST_MIME_TYPE => {
                 let mut file = std::fs::File::from(fd);
-                file.write_all(TEST_SELECTION_BYTES)
-                    .expect("source client should write clipboard payload");
+                if let Err(error) = file.write_all(TEST_SELECTION_BYTES) {
+                    panic!("source client should write clipboard payload: {error}");
+                }
                 state.send_requests = state.send_requests.saturating_add(1);
             }
             wl_data_source::Event::Cancelled if state.data_source.as_ref() == Some(source) => {
@@ -866,9 +881,10 @@ impl SourceClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(compositor), Some(wm_base)) = (self.compositor.as_ref(), self.wm_base.as_ref())
+        else {
+            return;
+        };
         let base_surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&base_surface, qh, ());
         let toplevel = xdg_surface.get_toplevel(qh, ());
@@ -885,11 +901,10 @@ impl SourceClientState {
             return;
         }
 
-        let manager = self
-            .data_device_manager
-            .as_ref()
-            .expect("data-device manager presence checked immediately above");
-        let seat = self.seat.as_ref().expect("seat presence checked immediately above");
+        let (Some(manager), Some(seat)) = (self.data_device_manager.as_ref(), self.seat.as_ref())
+        else {
+            return;
+        };
         self.data_device = Some(manager.get_data_device(seat, qh, ()));
     }
 
@@ -917,9 +932,10 @@ impl TargetClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(compositor), Some(wm_base)) = (self.compositor.as_ref(), self.wm_base.as_ref())
+        else {
+            return;
+        };
         let base_surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&base_surface, qh, ());
         let toplevel = xdg_surface.get_toplevel(qh, ());
@@ -936,11 +952,10 @@ impl TargetClientState {
             return;
         }
 
-        let manager = self
-            .data_device_manager
-            .as_ref()
-            .expect("data-device manager presence checked immediately above");
-        let seat = self.seat.as_ref().expect("seat presence checked immediately above");
+        let (Some(manager), Some(seat)) = (self.data_device_manager.as_ref(), self.seat.as_ref())
+        else {
+            return;
+        };
         self.data_device = Some(manager.get_data_device(seat, qh, ()));
     }
 

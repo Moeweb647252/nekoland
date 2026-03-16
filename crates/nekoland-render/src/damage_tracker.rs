@@ -537,11 +537,14 @@ mod tests {
             }));
         }
 
-        app.inner_mut()
+        let Some(mut visibility) = app
+            .inner_mut()
             .world_mut()
             .get_mut::<WindowViewportVisibility>(secondary_window)
-            .expect("window viewport visibility should remain present")
-            .output = Some("Virtual-1".to_owned());
+        else {
+            panic!("window viewport visibility should remain present");
+        };
+        visibility.output = Some("Virtual-1".to_owned());
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 
         let world = app.inner().world();
@@ -627,11 +630,11 @@ mod tests {
         app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();
         app.inner_mut().world_mut().resource_mut::<DamageState>().full_redraw = false;
 
-        app.inner_mut()
-            .world_mut()
-            .get_mut::<SurfaceGeometry>(window)
-            .expect("window geometry should remain present")
-            .width = 120;
+        let Some(mut geometry) = app.inner_mut().world_mut().get_mut::<SurfaceGeometry>(window)
+        else {
+            panic!("window geometry should remain present");
+        };
+        geometry.width = 120;
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 
         let world = app.inner().world();
@@ -687,11 +690,14 @@ mod tests {
         app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();
         app.inner_mut().world_mut().resource_mut::<DamageState>().full_redraw = false;
 
-        app.inner_mut()
+        let Some(mut content_version) = app
+            .inner_mut()
             .world_mut()
             .get_mut::<SurfaceContentVersion>(window)
-            .expect("surface content version should remain present")
-            .bump();
+        else {
+            panic!("surface content version should remain present");
+        };
+        content_version.bump();
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 
         let world = app.inner().world();

@@ -104,10 +104,10 @@ impl SoftwareCursorCache {
     ) -> &LoadedSoftwareCursor {
         let key = CursorCacheKey { theme: theme.to_owned(), icon, scale: scale.max(1) };
         if self.key.as_ref() != Some(&key) {
-            self.cursor = Some(load_software_cursor(&key.theme, key.icon, key.scale));
-            self.key = Some(key);
+            self.key = Some(key.clone());
+            self.cursor = None;
         }
-        self.cursor.as_ref().expect("cursor cache should be populated immediately above")
+        self.cursor.get_or_insert_with(|| load_software_cursor(&key.theme, key.icon, key.scale))
     }
 }
 

@@ -22,14 +22,17 @@ use serde_json::Value;
 /// Verifies the human-readable help text for subscription mode.
 #[test]
 fn subscribe_help_lists_topics_and_known_event_names() {
-    let output = Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
+    let output = match Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
         .arg("subscribe")
         .arg("--help")
         .output()
-        .expect("subscribe help should execute");
+    {
+        Ok(output) => output,
+        Err(error) => panic!("subscribe help should execute: {error}"),
+    };
 
-    let stdout = String::from_utf8(output.stdout).expect("subscribe help stdout should be UTF-8");
-    let stderr = String::from_utf8(output.stderr).expect("subscribe help stderr should be UTF-8");
+    let stdout = decode_utf8(output.stdout, "subscribe help stdout should be UTF-8");
+    let stderr = decode_utf8(output.stderr, "subscribe help stderr should be UTF-8");
 
     assert!(
         output.status.success(),
@@ -68,138 +71,62 @@ fn subscribe_help_lists_topics_and_known_event_names() {
 /// Verifies the machine-readable JSON help output for subscription mode.
 #[test]
 fn subscribe_help_supports_machine_readable_json_output() {
-    let output = Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
+    let output = match Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
         .arg("subscribe")
         .arg("--help")
         .arg("--json")
         .output()
-        .expect("subscribe json help should execute");
+    {
+        Ok(output) => output,
+        Err(error) => panic!("subscribe json help should execute: {error}"),
+    };
 
-    let stdout =
-        String::from_utf8(output.stdout).expect("subscribe json help stdout should be UTF-8");
-    let stderr =
-        String::from_utf8(output.stderr).expect("subscribe json help stderr should be UTF-8");
+    let stdout = decode_utf8(output.stdout, "subscribe json help stdout should be UTF-8");
+    let stderr = decode_utf8(output.stderr, "subscribe json help stderr should be UTF-8");
 
     assert!(
         output.status.success(),
         "subscribe json help should exit successfully\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
-    let help =
-        serde_json::from_str::<Value>(&stdout).expect("subscribe json help should be valid JSON");
+    let help = match serde_json::from_str::<Value>(&stdout) {
+        Ok(help) => help,
+        Err(error) => panic!("subscribe json help should be valid JSON: {error}"),
+    };
+    let topics = json_array(&help, "topics");
+    let known_events = json_array(&help, "known_events");
     assert_eq!(help["topics"][0], "window");
-    assert!(
-        help["topics"]
-            .as_array()
-            .expect("topics should be an array")
-            .iter()
-            .any(|topic| topic == "command")
-    );
-    assert!(
-        help["topics"]
-            .as_array()
-            .expect("topics should be an array")
-            .iter()
-            .any(|topic| topic == "config")
-    );
-    assert!(
-        help["topics"]
-            .as_array()
-            .expect("topics should be an array")
-            .iter()
-            .any(|topic| topic == "clipboard")
-    );
-    assert!(
-        help["topics"]
-            .as_array()
-            .expect("topics should be an array")
-            .iter()
-            .any(|topic| topic == "primary-selection")
-    );
-    assert!(
-        help["topics"]
-            .as_array()
-            .expect("topics should be an array")
-            .iter()
-            .any(|topic| topic == "focus")
-    );
-    assert!(
-        help["known_events"]
-            .as_array()
-            .expect("known_events should be an array")
-            .iter()
-            .any(|event| event == "window_geometry_changed")
-    );
-    assert!(
-        help["known_events"]
-            .as_array()
-            .expect("known_events should be an array")
-            .iter()
-            .any(|event| event == "window_state_changed")
-    );
-    assert!(
-        help["known_events"]
-            .as_array()
-            .expect("known_events should be an array")
-            .iter()
-            .any(|event| event == "popup_geometry_changed")
-    );
-    assert!(
-        help["known_events"]
-            .as_array()
-            .expect("known_events should be an array")
-            .iter()
-            .any(|event| event == "popup_grab_changed")
-    );
-    assert!(
-        help["known_events"]
-            .as_array()
-            .expect("known_events should be an array")
-            .iter()
-            .any(|event| event == "command_failed")
-    );
-    assert!(
-        help["known_events"]
-            .as_array()
-            .expect("known_events should be an array")
-            .iter()
-            .any(|event| event == "config_changed")
-    );
-    assert!(
-        help["known_events"]
-            .as_array()
-            .expect("known_events should be an array")
-            .iter()
-            .any(|event| event == "clipboard_changed")
-    );
-    assert!(
-        help["known_events"]
-            .as_array()
-            .expect("known_events should be an array")
-            .iter()
-            .any(|event| event == "primary_selection_changed")
-    );
-    assert!(
-        help["known_events"]
-            .as_array()
-            .expect("known_events should be an array")
-            .iter()
-            .any(|event| event == "focus_changed")
-    );
+    assert!(topics.iter().any(|topic| topic == "command"));
+    assert!(topics.iter().any(|topic| topic == "config"));
+    assert!(topics.iter().any(|topic| topic == "clipboard"));
+    assert!(topics.iter().any(|topic| topic == "primary-selection"));
+    assert!(topics.iter().any(|topic| topic == "focus"));
+    assert!(known_events.iter().any(|event| event == "window_geometry_changed"));
+    assert!(known_events.iter().any(|event| event == "window_state_changed"));
+    assert!(known_events.iter().any(|event| event == "popup_geometry_changed"));
+    assert!(known_events.iter().any(|event| event == "popup_grab_changed"));
+    assert!(known_events.iter().any(|event| event == "command_failed"));
+    assert!(known_events.iter().any(|event| event == "config_changed"));
+    assert!(known_events.iter().any(|event| event == "clipboard_changed"));
+    assert!(known_events.iter().any(|event| event == "primary_selection_changed"));
+    assert!(known_events.iter().any(|event| event == "focus_changed"));
     assert_eq!(help["patterns"]["prefix_wildcard_example"], "window_*");
 }
 
 /// Verifies that the completion subcommand still exposes the subscription entrypoints.
 #[test]
 fn completion_subcommand_generates_bash_script() {
-    let output = Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
+    let output = match Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
         .arg("completion")
         .arg("bash")
         .output()
-        .expect("completion bash should execute");
+    {
+        Ok(output) => output,
+        Err(error) => panic!("completion bash should execute: {error}"),
+    };
 
-    let stdout = String::from_utf8(output.stdout).expect("completion bash stdout should be UTF-8");
-    let stderr = String::from_utf8(output.stderr).expect("completion bash stderr should be UTF-8");
+    let stdout = decode_utf8(output.stdout, "completion bash stdout should be UTF-8");
+    let stderr = decode_utf8(output.stderr, "completion bash stderr should be UTF-8");
 
     assert!(
         output.status.success(),
@@ -213,7 +140,9 @@ fn completion_subcommand_generates_bash_script() {
 /// subscription events over IPC.
 #[test]
 fn subscribe_cli_streams_workspace_events_from_ipc() {
-    let _env_lock = env_lock().lock().expect("environment lock should not be poisoned");
+    let Ok(_env_lock) = env_lock().lock() else {
+        panic!("environment lock should not be poisoned");
+    };
     let runtime_dir = RuntimeDirGuard::new("nekoland-msg-subscribe-cli");
     let config_path = workspace_config_path();
 
@@ -225,9 +154,9 @@ fn subscribe_cli_streams_workspace_events_from_ipc() {
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -240,7 +169,7 @@ fn subscribe_cli_streams_workspace_events_from_ipc() {
         }
     };
 
-    let child = Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
+    let child = match Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
         .arg("subscribe")
         .arg("workspace")
         .arg("--no-payloads")
@@ -248,20 +177,30 @@ fn subscribe_cli_streams_workspace_events_from_ipc() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("subscribe CLI should spawn");
+    {
+        Ok(child) => child,
+        Err(error) => panic!("subscribe CLI should spawn: {error}"),
+    };
 
     let ipc_thread = thread::spawn(move || emit_workspace_events(&ipc_socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let ipc_result = ipc_thread.join().expect("IPC control thread should exit cleanly");
+    let Ok(ipc_result) = ipc_thread.join() else {
+        panic!("IPC control thread should exit cleanly");
+    };
     if let Err(reason) = ipc_result {
         panic!("workspace event emission failed: {reason}");
     }
 
     drop(app);
-    let output = child.wait_with_output().expect("subscribe CLI should exit cleanly");
-    let stdout = String::from_utf8(output.stdout).expect("subscribe CLI stdout should be UTF-8");
-    let stderr = String::from_utf8(output.stderr).expect("subscribe CLI stderr should be UTF-8");
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(error) => panic!("subscribe CLI should exit cleanly: {error}"),
+    };
+    let stdout = decode_utf8(output.stdout, "subscribe CLI stdout should be UTF-8");
+    let stderr = decode_utf8(output.stderr, "subscribe CLI stderr should be UTF-8");
 
     assert!(
         output.status.success(),
@@ -284,7 +223,9 @@ fn subscribe_cli_streams_workspace_events_from_ipc() {
 /// Verifies the JSONL streaming mode used by scripts and tooling.
 #[test]
 fn subscribe_cli_supports_jsonl_output_for_scripts() {
-    let _env_lock = env_lock().lock().expect("environment lock should not be poisoned");
+    let Ok(_env_lock) = env_lock().lock() else {
+        panic!("environment lock should not be poisoned");
+    };
     let runtime_dir = RuntimeDirGuard::new("nekoland-msg-subscribe-jsonl-cli");
     let config_path = workspace_config_path();
 
@@ -296,9 +237,9 @@ fn subscribe_cli_supports_jsonl_output_for_scripts() {
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -311,7 +252,7 @@ fn subscribe_cli_supports_jsonl_output_for_scripts() {
         }
     };
 
-    let child = Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
+    let child = match Command::new(env!("CARGO_BIN_EXE_nekoland-msg"))
         .arg("subscribe")
         .arg("all")
         .arg("--event")
@@ -324,20 +265,30 @@ fn subscribe_cli_supports_jsonl_output_for_scripts() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("subscribe CLI should spawn");
+    {
+        Ok(child) => child,
+        Err(error) => panic!("subscribe CLI should spawn: {error}"),
+    };
 
     let ipc_thread = thread::spawn(move || emit_workspace_events(&ipc_socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let ipc_result = ipc_thread.join().expect("IPC control thread should exit cleanly");
+    let Ok(ipc_result) = ipc_thread.join() else {
+        panic!("IPC control thread should exit cleanly");
+    };
     if let Err(reason) = ipc_result {
         panic!("workspace event emission failed: {reason}");
     }
 
     drop(app);
-    let output = child.wait_with_output().expect("subscribe CLI should exit cleanly");
-    let stdout = String::from_utf8(output.stdout).expect("subscribe CLI stdout should be UTF-8");
-    let stderr = String::from_utf8(output.stderr).expect("subscribe CLI stderr should be UTF-8");
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(error) => panic!("subscribe CLI should exit cleanly: {error}"),
+    };
+    let stdout = decode_utf8(output.stdout, "subscribe CLI stdout should be UTF-8");
+    let stderr = decode_utf8(output.stderr, "subscribe CLI stderr should be UTF-8");
 
     assert!(
         output.status.success(),
@@ -352,9 +303,11 @@ fn subscribe_cli_supports_jsonl_output_for_scripts() {
 
     let events = lines
         .iter()
-        .map(|line| {
-            serde_json::from_str::<IpcSubscriptionEvent>(line)
-                .expect("each jsonl line should decode as an IPC subscription event")
+        .map(|line| match serde_json::from_str::<IpcSubscriptionEvent>(line) {
+            Ok(event) => event,
+            Err(error) => {
+                panic!("each jsonl line should decode as an IPC subscription event: {error}")
+            }
         })
         .collect::<Vec<_>>();
     assert!(
@@ -391,7 +344,9 @@ impl RuntimeDirGuard {
     /// Creates and exports a unique runtime directory for one CLI integration test.
     fn new(prefix: &str) -> Self {
         let path = temporary_runtime_dir(prefix);
-        fs::create_dir_all(&path).expect("test runtime dir should be creatable");
+        if let Err(error) = fs::create_dir_all(&path) {
+            panic!("test runtime dir should be creatable: {error}");
+        }
         let previous = std::env::var_os("NEKOLAND_RUNTIME_DIR");
 
         unsafe {
@@ -426,12 +381,30 @@ fn workspace_config_path() -> PathBuf {
 /// Creates a unique temporary runtime directory path without touching the filesystem yet.
 fn temporary_runtime_dir(prefix: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time should be after the unix epoch")
-        .as_nanos();
+    let unique = unix_timestamp_nanos();
     path.push(format!("{prefix}-{}-{unique}", std::process::id()));
     path
+}
+
+fn decode_utf8(bytes: Vec<u8>, context: &str) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(error) => panic!("{context}: {error}"),
+    }
+}
+
+fn json_array<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+    let Some(array) = value[key].as_array() else {
+        panic!("{key} should be an array");
+    };
+    array
+}
+
+fn unix_timestamp_nanos() -> u128 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_nanos(),
+        Err(error) => panic!("system time should be after the unix epoch: {error}"),
+    }
 }
 
 /// Repeatedly sends workspace mutations over IPC so the subscribe CLI has events to print.

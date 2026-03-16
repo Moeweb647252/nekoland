@@ -38,7 +38,7 @@ struct XWaylandDisplayProbe(
 /// Verifies that a real X11 window mapped through XWayland appears in the compositor tree query.
 #[test]
 fn xwayland_window_appears_in_tree_snapshot() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let _runtime_dir = common::RuntimeDirGuard::new("nekoland-xwayland-smoke");
@@ -55,9 +55,9 @@ fn xwayland_window_appears_in_tree_snapshot() {
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -72,10 +72,12 @@ fn xwayland_window_appears_in_tree_snapshot() {
 
     let probe = display_probe.0.clone();
     let client_thread = thread::spawn(move || run_x11_smoke_client(probe, &ipc_socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let x11_window =
-        match client_thread.join().expect("X11 smoke client thread should exit cleanly") {
+    let x11_window = match client_thread.join() {
+        Ok(result) => match result {
             Ok(window) => window,
             Err(common::TestControl::Skip(reason)) => {
                 eprintln!("skipping XWayland smoke test: {reason}");
@@ -84,13 +86,13 @@ fn xwayland_window_appears_in_tree_snapshot() {
             Err(common::TestControl::Fail(reason)) => {
                 panic!("XWayland smoke client failed: {reason}");
             }
-        };
+        },
+        Err(_) => panic!("X11 smoke client thread should exit cleanly"),
+    };
 
-    let xwayland_state = app
-        .inner()
-        .world()
-        .get_resource::<XWaylandServerState>()
-        .expect("xwayland server state should be present after run");
+    let Some(xwayland_state) = app.inner().world().get_resource::<XWaylandServerState>() else {
+        panic!("xwayland server state should be present after run");
+    };
 
     assert!(xwayland_state.ready, "xwayland should be ready after a successful smoke test");
     assert!(x11_window.xwayland, "tree snapshot should mark X11 clients as xwayland");
@@ -107,8 +109,10 @@ fn record_xwayland_display_system(
     xwayland_state: Res<XWaylandServerState>,
     display_probe: Res<XWaylandDisplayProbe>,
 ) {
-    let mut slot =
-        display_probe.0.lock().expect("xwayland display probe mutex should not be poisoned");
+    let mut slot = display_probe
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if slot.is_some() {
         return;
     }
@@ -200,7 +204,7 @@ fn wait_for_xwayland_display(
     loop {
         let state = display_probe
             .lock()
-            .expect("xwayland display probe mutex should not be poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
 
         if let Some(state) = state {

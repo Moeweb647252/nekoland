@@ -577,15 +577,21 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let startup_state = world.get_resource::<StartupActionState>().unwrap();
+        let Some(startup_state) = world.get_resource::<StartupActionState>() else {
+            panic!("startup action state should exist");
+        };
         assert!(!startup_state.queued, "should wait for xwayland ready");
 
         app.inner_mut().world_mut().resource_mut::<XWaylandServerState>().ready = true;
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let startup_state = world.get_resource::<StartupActionState>().unwrap();
-        let history = world.get_resource::<CommandHistoryState>().unwrap();
+        let Some(startup_state) = world.get_resource::<StartupActionState>() else {
+            panic!("startup action state should exist");
+        };
+        let Some(history) = world.get_resource::<CommandHistoryState>() else {
+            panic!("command history state should exist");
+        };
         assert!(startup_state.queued, "should be queued after xwayland ready");
         assert_eq!(history.items.len(), 1, "should have executed after xwayland ready");
     }
@@ -631,8 +637,12 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let startup_state = world.get_resource::<StartupActionState>().unwrap();
-        let history = world.get_resource::<CommandHistoryState>().unwrap();
+        let Some(startup_state) = world.get_resource::<StartupActionState>() else {
+            panic!("startup action state should exist");
+        };
+        let Some(history) = world.get_resource::<CommandHistoryState>() else {
+            panic!("command history state should exist");
+        };
         assert!(startup_state.queued, "should run when xwayland disabled");
         assert_eq!(history.items.len(), 1, "should have executed");
     }
@@ -673,8 +683,12 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let startup_state = world.get_resource::<StartupActionState>().unwrap();
-        let history = world.get_resource::<CommandHistoryState>().unwrap();
+        let Some(startup_state) = world.get_resource::<StartupActionState>() else {
+            panic!("startup action state should exist");
+        };
+        let Some(history) = world.get_resource::<CommandHistoryState>() else {
+            panic!("command history state should exist");
+        };
         assert!(startup_state.queued, "should run when no xwayland resource");
         assert_eq!(history.items.len(), 1, "should have executed");
     }

@@ -305,8 +305,12 @@ mod tests {
             pressed_keys.record_key(64, true);
         }
 
-        world.run_system_once(viewport_pointer_pan_system).expect("viewport pan system should run");
-        world.run_system_once(cursor_motion_system).expect("cursor motion system should run");
+        let Ok(()) = world.run_system_once(viewport_pointer_pan_system) else {
+            panic!("viewport pan system should run");
+        };
+        let Ok(()) = world.run_system_once(cursor_motion_system) else {
+            panic!("cursor motion system should run");
+        };
 
         let output_controls = world.resource::<PendingOutputControls>();
         let pointer = world.resource::<GlobalPointerPosition>();
@@ -349,13 +353,16 @@ mod tests {
             pressed_keys.record_key(50, true);
         }
 
-        world.run_system_once(viewport_pointer_pan_system).expect("viewport pan system should run");
+        let Ok(()) = world.run_system_once(viewport_pointer_pan_system) else {
+            panic!("viewport pan system should run");
+        };
 
-        let output_controls =
-            world.get_resource::<PendingOutputControls>().expect("output controls should exist");
-        let viewport_pan = world
-            .get_resource::<ViewportPointerPanState>()
-            .expect("viewport pan state should exist");
+        let Some(output_controls) = world.get_resource::<PendingOutputControls>() else {
+            panic!("output controls should exist");
+        };
+        let Some(viewport_pan) = world.get_resource::<ViewportPointerPanState>() else {
+            panic!("viewport pan state should exist");
+        };
 
         assert_eq!(
             output_controls.as_slice(),
@@ -381,7 +388,9 @@ mod tests {
         world.insert_resource(PointerDelta { dx: 4.0, dy: 7.0 });
         world.init_resource::<Messages<PointerMotion>>();
 
-        world.run_system_once(cursor_motion_system).expect("cursor motion system should run");
+        let Ok(()) = world.run_system_once(cursor_motion_system) else {
+            panic!("cursor motion system should run");
+        };
 
         let pointer = world.resource::<GlobalPointerPosition>();
         let pointer_delta = world.resource::<PointerDelta>();
@@ -413,7 +422,9 @@ mod tests {
             ..Default::default()
         });
 
-        world.run_system_once(cursor_motion_system).expect("cursor motion system should run");
+        let Ok(()) = world.run_system_once(cursor_motion_system) else {
+            panic!("cursor motion system should run");
+        };
 
         let pointer = world.resource::<GlobalPointerPosition>();
         assert!((pointer.x - 99.999).abs() < 0.01, "pointer.x should stay inside output bounds");
@@ -435,8 +446,12 @@ mod tests {
             device: "winit".to_owned(),
             action: BackendInputAction::PointerDelta { dx: 4.0, dy: 7.0 },
         });
-        world.run_system_once(pointer_input_system).expect("pointer input system should run");
-        world.run_system_once(cursor_motion_system).expect("cursor motion system should run");
+        let Ok(()) = world.run_system_once(pointer_input_system) else {
+            panic!("pointer input system should run");
+        };
+        let Ok(()) = world.run_system_once(cursor_motion_system) else {
+            panic!("cursor motion system should run");
+        };
 
         let pointer = world.resource::<GlobalPointerPosition>();
         let physical = world.resource::<PhysicalPointerPosition>();
@@ -448,7 +463,9 @@ mod tests {
             device: "winit".to_owned(),
             action: BackendInputAction::PointerMoved { x: 300.0, y: 200.0 },
         });
-        world.run_system_once(pointer_input_system).expect("pointer input system should run");
+        let Ok(()) = world.run_system_once(pointer_input_system) else {
+            panic!("pointer input system should run");
+        };
 
         let pointer_delta = world.resource::<PointerDelta>();
         let physical = world.resource::<PhysicalPointerPosition>();
@@ -461,7 +478,9 @@ mod tests {
             device: "winit".to_owned(),
             action: BackendInputAction::PointerMoved { x: 302.0, y: 203.0 },
         });
-        world.run_system_once(pointer_input_system).expect("pointer input system should run");
+        let Ok(()) = world.run_system_once(pointer_input_system) else {
+            panic!("pointer input system should run");
+        };
 
         let pointer_delta = world.resource::<PointerDelta>();
         assert_eq!((pointer_delta.dx, pointer_delta.dy), (2.0, 3.0));
@@ -486,7 +505,9 @@ mod tests {
             device: "winit".to_owned(),
             action: BackendInputAction::FocusChanged { focused: false },
         });
-        world.run_system_once(pointer_input_system).expect("pointer input system should run");
+        let Ok(()) = world.run_system_once(pointer_input_system) else {
+            panic!("pointer input system should run");
+        };
 
         let physical = world.resource::<PhysicalPointerPosition>();
         let pointer_delta = world.resource::<PointerDelta>();

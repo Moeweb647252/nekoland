@@ -109,7 +109,7 @@ fn seat_input_events_reach_real_wayland_client() {
 
 /// Runs the seat-input scenario and returns the helper-client summary.
 fn run_seat_input_scenario() -> Option<SeatClientSummary> {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _disable_startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-seat-input-runtime");
@@ -129,9 +129,9 @@ fn run_seat_input_scenario() -> Option<SeatClientSummary> {
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -145,15 +145,20 @@ fn run_seat_input_scenario() -> Option<SeatClientSummary> {
     };
 
     let client_thread = thread::spawn(move || run_seat_input_client(&socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let summary = match client_thread.join().expect("client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping seat input test in restricted environment: {reason}");
-            return None;
-        }
-        Err(common::TestControl::Fail(reason)) => panic!("seat input client failed: {reason}"),
+    let summary = match client_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping seat input test in restricted environment: {reason}");
+                return None;
+            }
+            Err(common::TestControl::Fail(reason)) => panic!("seat input client failed: {reason}"),
+        },
+        Err(_) => panic!("client thread should exit cleanly"),
     };
 
     drop(runtime_dir);
@@ -347,12 +352,12 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for SeatClientState {
             xdg_surface.ack_configure(serial);
             if let Some(surface) = state.base_surface.as_ref() {
                 if !state.buffer_attached {
-                    let shm = state
-                        .shm
-                        .as_ref()
-                        .expect("wl_shm should be bound before the toplevel is configured");
-                    let (file, pool, buffer) = create_test_buffer(shm, qh)
-                        .expect("seat input client should create a wl_shm buffer");
+                    let Some(shm) = state.shm.as_ref() else {
+                        panic!("wl_shm should be bound before the toplevel is configured");
+                    };
+                    let Ok((file, pool, buffer)) = create_test_buffer(shm, qh) else {
+                        panic!("seat input client should create a wl_shm buffer");
+                    };
                     surface.attach(Some(&buffer), 0, 0);
                     state._backing_file = Some(file);
                     state._pool = Some(pool);
@@ -464,9 +469,10 @@ impl SeatClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(compositor), Some(wm_base)) = (self.compositor.as_ref(), self.wm_base.as_ref())
+        else {
+            return;
+        };
 
         let base_surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&base_surface, qh, ());

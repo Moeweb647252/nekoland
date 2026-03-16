@@ -86,9 +86,9 @@ fn popup_subscription_reports_geometry_and_grab_transitions() {
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -118,11 +118,15 @@ fn popup_subscription_reports_geometry_and_grab_transitions() {
         mutation_ready.store(true, Ordering::SeqCst);
     });
 
-    app.run().expect("nekoland app should complete the configured frame budget");
-    mutation_arm_thread.join().expect("popup mutation arm thread should exit cleanly");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
+    if mutation_arm_thread.join().is_err() {
+        panic!("popup mutation arm thread should exit cleanly");
+    }
 
-    let events =
-        match subscription_thread.join().expect("popup subscription thread should exit cleanly") {
+    let events = match subscription_thread.join() {
+        Ok(result) => match result {
             Ok(events) => events,
             Err(common::TestControl::Skip(reason)) => {
                 eprintln!("skipping popup subscription test in restricted environment: {reason}");
@@ -131,7 +135,9 @@ fn popup_subscription_reports_geometry_and_grab_transitions() {
             Err(common::TestControl::Fail(reason)) => {
                 panic!("popup subscription failed: {reason}");
             }
-        };
+        },
+        Err(_) => panic!("popup subscription thread should exit cleanly"),
+    };
 
     assert_eq!(events.geometry.surface_id, POPUP_SURFACE_ID);
     assert_eq!(events.geometry.parent_surface_id, PARENT_SURFACE_ID);

@@ -668,7 +668,10 @@ mod tests {
     use serde_json::Value;
 
     fn parse_ok(args: impl IntoIterator<Item = &'static str>) -> ParsedAction {
-        parse_cli_from(args).expect("CLI arguments should parse successfully")
+        let Ok(action) = parse_cli_from(args) else {
+            panic!("CLI arguments should parse successfully");
+        };
+        action
     }
 
     #[test]
@@ -1021,8 +1024,9 @@ mod tests {
 
     #[test]
     fn subscription_help_lists_topics_and_known_events() {
-        let help = render_subscription_help(HelpOutputMode::Text)
-            .expect("text subscription help should render successfully");
+        let Ok(help) = render_subscription_help(HelpOutputMode::Text) else {
+            panic!("text subscription help should render successfully");
+        };
 
         assert!(help.contains("Topics:"));
         assert!(help.contains("window"));
@@ -1033,26 +1037,28 @@ mod tests {
 
     #[test]
     fn subscription_help_json_lists_topics_and_known_events() {
-        let help = render_subscription_help(HelpOutputMode::Json)
-            .expect("json subscription help should render successfully");
-        let help = serde_json::from_str::<Value>(&help)
-            .expect("json subscription help should decode as JSON");
+        let Ok(help) = render_subscription_help(HelpOutputMode::Json) else {
+            panic!("json subscription help should render successfully");
+        };
+        let Ok(help) = serde_json::from_str::<Value>(&help) else {
+            panic!("json subscription help should decode as JSON");
+        };
+        let Some(known_events) = help["known_events"].as_array() else {
+            panic!("known_events should be an array");
+        };
 
         assert_eq!(help["topics"][0], "window");
         assert!(
-            help["known_events"]
-                .as_array()
-                .expect("known_events should be an array")
-                .iter()
-                .any(|event| event == "window_created")
+            known_events.iter().any(|event| event == "window_created")
         );
         assert_eq!(help["patterns"]["prefix_wildcard_example"], "window_*");
     }
 
     #[test]
     fn completion_output_contains_command_tree() {
-        let completion =
-            render_completion(CompletionShellArg::Bash).expect("bash completion should render");
+        let Ok(completion) = render_completion(CompletionShellArg::Bash) else {
+            panic!("bash completion should render");
+        };
 
         assert!(completion.contains("nekoland-msg"));
         assert!(completion.contains("subscribe"));

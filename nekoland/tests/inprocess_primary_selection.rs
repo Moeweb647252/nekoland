@@ -96,9 +96,9 @@ fn primary_selection_reaches_ecs_state() {
     assert!(summary.keyboard_enter_count >= 1, "client should receive wl_keyboard.enter");
     assert!(summary.key_press_count >= 1, "client should receive at least one wl_keyboard.key");
 
-    let selection = selection_state
-        .selection
-        .expect("primary selection should be tracked after the client sets it");
+    let Some(selection) = selection_state.selection else {
+        panic!("primary selection should be tracked after the client sets it");
+    };
     assert_eq!(selection.seat_name, "seat-0");
     assert_eq!(selection.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
 }
@@ -107,7 +107,7 @@ fn primary_selection_reaches_ecs_state() {
 /// primary selection state.
 fn run_primary_selection_scenario() -> Option<(PrimarySelectionClientSummary, PrimarySelectionState)>
 {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-primary-selection-runtime");
@@ -129,9 +129,9 @@ fn run_primary_selection_scenario() -> Option<(PrimarySelectionClientSummary, Pr
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -145,24 +145,31 @@ fn run_primary_selection_scenario() -> Option<(PrimarySelectionClientSummary, Pr
     };
 
     let client_thread = thread::spawn(move || run_primary_selection_client(&socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
     let selection_state = app
         .inner()
         .world()
         .get_resource::<PrimarySelectionState>()
-        .cloned()
-        .expect("primary selection resource should be initialized");
+        .cloned();
+    let Some(selection_state) = selection_state else {
+        panic!("primary selection resource should be initialized");
+    };
 
-    let summary = match client_thread.join().expect("client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping primary selection test in restricted environment: {reason}");
-            return None;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("primary selection client failed: {reason}")
-        }
+    let summary = match client_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping primary selection test in restricted environment: {reason}");
+                return None;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("primary selection client failed: {reason}")
+            }
+        },
+        Err(_) => panic!("client thread should exit cleanly"),
     };
 
     drop(runtime_dir);
@@ -406,9 +413,10 @@ impl PrimarySelectionClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(compositor), Some(wm_base)) = (self.compositor.as_ref(), self.wm_base.as_ref())
+        else {
+            return;
+        };
 
         let base_surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&base_surface, qh, ());
@@ -429,11 +437,11 @@ impl PrimarySelectionClientState {
             return;
         }
 
-        let manager = self
-            .primary_selection_manager
-            .as_ref()
-            .expect("primary-selection manager presence checked immediately above");
-        let seat = self.seat.as_ref().expect("seat presence checked immediately above");
+        let (Some(manager), Some(seat)) =
+            (self.primary_selection_manager.as_ref(), self.seat.as_ref())
+        else {
+            return;
+        };
         self.primary_selection_device = Some(manager.get_device(seat, qh, ()));
     }
 

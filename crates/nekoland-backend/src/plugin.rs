@@ -354,10 +354,9 @@ mod tests {
 
         app.world_mut().run_schedule(PresentSchedule);
 
-        let audit = app
-            .world()
-            .get_resource::<PresentOrderAudit>()
-            .expect("present order audit should exist");
+        let Some(audit) = app.world().get_resource::<PresentOrderAudit>() else {
+            panic!("present order audit should exist");
+        };
         assert_eq!(audit.0, vec!["protocol", "backend"]);
     }
 }

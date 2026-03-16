@@ -157,10 +157,11 @@ impl LayerClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let layer_shell =
-            self.layer_shell.as_ref().expect("layer shell presence checked immediately above");
+        let (Some(compositor), Some(layer_shell)) =
+            (self.compositor.as_ref(), self.layer_shell.as_ref())
+        else {
+            return;
+        };
 
         let surface = compositor.create_surface(qh, ());
         let layer_surface = layer_shell.get_layer_surface(
@@ -218,7 +219,7 @@ impl LayerClientState {
 /// Verifies that a mapped layer-shell surface appears in ECS and the render list.
 #[test]
 fn layer_shell_surface_reaches_ecs_and_render_list() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-layer-shell-runtime");
     let mut app = build_app(workspace_config_path());
@@ -241,17 +242,22 @@ fn layer_shell_surface_reaches_ecs_and_render_list() {
     let client_thread = thread::spawn(move || {
         run_layer_shell_client(&socket_path, LayerClientOptions::standard_panel())
     });
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let summary = match client_thread.join().expect("client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping layer-shell test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("layer-shell client failed: {reason}");
-        }
+    let summary = match client_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping layer-shell test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("layer-shell client failed: {reason}");
+            }
+        },
+        Err(_) => panic!("client thread should exit cleanly"),
     };
 
     common::assert_globals_present(&summary.globals);
@@ -260,25 +266,25 @@ fn layer_shell_surface_reaches_ecs_and_render_list() {
     let (surface_id, geometry, namespace, render_elements, wl_surface) = {
         let world = app.inner_mut().world_mut();
         let mut layers = world.query::<(&WlSurfaceHandle, &SurfaceGeometry, &LayerShellSurface)>();
-        let (surface_id, geometry, namespace) = layers
+        let layer_row = layers
             .iter(world)
             .next()
             .map(|(surface, geometry, layer_surface)| {
                 (surface.id, geometry.clone(), layer_surface.namespace.clone())
-            })
-            .expect("layer-shell client should create a layer entity");
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be available")
-            .elements
-            .clone();
-        let registry = world
-            .get_non_send_resource::<ProtocolSurfaceRegistry>()
-            .expect("protocol surface registry should be initialized");
-        let wl_surface = registry
-            .surface(surface_id)
-            .cloned()
-            .expect("layer shell surface should be tracked in protocol surface registry");
+            });
+        let Some((surface_id, geometry, namespace)) = layer_row else {
+            panic!("layer-shell client should create a layer entity");
+        };
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be available");
+        };
+        let render_elements = render_list.elements.clone();
+        let Some(registry) = world.get_non_send_resource::<ProtocolSurfaceRegistry>() else {
+            panic!("protocol surface registry should be initialized");
+        };
+        let Some(wl_surface) = registry.surface(surface_id).cloned() else {
+            panic!("layer shell surface should be tracked in protocol surface registry");
+        };
         (surface_id, geometry, namespace, render_elements, wl_surface)
     };
 
@@ -296,7 +302,7 @@ fn layer_shell_surface_reaches_ecs_and_render_list() {
 
 #[test]
 fn output_bound_layer_shell_surface_resolves_to_a_real_output_entity() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-layer-output-bind-runtime");
     let mut app = build_app(workspace_config_path());
@@ -319,17 +325,22 @@ fn output_bound_layer_shell_surface_resolves_to_a_real_output_entity() {
     let client_thread = thread::spawn(move || {
         run_layer_shell_client(&socket_path, LayerClientOptions::bound_standard_panel())
     });
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let summary = match client_thread.join().expect("client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping output-bound layer-shell test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("layer-shell client failed: {reason}");
-        }
+    let summary = match client_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping output-bound layer-shell test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("layer-shell client failed: {reason}");
+            }
+        },
+        Err(_) => panic!("client thread should exit cleanly"),
     };
 
     common::assert_globals_present(&summary.globals);
@@ -342,10 +353,9 @@ fn output_bound_layer_shell_surface_resolves_to_a_real_output_entity() {
         &LayerShellSurface,
         Option<&nekoland_ecs::components::LayerOnOutput>,
     )>();
-    let (_, geometry, _, layer_output) = layers
-        .iter(world)
-        .next()
-        .expect("output-bound layer-shell client should create a layer entity");
+    let Some((_, geometry, _, layer_output)) = layers.iter(world).next() else {
+        panic!("output-bound layer-shell client should create a layer entity");
+    };
 
     assert!(layer_output.is_some(), "explicit wl_output binding should resolve to a real output");
     assert_eq!(geometry.x, 0);
@@ -354,7 +364,7 @@ fn output_bound_layer_shell_surface_resolves_to_a_real_output_entity() {
 
 #[test]
 fn exclusive_top_layer_reserves_work_area_for_new_windows() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-layer-work-area-runtime");
     let mut app = build_app(workspace_config_path());
@@ -383,28 +393,35 @@ fn exclusive_top_layer_reserves_work_area_for_new_windows() {
         common::run_xdg_client_with_hold(&xdg_socket_path, CLIENT_POST_ATTACH_HOLD)
     });
 
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    let layer_summary = match layer_thread.join().expect("layer client thread should exit cleanly")
-    {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping layer work-area test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("layer-shell client failed: {reason}");
-        }
+    let layer_summary = match layer_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping layer work-area test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("layer-shell client failed: {reason}");
+            }
+        },
+        Err(_) => panic!("layer client thread should exit cleanly"),
     };
-    let xdg_summary = match xdg_thread.join().expect("xdg client thread should exit cleanly") {
-        Ok(summary) => summary,
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping layer work-area test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("xdg client failed: {reason}");
-        }
+    let xdg_summary = match xdg_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => summary,
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping layer work-area test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("xdg client failed: {reason}");
+            }
+        },
+        Err(_) => panic!("xdg client thread should exit cleanly"),
     };
 
     common::assert_globals_present(&layer_summary.globals);
@@ -414,27 +431,28 @@ fn exclusive_top_layer_reserves_work_area_for_new_windows() {
 
     let (output, work_area, layer_geometry, layer_namespace, window_geometry) = {
         let world = app.inner_mut().world_mut();
-        let output = world
-            .query::<&OutputProperties>()
-            .iter(world)
-            .next()
-            .cloned()
-            .expect("output properties should exist");
-        let work_area = *world.get_resource::<WorkArea>().expect("work area resource should exist");
+        let output = world.query::<&OutputProperties>().iter(world).next().cloned();
+        let Some(output) = output else {
+            panic!("output properties should exist");
+        };
+        let Some(work_area) = world.get_resource::<WorkArea>() else {
+            panic!("work area resource should exist");
+        };
+        let work_area = *work_area;
         let mut layers = world.query::<(&SurfaceGeometry, &LayerShellSurface)>();
-        let (layer_geometry, layer_namespace) = layers
+        let layer_state = layers
             .iter(world)
             .find(|(_, layer)| {
                 layer.namespace == LayerClientOptions::exclusive_top_panel().namespace
             })
-            .map(|(geometry, layer)| (geometry.clone(), layer.namespace.clone()))
-            .expect("exclusive layer surface should exist");
-        let window_geometry = world
-            .query::<(&SurfaceGeometry, &XdgWindow)>()
-            .iter(world)
-            .next()
-            .map(|(geometry, _)| geometry.clone())
-            .expect("xdg window should exist");
+            .map(|(geometry, layer)| (geometry.clone(), layer.namespace.clone()));
+        let Some((layer_geometry, layer_namespace)) = layer_state else {
+            panic!("exclusive layer surface should exist");
+        };
+        let window_geometry = world.query::<(&SurfaceGeometry, &XdgWindow)>().iter(world).next();
+        let Some(window_geometry) = window_geometry.map(|(geometry, _)| geometry.clone()) else {
+            panic!("xdg window should exist");
+        };
         (output, work_area, layer_geometry, layer_namespace, window_geometry)
     };
 
@@ -459,9 +477,9 @@ fn protocol_socket_path(
     runtime_dir: &Path,
 ) -> Result<PathBuf, common::TestControl> {
     let world = app.inner().world();
-    let server_state = world
-        .get_resource::<ProtocolServerState>()
-        .expect("protocol server state should be available immediately after build");
+    let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+        panic!("protocol server state should be available immediately after build");
+    };
 
     match (&server_state.socket_name, &server_state.startup_error) {
         (Some(socket_name), _) => Ok(runtime_dir.join(socket_name)),

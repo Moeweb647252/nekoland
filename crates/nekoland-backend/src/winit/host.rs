@@ -277,7 +277,12 @@ impl EventSource for HostWinitEventLoop {
         if self.pending_events.is_empty() {
             Ok(None)
         } else {
-            Ok(Some((Readiness::EMPTY, self.fake_token.expect("token registered before sleep"))))
+            let Some(fake_token) = self.fake_token else {
+                return Err(calloop::Error::IoError(IoError::other(
+                    "winit fake token missing before sleep",
+                )));
+            };
+            Ok(Some((Readiness::EMPTY, fake_token)))
         }
     }
 

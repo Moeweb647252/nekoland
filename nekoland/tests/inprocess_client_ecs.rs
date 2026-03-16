@@ -18,7 +18,7 @@ mod common;
 /// Verifies that a live client round-trip creates window entities, render elements, and focus.
 #[test]
 fn live_client_roundtrip_populates_window_entities_and_render_state() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-inprocess-runtime");
     let config_path = workspace_config_path();
@@ -31,9 +31,9 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -53,20 +53,25 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
         // compositor has enough frames to materialize ECS and render state.
         common::run_xdg_client_with_hold(&socket_path, Duration::from_millis(100))
     });
-    app.run().expect("nekoland app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
+    }
 
-    match client_thread.join().expect("client thread should exit cleanly") {
-        Ok(summary) => {
-            common::assert_globals_present(&summary.globals);
-            assert!(summary.configure_serial > 0, "client should ack a configure");
-        }
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping in-process ECS protocol test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("in-process wayland client failed: {reason}");
-        }
+    match client_thread.join() {
+        Ok(result) => match result {
+            Ok(summary) => {
+                common::assert_globals_present(&summary.globals);
+                assert!(summary.configure_serial > 0, "client should ack a configure");
+            }
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping in-process ECS protocol test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("in-process wayland client failed: {reason}");
+            }
+        },
+        Err(_) => panic!("client thread should exit cleanly"),
     }
 
     let (window_rows, render_elements, cursor_state, focused_surface) = {
@@ -83,19 +88,18 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
                 )
             })
             .collect::<Vec<_>>();
-        let render_elements = world
-            .get_resource::<RenderList>()
-            .expect("render list should be initialized by RenderPlugin")
-            .elements
-            .clone();
-        let cursor_state = world
-            .get_resource::<CursorRenderState>()
-            .expect("cursor render state should be initialized by RenderPlugin")
-            .clone();
-        let focused_surface = world
-            .get_resource::<KeyboardFocusState>()
-            .expect("keyboard focus state should be initialized by InputPlugin")
-            .focused_surface;
+        let Some(render_list) = world.get_resource::<RenderList>() else {
+            panic!("render list should be initialized by RenderPlugin");
+        };
+        let render_elements = render_list.elements.clone();
+        let Some(cursor_state) = world.get_resource::<CursorRenderState>() else {
+            panic!("cursor render state should be initialized by RenderPlugin");
+        };
+        let cursor_state = cursor_state.clone();
+        let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
+            panic!("keyboard focus state should be initialized by InputPlugin");
+        };
+        let focused_surface = keyboard_focus.focused_surface;
         (window_rows, render_elements, cursor_state, focused_surface)
     };
 

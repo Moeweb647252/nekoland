@@ -116,20 +116,26 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(InputSchedule);
 
         let world = app.inner().world();
-        let audit = world.get_resource::<InputAudit>().expect("input audit should be initialized");
-        let pointer = world
-            .get_resource::<GlobalPointerPosition>()
-            .expect("pointer position should be initialized");
-        let modifiers =
-            world.get_resource::<ModifierState>().expect("modifier state should be initialized");
-        let pressed_keys =
-            world.get_resource::<PressedKeys>().expect("pressed keys should be initialized");
-        let pending_input_events = world
-            .get_resource::<PendingInputEvents>()
-            .expect("pending input events should be initialized");
-        let pending_backend_input_events = world
-            .get_resource::<PendingBackendInputEvents>()
-            .expect("backend input queue should be initialized");
+        let Some(audit) = world.get_resource::<InputAudit>() else {
+            panic!("input audit should be initialized");
+        };
+        let Some(pointer) = world.get_resource::<GlobalPointerPosition>() else {
+            panic!("pointer position should be initialized");
+        };
+        let Some(modifiers) = world.get_resource::<ModifierState>() else {
+            panic!("modifier state should be initialized");
+        };
+        let Some(pressed_keys) = world.get_resource::<PressedKeys>() else {
+            panic!("pressed keys should be initialized");
+        };
+        let Some(pending_input_events) = world.get_resource::<PendingInputEvents>() else {
+            panic!("pending input events should be initialized");
+        };
+        let Some(pending_backend_input_events) =
+            world.get_resource::<PendingBackendInputEvents>()
+        else {
+            panic!("backend input queue should be initialized");
+        };
 
         assert_eq!(audit.key_events, vec![(133, true), (36, true)]);
         assert_eq!(audit.pointer_events, vec![(320.5, 128.0)]);

@@ -43,6 +43,16 @@ impl NekolandPlugin for ConfigPlugin {
     fn build(&self, app: &mut App) {
         let last_observed_modified = hot_reload::observed_modified_at(&self.path);
         hot_reload::install_config_watch_source(app, self.path.clone(), last_observed_modified);
+        let default_config = match CompositorConfig::try_from(NekolandConfigFile::default()) {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "built-in default config failed to normalize; falling back to CompositorConfig::default()"
+                );
+                CompositorConfig::default()
+            }
+        };
 
         // Falling back to defaults keeps the compositor bootable even when the configured path is
         // missing or malformed; the failure is still preserved in `LoadedConfigSource`.
@@ -59,13 +69,7 @@ impl NekolandPlugin for ConfigPlugin {
                             %error,
                             "falling back to built-in default config"
                         );
-                        (
-                            CompositorConfig::try_from(NekolandConfigFile::default())
-                                .expect("built-in default config should normalize"),
-                            false,
-                            0,
-                            Some(error),
-                        )
+                        (default_config.clone(), false, 0, Some(error))
                     }
                 },
                 Err(error) => {
@@ -74,13 +78,7 @@ impl NekolandPlugin for ConfigPlugin {
                         %error,
                         "falling back to built-in default config"
                     );
-                    (
-                        CompositorConfig::try_from(NekolandConfigFile::default())
-                            .expect("built-in default config should normalize"),
-                        false,
-                        0,
-                        Some(error.to_string()),
-                    )
+                    (default_config, false, 0, Some(error.to_string()))
                 }
             };
 

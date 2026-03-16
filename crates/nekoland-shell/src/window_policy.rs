@@ -179,7 +179,10 @@ mod tests {
 
         assert_eq!(layout, WindowLayout::Floating);
         assert_eq!(mode, WindowMode::Fullscreen);
-        assert_eq!(restore.snapshot.expect("restore snapshot").layout, WindowLayout::Tiled);
+        let Some(snapshot) = restore.snapshot else {
+            panic!("restore snapshot");
+        };
+        assert_eq!(snapshot.layout, WindowLayout::Tiled);
     }
 
     #[test]
@@ -237,10 +240,10 @@ mod tests {
         }
         world.flush();
 
-        let background = world
-            .get::<OutputBackgroundWindow>(entity)
-            .expect("background role should exist")
-            .clone();
+        let Some(background) = world.get::<OutputBackgroundWindow>(entity) else {
+            panic!("background role should exist");
+        };
+        let background = background.clone();
         assert_eq!(background.output, "Virtual-1");
         assert_eq!(role, WindowRole::OutputBackground);
         assert_eq!(mode, WindowMode::Fullscreen);

@@ -48,15 +48,19 @@ pub fn configure_sequence_system(
                     deferred.push(request);
                     continue;
                 };
-                let Ok((_, window)) = windows.get_mut(entity) else {
+                let Ok((_, mut window)) = windows.get_mut(entity) else {
                     deferred.push(request);
                     continue;
                 };
 
-                window
-                    .xdg_window
-                    .expect("xdg runtime should expose xdg metadata")
-                    .last_acked_configure = Some(serial);
+                let Some(xdg_window) = window.xdg_window.as_mut() else {
+                    tracing::warn!(
+                        surface_id = request.surface_id,
+                        "skipping ack_configure for xdg window without xdg metadata"
+                    );
+                    continue;
+                };
+                xdg_window.last_acked_configure = Some(serial);
             }
             WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Popup, serial } => {
                 let Some(entity) =

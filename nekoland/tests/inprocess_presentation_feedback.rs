@@ -10,10 +10,10 @@ use nekoland::build_app;
 use nekoland_backend::BackendStatus;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ipc::commands::{OutputCommand, OutputSnapshot, QueryCommand, WorkspaceCommand};
-use nekoland_ipc::{IpcCommand, IpcReply, IpcRequest, IpcServerState, send_request_to_path};
+use nekoland_ipc::{send_request_to_path, IpcCommand, IpcReply, IpcRequest, IpcServerState};
 use nekoland_protocol::ProtocolServerState;
 use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
-use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+use wayland_client::{delegate_noop, Connection, Dispatch, QueueHandle};
 use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
@@ -111,9 +111,10 @@ impl PresentationClientState {
             return;
         }
 
-        let compositor =
-            self.compositor.as_ref().expect("compositor presence checked immediately above");
-        let wm_base = self.wm_base.as_ref().expect("wm_base presence checked immediately above");
+        let (Some(compositor), Some(wm_base)) = (self.compositor.as_ref(), self.wm_base.as_ref())
+        else {
+            panic!("compositor and wm_base presence checked immediately above");
+        };
 
         let base_surface = compositor.create_surface(qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&base_surface, qh, ());
@@ -127,10 +128,12 @@ impl PresentationClientState {
 
     /// Requests a new presentation feedback object for the test surface.
     fn request_feedback(&self, qh: &QueueHandle<Self>) {
-        let presentation =
-            self.presentation.as_ref().expect("presentation scenario requires wp_presentation");
-        let surface =
-            self.base_surface.as_ref().expect("presentation scenario requires a wl_surface");
+        let Some(presentation) = self.presentation.as_ref() else {
+            panic!("presentation scenario requires wp_presentation");
+        };
+        let Some(surface) = self.base_surface.as_ref() else {
+            panic!("presentation scenario requires a wl_surface");
+        };
         let _ = presentation.feedback(surface, qh, ());
         surface.commit();
     }
@@ -187,7 +190,9 @@ impl PresentationClientState {
 /// after reactivation.
 #[test]
 fn inactive_workspace_surfaces_delay_presentation_feedback_until_reactivated() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let Ok(_env_lock) = common::env_lock().lock() else {
+        panic!("environment lock should not be poisoned");
+    };
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-presentation-runtime");
     let config_path = workspace_config_path();
 
@@ -199,9 +204,9 @@ fn inactive_workspace_surfaces_delay_presentation_feedback_until_reactivated() {
 
     let socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<ProtocolServerState>()
-            .expect("protocol server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
+            panic!("protocol server state should be available immediately after build");
+        };
 
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
@@ -216,9 +221,9 @@ fn inactive_workspace_surfaces_delay_presentation_feedback_until_reactivated() {
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -235,9 +240,14 @@ fn inactive_workspace_surfaces_delay_presentation_feedback_until_reactivated() {
 
     let client_thread =
         thread::spawn(move || run_presentation_client(&socket_path, ipc_socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
+    let Ok(()) = app.run() else {
+        panic!("nekoland app should complete the configured frame budget");
+    };
 
-    let summary = match client_thread.join().expect("presentation client should exit cleanly") {
+    let Ok(client_result) = client_thread.join() else {
+        panic!("presentation client should exit cleanly");
+    };
+    let summary = match client_result {
         Ok(summary) => summary,
         Err(common::TestControl::Skip(reason)) => {
             eprintln!("skipping presentation feedback test in restricted environment: {reason}");
@@ -401,11 +411,11 @@ fn send_ipc_request_with_retry(
 
 /// Reconfigures the active output to a deterministic mode before the presentation scenario runs.
 fn configure_output_mode(socket_path: &Path) -> Result<(), common::TestControl> {
-    let output_name = wait_for_outputs(socket_path, |outputs| !outputs.is_empty())?
-        .into_iter()
-        .next()
-        .expect("wait_for_outputs predicate should ensure at least one output is present")
-        .name;
+    let outputs = wait_for_outputs(socket_path, |outputs| !outputs.is_empty())?;
+    let Some(output) = outputs.into_iter().next() else {
+        panic!("wait_for_outputs predicate should ensure at least one output is present");
+    };
+    let output_name = output.name;
 
     let reply = send_ipc_request_with_retry(
         socket_path,

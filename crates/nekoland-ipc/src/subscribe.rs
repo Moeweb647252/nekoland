@@ -377,10 +377,14 @@ pub(crate) fn subscription_dispatch_system(
         }
     }
 
-    let last_tree = snapshots
-        .last_tree
-        .as_ref()
-        .expect("subscription snapshots are initialized immediately before access");
+    let Some(last_tree) = snapshots.last_tree.as_ref() else {
+        snapshots.last_tree = Some(query_cache.tree.clone());
+        snapshots.last_popups = current_popups;
+        snapshots.last_config = Some(query_cache.config.clone());
+        snapshots.last_clipboard = Some(query_cache.clipboard.clone());
+        snapshots.last_primary_selection = Some(query_cache.primary_selection.clone());
+        return;
+    };
     let previous_windows = last_tree
         .windows
         .iter()

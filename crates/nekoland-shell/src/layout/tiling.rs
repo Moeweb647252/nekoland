@@ -153,8 +153,12 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
-        let left_geometry = world.get::<SurfaceGeometry>(left).expect("left geometry");
-        let right_geometry = world.get::<SurfaceGeometry>(right).expect("right geometry");
+        let Some(left_geometry) = world.get::<SurfaceGeometry>(left) else {
+            panic!("left geometry");
+        };
+        let Some(right_geometry) = world.get::<SurfaceGeometry>(right) else {
+            panic!("right geometry");
+        };
 
         assert_eq!(
             (left_geometry.x, left_geometry.y, left_geometry.width, left_geometry.height),
@@ -212,13 +216,17 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let tiling = app
-            .inner()
-            .world()
-            .get_resource::<WorkspaceTilingState>()
-            .expect("tiling state should exist");
+        let Some(tiling) = app.inner().world().get_resource::<WorkspaceTilingState>() else {
+            panic!("tiling state should exist");
+        };
         assert_eq!(tiling.workspaces.len(), 2);
-        assert_eq!(tiling.workspaces.get(&1).expect("workspace 1").leaf_surfaces, vec![11]);
-        assert_eq!(tiling.workspaces.get(&2).expect("workspace 2").leaf_surfaces, vec![22]);
+        let Some(workspace_1) = tiling.workspaces.get(&1) else {
+            panic!("workspace 1");
+        };
+        let Some(workspace_2) = tiling.workspaces.get(&2) else {
+            panic!("workspace 2");
+        };
+        assert_eq!(workspace_1.leaf_surfaces, vec![11]);
+        assert_eq!(workspace_2.leaf_surfaces, vec![22]);
     }
 }

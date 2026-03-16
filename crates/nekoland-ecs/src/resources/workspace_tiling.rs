@@ -139,11 +139,23 @@ impl WorkspaceTileTree {
             self.root = Some(new_leaf);
             return;
         };
-        let tail_leaf = self
+        let Some(tail_leaf) = self
             .surface_nodes
             .get(&existing_tail_surface)
             .copied()
-            .expect("existing tail leaf should be indexed");
+            .or_else(|| {
+                self.nodes.iter().find_map(|(node_id, node)| match node {
+                    TileNode::Leaf { surface_id } if *surface_id == existing_tail_surface => {
+                        Some(*node_id)
+                    }
+                    _ => None,
+                })
+            })
+        else {
+            self.root = Some(new_leaf);
+            return;
+        };
+        self.surface_nodes.entry(existing_tail_surface).or_insert(tail_leaf);
         let parent = self.parents.get(&tail_leaf).copied();
         let axis = parent
             .and_then(|parent_id| match self.nodes.get(&parent_id) {
@@ -370,8 +382,12 @@ mod tests {
         tree.ensure_surface(33);
 
         assert_eq!(tree.leaf_surfaces, vec![11, 22, 33]);
-        let root = tree.root.expect("tree root should exist");
-        let node = tree.nodes.get(&root).expect("root node should exist");
+        let Some(root) = tree.root else {
+            panic!("tree root should exist");
+        };
+        let Some(node) = tree.nodes.get(&root) else {
+            panic!("root node should exist");
+        };
         assert!(matches!(node, TileNode::Split { axis: SplitAxis::Horizontal, .. }));
     }
 
@@ -415,8 +431,14 @@ mod tests {
         tiling.ensure_surface(3, 11);
 
         assert!(!tiling.workspaces.contains_key(&UNASSIGNED_WORKSPACE_TILING_ID));
-        assert_eq!(tiling.workspaces.get(&2).expect("workspace 2").leaf_surfaces, vec![22]);
-        assert_eq!(tiling.workspaces.get(&3).expect("workspace 3").leaf_surfaces, vec![11]);
+        let Some(workspace_2) = tiling.workspaces.get(&2) else {
+            panic!("workspace 2");
+        };
+        let Some(workspace_3) = tiling.workspaces.get(&3) else {
+            panic!("workspace 3");
+        };
+        assert_eq!(workspace_2.leaf_surfaces, vec![22]);
+        assert_eq!(workspace_3.leaf_surfaces, vec![11]);
     }
 
     #[test]
@@ -428,7 +450,9 @@ mod tests {
         tiling.set_surface_split_axis(1, 22, SplitAxis::Horizontal);
         tiling.retain_known(&[(11, 1_u32), (22, 1_u32)].into_iter().collect());
 
-        let tree = tiling.workspaces.get(&1).expect("workspace tree should remain");
+        let Some(tree) = tiling.workspaces.get(&1) else {
+            panic!("workspace tree should remain");
+        };
         assert_eq!(tree.leaf_surfaces, vec![11, 22]);
         assert_eq!(tree.split_axis_for_surface(11), Some(SplitAxis::Horizontal));
         assert_eq!(tree.split_axis_for_surface(22), Some(SplitAxis::Horizontal));

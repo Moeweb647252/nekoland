@@ -44,9 +44,9 @@ fn focus_subscription_reports_window_focus_transitions() {
 
     let ipc_socket_path = {
         let world = app.inner().world();
-        let server_state = world
-            .get_resource::<IpcServerState>()
-            .expect("IPC server state should be available immediately after build");
+        let Some(server_state) = world.get_resource::<IpcServerState>() else {
+            panic!("IPC server state should be available immediately after build");
+        };
 
         match (server_state.listening, &server_state.startup_error) {
             (true, _) => server_state.socket_path.clone(),
@@ -74,21 +74,26 @@ fn focus_subscription_reports_window_focus_transitions() {
 
     let command_thread =
         thread::spawn(move || issue_focus_command_when_windows_are_ready(&ipc_socket_path));
-    app.run().expect("nekoland app should complete the configured frame budget");
-
-    match command_thread.join().expect("focus command thread should exit cleanly") {
-        Ok(()) => {}
-        Err(common::TestControl::Skip(reason)) => {
-            eprintln!("skipping focus subscription test in restricted environment: {reason}");
-            return;
-        }
-        Err(common::TestControl::Fail(reason)) => {
-            panic!("focus command sequence failed: {reason}");
-        }
+    if let Err(error) = app.run() {
+        panic!("nekoland app should complete the configured frame budget: {error}");
     }
 
-    let focus_change =
-        match subscription_thread.join().expect("subscription thread should exit cleanly") {
+    match command_thread.join() {
+        Ok(result) => match result {
+            Ok(()) => {}
+            Err(common::TestControl::Skip(reason)) => {
+                eprintln!("skipping focus subscription test in restricted environment: {reason}");
+                return;
+            }
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("focus command sequence failed: {reason}");
+            }
+        },
+        Err(_) => panic!("focus command thread should exit cleanly"),
+    };
+
+    let focus_change = match subscription_thread.join() {
+        Ok(result) => match result {
             Ok(focus_change) => focus_change,
             Err(common::TestControl::Skip(reason)) => {
                 eprintln!("skipping focus subscription test in restricted environment: {reason}");
@@ -97,7 +102,9 @@ fn focus_subscription_reports_window_focus_transitions() {
             Err(common::TestControl::Fail(reason)) => {
                 panic!("focus subscription failed: {reason}");
             }
-        };
+        },
+        Err(_) => panic!("subscription thread should exit cleanly"),
+    };
 
     assert_eq!(focus_change.previous_surface, Some(PRIMARY_SURFACE_ID));
     assert_eq!(focus_change.focused_surface, Some(TARGET_SURFACE_ID));

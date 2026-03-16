@@ -24,7 +24,7 @@ const TEST_SURFACE_ID: u64 = 4242;
 /// timeline for its synthetic output.
 #[test]
 fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
-    let _env_lock = common::env_lock().lock().expect("environment lock should not be poisoned");
+    let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-virtual-output");
@@ -40,25 +40,29 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
     });
     seed_floating_window(app.inner_mut().world_mut());
 
-    app.run().expect("virtual-output app should complete the configured frame budget");
+    if let Err(error) = app.run() {
+        panic!("virtual-output app should complete the configured frame budget: {error}");
+    }
 
     let world = app.inner_mut().world_mut();
-    let backend_status = world
-        .get_resource::<BackendStatus>()
-        .expect("backend status should remain available")
-        .clone();
-    let (output, properties) = world
+    let Some(backend_status) = world.get_resource::<BackendStatus>() else {
+        panic!("backend status should remain available");
+    };
+    let backend_status = backend_status.clone();
+    let output_state = world
         .query::<(&OutputDevice, &OutputProperties)>()
         .iter(world)
         .next()
-        .map(|(output, properties)| (output.clone(), properties.clone()))
-        .expect("virtual backend should publish one output");
-    let capture_state = world
-        .get_resource::<VirtualOutputCaptureState>()
-        .expect("virtual output capture state should be available");
-    let presentation_state = world
-        .get_resource::<OutputPresentationState>()
-        .expect("output presentation state should be available");
+        .map(|(output, properties)| (output.clone(), properties.clone()));
+    let Some((output, properties)) = output_state else {
+        panic!("virtual backend should publish one output");
+    };
+    let Some(capture_state) = world.get_resource::<VirtualOutputCaptureState>() else {
+        panic!("virtual output capture state should be available");
+    };
+    let Some(presentation_state) = world.get_resource::<OutputPresentationState>() else {
+        panic!("output presentation state should be available");
+    };
 
     assert!(
         backend_status.active.iter().any(|backend| backend.kind == BackendKind::Virtual),
@@ -67,10 +71,9 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
     assert_eq!(output.kind, OutputKind::Virtual);
     assert!(!capture_state.frames.is_empty(), "virtual backend should capture at least one frame");
 
-    let latest_frame = capture_state
-        .frames
-        .back()
-        .expect("virtual backend should retain the latest offscreen frame");
+    let Some(latest_frame) = capture_state.frames.back() else {
+        panic!("virtual backend should retain the latest offscreen frame");
+    };
     assert_eq!(latest_frame.output_name, output.name);
     assert_eq!(latest_frame.width, properties.width);
     assert_eq!(latest_frame.height, properties.height);
@@ -81,7 +84,7 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
         .elements
         .iter()
         .find(|element| element.surface_id == TEST_SURFACE_ID)
-        .expect("virtual frame should include the seeded floating window");
+        .unwrap_or_else(|| panic!("virtual frame should include the seeded floating window"));
     assert_eq!(window.kind, VirtualOutputElementKind::Window);
     assert_eq!(window.x, 64);
     assert_eq!(window.y, 48);
@@ -92,7 +95,9 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
         .outputs
         .iter()
         .find(|timeline| timeline.output_name == output.name)
-        .expect("virtual backend should publish a presentation timeline for its output");
+        .unwrap_or_else(|| {
+            panic!("virtual backend should publish a presentation timeline for its output")
+        });
     assert!(presentation.sequence > 0, "virtual output should advance presentation sequence");
 }
 
