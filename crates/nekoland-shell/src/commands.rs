@@ -411,6 +411,11 @@ fn nested_wayland_env(
             "DISPLAY".to_owned(),
             "WAYLAND_DISPLAY".to_owned(),
             "WAYLAND_SOCKET".to_owned(),
+            "HYPRLAND_INSTANCE_SIGNATURE".to_owned(),
+            "HYPRLAND_CMD".to_owned(),
+            "SWAYSOCK".to_owned(),
+            "NIRI_SOCKET".to_owned(),
+            "I3SOCK".to_owned(),
             "DESKTOP_STARTUP_ID".to_owned(),
             "XDG_ACTIVATION_TOKEN".to_owned(),
         ],
@@ -427,6 +432,8 @@ fn nested_wayland_env(
     }
 
     env.vars.push(("XDG_CURRENT_DESKTOP".to_owned(), "nekoland".to_owned()));
+    env.vars.push(("XDG_SESSION_DESKTOP".to_owned(), "nekoland".to_owned()));
+    env.vars.push(("DESKTOP_SESSION".to_owned(), "nekoland".to_owned()));
     env.vars.push(("XDG_SESSION_TYPE".to_owned(), "wayland".to_owned()));
 
     if let Some(display_name) = xwayland_server
@@ -475,6 +482,8 @@ mod tests {
         assert_eq!(vars.get("WAYLAND_DISPLAY"), Some(&"wayland-77".to_owned()));
         assert_eq!(vars.get("XDG_RUNTIME_DIR"), Some(&"/tmp/nekoland-runtime".to_owned()));
         assert_eq!(vars.get("XDG_CURRENT_DESKTOP"), Some(&"nekoland".to_owned()));
+        assert_eq!(vars.get("XDG_SESSION_DESKTOP"), Some(&"nekoland".to_owned()));
+        assert_eq!(vars.get("DESKTOP_SESSION"), Some(&"nekoland".to_owned()));
         assert_eq!(vars.get("XDG_SESSION_TYPE"), Some(&"wayland".to_owned()));
         assert!(
             !vars.contains_key("DISPLAY"),
@@ -486,6 +495,11 @@ mod tests {
                 "DISPLAY".to_owned(),
                 "WAYLAND_DISPLAY".to_owned(),
                 "WAYLAND_SOCKET".to_owned(),
+                "HYPRLAND_INSTANCE_SIGNATURE".to_owned(),
+                "HYPRLAND_CMD".to_owned(),
+                "SWAYSOCK".to_owned(),
+                "NIRI_SOCKET".to_owned(),
+                "I3SOCK".to_owned(),
                 "DESKTOP_STARTUP_ID".to_owned(),
                 "XDG_ACTIVATION_TOKEN".to_owned(),
             ]
@@ -511,6 +525,8 @@ mod tests {
         let vars = env.vars.iter().cloned().collect::<BTreeMap<_, _>>();
         assert_eq!(vars.get("DISPLAY"), Some(&":77".to_owned()));
         assert_eq!(vars.get("WAYLAND_DISPLAY"), Some(&"wayland-77".to_owned()));
+        assert_eq!(vars.get("XDG_SESSION_DESKTOP"), Some(&"nekoland".to_owned()));
+        assert_eq!(vars.get("DESKTOP_SESSION"), Some(&"nekoland".to_owned()));
     }
 
     #[test]
