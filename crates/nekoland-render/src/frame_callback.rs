@@ -24,6 +24,7 @@ pub fn frame_callback_system(
         .flat_map(|plan| plan.items.iter())
         .filter_map(|item| match item {
             RenderPlanItem::Surface(item) => Some(item.surface_id),
+            RenderPlanItem::SolidRect(_) | RenderPlanItem::Backdrop(_) => None,
         })
         .collect::<BTreeSet<_>>();
     let known_surface_ids =

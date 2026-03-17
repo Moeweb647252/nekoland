@@ -99,6 +99,7 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
             .flat_map(|output_plan| output_plan.items.iter())
             .filter_map(|item| match item {
                 RenderPlanItem::Surface(item) => Some(item.surface_id),
+                RenderPlanItem::SolidRect(_) | RenderPlanItem::Backdrop(_) => None,
             })
             .collect::<Vec<_>>();
         let Some(cursor_state) = world.get_resource::<CursorRenderState>() else {

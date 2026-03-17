@@ -8,7 +8,7 @@ use nekoland_ecs::presentation_logic::{
     is_background_band_layer, is_foreground_band_layer, managed_window_visible, popup_visible,
 };
 use nekoland_ecs::resources::{
-    OutputRenderPlan, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
+    OutputRenderPlan, RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
     SurfacePresentationRole, SurfacePresentationSnapshot, SurfaceRenderItem, SurfaceVisualSnapshot,
     UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
 };
@@ -220,11 +220,13 @@ pub fn compose_frame_system(composition: FrameCompositionInputs<'_, '_>) {
         for output_id in target_outputs {
             plans.entry(output_id).or_default().push(RenderPlanItem::Surface(SurfaceRenderItem {
                 surface_id,
-                rect: RenderRect::from(&state.geometry),
-                opacity,
-                z_index: z_index as i32,
-                clip_rect: None,
-                scene_role: RenderSceneRole::Desktop,
+                instance: RenderItemInstance {
+                    rect: RenderRect::from(&state.geometry),
+                    opacity,
+                    clip_rect: None,
+                    z_index: z_index as i32,
+                    scene_role: RenderSceneRole::Desktop,
+                },
             }));
         }
     }
@@ -307,6 +309,7 @@ mod tests {
             .flat_map(|plan| plan.items.iter())
             .filter_map(|item| match item {
                 RenderPlanItem::Surface(item) => Some(item.surface_id),
+                RenderPlanItem::SolidRect(_) | RenderPlanItem::Backdrop(_) => None,
             })
             .collect()
     }
@@ -536,8 +539,10 @@ mod tests {
         let render_plan = app.inner().world().resource::<RenderPlan>();
         let output_plan = render_plan.outputs.values().next().expect("single output render plan");
         assert_eq!(output_plan.items.len(), 1);
-        let RenderPlanItem::Surface(item) = &output_plan.items[0];
-        assert_eq!(item.opacity, 0.25);
+        let RenderPlanItem::Surface(item) = &output_plan.items[0] else {
+            panic!("expected surface render item");
+        };
+        assert_eq!(item.instance.opacity, 0.25);
     }
 
     #[test]

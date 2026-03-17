@@ -12,6 +12,7 @@ use nekoland_core::prelude::AppMetadata;
 use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, CompositorConfig, DamageRect, OutputDamageRegions,
+    RenderRect,
 };
 use nekoland_protocol::ProtocolDmabufSupport;
 use smithay::backend::renderer::Color32F;
@@ -21,6 +22,7 @@ use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
+use smithay::backend::renderer::element::utils::CropRenderElement;
 use smithay::reexports::winit::dpi::PhysicalSize;
 use smithay::reexports::winit::window::{CursorGrabMode, Window as HostWindow};
 use smithay::render_elements;
@@ -45,6 +47,7 @@ use crate::winit::host::{
 render_elements! {
     WinitRenderElement<=smithay::backend::renderer::gles::GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<smithay::backend::renderer::gles::GlesRenderer>,
+    ClippedSurface=CropRenderElement<WaylandSurfaceRenderElement<smithay::backend::renderer::gles::GlesRenderer>>,
     Memory=MemoryRenderBufferRenderElement<smithay::backend::renderer::gles::GlesRenderer>,
 }
 
@@ -477,17 +480,30 @@ impl Backend for WinitRuntime {
             for render_element in
                 render_plan_output_surfaces_in_presentation_order(cx.render_plan, output.output_id)
             {
+                let Some(clip_rect) = render_element.instance.visible_rect() else {
+                    continue;
+                };
+                let Some(clip_rect) = render_rect_to_physical(&clip_rect, mode.scale) else {
+                    continue;
+                };
                 let Some(surface) = surface_registry.surface(render_element.surface_id) else {
                     continue;
                 };
-                elements.extend(render_elements_from_surface_tree(
-                    renderer,
-                    surface,
-                    (render_element.x, render_element.y),
-                    mode.scale as f64,
-                    render_element.opacity,
-                    Kind::Unspecified,
-                ));
+                elements.extend(
+                    render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
+                        renderer,
+                        surface,
+                        (render_element.instance.rect.x, render_element.instance.rect.y),
+                        mode.scale as f64,
+                        render_element.instance.opacity,
+                        Kind::Unspecified,
+                    )
+                    .into_iter()
+                    .filter_map(|element| {
+                        CropRenderElement::from_element(element, mode.scale as f64, clip_rect)
+                    })
+                    .map(WinitRenderElement::from),
+                );
             }
 
             let smithay_damage = match damage_tracker.render_output(
@@ -568,6 +584,21 @@ fn output_damage_regions_physical(
         .flatten()
         .filter_map(|rect| damage_rect_to_physical(rect, scale))
         .collect()
+}
+
+fn render_rect_to_physical(rect: &RenderRect, scale: u32) -> Option<Rectangle<i32, Physical>> {
+    if rect.width == 0 || rect.height == 0 {
+        return None;
+    }
+
+    let scale = i64::from(scale.max(1));
+    let x = (i64::from(rect.x) * scale).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let y = (i64::from(rect.y) * scale).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let width =
+        (u64::from(rect.width) * u64::try_from(scale).ok()?).min(u64::from(i32::MAX as u32)) as i32;
+    let height = (u64::from(rect.height) * u64::try_from(scale).ok()?)
+        .min(u64::from(i32::MAX as u32)) as i32;
+    Some(Rectangle::new((x, y).into(), (width.max(1), height.max(1)).into()))
 }
 
 fn damage_rect_to_physical(rect: &DamageRect, scale: u32) -> Option<Rectangle<i32, Physical>> {

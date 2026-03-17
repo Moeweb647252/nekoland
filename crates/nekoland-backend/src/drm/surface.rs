@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use drm_fourcc::DrmFourcc;
 use nekoland_ecs::resources::{
-    CompositorConfig, CursorRenderState, DamageRect, OutputDamageRegions, RenderPlan,
+    CompositorConfig, CursorRenderState, DamageRect, OutputDamageRegions, RenderPlan, RenderRect,
 };
 use nekoland_protocol::{ProtocolCursorState, ProtocolSurfaceRegistry};
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags};
@@ -15,6 +15,7 @@ use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
+use smithay::backend::renderer::element::utils::CropRenderElement;
 use smithay::backend::renderer::element::{Id, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::CommitCounter;
@@ -64,6 +65,7 @@ pub(crate) struct DrmPresentCtx<'a> {
 render_elements! {
     pub(crate) BackendDrmRenderElement<=GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    ClippedSurface=CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     Damage=SolidColorRenderElement,
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
 }
@@ -199,17 +201,29 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         for render_element in
             render_plan_output_surfaces_in_presentation_order(render_plan, output.output_id)
         {
+            let Some(clip_rect) = render_element.instance.visible_rect() else {
+                continue;
+            };
+            let Some(clip_rect) = render_rect_to_physical(&clip_rect, output.properties.scale)
+            else {
+                continue;
+            };
             let Some(wl_surface) = surface_registry.surface(render_element.surface_id) else {
                 continue;
             };
-            elements.extend(render_elements_from_surface_tree::<_, BackendDrmRenderElement>(
-                renderer,
-                wl_surface,
-                (render_element.x, render_element.y),
-                scale,
-                render_element.opacity,
-                Kind::Unspecified,
-            ));
+            elements.extend(
+                render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
+                    renderer,
+                    wl_surface,
+                    (render_element.instance.rect.x, render_element.instance.rect.y),
+                    scale,
+                    render_element.instance.opacity,
+                    Kind::Unspecified,
+                )
+                .into_iter()
+                .filter_map(|element| CropRenderElement::from_element(element, scale, clip_rect))
+                .map(BackendDrmRenderElement::from),
+            );
         }
         elements.extend(
             ecs_damage_render_elements(
@@ -281,6 +295,22 @@ fn ecs_damage_render_elements(
 }
 
 fn damage_rect_to_physical(rect: &DamageRect, scale: u32) -> Option<Rectangle<i32, Physical>> {
+    if rect.width == 0 || rect.height == 0 {
+        return None;
+    }
+
+    let scale = i64::from(scale.max(1));
+    let x = (i64::from(rect.x) * scale).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let y = (i64::from(rect.y) * scale).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    let width =
+        (u64::from(rect.width) * u64::try_from(scale).ok()?).min(u64::from(i32::MAX as u32)) as i32;
+    let height = (u64::from(rect.height) * u64::try_from(scale).ok()?)
+        .min(u64::from(i32::MAX as u32)) as i32;
+
+    Some(Rectangle::new((x, y).into(), (width, height).into()))
+}
+
+fn render_rect_to_physical(rect: &RenderRect, scale: u32) -> Option<Rectangle<i32, Physical>> {
     if rect.width == 0 || rect.height == 0 {
         return None;
     }

@@ -381,9 +381,10 @@ mod tests {
         OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry, WlSurfaceHandle,
     };
     use nekoland_ecs::resources::{
-        CompositorClock, OutputDamageRegions, OutputRenderPlan, PresentAuditState, RenderPlan,
-        RenderPlanItem, RenderRect, RenderSceneRole, SurfacePresentationSnapshot,
-        SurfacePresentationState, SurfaceRenderItem, VirtualOutputCaptureState,
+        CompositorClock, OutputDamageRegions, OutputRenderPlan, PresentAuditState,
+        RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
+        SurfacePresentationSnapshot, SurfacePresentationState, SurfaceRenderItem,
+        VirtualOutputCaptureState,
     };
     use nekoland_protocol::ProtocolSeatDispatchSystems;
 
@@ -533,19 +534,23 @@ mod tests {
                         items: vec![
                             RenderPlanItem::Surface(SurfaceRenderItem {
                                 surface_id: 11,
-                                rect: RenderRect { x: 10, y: 20, width: 300, height: 200 },
-                                opacity: 1.0,
-                                z_index: 0,
-                                clip_rect: None,
-                                scene_role: RenderSceneRole::Desktop,
+                                instance: RenderItemInstance {
+                                    rect: RenderRect { x: 10, y: 20, width: 300, height: 200 },
+                                    opacity: 1.0,
+                                    clip_rect: None,
+                                    z_index: 0,
+                                    scene_role: RenderSceneRole::Desktop,
+                                },
                             }),
                             RenderPlanItem::Surface(SurfaceRenderItem {
                                 surface_id: 33,
-                                rect: RenderRect { x: 70, y: 80, width: 128, height: 96 },
-                                opacity: 0.5,
-                                z_index: 1,
-                                clip_rect: None,
-                                scene_role: RenderSceneRole::Desktop,
+                                instance: RenderItemInstance {
+                                    rect: RenderRect { x: 70, y: 80, width: 128, height: 96 },
+                                    opacity: 0.5,
+                                    clip_rect: None,
+                                    z_index: 1,
+                                    scene_role: RenderSceneRole::Desktop,
+                                },
                             }),
                         ],
                     },
@@ -556,19 +561,23 @@ mod tests {
                         items: vec![
                             RenderPlanItem::Surface(SurfaceRenderItem {
                                 surface_id: 33,
-                                rect: RenderRect { x: 70, y: 80, width: 128, height: 96 },
-                                opacity: 0.5,
-                                z_index: 0,
-                                clip_rect: None,
-                                scene_role: RenderSceneRole::Desktop,
+                                instance: RenderItemInstance {
+                                    rect: RenderRect { x: 70, y: 80, width: 128, height: 96 },
+                                    opacity: 0.5,
+                                    clip_rect: None,
+                                    z_index: 0,
+                                    scene_role: RenderSceneRole::Desktop,
+                                },
                             }),
                             RenderPlanItem::Surface(SurfaceRenderItem {
                                 surface_id: 22,
-                                rect: RenderRect { x: 40, y: 50, width: 320, height: 240 },
-                                opacity: 0.7,
-                                z_index: 2,
-                                clip_rect: None,
-                                scene_role: RenderSceneRole::Desktop,
+                                instance: RenderItemInstance {
+                                    rect: RenderRect { x: 40, y: 50, width: 320, height: 240 },
+                                    opacity: 0.7,
+                                    clip_rect: None,
+                                    z_index: 2,
+                                    scene_role: RenderSceneRole::Desktop,
+                                },
                             }),
                         ],
                     },

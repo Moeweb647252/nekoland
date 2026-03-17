@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
-    OutputPresentAudit, PresentAuditElement, PresentAuditElementKind, RenderPlan, RenderPlanItem,
+    OutputPresentAudit, PresentAuditElement, PresentAuditElementKind, RenderColor,
+    RenderItemInstance, RenderPlan, RenderPlanItem,
 };
 
 use crate::traits::{OutputSnapshot, RenderSurfaceRole, RenderSurfaceSnapshot};
@@ -10,33 +11,52 @@ use crate::traits::{OutputSnapshot, RenderSurfaceRole, RenderSurfaceSnapshot};
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct OutputSurfaceRenderRecord {
     pub surface_id: u64,
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-    pub opacity: f32,
-    pub z_index: i32,
+    pub instance: RenderItemInstance,
 }
 
-pub(crate) fn render_plan_output_surface_records(
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OutputSolidRectRenderRecord {
+    pub color: RenderColor,
+    pub instance: RenderItemInstance,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OutputBackdropRenderRecord {
+    pub instance: RenderItemInstance,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum OutputRenderRecord {
+    Surface(OutputSurfaceRenderRecord),
+    SolidRect(OutputSolidRectRenderRecord),
+    Backdrop(OutputBackdropRenderRecord),
+}
+
+pub(crate) fn render_plan_output_records(
     render_plan: &RenderPlan,
     output_id: OutputId,
-) -> Vec<OutputSurfaceRenderRecord> {
+) -> Vec<OutputRenderRecord> {
     render_plan
         .outputs
         .get(&output_id)
         .into_iter()
         .flat_map(|output_plan| output_plan.items.iter())
-        .filter_map(|item| match item {
-            RenderPlanItem::Surface(item) => Some(OutputSurfaceRenderRecord {
-                surface_id: item.surface_id,
-                x: item.rect.x,
-                y: item.rect.y,
-                width: item.rect.width,
-                height: item.rect.height,
-                opacity: item.opacity,
-                z_index: item.z_index,
-            }),
+        .map(|item| match item {
+            RenderPlanItem::Surface(item) => {
+                OutputRenderRecord::Surface(OutputSurfaceRenderRecord {
+                    surface_id: item.surface_id,
+                    instance: item.instance,
+                })
+            }
+            RenderPlanItem::SolidRect(item) => {
+                OutputRenderRecord::SolidRect(OutputSolidRectRenderRecord {
+                    color: item.color,
+                    instance: item.instance,
+                })
+            }
+            RenderPlanItem::Backdrop(item) => {
+                OutputRenderRecord::Backdrop(OutputBackdropRenderRecord { instance: item.instance })
+            }
         })
         .collect()
 }
@@ -55,13 +75,9 @@ pub(crate) fn render_plan_output_surfaces_in_presentation_order(
         .filter_map(|item| match item {
             RenderPlanItem::Surface(item) => Some(OutputSurfaceRenderRecord {
                 surface_id: item.surface_id,
-                x: item.rect.x,
-                y: item.rect.y,
-                width: item.rect.width,
-                height: item.rect.height,
-                opacity: item.opacity,
-                z_index: item.z_index,
+                instance: item.instance,
             }),
+            RenderPlanItem::SolidRect(_) | RenderPlanItem::Backdrop(_) => None,
         })
         .collect()
 }
@@ -71,20 +87,26 @@ pub(crate) fn render_plan_output_present_audit_elements(
     surfaces: &HashMap<u64, RenderSurfaceSnapshot>,
     output_id: OutputId,
 ) -> Vec<PresentAuditElement> {
-    render_plan_output_surface_records(render_plan, output_id)
+    render_plan_output_records(render_plan, output_id)
         .into_iter()
-        .map(|record| PresentAuditElement {
-            surface_id: record.surface_id,
-            kind: surfaces
-                .get(&record.surface_id)
-                .map(|surface| present_audit_element_kind(surface.role))
-                .unwrap_or(PresentAuditElementKind::Unknown),
-            x: record.x,
-            y: record.y,
-            width: record.width,
-            height: record.height,
-            z_index: record.z_index,
-            opacity: record.opacity,
+        .filter_map(|record| match record {
+            OutputRenderRecord::Surface(record) => {
+                let visible_rect = record.instance.visible_rect()?;
+                Some(PresentAuditElement {
+                    surface_id: record.surface_id,
+                    kind: surfaces
+                        .get(&record.surface_id)
+                        .map(|surface| present_audit_element_kind(surface.role))
+                        .unwrap_or(PresentAuditElementKind::Unknown),
+                    x: visible_rect.x,
+                    y: visible_rect.y,
+                    width: visible_rect.width,
+                    height: visible_rect.height,
+                    z_index: record.instance.z_index,
+                    opacity: record.instance.opacity,
+                })
+            }
+            OutputRenderRecord::SolidRect(_) | OutputRenderRecord::Backdrop(_) => None,
         })
         .collect()
 }
@@ -131,14 +153,14 @@ mod tests {
         OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry,
     };
     use nekoland_ecs::resources::{
-        OutputRenderPlan, PresentAuditElementKind, RenderPlan, RenderPlanItem, RenderRect,
-        RenderSceneRole, SurfaceRenderItem,
+        OutputRenderPlan, PresentAuditElementKind, RenderItemInstance, RenderPlan, RenderPlanItem,
+        RenderRect, RenderSceneRole, SurfaceRenderItem,
     };
 
     use crate::traits::{OutputSnapshot, RenderSurfaceRole, RenderSurfaceSnapshot};
 
     use super::{
-        render_plan_output_present_audit_elements, render_plan_output_surface_records,
+        render_plan_output_present_audit_elements, render_plan_output_records,
         render_plan_output_surfaces_in_presentation_order, snapshot_present_audit_outputs,
     };
 
@@ -182,19 +204,23 @@ mod tests {
                     items: vec![
                         RenderPlanItem::Surface(SurfaceRenderItem {
                             surface_id: 11,
-                            rect: RenderRect { x: 10, y: 20, width: 30, height: 40 },
-                            opacity: 1.0,
-                            z_index: 0,
-                            clip_rect: None,
-                            scene_role: RenderSceneRole::Desktop,
+                            instance: RenderItemInstance {
+                                rect: RenderRect { x: 10, y: 20, width: 30, height: 40 },
+                                opacity: 1.0,
+                                clip_rect: None,
+                                z_index: 0,
+                                scene_role: RenderSceneRole::Desktop,
+                            },
                         }),
                         RenderPlanItem::Surface(SurfaceRenderItem {
                             surface_id: 22,
-                            rect: RenderRect { x: 50, y: 60, width: 70, height: 80 },
-                            opacity: 0.5,
-                            z_index: 1,
-                            clip_rect: None,
-                            scene_role: RenderSceneRole::Desktop,
+                            instance: RenderItemInstance {
+                                rect: RenderRect { x: 50, y: 60, width: 70, height: 80 },
+                                opacity: 0.5,
+                                clip_rect: None,
+                                z_index: 1,
+                                scene_role: RenderSceneRole::Desktop,
+                            },
                         }),
                     ],
                 },
@@ -204,9 +230,13 @@ mod tests {
         };
 
         assert_eq!(
-            render_plan_output_surface_records(&render_plan, OutputId(7))
+            render_plan_output_records(&render_plan, OutputId(7))
                 .into_iter()
-                .map(|record| record.surface_id)
+                .filter_map(|record| match record {
+                    super::OutputRenderRecord::Surface(record) => Some(record.surface_id),
+                    super::OutputRenderRecord::SolidRect(_)
+                    | super::OutputRenderRecord::Backdrop(_) => None,
+                })
                 .collect::<Vec<_>>(),
             vec![11, 22]
         );

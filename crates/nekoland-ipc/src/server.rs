@@ -955,7 +955,9 @@ fn flattened_render_plan_surface_order(
     for (_, _, _, output_id) in output_scene_order {
         let Some(output_plan) = render_plan.outputs.get(&output_id) else { continue };
         for item in &output_plan.items {
-            let RenderPlanItem::Surface(item) = item;
+            let RenderPlanItem::Surface(item) = item else {
+                continue;
+            };
             if seen.insert(item.surface_id) {
                 ordered.push(item.surface_id);
             }

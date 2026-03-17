@@ -281,6 +281,7 @@ fn layer_shell_surface_reaches_ecs_and_render_plan() {
             .flat_map(|output_plan| output_plan.items.iter())
             .filter_map(|item| match item {
                 RenderPlanItem::Surface(item) => Some(item.surface_id),
+                RenderPlanItem::SolidRect(_) | RenderPlanItem::Backdrop(_) => None,
             })
             .collect::<Vec<_>>();
         let Some(registry) = world.get_non_send_resource::<ProtocolSurfaceRegistry>() else {

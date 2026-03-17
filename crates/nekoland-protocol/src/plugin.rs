@@ -34,9 +34,12 @@ use nekoland_core::error::NekolandError;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule, ProtocolSchedule, RenderSchedule};
 use nekoland_ecs::components::{
-    DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow, OutputDevice,
-    OutputPlacement, SurfaceGeometry, WindowRole, WindowViewportVisibility, X11WindowType,
-    XdgPopup, XdgWindow,
+    OutputDevice, OutputPlacement, X11WindowType, XdgPopup, XdgWindow,
+};
+#[cfg(test)]
+use nekoland_ecs::components::{
+    DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow, WindowRole,
+    WindowViewportVisibility,
 };
 use nekoland_ecs::resources::{
     BackendInputAction, ClipboardSelectionState, CompositorClock, CompositorConfig,
@@ -44,13 +47,15 @@ use nekoland_ecs::resources::{
     KeyboardLayoutState, OutputPresentationState, PendingLayerRequests, PendingOutputEvents,
     PendingPopupServerRequests, PendingProtocolInputEvents, PendingWindowControls,
     PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests, PopupPlacement,
-    PopupServerAction, PrimaryOutputState, ResizeEdges, PrimarySelectionState, RenderPlan,
-    SurfaceExtent, SurfacePresentationRole, SurfacePresentationSnapshot, WindowServerAction,
-    X11WindowGeometry, XdgSurfaceRole,
+    PopupServerAction, ResizeEdges, PrimarySelectionState, RenderPlan, SurfaceExtent,
+    SurfacePresentationRole, SurfacePresentationSnapshot, WindowServerAction, X11WindowGeometry,
+    XdgSurfaceRole,
 };
 use nekoland_ecs::views::{
-    OutputRuntime, PopupRuntime, SurfaceRuntime, WindowVisibilityRuntime, WorkspaceRuntime,
+    OutputRuntime, PopupRuntime, WindowVisibilityRuntime, WorkspaceRuntime,
 };
+#[cfg(test)]
+use nekoland_ecs::views::SurfaceRuntime;
 use smithay::backend::input::{Axis as InputAxis, AxisSource, ButtonState, KeyState};
 use smithay::backend::allocator::{Buffer, Format as DmabufFormat, dmabuf::Dmabuf};
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
@@ -394,6 +399,7 @@ type ProtocolOutputQuery<'w, 's> = Query<
         &'static OutputPlacement,
     ),
 >;
+#[cfg(test)]
 type PointerWindows<'w, 's> = Query<
     'w,
     's,
@@ -406,7 +412,9 @@ type PointerWindows<'w, 's> = Query<
     ),
     With<XdgWindow>,
 >;
+#[cfg(test)]
 type PointerPopups<'w, 's> = Query<'w, 's, (SurfaceRuntime, &'static ChildOf), With<XdgPopup>>;
+#[cfg(test)]
 type PointerLayers<'w, 's> = Query<
     'w,
     's,
@@ -440,22 +448,14 @@ struct DispatchSeatInputParams<'w, 's> {
     pointer: Option<Res<'w, GlobalPointerPosition>>,
     render_plan: Option<Res<'w, RenderPlan>>,
     surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
-    primary_output: Option<Res<'w, PrimaryOutputState>>,
     pending_protocol_input_events: ResMut<'w, PendingProtocolInputEvents>,
     outputs: ProtocolOutputQuery<'w, 's>,
-    windows: PointerWindows<'w, 's>,
-    popups: PointerPopups<'w, 's>,
-    layers: PointerLayers<'w, 's>,
 }
 
 struct PointerFocusInputs<'a, 'w, 's> {
     render_plan: Option<&'a RenderPlan>,
     surface_presentation: Option<&'a SurfacePresentationSnapshot>,
-    primary_output: Option<&'a PrimaryOutputState>,
     outputs: &'a ProtocolOutputQuery<'w, 's>,
-    windows: &'a PointerWindows<'w, 's>,
-    popups: &'a PointerPopups<'w, 's>,
-    layers: &'a PointerLayers<'w, 's>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -923,12 +923,8 @@ fn dispatch_seat_input_system(
         pointer,
         render_plan,
         surface_presentation,
-        primary_output,
         mut pending_protocol_input_events,
         outputs,
-        windows,
-        popups,
-        layers,
     } = params;
     let time = compositor_time_millis(&clock);
     let keyboard_focus = keyboard_focus.as_deref();
@@ -936,11 +932,7 @@ fn dispatch_seat_input_system(
     let focus_inputs = PointerFocusInputs {
         render_plan: render_plan.as_deref(),
         surface_presentation: surface_presentation.as_deref(),
-        primary_output: primary_output.as_deref(),
         outputs: &outputs,
-        windows: &windows,
-        popups: &popups,
-        layers: &layers,
     };
 
     for event in pending_protocol_input_events.drain() {
@@ -3837,35 +3829,33 @@ fn pointer_focus_target(
     let output_contexts = focus_inputs
         .outputs
         .iter()
-        .map(|(_, output_id, output, placement)| {
-            (*output_id, output.name.clone(), placement.x, placement.y)
-        })
+        .map(|(_, output_id, _, placement)| (*output_id, placement.x, placement.y))
         .collect::<Vec<_>>();
     if let Some(surface_presentation) = focus_inputs.surface_presentation {
-        for (output_id, _, placement_x, placement_y) in &output_contexts {
+        for (output_id, placement_x, placement_y) in &output_contexts {
             let Some(output_plan) = render_plan.outputs.get(output_id) else { continue };
             for item in output_plan.items.iter().rev() {
-                let nekoland_ecs::resources::RenderPlanItem::Surface(item) = item;
+                let nekoland_ecs::resources::RenderPlanItem::Surface(item) = item else {
+                    continue;
+                };
                 let Some(state) = surface_presentation.surfaces.get(&item.surface_id) else {
                     continue;
                 };
                 if !state.visible || !state.input_enabled {
                     continue;
                 }
-                let bounds = GlobalSurfaceBounds {
-                    x: f64::from(*placement_x + item.rect.x),
-                    y: f64::from(*placement_y + item.rect.y),
-                    width: f64::from(item.rect.width),
-                    height: f64::from(item.rect.height),
+                let Some(bounds) =
+                    global_surface_bounds_for_item(*placement_x, *placement_y, item.instance)
+                else {
+                    continue;
                 };
-                if pointer_x < bounds.x
-                    || pointer_x >= bounds.x + bounds.width
-                    || pointer_y < bounds.y
-                    || pointer_y >= bounds.y + bounds.height
-                {
+                if !bounds.contains(pointer_x, pointer_y) {
                     continue;
                 }
-                let surface_origin = Point::<f64, Logical>::from((bounds.x, bounds.y));
+                let surface_origin = Point::<f64, Logical>::from((
+                    f64::from(*placement_x + item.instance.rect.x),
+                    f64::from(*placement_y + item.instance.rect.y),
+                ));
                 if server.is_some_and(|server| {
                     !server.pointer_focus_candidate_accepts(
                         item.surface_id,
@@ -3881,100 +3871,31 @@ fn pointer_focus_target(
 
         return None;
     }
-    let primary_output_id = focus_inputs.primary_output.and_then(|primary_output| {
-        primary_output.id.and_then(|output_id| {
-            focus_inputs
-                .outputs
-                .iter()
-                .find(|(_, candidate_id, _, _)| **candidate_id == output_id)
-                .map(|(_, candidate_id, _, _)| *candidate_id)
-        })
-    });
-    let output_ids = focus_inputs
-        .outputs
-        .iter()
-        .map(|(entity, output_id, _, _)| (entity, *output_id))
-        .collect::<HashMap<_, _>>();
-    let output_ids_by_name = focus_inputs
-        .outputs
-        .iter()
-        .map(|(_, output_id, output, _)| (output.name.clone(), *output_id))
-        .collect::<HashMap<_, _>>();
-    let output_offsets = focus_inputs
-        .outputs
-        .iter()
-        .map(|(_, output_id, _, placement)| (*output_id, (placement.x, placement.y)))
-        .collect::<HashMap<_, _>>();
-    let mut surface_bounds = HashMap::new();
-    let mut window_target_outputs_by_entity = HashMap::new();
-
-    for (entity, surface, role, viewport_visibility, background) in focus_inputs.windows.iter() {
-        if role.is_output_background() {
-            continue;
-        }
-        let target_output = background
-            .map(|background| background.output)
-            .or_else(|| viewport_visibility.and_then(|visibility| visibility.output.clone()));
-        window_target_outputs_by_entity.insert(entity, target_output.clone());
-        surface_bounds.insert(
-            surface.surface_id(),
-            global_surface_bounds(surface.geometry, target_output, &output_offsets),
-        );
-    }
-
-    for (surface, child_of) in focus_inputs.popups.iter() {
-        let target_output =
-            window_target_outputs_by_entity.get(&child_of.parent()).copied().flatten();
-        surface_bounds.insert(
-            surface.surface_id(),
-            global_surface_bounds(surface.geometry, target_output, &output_offsets),
-        );
-    }
-
-    for (surface, layer_output, desired_output_name) in focus_inputs.layers.iter() {
-        let target_output = layer_output
-            .and_then(|layer_output| output_ids.get(&layer_output.0).copied())
-            .or_else(|| {
-                desired_output_name
-                    .and_then(|desired_output_name| desired_output_name.0.as_deref())
-                    .and_then(|output_name| output_ids_by_name.get(output_name).copied())
-            })
-            .or(primary_output_id);
-        surface_bounds.insert(
-            surface.surface_id(),
-            global_surface_bounds(surface.geometry, target_output, &output_offsets),
-        );
-    }
-
-    for (output_id, _, placement_x, placement_y) in &output_contexts {
+    for (output_id, placement_x, placement_y) in &output_contexts {
         let Some(output_plan) = render_plan.outputs.get(output_id) else { continue };
         for item in output_plan.items.iter().rev() {
-            let nekoland_ecs::resources::RenderPlanItem::Surface(item) = item;
-            let bounds =
-                surface_bounds.get(&item.surface_id).copied().unwrap_or(GlobalSurfaceBounds {
-                    x: f64::from(*placement_x + item.rect.x),
-                    y: f64::from(*placement_y + item.rect.y),
-                    width: f64::from(item.rect.width),
-                    height: f64::from(item.rect.height),
-                });
-
-            if pointer_x >= bounds.x
-                && pointer_x < bounds.x + bounds.width
-                && pointer_y >= bounds.y
-                && pointer_y < bounds.y + bounds.height
-            {
-                let surface_origin = Point::<f64, Logical>::from((bounds.x, bounds.y));
-                if server.is_some_and(|server| {
-                    !server.pointer_focus_candidate_accepts(
-                        item.surface_id,
-                        location,
-                        surface_origin,
-                    )
-                }) {
-                    continue;
-                }
-                return Some(PointerSurfaceFocus { surface_id: item.surface_id, surface_origin });
+            let nekoland_ecs::resources::RenderPlanItem::Surface(item) = item else {
+                continue;
+            };
+            let Some(bounds) =
+                global_surface_bounds_for_item(*placement_x, *placement_y, item.instance)
+            else {
+                continue;
+            };
+            if !bounds.contains(pointer_x, pointer_y) {
+                continue;
             }
+
+            let surface_origin = Point::<f64, Logical>::from((
+                f64::from(*placement_x + item.instance.rect.x),
+                f64::from(*placement_y + item.instance.rect.y),
+            ));
+            if server.is_some_and(|server| {
+                !server.pointer_focus_candidate_accepts(item.surface_id, location, surface_origin)
+            }) {
+                continue;
+            }
+            return Some(PointerSurfaceFocus { surface_id: item.surface_id, surface_origin });
         }
     }
 
@@ -3989,20 +3910,24 @@ struct GlobalSurfaceBounds {
     height: f64,
 }
 
-fn global_surface_bounds(
-    geometry: &SurfaceGeometry,
-    target_output: Option<nekoland_ecs::components::OutputId>,
-    output_offsets: &HashMap<nekoland_ecs::components::OutputId, (i32, i32)>,
-) -> GlobalSurfaceBounds {
-    let (offset_x, offset_y) = target_output
-        .and_then(|target_output| output_offsets.get(&target_output).copied())
-        .unwrap_or((0, 0));
-    GlobalSurfaceBounds {
-        x: f64::from(geometry.x.saturating_add(offset_x)),
-        y: f64::from(geometry.y.saturating_add(offset_y)),
-        width: f64::from(geometry.width.max(1)),
-        height: f64::from(geometry.height.max(1)),
+impl GlobalSurfaceBounds {
+    fn contains(self, x: f64, y: f64) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
     }
+}
+
+fn global_surface_bounds_for_item(
+    placement_x: i32,
+    placement_y: i32,
+    instance: nekoland_ecs::resources::RenderItemInstance,
+) -> Option<GlobalSurfaceBounds> {
+    let rect = instance.visible_rect()?;
+    Some(GlobalSurfaceBounds {
+        x: f64::from(placement_x + rect.x),
+        y: f64::from(placement_y + rect.y),
+        width: f64::from(rect.width),
+        height: f64::from(rect.height),
+    })
 }
 
 fn current_output_timing(outputs: &Query<OutputRuntime>) -> Option<OutputTiming> {
@@ -4271,7 +4196,7 @@ mod tests {
         SurfaceGeometry, WindowViewportVisibility, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{
-        OutputRenderPlan, PrimaryOutputState, RenderPlan, RenderPlanItem, RenderRect,
+        OutputRenderPlan, RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect,
         RenderSceneRole, SurfaceRenderItem,
     };
     use smithay::reexports::wayland_server::Display;
@@ -4428,34 +4353,34 @@ mod tests {
                     items: vec![
                         RenderPlanItem::Surface(SurfaceRenderItem {
                             surface_id: 11,
-                            rect: RenderRect { x: 0, y: 0, width: 320, height: 64 },
-                            opacity: 1.0,
-                            z_index: 0,
-                            clip_rect: None,
-                            scene_role: RenderSceneRole::Desktop,
+                            instance: RenderItemInstance {
+                                rect: RenderRect { x: 0, y: 0, width: 320, height: 64 },
+                                opacity: 1.0,
+                                clip_rect: None,
+                                z_index: 0,
+                                scene_role: RenderSceneRole::Desktop,
+                            },
                         }),
                         RenderPlanItem::Surface(SurfaceRenderItem {
                             surface_id: 22,
-                            rect: RenderRect { x: 0, y: 0, width: 320, height: 64 },
-                            opacity: 1.0,
-                            z_index: 1,
-                            clip_rect: None,
-                            scene_role: RenderSceneRole::Desktop,
+                            instance: RenderItemInstance {
+                                rect: RenderRect { x: 0, y: 0, width: 320, height: 64 },
+                                opacity: 1.0,
+                                clip_rect: None,
+                                z_index: 1,
+                                scene_role: RenderSceneRole::Desktop,
+                            },
                         }),
                     ],
                 },
             )]),
         };
         let mut system_state = SystemState::<PointerHitTestState<'_, '_>>::new(&mut world);
-        let (outputs, windows, popups, layers) = system_state.get(&world);
+        let (outputs, _, _, _) = system_state.get(&world);
         let focus_inputs = PointerFocusInputs {
             render_plan: Some(&render_plan),
             surface_presentation: None,
-            primary_output: None,
             outputs: &outputs,
-            windows: &windows,
-            popups: &popups,
-            layers: &layers,
         };
 
         let Some(target) =
@@ -4493,12 +4418,6 @@ mod tests {
             placement: OutputPlacement { x: 100, y: 0 },
             ..Default::default()
         });
-        let dp1_id = world
-            .query::<(&OutputId, &OutputDevice)>()
-            .iter(&world)
-            .find(|(_, output)| output.name == "DP-1")
-            .map(|(output_id, _)| *output_id)
-            .expect("dp-1 output id");
         let dp2_id = world
             .query::<(&OutputId, &OutputDevice)>()
             .iter(&world)
@@ -4517,26 +4436,23 @@ mod tests {
                 OutputRenderPlan {
                     items: vec![RenderPlanItem::Surface(SurfaceRenderItem {
                         surface_id: 42,
-                        rect: RenderRect { x: 0, y: 0, width: 80, height: 80 },
-                        opacity: 1.0,
-                        z_index: 0,
-                        clip_rect: None,
-                        scene_role: RenderSceneRole::Desktop,
+                        instance: RenderItemInstance {
+                            rect: RenderRect { x: 0, y: 0, width: 80, height: 80 },
+                            opacity: 1.0,
+                            clip_rect: None,
+                            z_index: 0,
+                            scene_role: RenderSceneRole::Desktop,
+                        },
                     })],
                 },
             )]),
         };
         let mut system_state = SystemState::<PointerHitTestState<'_, '_>>::new(&mut world);
-        let (outputs, windows, popups, layers) = system_state.get(&world);
-        let primary_output = PrimaryOutputState { id: Some(dp1_id) };
+        let (outputs, _, _, _) = system_state.get(&world);
         let focus_inputs = PointerFocusInputs {
             render_plan: Some(&render_plan),
             surface_presentation: None,
-            primary_output: Some(&primary_output),
             outputs: &outputs,
-            windows: &windows,
-            popups: &popups,
-            layers: &layers,
         };
 
         let Some(target) =
@@ -4551,6 +4467,67 @@ mod tests {
             pointer_focus_target(10.0, 10.0, None, (10.0, 10.0).into(), &focus_inputs).is_none(),
             "output-local geometry should not be hit-tested at the wrong global origin",
         );
+    }
+
+    #[test]
+    fn pointer_hit_test_respects_render_item_clip_rect() {
+        let mut world = World::default();
+        let output_entity = world
+            .spawn(OutputBundle {
+                output: OutputDevice { name: "Virtual-1".to_owned(), ..Default::default() },
+                properties: OutputProperties {
+                    width: 128,
+                    height: 128,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                placement: OutputPlacement { x: 0, y: 0 },
+                ..Default::default()
+            })
+            .id();
+        let output_id = *world.get::<OutputId>(output_entity).expect("virtual output id");
+        world.spawn((
+            WlSurfaceHandle { id: 77 },
+            SurfaceGeometry { x: 0, y: 0, width: 80, height: 80 },
+            XdgWindow::default(),
+        ));
+
+        let render_plan = RenderPlan {
+            outputs: std::collections::BTreeMap::from([(
+                output_id,
+                OutputRenderPlan {
+                    items: vec![RenderPlanItem::Surface(SurfaceRenderItem {
+                        surface_id: 77,
+                        instance: RenderItemInstance {
+                            rect: RenderRect { x: 0, y: 0, width: 80, height: 80 },
+                            opacity: 1.0,
+                            clip_rect: Some(RenderRect { x: 40, y: 0, width: 40, height: 80 }),
+                            z_index: 0,
+                            scene_role: RenderSceneRole::Desktop,
+                        },
+                    })],
+                },
+            )]),
+        };
+        let mut system_state = SystemState::<PointerHitTestState<'_, '_>>::new(&mut world);
+        let (outputs, _, _, _) = system_state.get(&world);
+        let focus_inputs = PointerFocusInputs {
+            render_plan: Some(&render_plan),
+            surface_presentation: None,
+            outputs: &outputs,
+        };
+
+        assert!(
+            pointer_focus_target(10.0, 10.0, None, (10.0, 10.0).into(), &focus_inputs).is_none(),
+            "clipped-out region should not receive pointer focus",
+        );
+        let Some(target) =
+            pointer_focus_target(60.0, 10.0, None, (60.0, 10.0).into(), &focus_inputs)
+        else {
+            panic!("visible clipped region should still receive pointer focus");
+        };
+        assert_eq!(target.surface_id, 77);
+        assert_eq!(target.surface_origin, (0.0, 0.0).into());
     }
 
     #[test]
