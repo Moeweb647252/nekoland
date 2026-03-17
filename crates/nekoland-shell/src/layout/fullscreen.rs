@@ -6,7 +6,7 @@ use nekoland_ecs::resources::{PrimaryOutputState, WorkArea};
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
-use crate::viewport::resolve_output_state_for_workspace;
+use crate::viewport::{resolve_output_state_for_window, resolve_output_state_for_workspace};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FullscreenLayout;
@@ -24,11 +24,14 @@ pub fn fullscreen_layout_system(
             continue;
         }
         let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces);
-        let output_state =
-            resolve_output_state_for_workspace(&outputs, workspace_id, primary_output.as_deref());
         match *window.mode {
             WindowMode::Fullscreen => {
-                let Some((_, output, _, _)) = output_state.as_ref() else {
+                let Some((_, output, _, _)) = resolve_output_state_for_window(
+                    &outputs,
+                    workspace_id,
+                    Some(window.fullscreen_target.as_ref()),
+                    primary_output.as_deref(),
+                ) else {
                     continue;
                 };
                 window.geometry.x = 0;
@@ -37,6 +40,11 @@ pub fn fullscreen_layout_system(
                 window.geometry.height = output.height.max(1);
             }
             WindowMode::Maximized => {
+                let output_state = resolve_output_state_for_workspace(
+                    &outputs,
+                    workspace_id,
+                    primary_output.as_deref(),
+                );
                 let window_work_area =
                     output_state.as_ref().map_or(*work_area, |(_, _, _, work_area)| WorkArea {
                         x: work_area.x,
@@ -56,4 +64,127 @@ pub fn fullscreen_layout_system(
     }
 
     tracing::trace!("fullscreen layout system tick");
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_ecs::hierarchy::ChildOf;
+    use bevy_ecs::schedule::IntoScheduleConfigs;
+    use nekoland_core::prelude::NekolandApp;
+    use nekoland_core::schedules::LayoutSchedule;
+    use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
+    use nekoland_ecs::components::{
+        OutputCurrentWorkspace, OutputDevice, OutputKind, OutputProperties, OutputViewport,
+        OutputWorkArea, SurfaceGeometry, WindowFullscreenTarget, WindowLayout, WindowMode,
+        WindowSceneGeometry, WlSurfaceHandle, Workspace, WorkspaceId, XdgWindow,
+    };
+    use nekoland_ecs::resources::{PrimaryOutputState, WorkArea};
+    use nekoland_ecs::selectors::OutputName;
+
+    use crate::viewport::window_viewport_projection_system;
+
+    use super::fullscreen_layout_system;
+
+    #[test]
+    fn fullscreen_layout_prefers_named_target_output_over_workspace_output() {
+        let mut app = NekolandApp::new("fullscreen-target-output-test");
+        app.insert_resource(PrimaryOutputState { name: Some("Virtual-1".to_owned()) })
+            .insert_resource(WorkArea { x: 0, y: 0, width: 800, height: 600 });
+        app.inner_mut().add_systems(
+            LayoutSchedule,
+            (fullscreen_layout_system, window_viewport_projection_system).chain(),
+        );
+
+        let workspace_1 = app
+            .inner_mut()
+            .world_mut()
+            .spawn(Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true })
+            .id();
+        app.inner_mut().world_mut().spawn(Workspace {
+            id: WorkspaceId(2),
+            name: "2".to_owned(),
+            active: false,
+        });
+
+        app.inner_mut().world_mut().spawn((
+            OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "one".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 800,
+                    height: 600,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                viewport: OutputViewport::default(),
+                work_area: OutputWorkArea { x: 0, y: 0, width: 800, height: 600 },
+                ..Default::default()
+            },
+            OutputCurrentWorkspace { workspace: WorkspaceId(1) },
+        ));
+        app.inner_mut().world_mut().spawn((
+            OutputBundle {
+                output: OutputDevice {
+                    name: "HDMI-A-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "two".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1920,
+                    height: 1080,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                viewport: OutputViewport::default(),
+                work_area: OutputWorkArea { x: 0, y: 0, width: 1920, height: 1080 },
+                ..Default::default()
+            },
+            OutputCurrentWorkspace { workspace: WorkspaceId(2) },
+        ));
+
+        let window_entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                WindowBundle {
+                    surface: WlSurfaceHandle { id: 77 },
+                    geometry: SurfaceGeometry { x: 30, y: 40, width: 400, height: 300 },
+                    scene_geometry: WindowSceneGeometry { x: 30, y: 40, width: 400, height: 300 },
+                    viewport_visibility: Default::default(),
+                    buffer: Default::default(),
+                    content_version: Default::default(),
+                    window: XdgWindow::default(),
+                    layout: WindowLayout::Floating,
+                    mode: WindowMode::Fullscreen,
+                    decoration: Default::default(),
+                    border_theme: Default::default(),
+                    animation: Default::default(),
+                },
+                WindowFullscreenTarget { output: Some(OutputName::from("HDMI-A-1")) },
+                ChildOf(workspace_1),
+            ))
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        let Some(geometry) = world.get::<SurfaceGeometry>(window_entity) else {
+            panic!("fullscreen window geometry should exist");
+        };
+        let Some(visibility) =
+            world.get::<nekoland_ecs::components::WindowViewportVisibility>(window_entity)
+        else {
+            panic!("fullscreen window viewport visibility should exist");
+        };
+
+        assert_eq!((geometry.x, geometry.y), (0, 0));
+        assert_eq!((geometry.width, geometry.height), (1920, 1080));
+        assert!(visibility.visible);
+        assert_eq!(visibility.output.as_deref(), Some("HDMI-A-1"));
+    }
 }

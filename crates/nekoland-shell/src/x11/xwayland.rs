@@ -7,9 +7,9 @@ use bevy_ecs::system::SystemParam;
 use nekoland_ecs::bundles::X11WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, FloatingPosition, ServerDecoration, SurfaceGeometry, WindowAnimation,
-    WindowLayout, WindowMode, WindowPlacement, WindowPolicyState, WindowPosition,
-    WindowRestoreState, WindowRole, WindowSceneGeometry, WindowSize, WlSurfaceHandle, X11Window,
-    XdgPopup, XdgWindow,
+    WindowFullscreenTarget, WindowLayout, WindowMode, WindowPlacement, WindowPolicyState,
+    WindowPosition, WindowRestoreState, WindowRole, WindowSceneGeometry, WindowSize,
+    WlSurfaceHandle, X11Window, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
 use nekoland_ecs::resources::{
@@ -120,10 +120,6 @@ pub fn xwayland_bridge_system(
         &entity_index,
         1,
     );
-    let output_geometry = outputs
-        .iter()
-        .next()
-        .map(|(_, output)| (output.properties.width.max(1), output.properties.height.max(1)));
     let mut deferred = Vec::new();
 
     for request in pending_x11_requests.drain() {
@@ -196,7 +192,6 @@ pub fn xwayland_bridge_system(
                 if !enter_x11_window_state(
                     request.surface_id,
                     WindowMode::Maximized,
-                    output_geometry,
                     &entity_index,
                     &mut windows,
                 ) {
@@ -216,7 +211,6 @@ pub fn xwayland_bridge_system(
                 if !enter_x11_window_state(
                     request.surface_id,
                     WindowMode::Fullscreen,
-                    output_geometry,
                     &entity_index,
                     &mut windows,
                 ) {
@@ -359,6 +353,7 @@ fn map_x11_window(
             WindowBackgroundState::new(
                 &mut window.role,
                 &mut window.scene_geometry,
+                &mut window.fullscreen_target,
                 &mut window.layout,
                 &mut window.mode,
             ),
@@ -444,6 +439,7 @@ fn map_x11_window(
         width: geometry.width.max(1),
         height: geometry.height.max(1),
     };
+    let mut fullscreen_target = WindowFullscreenTarget::default();
     let mut role = WindowRole::Managed;
     let mut layout = policy.layout;
     let mut mode = policy.mode;
@@ -451,10 +447,22 @@ fn map_x11_window(
         commands,
         window_entity,
         background,
-        WindowBackgroundState::new(&mut role, &mut scene_geometry, &mut layout, &mut mode),
+        WindowBackgroundState::new(
+            &mut role,
+            &mut scene_geometry,
+            &mut fullscreen_target,
+            &mut layout,
+            &mut mode,
+        ),
         None,
     );
-    commands.entity(window_entity).insert((scene_geometry.clone(), layout, mode, role));
+    commands.entity(window_entity).insert((
+        scene_geometry.clone(),
+        fullscreen_target,
+        layout,
+        mode,
+        role,
+    ));
     if let Some(active_workspace_entity) = active_workspace_entity {
         commands.entity(window_entity).insert(ChildOf(active_workspace_entity));
     }
@@ -530,6 +538,7 @@ fn reconfigure_x11_window(
         WindowBackgroundState::new(
             &mut window.role,
             &mut window.scene_geometry,
+            &mut window.fullscreen_target,
             &mut window.layout,
             &mut window.mode,
         ),
@@ -571,7 +580,6 @@ fn reconfigure_x11_window(
 fn enter_x11_window_state(
     surface_id: u64,
     target_mode: WindowMode,
-    output_geometry: Option<(u32, u32)>,
     entity_index: &EntityIndex,
     windows: &mut X11Windows<'_, '_>,
 ) -> bool {
@@ -586,14 +594,10 @@ fn enter_x11_window_state(
         geometry: window.scene_geometry.clone(),
         layout: *window.layout,
         mode: *window.mode,
+        fullscreen_output: window.fullscreen_target.output.clone(),
     });
     *window.mode = target_mode;
-    if let Some((width, height)) = output_geometry {
-        window.geometry.x = 0;
-        window.geometry.y = 0;
-        window.geometry.width = width;
-        window.geometry.height = height;
-    }
+    window.fullscreen_target.output = None;
     true
 }
 
@@ -611,10 +615,12 @@ fn restore_or_default_x11_window_state(
 
     if let Some(restored) = window.restore.snapshot.take() {
         *window.scene_geometry = restored.geometry;
+        window.fullscreen_target.output = restored.fullscreen_output;
         *window.layout = restored.layout;
         *window.mode = restored.mode;
     } else {
         restore_window_policy(&window.policy_state, &mut window.layout, &mut window.mode);
+        window.fullscreen_target.output = None;
     }
     true
 }
@@ -722,20 +728,24 @@ mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
-    use nekoland_ecs::bundles::X11WindowBundle;
+    use nekoland_ecs::bundles::{OutputBundle, X11WindowBundle};
     use nekoland_ecs::components::{
-        BorderTheme, BufferState, ServerDecoration, SurfaceGeometry, WindowAnimation, WindowLayout,
-        WindowMode, WindowSceneGeometry, WlSurfaceHandle, Workspace, WorkspaceId, X11Window,
-        XdgWindow,
+        BorderTheme, BufferState, OutputCurrentWorkspace, OutputDevice, OutputKind,
+        OutputProperties, OutputWorkArea, ServerDecoration, SurfaceGeometry, WindowAnimation,
+        WindowLayout, WindowMode, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle,
+        Workspace, WorkspaceId, X11Window, XdgWindow,
     };
     use nekoland_ecs::events::{PointerButton, WindowClosed, WindowCreated, WindowMoved};
     use nekoland_ecs::resources::{
         CompositorConfig, ConfiguredWindowRule, EntityIndex, GlobalPointerPosition,
-        KeyboardFocusState, PendingX11Requests, ResizeEdges, WindowStackingState,
-        X11LifecycleAction, X11LifecycleRequest, X11WindowGeometry, rebuild_entity_index_system,
+        KeyboardFocusState, PendingX11Requests, PrimaryOutputState, ResizeEdges,
+        WindowStackingState, WorkArea, X11LifecycleAction, X11LifecycleRequest, X11WindowGeometry,
+        rebuild_entity_index_system,
     };
 
     use crate::interaction::{self, ActiveWindowGrab};
+    use crate::layout::fullscreen::fullscreen_layout_system;
+    use crate::viewport::window_viewport_projection_system;
 
     use super::xwayland_bridge_system;
 
@@ -792,6 +802,120 @@ mod tests {
                 border_theme: BorderTheme::default(),
                 animation: WindowAnimation::default(),
             },))
+            .id();
+
+        (app, entity)
+    }
+
+    fn setup_app_with_output_routing() -> (NekolandApp, Entity) {
+        let mut app = NekolandApp::new("xwayland-output-routing-test");
+        app.insert_resource(CompositorConfig::default())
+            .insert_resource(EntityIndex::default())
+            .insert_resource(GlobalPointerPosition { x: 320.0, y: 180.0 })
+            .insert_resource(KeyboardFocusState::default())
+            .insert_resource(ActiveWindowGrab::default())
+            .insert_resource(WindowStackingState::default())
+            .insert_resource(PendingX11Requests::default())
+            .insert_resource(nekoland_ecs::resources::PendingPopupServerRequests::default())
+            .insert_resource(PrimaryOutputState { name: Some("Virtual-1".to_owned()) })
+            .insert_resource(WorkArea { x: 0, y: 0, width: 800, height: 600 });
+        app.inner_mut()
+            .add_message::<PointerButton>()
+            .add_message::<WindowCreated>()
+            .add_message::<WindowClosed>()
+            .add_message::<WindowMoved>()
+            .add_systems(
+                LayoutSchedule,
+                (
+                    rebuild_entity_index_system,
+                    xwayland_bridge_system,
+                    fullscreen_layout_system,
+                    window_viewport_projection_system,
+                )
+                    .chain(),
+            );
+
+        app.inner_mut().world_mut().spawn(Workspace {
+            id: WorkspaceId(1),
+            name: "1".to_owned(),
+            active: true,
+        });
+        let workspace_2 = app
+            .inner_mut()
+            .world_mut()
+            .spawn(Workspace { id: WorkspaceId(2), name: "2".to_owned(), active: false })
+            .id();
+
+        app.inner_mut().world_mut().spawn((
+            OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "one".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 800,
+                    height: 600,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                work_area: OutputWorkArea { x: 0, y: 0, width: 800, height: 600 },
+                ..Default::default()
+            },
+            OutputCurrentWorkspace { workspace: WorkspaceId(1) },
+        ));
+        app.inner_mut().world_mut().spawn((
+            OutputBundle {
+                output: OutputDevice {
+                    name: "HDMI-A-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "two".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1600,
+                    height: 900,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                work_area: OutputWorkArea { x: 40, y: 80, width: 1000, height: 700 },
+                ..Default::default()
+            },
+            OutputCurrentWorkspace { workspace: WorkspaceId(2) },
+        ));
+
+        let entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                X11WindowBundle {
+                    surface: WlSurfaceHandle { id: 42 },
+                    geometry: SurfaceGeometry { x: 32, y: 48, width: 640, height: 480 },
+                    scene_geometry: WindowSceneGeometry { x: 32, y: 48, width: 640, height: 480 },
+                    viewport_visibility: Default::default(),
+                    buffer: BufferState { attached: true, scale: 1 },
+                    content_version: Default::default(),
+                    window: XdgWindow {
+                        app_id: "x11-test".to_owned(),
+                        title: "X11 Test".to_owned(),
+                        last_acked_configure: None,
+                    },
+                    x11_window: X11Window {
+                        window_id: 7,
+                        override_redirect: false,
+                        popup: false,
+                        transient_for: None,
+                        window_type: None,
+                    },
+                    layout: WindowLayout::Tiled,
+                    mode: WindowMode::Normal,
+                    decoration: ServerDecoration { enabled: true },
+                    border_theme: BorderTheme::default(),
+                    animation: WindowAnimation::default(),
+                },
+                ChildOf(workspace_2),
+            ))
             .id();
 
         (app, entity)
@@ -1001,5 +1125,59 @@ mod tests {
         };
         assert_eq!(*layout, WindowLayout::Tiled);
         assert_eq!(*mode, WindowMode::Normal);
+    }
+
+    #[test]
+    fn x11_maximize_uses_workspace_output_work_area_instead_of_first_output() {
+        let (mut app, entity) = setup_app_with_output_routing();
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<PendingX11Requests>()
+            .push(X11LifecycleRequest { surface_id: 42, action: X11LifecycleAction::Maximize });
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        let Some(geometry) = world.get::<SurfaceGeometry>(entity) else {
+            panic!("x11 window geometry should exist after maximize");
+        };
+        let Some(mode) = world.get::<WindowMode>(entity) else {
+            panic!("x11 window mode should exist after maximize");
+        };
+        let Some(visibility) = world.get::<WindowViewportVisibility>(entity) else {
+            panic!("x11 window viewport visibility should exist after maximize");
+        };
+
+        assert_eq!(*mode, WindowMode::Maximized);
+        assert_eq!((geometry.x, geometry.y), (56, 96));
+        assert_eq!((geometry.width, geometry.height), (968, 668));
+        assert_eq!(visibility.output.as_deref(), Some("HDMI-A-1"));
+    }
+
+    #[test]
+    fn x11_fullscreen_uses_workspace_output_instead_of_first_output() {
+        let (mut app, entity) = setup_app_with_output_routing();
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<PendingX11Requests>()
+            .push(X11LifecycleRequest { surface_id: 42, action: X11LifecycleAction::Fullscreen });
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        let Some(geometry) = world.get::<SurfaceGeometry>(entity) else {
+            panic!("x11 window geometry should exist after fullscreen");
+        };
+        let Some(mode) = world.get::<WindowMode>(entity) else {
+            panic!("x11 window mode should exist after fullscreen");
+        };
+        let Some(visibility) = world.get::<WindowViewportVisibility>(entity) else {
+            panic!("x11 window viewport visibility should exist after fullscreen");
+        };
+
+        assert_eq!(*mode, WindowMode::Fullscreen);
+        assert_eq!((geometry.x, geometry.y), (0, 0));
+        assert_eq!((geometry.width, geometry.height), (1600, 900));
+        assert_eq!(visibility.output.as_deref(), Some("HDMI-A-1"));
     }
 }

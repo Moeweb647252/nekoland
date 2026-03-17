@@ -8,9 +8,9 @@ pub const DEFAULT_KEYBOARD_SEAT_NAME: &str = "seat-0";
 /// Runtime keyboard-layout state for the compositor seat.
 #[derive(Resource, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KeyboardLayoutState {
-    pub seat_name: String,
-    pub layouts: Vec<ConfiguredKeyboardLayout>,
-    pub active_index: usize,
+    seat_name: String,
+    layouts: Vec<ConfiguredKeyboardLayout>,
+    active_index: usize,
 }
 
 impl Default for KeyboardLayoutState {
@@ -24,6 +24,18 @@ impl Default for KeyboardLayoutState {
 }
 
 impl KeyboardLayoutState {
+    pub fn seat_name(&self) -> &str {
+        &self.seat_name
+    }
+
+    pub fn layouts(&self) -> &[ConfiguredKeyboardLayout] {
+        &self.layouts
+    }
+
+    pub fn active_index(&self) -> usize {
+        self.normalized_active_index()
+    }
+
     pub fn from_config(layouts: &[ConfiguredKeyboardLayout], current_name: &str) -> Self {
         let mut state = Self::default();
         state.apply_layouts(layouts, Some(current_name), None);
@@ -31,10 +43,11 @@ impl KeyboardLayoutState {
     }
 
     pub fn active_layout(&self) -> &ConfiguredKeyboardLayout {
-        self.layouts
-            .get(self.active_index)
-            .or_else(|| self.layouts.first())
-            .expect("keyboard layout state should always contain at least one layout")
+        debug_assert!(
+            !self.layouts.is_empty(),
+            "keyboard layout state should always contain at least one layout"
+        );
+        &self.layouts[self.normalized_active_index()]
     }
 
     pub fn active_name(&self) -> &str {
@@ -63,7 +76,7 @@ impl KeyboardLayoutState {
             return false;
         }
 
-        let next_index = (self.active_index + 1) % self.layouts.len();
+        let next_index = (self.normalized_active_index() + 1) % self.layouts.len();
         self.activate_index(next_index)
     }
 
@@ -72,8 +85,9 @@ impl KeyboardLayoutState {
             return false;
         }
 
+        let current_index = self.normalized_active_index();
         let prev_index =
-            if self.active_index == 0 { self.layouts.len() - 1 } else { self.active_index - 1 };
+            if current_index == 0 { self.layouts.len() - 1 } else { current_index - 1 };
         self.activate_index(prev_index)
     }
 
@@ -93,9 +107,17 @@ impl KeyboardLayoutState {
         self.activate_index(index)
     }
 
+    pub fn contains_name(&self, name: &str) -> bool {
+        self.index_for_name(Some(name)).is_some()
+    }
+
     fn index_for_name(&self, name: Option<&str>) -> Option<usize> {
         let name = name?;
         self.layouts.iter().position(|layout| layout.name == name)
+    }
+
+    fn normalized_active_index(&self) -> usize {
+        self.active_index.min(self.layouts.len().saturating_sub(1))
     }
 }
 
@@ -136,5 +158,14 @@ mod tests {
         state.apply_layouts(&[layout("us", "us"), layout("fr", "fr")], Some("fr"), Some("de"));
 
         assert_eq!(state.active_name(), "fr");
+    }
+
+    #[test]
+    fn active_layout_clamps_stale_index_back_to_the_last_available_layout() {
+        let mut state = KeyboardLayoutState::from_config(&[layout("us", "us")], "us");
+        state.active_index = usize::MAX;
+
+        assert_eq!(state.active_index(), 0);
+        assert_eq!(state.active_name(), "us");
     }
 }

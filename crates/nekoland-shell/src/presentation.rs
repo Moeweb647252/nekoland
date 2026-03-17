@@ -167,6 +167,7 @@ mod tests {
                     geometry: WindowSceneGeometry { x: 200, y: 300, width: 640, height: 480 },
                     layout: WindowLayout::Floating,
                     mode: nekoland_ecs::components::WindowMode::Normal,
+                    fullscreen_output: None,
                 },
             },
         ));

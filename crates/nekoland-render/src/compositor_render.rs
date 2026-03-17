@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::hierarchy::ChildOf;
-use bevy_ecs::prelude::{Entity, Query, ResMut, With};
+use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
+use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{XdgPopup, XdgWindow};
 use nekoland_ecs::presentation_logic::{
     is_background_band_layer, is_foreground_band_layer, managed_window_visible, popup_visible,
@@ -18,20 +19,33 @@ use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrameComposer;
 
+#[derive(SystemParam)]
+pub struct FrameCompositionInputs<'w, 's> {
+    layers: Query<'w, 's, LayerRenderRuntime, With<nekoland_ecs::components::LayerShellSurface>>,
+    windows: Query<'w, 's, (Entity, WindowRenderRuntime), With<XdgWindow>>,
+    popups: Query<'w, 's, PopupRenderRuntime, With<XdgPopup>>,
+    stacking: Res<'w, WindowStackingState>,
+    workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
+    surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
+    surface_visual: Option<Res<'w, SurfaceVisualSnapshot>>,
+    render_list: ResMut<'w, RenderList>,
+}
+
 /// Builds the per-frame render list from already-laid-out surfaces plus projected visual state.
 ///
 /// Composition order is deliberate: output backgrounds, background/bottom layers, visible
 /// windows, popups whose parents are still visible, then top/overlay layers.
-pub fn compose_frame_system(
-    layers: Query<LayerRenderRuntime, With<nekoland_ecs::components::LayerShellSurface>>,
-    windows: Query<(Entity, WindowRenderRuntime), With<XdgWindow>>,
-    popups: Query<PopupRenderRuntime, With<XdgPopup>>,
-    stacking: bevy_ecs::prelude::Res<WindowStackingState>,
-    workspaces: Query<(Entity, WorkspaceRuntime)>,
-    surface_presentation: Option<bevy_ecs::prelude::Res<SurfacePresentationSnapshot>>,
-    surface_visual: Option<bevy_ecs::prelude::Res<SurfaceVisualSnapshot>>,
-    mut render_list: ResMut<RenderList>,
-) {
+pub fn compose_frame_system(composition: FrameCompositionInputs<'_, '_>) {
+    let FrameCompositionInputs {
+        layers,
+        windows,
+        popups,
+        stacking,
+        workspaces,
+        surface_presentation,
+        surface_visual,
+        mut render_list,
+    } = composition;
     let surface_presentation = surface_presentation.as_deref();
     let surface_visual = surface_visual.as_deref();
     let background_windows = windows
@@ -289,6 +303,7 @@ mod tests {
                     geometry: Default::default(),
                     layout: nekoland_ecs::components::WindowLayout::Floating,
                     mode: nekoland_ecs::components::WindowMode::Normal,
+                    fullscreen_output: None,
                 },
             },
         ));
@@ -341,6 +356,7 @@ mod tests {
                     geometry: Default::default(),
                     layout: nekoland_ecs::components::WindowLayout::Floating,
                     mode: nekoland_ecs::components::WindowMode::Normal,
+                    fullscreen_output: None,
                 },
             },
         ));
@@ -431,6 +447,7 @@ mod tests {
                         geometry: Default::default(),
                         layout: nekoland_ecs::components::WindowLayout::Floating,
                         mode: nekoland_ecs::components::WindowMode::Normal,
+                        fullscreen_output: None,
                     },
                 },
             ));

@@ -9,8 +9,8 @@ use bevy_ecs::system::SystemParam;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, ServerDecoration, SurfaceContentVersion, SurfaceGeometry,
-    WindowAnimation, WindowLayout, WindowMode, WindowPolicyState, WindowRole, WindowSceneGeometry,
-    WlSurfaceHandle, XdgPopup, XdgWindow,
+    WindowAnimation, WindowFullscreenTarget, WindowLayout, WindowMode, WindowPolicyState,
+    WindowRole, WindowSceneGeometry, WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
@@ -19,11 +19,14 @@ use nekoland_ecs::resources::{
     WindowLifecycleAction, WindowLifecycleRequest, WorkArea, XdgSurfaceRole,
 };
 use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowRuntime, WorkspaceRuntime};
-use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_target;
+use nekoland_ecs::workspace_membership::{
+    focused_or_primary_workspace_runtime_target, window_workspace_runtime_id,
+};
 
 use crate::layout::floating::{
     centre_x, centre_y, placement_work_area, should_auto_place_floating_window,
 };
+use crate::viewport::resolve_output_state_for_workspace;
 use crate::window_policy::{
     WindowBackgroundState, refresh_window_policy, sync_window_background_role,
 };
@@ -50,7 +53,7 @@ pub struct ToplevelLifecycleParams<'w, 's> {
     focused_output: Option<Res<'w, FocusedOutputState>>,
     windows: ToplevelWindows<'w, 's>,
     popups: ToplevelPopups<'w, 's>,
-    _workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
+    workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
     window_created: MessageWriter<'w, WindowCreated>,
     window_closed: MessageWriter<'w, WindowClosed>,
 }
@@ -75,7 +78,7 @@ pub fn toplevel_lifecycle_system(
         focused_output,
         mut windows,
         popups,
-        _workspaces,
+        workspaces,
         mut window_created,
         mut window_closed,
     } = toplevel;
@@ -83,8 +86,6 @@ pub fn toplevel_lifecycle_system(
     let mut known_surfaces =
         existing_surfaces.iter().map(|surface| surface.id).collect::<BTreeSet<_>>();
     let mut deferred = Vec::new();
-    let placement_area =
-        placement_work_area(&work_area, outputs.iter().next().map(|(_, output)| output.properties));
 
     for request in pending_xdg_requests.drain() {
         match request.action.clone() {
@@ -113,6 +114,7 @@ pub fn toplevel_lifecycle_system(
                 };
                 let mut layout = policy.layout;
                 let mut mode = policy.mode;
+                let mut fullscreen_target = WindowFullscreenTarget::default();
                 let window_entity = commands
                     .spawn((
                         WindowBundle {
@@ -151,12 +153,19 @@ pub fn toplevel_lifecycle_system(
                     WindowBackgroundState::new(
                         &mut role,
                         &mut scene_geometry,
+                        &mut fullscreen_target,
                         &mut layout,
                         &mut mode,
                     ),
                     None,
                 );
-                commands.entity(window_entity).insert((scene_geometry.clone(), layout, mode, role));
+                commands.entity(window_entity).insert((
+                    scene_geometry.clone(),
+                    fullscreen_target,
+                    layout,
+                    mode,
+                    role,
+                ));
                 if let Some(workspace_entity) = workspace_entity {
                     commands.entity(window_entity).insert(ChildOf(workspace_entity));
                 }
@@ -201,6 +210,14 @@ pub fn toplevel_lifecycle_system(
                     if restored.layout == WindowLayout::Floating
                         && should_auto_place_floating_window(&window.placement, &restored.geometry)
                     {
+                        let workspace_id =
+                            window_workspace_runtime_id(window.child_of, &workspaces);
+                        let placement_area = placement_area_for_workspace(
+                            &outputs,
+                            workspace_id,
+                            primary_output.as_deref(),
+                            &work_area,
+                        );
                         restored.geometry.x = centre_x(&placement_area, 0, restored.geometry.width);
                         restored.geometry.y =
                             centre_y(&placement_area, 0, restored.geometry.height);
@@ -303,6 +320,7 @@ pub fn toplevel_lifecycle_system(
                     WindowBackgroundState::new(
                         &mut window_runtime.role,
                         &mut window_runtime.scene_geometry,
+                        &mut window_runtime.fullscreen_target,
                         &mut window_runtime.layout,
                         &mut window_runtime.mode,
                     ),
@@ -314,6 +332,28 @@ pub fn toplevel_lifecycle_system(
     }
 
     pending_xdg_requests.replace(deferred);
+}
+
+fn placement_area_for_workspace(
+    outputs: &Query<(Entity, OutputRuntime)>,
+    workspace_id: Option<u32>,
+    primary_output: Option<&PrimaryOutputState>,
+    work_area: &WorkArea,
+) -> WorkArea {
+    resolve_output_state_for_workspace(outputs, workspace_id, primary_output).map_or(
+        *work_area,
+        |(_, output, _, output_work_area)| {
+            placement_work_area(
+                &WorkArea {
+                    x: output_work_area.x,
+                    y: output_work_area.y,
+                    width: output_work_area.width,
+                    height: output_work_area.height,
+                },
+                Some(output),
+            )
+        },
+    )
 }
 
 /// Debug helper kept around for tracing deferred protocol requests while the lifecycle systems are
@@ -439,16 +479,18 @@ mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
-    use nekoland_ecs::bundles::WindowBundle;
+    use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
-        BufferState, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode,
-        WindowSceneGeometry, WlSurfaceHandle, Workspace, WorkspaceId, XdgPopup, XdgWindow,
+        BufferState, OutputCurrentWorkspace, OutputDevice, OutputKind, OutputProperties,
+        OutputWorkArea, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode,
+        WindowRestoreSnapshot, WindowRestoreState, WindowSceneGeometry, WlSurfaceHandle, Workspace,
+        WorkspaceId, XdgPopup, XdgWindow,
     };
     use nekoland_ecs::events::{WindowClosed, WindowCreated};
     use nekoland_ecs::resources::{
         CompositorConfig, ConfiguredWindowRule, EntityIndex, PendingPopupServerRequests,
-        PendingXdgRequests, PopupServerAction, WindowLifecycleAction, WindowLifecycleRequest,
-        WorkArea, XdgSurfaceRole, rebuild_entity_index_system,
+        PendingXdgRequests, PopupServerAction, PrimaryOutputState, WindowLifecycleAction,
+        WindowLifecycleRequest, WorkArea, XdgSurfaceRole, rebuild_entity_index_system,
     };
 
     use super::toplevel_lifecycle_system;
@@ -564,6 +606,125 @@ mod tests {
         assert_eq!(pending.len(), 1, "destroying a toplevel should queue one popup dismiss");
         assert_eq!(pending[0].surface_id, 12);
         assert!(matches!(pending[0].action, PopupServerAction::Dismiss));
+    }
+
+    #[test]
+    fn committed_size_repositions_restore_geometry_using_workspace_output_area() {
+        let mut app = NekolandApp::new("toplevel-restore-placement-test");
+        app.insert_resource(CompositorConfig::default())
+            .insert_resource(WorkArea { x: 0, y: 0, width: 640, height: 480 })
+            .insert_resource(PrimaryOutputState { name: Some("Virtual-1".to_owned()) })
+            .insert_resource(PendingXdgRequests::default())
+            .insert_resource(PendingPopupServerRequests::default())
+            .insert_resource(EntityIndex::default());
+        app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_systems(
+            LayoutSchedule,
+            (rebuild_entity_index_system, toplevel_lifecycle_system).chain(),
+        );
+
+        app.inner_mut().world_mut().spawn(Workspace {
+            id: WorkspaceId(1),
+            name: "1".to_owned(),
+            active: true,
+        });
+        let workspace_2 = app
+            .inner_mut()
+            .world_mut()
+            .spawn(Workspace { id: WorkspaceId(2), name: "2".to_owned(), active: false })
+            .id();
+        app.inner_mut().world_mut().spawn((
+            OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "one".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 640,
+                    height: 480,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                work_area: OutputWorkArea { x: 0, y: 0, width: 640, height: 480 },
+                ..Default::default()
+            },
+            OutputCurrentWorkspace { workspace: WorkspaceId(1) },
+        ));
+        app.inner_mut().world_mut().spawn((
+            OutputBundle {
+                output: OutputDevice {
+                    name: "HDMI-A-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "two".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1600,
+                    height: 900,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                work_area: OutputWorkArea { x: 100, y: 200, width: 800, height: 500 },
+                ..Default::default()
+            },
+            OutputCurrentWorkspace { workspace: WorkspaceId(2) },
+        ));
+        let window_entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                WindowBundle {
+                    surface: WlSurfaceHandle { id: 51 },
+                    geometry: SurfaceGeometry { x: 0, y: 0, width: 300, height: 200 },
+                    scene_geometry: WindowSceneGeometry { x: 0, y: 0, width: 300, height: 200 },
+                    viewport_visibility: Default::default(),
+                    buffer: BufferState { attached: false, scale: 1 },
+                    content_version: Default::default(),
+                    window: XdgWindow::default(),
+                    layout: WindowLayout::Floating,
+                    mode: WindowMode::Fullscreen,
+                    decoration: Default::default(),
+                    border_theme: Default::default(),
+                    animation: WindowAnimation::default(),
+                },
+                WindowRestoreSnapshot {
+                    snapshot: Some(WindowRestoreState {
+                        geometry: WindowSceneGeometry { x: 0, y: 0, width: 300, height: 200 },
+                        layout: WindowLayout::Floating,
+                        mode: WindowMode::Normal,
+                        fullscreen_output: None,
+                    }),
+                },
+                ChildOf(workspace_2),
+            ))
+            .id();
+
+        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+            WindowLifecycleRequest {
+                surface_id: 51,
+                action: WindowLifecycleAction::Committed {
+                    role: XdgSurfaceRole::Toplevel,
+                    size: Some(nekoland_ecs::resources::SurfaceExtent { width: 200, height: 100 }),
+                },
+            },
+        );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let Some(restore) = app
+            .inner()
+            .world()
+            .get::<WindowRestoreSnapshot>(window_entity)
+            .and_then(|restore| restore.snapshot.as_ref())
+        else {
+            panic!("restore snapshot should remain present");
+        };
+
+        assert_eq!(
+            restore.geometry,
+            WindowSceneGeometry { x: 400, y: 400, width: 200, height: 100 }
+        );
     }
 
     #[test]

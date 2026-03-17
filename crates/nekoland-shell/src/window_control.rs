@@ -89,6 +89,7 @@ pub fn window_control_request_system(
                             WindowBackgroundState::new(
                                 &mut window.role,
                                 &mut window.scene_geometry,
+                                &mut window.fullscreen_target,
                                 &mut window.layout,
                                 &mut window.mode,
                             ),
@@ -108,6 +109,7 @@ pub fn window_control_request_system(
                             WindowBackgroundState::new(
                                 &mut window.role,
                                 &mut window.scene_geometry,
+                                &mut window.fullscreen_target,
                                 &mut window.layout,
                                 &mut window.mode,
                             ),
@@ -198,6 +200,7 @@ pub fn window_control_request_system(
                         WindowBackgroundState::new(
                             &mut window.role,
                             &mut window.scene_geometry,
+                            &mut window.fullscreen_target,
                             &mut window.layout,
                             &mut window.mode,
                         ),
@@ -217,6 +220,7 @@ pub fn window_control_request_system(
                         WindowBackgroundState::new(
                             &mut window.role,
                             &mut window.scene_geometry,
+                            &mut window.fullscreen_target,
                             &mut window.layout,
                             &mut window.mode,
                         ),

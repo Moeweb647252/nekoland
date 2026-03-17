@@ -4,8 +4,8 @@ use bevy_ecs::query::QueryData;
 use crate::components::{
     BufferState, LayerShellSurface, OutputBackgroundWindow, OutputCurrentWorkspace, OutputDevice,
     OutputPlacement, OutputProperties, OutputViewport, OutputWorkArea, PopupGrab,
-    SurfaceContentVersion, SurfaceGeometry, WindowLayout, WindowMode, WindowPlacement,
-    WindowPolicyState, WindowRestoreSnapshot, WindowRole, WindowSceneGeometry,
+    SurfaceContentVersion, SurfaceGeometry, WindowFullscreenTarget, WindowLayout, WindowMode,
+    WindowPlacement, WindowPolicyState, WindowRestoreSnapshot, WindowRole, WindowSceneGeometry,
     WindowViewportVisibility, WlSurfaceHandle, Workspace, X11Window, XdgPopup, XdgWindow,
 };
 
@@ -58,6 +58,7 @@ pub struct WindowRuntime {
     pub role: &'static mut WindowRole,
     pub background: Option<&'static mut OutputBackgroundWindow>,
     pub placement: &'static mut WindowPlacement,
+    pub fullscreen_target: &'static mut WindowFullscreenTarget,
     pub restore: &'static mut WindowRestoreSnapshot,
     pub policy_state: &'static mut WindowPolicyState,
     pub layout: &'static mut WindowLayout,

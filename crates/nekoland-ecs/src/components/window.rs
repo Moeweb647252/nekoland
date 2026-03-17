@@ -2,6 +2,7 @@ use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 
 use crate::components::WorkspaceCoord;
+use crate::selectors::OutputName;
 
 /// Metadata tracked for a mapped XDG toplevel surface.
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -14,6 +15,7 @@ use crate::components::WorkspaceCoord;
     WindowRole,
     WindowLayout,
     WindowMode,
+    WindowFullscreenTarget,
     WindowPolicyState,
     WindowPlacement,
     WindowRestoreSnapshot,
@@ -179,12 +181,20 @@ pub struct WindowRestoreState {
     pub geometry: WindowSceneGeometry,
     pub layout: WindowLayout,
     pub mode: WindowMode,
+    #[serde(default)]
+    pub fullscreen_output: Option<OutputName>,
 }
 
 /// Per-window restore snapshot storage.
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowRestoreSnapshot {
     pub snapshot: Option<WindowRestoreState>,
+}
+
+/// Optional output target used while a managed window is in fullscreen mode.
+#[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowFullscreenTarget {
+    pub output: Option<OutputName>,
 }
 
 /// Output-scoped background role that removes a window from the normal workspace scene.

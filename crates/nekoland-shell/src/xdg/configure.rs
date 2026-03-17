@@ -7,7 +7,8 @@ use nekoland_ecs::resources::{
     EntityIndex, GlobalPointerPosition, KeyboardFocusState, PendingXdgRequests,
     WindowLifecycleAction, XdgSurfaceRole,
 };
-use nekoland_ecs::views::{OutputRuntime, PopupConfigureRuntime, WindowRuntime};
+use nekoland_ecs::selectors::OutputName;
+use nekoland_ecs::views::{PopupConfigureRuntime, WindowRuntime};
 
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
 use crate::window_policy::{lock_window_policy, restore_window_policy};
@@ -29,17 +30,11 @@ pub struct ConfigureSequenceParams<'w, 's> {
     active_grab: ResMut<'w, ActiveWindowGrab>,
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
     windows: XdgWindows<'w, 's>,
-    outputs: Query<'w, 's, OutputRuntime>,
     popups: XdgPopups<'w, 's>,
 }
 
 pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>) {
     let mut deferred = Vec::new();
-    let output_geometry = configure
-        .outputs
-        .iter()
-        .next()
-        .map(|output| (output.properties.width.max(1), output.properties.height.max(1)));
 
     for request in configure.pending_xdg_requests.drain() {
         match request.action.clone() {
@@ -178,8 +173,10 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                     geometry: window.scene_geometry.clone(),
                     layout: *window.layout,
                     mode: *window.mode,
+                    fullscreen_output: window.fullscreen_target.output.clone(),
                 });
                 *window.mode = WindowMode::Maximized;
+                window.fullscreen_target.output = None;
                 configure.keyboard_focus.focused_surface = Some(window.surface_id());
             }
             WindowLifecycleAction::UnMaximize => {
@@ -198,6 +195,7 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
 
                 if let Some(restored) = window.restore.snapshot.take() {
                     *window.scene_geometry = restored.geometry;
+                    window.fullscreen_target.output = restored.fullscreen_output;
                     *window.layout = restored.layout;
                     *window.mode = restored.mode;
                 } else {
@@ -206,6 +204,7 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                         &mut window.layout,
                         &mut window.mode,
                     );
+                    window.fullscreen_target.output = None;
                 }
             }
             WindowLifecycleAction::Fullscreen { output_name } => {
@@ -226,14 +225,11 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                     geometry: window.scene_geometry.clone(),
                     layout: *window.layout,
                     mode: *window.mode,
+                    fullscreen_output: window.fullscreen_target.output.clone(),
                 });
                 *window.mode = WindowMode::Fullscreen;
-                if let Some((width, height)) = output_geometry {
-                    window.geometry.x = 0;
-                    window.geometry.y = 0;
-                    window.geometry.width = width;
-                    window.geometry.height = height;
-                }
+                window.fullscreen_target.output =
+                    output_name.as_ref().map(|output_name| OutputName::from(output_name.as_str()));
                 configure.keyboard_focus.focused_surface = Some(window.surface_id());
                 tracing::trace!(
                     surface_id = window.surface_id(),
@@ -257,6 +253,7 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
 
                 if let Some(restored) = window.restore.snapshot.take() {
                     *window.scene_geometry = restored.geometry;
+                    window.fullscreen_target.output = restored.fullscreen_output;
                     *window.layout = restored.layout;
                     *window.mode = restored.mode;
                 } else {
@@ -265,6 +262,7 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                         &mut window.layout,
                         &mut window.mode,
                     );
+                    window.fullscreen_target.output = None;
                 }
             }
             WindowLifecycleAction::Minimize => {

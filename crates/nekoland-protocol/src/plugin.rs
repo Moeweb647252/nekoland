@@ -245,6 +245,7 @@ struct ProtocolRuntimeState {
     xwayland_client: Option<Client>,
     _xwm_connection: Option<UnixStream>,
     mapped_primary_output_name: String,
+    bound_output_names: HashMap<String, String>,
     event_queue: VecDeque<ProtocolEvent>,
     next_surface_id: u64,
     presentation_sequence: u64,
@@ -2427,6 +2428,7 @@ impl ProtocolRuntimeState {
             xwayland_client: None,
             _xwm_connection: None,
             mapped_primary_output_name: primary_output.name(),
+            bound_output_names: HashMap::new(),
             event_queue: VecDeque::new(),
             next_surface_id: 1,
             presentation_sequence: 0,
@@ -3103,7 +3105,12 @@ impl XdgShellHandler for ProtocolRuntimeState {
         surface.send_configure();
         self.queue_event(ProtocolEvent::FullscreenRequested {
             surface_id,
-            output_name: output.map(|output| format!("wl_output@{:?}", output.id())),
+            output_name: output.as_ref().map(|output| {
+                self.bound_output_names
+                    .get(&wl_output_resource_key(output))
+                    .cloned()
+                    .unwrap_or_else(|| self.mapped_primary_output_name.clone())
+            }),
         });
     }
 
@@ -3460,7 +3467,9 @@ impl ShmHandler for ProtocolRuntimeState {
 }
 
 impl OutputHandler for ProtocolRuntimeState {
-    fn output_bound(&mut self, _output: Output, _wl_output: WlOutput) {}
+    fn output_bound(&mut self, output: Output, wl_output: WlOutput) {
+        self.bound_output_names.insert(wl_output_resource_key(&wl_output), output.name());
+    }
 }
 
 impl XWaylandShellHandler for ProtocolRuntimeState {
@@ -4113,6 +4122,10 @@ fn seat_name(seat: &WlSeat) -> String {
     format!("wl_seat@{:?}", seat.id())
 }
 
+fn wl_output_resource_key(output: &WlOutput) -> String {
+    format!("wl_output@{:?}", output.id())
+}
+
 fn remember_protocol_error(
     slot: &mut Option<String>,
     error: impl std::fmt::Display,
@@ -4224,7 +4237,7 @@ mod tests {
     };
     use nekoland_ecs::resources::{PrimaryOutputState, RenderElement, RenderList};
     use smithay::reexports::wayland_server::Display;
-    use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
+    use wayland_client::protocol::{wl_compositor, wl_output, wl_registry, wl_surface};
     use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
     use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
@@ -4245,10 +4258,13 @@ mod tests {
     struct TestClientState {
         globals: Vec<String>,
         base_surface: Option<wl_surface::WlSurface>,
+        output: Option<wl_output::WlOutput>,
         wm_base: Option<xdg_wm_base::XdgWmBase>,
         xdg_surface: Option<(xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel)>,
         configure_serial: Option<u32>,
         wm_capabilities: Vec<xdg_toplevel::WmCapabilities>,
+        request_fullscreen_on_first_configure: bool,
+        sent_fullscreen_request: bool,
     }
 
     #[test]
@@ -4442,10 +4458,14 @@ mod tests {
     #[test]
     fn foreign_toplevel_sync_creates_updates_and_removes_handles() {
         let socket_path = temporary_socket_path();
-        let listener = UnixListener::bind(&socket_path).expect("test UnixListener bind");
+        let Ok(listener) = UnixListener::bind(&socket_path) else {
+            panic!("test UnixListener bind");
+        };
         let client_socket_path = socket_path.clone();
         let client_thread = thread::spawn(move || UnixStream::connect(client_socket_path));
-        let (server_stream, _) = listener.accept().expect("test UnixListener accept");
+        let Ok((server_stream, _)) = listener.accept() else {
+            panic!("test UnixListener accept");
+        };
         let _ = fs::remove_file(&socket_path);
         let mut runtime = test_runtime(server_stream);
         let _ = client_thread.join();
@@ -4456,11 +4476,9 @@ mod tests {
             app_id: "app.one".to_owned(),
         }]);
         assert_eq!(runtime.state.foreign_toplevels.len(), 1);
-        let handle = runtime
-            .state
-            .foreign_toplevels
-            .get(&11)
-            .expect("foreign toplevel handle should exist after sync");
+        let Some(handle) = runtime.state.foreign_toplevels.get(&11) else {
+            panic!("foreign toplevel handle should exist after sync");
+        };
         assert_eq!(handle.title(), "One");
         assert_eq!(handle.app_id(), "app.one");
 
@@ -4469,15 +4487,58 @@ mod tests {
             title: "Renamed".to_owned(),
             app_id: "app.one".to_owned(),
         }]);
-        let handle = runtime
-            .state
-            .foreign_toplevels
-            .get(&11)
-            .expect("foreign toplevel handle should still exist after update");
+        let Some(handle) = runtime.state.foreign_toplevels.get(&11) else {
+            panic!("foreign toplevel handle should still exist after update");
+        };
         assert_eq!(handle.title(), "Renamed");
 
         runtime.sync_foreign_toplevel_list(&[]);
         assert!(runtime.state.foreign_toplevels.is_empty());
+    }
+
+    #[test]
+    fn fullscreen_request_uses_bound_output_name() {
+        let socket_path = temporary_socket_path();
+        let Ok(listener) = UnixListener::bind(&socket_path) else {
+            panic!("test UnixListener bind");
+        };
+        let (result_tx, result_rx) = mpsc::channel();
+        let client_socket_path = socket_path.clone();
+        let client_thread = thread::spawn(move || {
+            let result = run_fullscreen_test_client(client_socket_path);
+            let _ = result_tx.send(result);
+        });
+        let Ok((server_stream, _)) = listener.accept() else {
+            panic!("test UnixListener accept");
+        };
+        let _ = fs::remove_file(&socket_path);
+        let mut runtime = test_runtime(server_stream);
+
+        let Some(_) = pump_server_until_client_finishes(&mut runtime, &result_rx) else {
+            let Ok(()) = client_thread.join() else {
+                panic!("client thread should exit cleanly");
+            };
+            return;
+        };
+        let Ok(()) = client_thread.join() else {
+            panic!("client thread should exit cleanly");
+        };
+
+        for _ in 0..4 {
+            runtime.dispatch_clients();
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(
+            runtime.drain_events().iter().any(|event| matches!(
+                event,
+                ProtocolEvent::FullscreenRequested {
+                    output_name: Some(output_name),
+                    ..
+                } if output_name == "Nekoland-1"
+            )),
+            "fullscreen request should carry the bound output name",
+        );
     }
 
     fn test_runtime(server_stream: UnixStream) -> SmithayProtocolRuntime {
@@ -4509,6 +4570,19 @@ mod tests {
     }
 
     fn run_test_client(socket_path: std::path::PathBuf) -> Result<ClientSummary, String> {
+        run_configure_test_client(socket_path, false)
+    }
+
+    fn run_fullscreen_test_client(
+        socket_path: std::path::PathBuf,
+    ) -> Result<ClientSummary, String> {
+        run_configure_test_client(socket_path, true)
+    }
+
+    fn run_configure_test_client(
+        socket_path: std::path::PathBuf,
+        request_fullscreen_on_first_configure: bool,
+    ) -> Result<ClientSummary, String> {
         let stream = UnixStream::connect(&socket_path)
             .map_err(|error| format!("socket connect failed: {error}"))?;
         let conn = Connection::from_socket(stream)
@@ -4517,10 +4591,13 @@ mod tests {
         let qh = event_queue.handle();
         conn.display().get_registry(&qh, ());
 
-        let mut state = TestClientState::default();
+        let mut state =
+            TestClientState { request_fullscreen_on_first_configure, ..Default::default() };
         let deadline = Instant::now() + Duration::from_secs(2);
 
-        while state.configure_serial.is_none() {
+        while state.configure_serial.is_none()
+            || (request_fullscreen_on_first_configure && !state.sent_fullscreen_request)
+        {
             client_dispatch_once(&mut event_queue, &mut state)
                 .map_err(|error| format!("client dispatch failed: {error}"))?;
             if Instant::now() >= deadline {
@@ -4651,6 +4728,10 @@ mod tests {
                             Some(registry.bind::<xdg_wm_base::XdgWmBase, _, _>(name, 6, qh, ()));
                         state.maybe_init_toplevel(qh);
                     }
+                    "wl_output" => {
+                        state.output =
+                            Some(registry.bind::<wl_output::WlOutput, _, _>(name, 4, qh, ()));
+                    }
                     _ => {}
                 }
             }
@@ -4684,6 +4765,14 @@ mod tests {
             if let xdg_surface::Event::Configure { serial, .. } = event {
                 state.configure_serial = Some(serial);
                 xdg_surface.ack_configure(serial);
+                if state.request_fullscreen_on_first_configure
+                    && !state.sent_fullscreen_request
+                    && let (Some((_, toplevel)), Some(output)) =
+                        (state.xdg_surface.as_ref(), state.output.as_ref())
+                {
+                    toplevel.set_fullscreen(Some(output));
+                    state.sent_fullscreen_request = true;
+                }
                 if let Some(surface) = state.base_surface.as_ref() {
                     surface.commit();
                 }
@@ -4692,6 +4781,7 @@ mod tests {
     }
 
     delegate_noop!(TestClientState: ignore wl_compositor::WlCompositor);
+    delegate_noop!(TestClientState: ignore wl_output::WlOutput);
     delegate_noop!(TestClientState: ignore wl_surface::WlSurface);
     impl Dispatch<xdg_toplevel::XdgToplevel, ()> for TestClientState {
         fn event(

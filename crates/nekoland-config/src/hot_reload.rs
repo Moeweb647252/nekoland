@@ -588,7 +588,7 @@ cursor_theme = "default"
         };
 
         assert_eq!(keyboard_layout_state.active_name(), "de");
-        assert_eq!(keyboard_layout_state.layouts.len(), 2);
+        assert_eq!(keyboard_layout_state.layouts().len(), 2);
     }
 
     #[test]

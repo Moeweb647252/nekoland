@@ -1,8 +1,8 @@
 use bevy_ecs::prelude::{Commands, Entity};
 use nekoland_ecs::components::WindowRestoreState;
 use nekoland_ecs::components::{
-    OutputBackgroundWindow, WindowLayout, WindowMode, WindowPolicy, WindowPolicyState,
-    WindowRestoreSnapshot, WindowRole, WindowSceneGeometry,
+    OutputBackgroundWindow, WindowFullscreenTarget, WindowLayout, WindowMode, WindowPolicy,
+    WindowPolicyState, WindowRestoreSnapshot, WindowRole, WindowSceneGeometry,
 };
 use nekoland_ecs::selectors::OutputName;
 
@@ -72,6 +72,7 @@ pub fn restore_window_policy(
 pub struct WindowBackgroundState<'a> {
     pub role: &'a mut WindowRole,
     pub scene_geometry: &'a mut WindowSceneGeometry,
+    pub fullscreen_target: &'a mut WindowFullscreenTarget,
     pub layout: &'a mut WindowLayout,
     pub mode: &'a mut WindowMode,
 }
@@ -80,10 +81,11 @@ impl<'a> WindowBackgroundState<'a> {
     pub fn new(
         role: &'a mut WindowRole,
         scene_geometry: &'a mut WindowSceneGeometry,
+        fullscreen_target: &'a mut WindowFullscreenTarget,
         layout: &'a mut WindowLayout,
         mode: &'a mut WindowMode,
     ) -> Self {
-        Self { role, scene_geometry, layout, mode }
+        Self { role, scene_geometry, fullscreen_target, layout, mode }
     }
 }
 
@@ -94,7 +96,7 @@ pub fn sync_window_background_role(
     window: WindowBackgroundState<'_>,
     current_background: Option<OutputBackgroundWindow>,
 ) {
-    let WindowBackgroundState { role, scene_geometry, layout, mode } = window;
+    let WindowBackgroundState { role, scene_geometry, fullscreen_target, layout, mode } = window;
     let desired_output = desired_output.map(|output| output.as_str().to_owned());
     let current_output = current_background.as_ref().map(|background| background.output.clone());
 
@@ -109,6 +111,7 @@ pub fn sync_window_background_role(
                     geometry: scene_geometry.clone(),
                     layout: *layout,
                     mode: *mode,
+                    fullscreen_output: fullscreen_target.output.clone(),
                 },
             );
             *mode = WindowMode::Fullscreen;
@@ -118,6 +121,7 @@ pub fn sync_window_background_role(
         None => {
             if let Some(background) = current_background {
                 *scene_geometry = background.restore.geometry.clone();
+                fullscreen_target.output = background.restore.fullscreen_output.clone();
                 *layout = background.restore.layout;
                 *mode = background.restore.mode;
                 *role = WindowRole::Managed;
@@ -131,7 +135,8 @@ pub fn sync_window_background_role(
 mod tests {
     use bevy_ecs::prelude::World;
     use nekoland_ecs::components::{
-        OutputBackgroundWindow, WindowRestoreState, WindowRole, WindowSceneGeometry,
+        OutputBackgroundWindow, WindowFullscreenTarget, WindowRestoreState, WindowRole,
+        WindowSceneGeometry,
     };
     use nekoland_ecs::selectors::OutputName;
 
@@ -179,6 +184,7 @@ mod tests {
                 geometry: WindowSceneGeometry { x: 10, y: 20, width: 800, height: 600 },
                 layout: WindowLayout::Floating,
                 mode: WindowMode::Normal,
+                fullscreen_output: None,
             }),
         };
         let mut policy_state = WindowPolicyState {
@@ -239,6 +245,7 @@ mod tests {
         let entity = world.spawn_empty().id();
         let mut role = WindowRole::Managed;
         let mut scene_geometry = WindowSceneGeometry { x: 10, y: 20, width: 800, height: 600 };
+        let mut fullscreen_target = WindowFullscreenTarget::default();
         let mut layout = WindowLayout::Floating;
         let mut mode = WindowMode::Normal;
 
@@ -248,7 +255,13 @@ mod tests {
                 &mut commands,
                 entity,
                 Some(OutputName::from("Virtual-1")),
-                WindowBackgroundState::new(&mut role, &mut scene_geometry, &mut layout, &mut mode),
+                WindowBackgroundState::new(
+                    &mut role,
+                    &mut scene_geometry,
+                    &mut fullscreen_target,
+                    &mut layout,
+                    &mut mode,
+                ),
                 None,
             );
         }
@@ -268,7 +281,13 @@ mod tests {
                 &mut commands,
                 entity,
                 None,
-                WindowBackgroundState::new(&mut role, &mut scene_geometry, &mut layout, &mut mode),
+                WindowBackgroundState::new(
+                    &mut role,
+                    &mut scene_geometry,
+                    &mut fullscreen_target,
+                    &mut layout,
+                    &mut mode,
+                ),
                 Some(background),
             );
         }

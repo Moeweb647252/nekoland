@@ -2,8 +2,8 @@ use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::{Entity, Query, Res, With};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{
-    OutputProperties, OutputViewport, OutputWorkArea, SurfaceGeometry, WindowMode,
-    WindowSceneGeometry, XdgWindow,
+    OutputProperties, OutputViewport, OutputWorkArea, SurfaceGeometry, WindowFullscreenTarget,
+    WindowMode, WindowSceneGeometry, XdgWindow,
 };
 use nekoland_ecs::resources::PrimaryOutputState;
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
@@ -136,6 +136,24 @@ pub(crate) fn resolve_output_state_by_name<'w, 's>(
         .map(|(_, output)| (output.properties, output.viewport, output.work_area))
 }
 
+pub(crate) fn resolve_output_state_for_window<'w, 's>(
+    outputs: &'w Query<'w, 's, (Entity, OutputRuntime)>,
+    workspace_id: Option<u32>,
+    fullscreen_target: Option<&WindowFullscreenTarget>,
+    primary_output: Option<&PrimaryOutputState>,
+) -> Option<(String, &'w OutputProperties, &'w OutputViewport, &'w OutputWorkArea)> {
+    if let Some(output_name) = fullscreen_target
+        .and_then(|target| target.output.as_ref())
+        .map(nekoland_ecs::selectors::OutputName::as_str)
+        && let Some((output, viewport, work_area)) =
+            resolve_output_state_by_name(outputs, output_name)
+    {
+        return Some((output_name.to_owned(), output, viewport, work_area));
+    }
+
+    resolve_output_state_for_workspace(outputs, workspace_id, primary_output)
+}
+
 pub fn window_viewport_projection_system(
     outputs: Query<(Entity, OutputRuntime)>,
     primary_output: Option<Res<PrimaryOutputState>>,
@@ -160,9 +178,17 @@ pub fn window_viewport_projection_system(
         }
 
         let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces);
-        let Some((output_name, output, viewport, _)) =
+        let output_state = if *window.mode == WindowMode::Fullscreen {
+            resolve_output_state_for_window(
+                &outputs,
+                workspace_id,
+                Some(window.fullscreen_target.as_ref()),
+                primary_output.as_deref(),
+            )
+        } else {
             resolve_output_state_for_workspace(&outputs, workspace_id, primary_output.as_deref())
-        else {
+        };
+        let Some((output_name, output, viewport, _)) = output_state else {
             *window.viewport_visibility =
                 nekoland_ecs::components::WindowViewportVisibility { visible: false, output: None };
             continue;
