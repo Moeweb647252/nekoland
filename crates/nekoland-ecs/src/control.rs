@@ -1,6 +1,8 @@
+use std::ops::Deref;
+
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Query, Res, ResMut};
-use bevy_ecs::system::SystemParam;
+use bevy_ecs::system::{Single, SystemParam};
 
 use crate::components::{ActiveWorkspace, OutputDevice, WlSurfaceHandle, Workspace};
 use crate::resources::{
@@ -160,9 +162,9 @@ impl<'w, 's> WindowOps<'w, 's> {
 #[derive(SystemParam)]
 pub struct WorkspaceOps<'w, 's> {
     pending: ResMut<'w, PendingWorkspaceControls>,
-    active_workspaces:
-        Query<'w, 's, (Entity, &'static Workspace), bevy_ecs::query::With<ActiveWorkspace>>,
-    _marker: std::marker::PhantomData<&'s ()>,
+    active_workspace: Option<
+        Single<'w, 's, (Entity, &'static Workspace), bevy_ecs::query::With<ActiveWorkspace>>,
+    >,
 }
 
 impl<'w, 's> WorkspaceOps<'w, 's> {
@@ -211,11 +213,11 @@ impl<'w, 's> WorkspaceOps<'w, 's> {
     }
 
     pub fn active_entity(&self) -> Option<Entity> {
-        self.active_workspaces.iter().next().map(|(entity, _)| entity)
+        self.active_workspace.as_ref().map(|active_workspace| active_workspace.deref().0)
     }
 
     pub fn active_workspace(&self) -> Option<&Workspace> {
-        self.active_workspaces.iter().next().map(|(_, workspace)| workspace)
+        self.active_workspace.as_ref().map(|active_workspace| active_workspace.deref().1)
     }
 }
 

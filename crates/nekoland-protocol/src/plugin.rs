@@ -182,7 +182,7 @@ pub struct ProtocolPlugin;
 
 /// Present-phase system set that updates Smithay seat focus/hit-test state from the current frame.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ProtocolSeatDispatchSet;
+pub struct ProtocolSeatDispatchSystems;
 
 #[derive(Debug, Clone)]
 struct SurfaceIdentity(u64);
@@ -613,7 +613,7 @@ impl NekolandPlugin for ProtocolPlugin {
             )
             .add_systems(
                 PresentSchedule,
-                dispatch_seat_input_system.in_set(ProtocolSeatDispatchSet),
+                dispatch_seat_input_system.in_set(ProtocolSeatDispatchSystems),
             );
     }
 }

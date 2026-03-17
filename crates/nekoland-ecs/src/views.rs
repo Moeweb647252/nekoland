@@ -2,11 +2,12 @@ use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::query::QueryData;
 
 use crate::components::{
-    BufferState, LayerShellSurface, OutputBackgroundWindow, OutputCurrentWorkspace, OutputDevice,
-    OutputPlacement, OutputProperties, OutputViewport, OutputWorkArea, PopupGrab,
-    SurfaceContentVersion, SurfaceGeometry, WindowFullscreenTarget, WindowLayout, WindowMode,
-    WindowPlacement, WindowPolicyState, WindowRestoreSnapshot, WindowRole, WindowSceneGeometry,
-    WindowViewportVisibility, WlSurfaceHandle, Workspace, X11Window, XdgPopup, XdgWindow,
+    BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow,
+    OutputCurrentWorkspace, OutputDevice, OutputPlacement, OutputProperties, OutputViewport,
+    OutputWorkArea, PopupGrab, SurfaceContentVersion, SurfaceGeometry, WindowFullscreenTarget,
+    WindowLayout, WindowMode, WindowPlacement, WindowPolicyState, WindowRestoreSnapshot,
+    WindowRole, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle, Workspace,
+    X11Window, XdgPopup, XdgWindow,
 };
 
 /// Common read-only runtime view over one surface-backed entity with committed geometry.
@@ -215,6 +216,34 @@ pub struct LayerRenderRuntime {
 }
 
 impl<'w, 's> LayerRenderRuntimeItem<'w, 's> {
+    pub fn surface_id(&self) -> u64 {
+        self.surface.id
+    }
+}
+
+/// Read-only view for layer/output relationship reconciliation.
+#[derive(QueryData)]
+pub struct LayerOutputBindingRuntime {
+    pub desired_output_name: Option<&'static DesiredOutputName>,
+    pub layer_output: Option<&'static LayerOnOutput>,
+}
+
+/// Read-only view for backend presentation snapshot derivation.
+#[derive(QueryData)]
+pub struct BackendPresentSurfaceRuntime {
+    pub surface: &'static WlSurfaceHandle,
+    pub geometry: &'static SurfaceGeometry,
+    pub window: Option<&'static XdgWindow>,
+    pub popup: Option<&'static XdgPopup>,
+    pub layer: Option<&'static LayerShellSurface>,
+    pub viewport_visibility: Option<&'static WindowViewportVisibility>,
+    pub background: Option<&'static OutputBackgroundWindow>,
+    pub child_of: Option<&'static ChildOf>,
+    pub layer_output: Option<&'static LayerOnOutput>,
+    pub desired_output_name: Option<&'static DesiredOutputName>,
+}
+
+impl<'w, 's> BackendPresentSurfaceRuntimeItem<'w, 's> {
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }

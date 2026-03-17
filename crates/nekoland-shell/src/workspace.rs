@@ -1,13 +1,15 @@
+use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::hierarchy::{ChildOf, Children};
+use bevy_ecs::lifecycle::RemovedComponents;
 use bevy_ecs::prelude::{Commands, Entity, Has, Query, Res, ResMut, Resource, With};
-use bevy_ecs::query::Allow;
+use bevy_ecs::query::{Added, Allow, Changed, Or};
 use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{
     ActiveWorkspace, OutputCurrentWorkspace, OutputDevice, Workspace, WorkspaceId, XdgWindow,
 };
 use nekoland_ecs::resources::{
-    EntityIndex, FocusedOutputState, PendingWorkspaceControls, PrimaryOutputState, WorkspaceControl,
+    FocusedOutputState, PendingWorkspaceControls, PrimaryOutputState, WorkspaceControl,
 };
 use nekoland_ecs::selectors::{WorkspaceLookup, WorkspaceName, WorkspaceSelector};
 use nekoland_ecs::views::{OutputRuntime, WorkspaceRuntime};
@@ -25,16 +27,43 @@ type WorkspaceWindows<'w, 's> =
     Query<'w, 's, (Entity, Option<&'static ChildOf>), (With<XdgWindow>, Allow<Disabled>)>;
 type WorkspaceOutputs<'w, 's> =
     Query<'w, 's, (Entity, &'static OutputDevice, Option<&'static OutputCurrentWorkspace>)>;
+type WorkspaceEntities<'w, 's> = Query<'w, 's, (), With<Workspace>>;
+type ActiveWorkspaceEntities<'w, 's> = Query<'w, 's, (), With<ActiveWorkspace>>;
+type WorkspaceAdditions<'w, 's> = Query<'w, 's, (), Added<Workspace>>;
+type WorkspaceOutputRouteChanges<'w, 's> = Query<
+    'w,
+    's,
+    (),
+    Or<(
+        Added<OutputDevice>,
+        Changed<OutputDevice>,
+        Added<OutputCurrentWorkspace>,
+        Changed<OutputCurrentWorkspace>,
+    )>,
+>;
 
 #[derive(SystemParam)]
 pub struct WorkspaceCommandParams<'w, 's> {
     pending_workspace_controls: ResMut<'w, PendingWorkspaceControls>,
-    entity_index: ResMut<'w, EntityIndex>,
     primary_output: Option<Res<'w, PrimaryOutputState>>,
     focused_output: Option<Res<'w, FocusedOutputState>>,
     workspaces: Query<'w, 's, (Entity, WorkspaceRuntime), Allow<Disabled>>,
     outputs: WorkspaceOutputs<'w, 's>,
     windows: WorkspaceWindows<'w, 's>,
+}
+
+#[derive(SystemParam)]
+pub(crate) struct WorkspaceReconciliationState<'w, 's> {
+    pending_workspace_controls: Res<'w, PendingWorkspaceControls>,
+    workspaces: WorkspaceEntities<'w, 's>,
+    active_workspaces: ActiveWorkspaceEntities<'w, 's>,
+    workspace_additions: WorkspaceAdditions<'w, 's>,
+    output_route_changes: WorkspaceOutputRouteChanges<'w, 's>,
+    primary_output: Option<Res<'w, PrimaryOutputState>>,
+    focused_output: Option<Res<'w, FocusedOutputState>>,
+    removed_workspaces: RemovedComponents<'w, 's, Workspace>,
+    removed_outputs: RemovedComponents<'w, 's, OutputDevice>,
+    removed_output_routes: RemovedComponents<'w, 's, OutputCurrentWorkspace>,
 }
 
 /// Ensures the compositor always has at least one active workspace entity.
@@ -57,6 +86,37 @@ pub fn workspace_switch_system(
     }
 
     tracing::trace!(count = workspaces.iter().count(), "workspace housekeeping tick");
+}
+
+pub(crate) fn workspace_reconciliation_needed(state: WorkspaceReconciliationState<'_, '_>) -> bool {
+    let WorkspaceReconciliationState {
+        pending_workspace_controls,
+        workspaces,
+        active_workspaces,
+        workspace_additions,
+        output_route_changes,
+        primary_output,
+        focused_output,
+        removed_workspaces,
+        removed_outputs,
+        removed_output_routes,
+    } = state;
+
+    if !pending_workspace_controls.is_empty() || workspaces.is_empty() {
+        return true;
+    }
+
+    if active_workspaces.iter().take(2).count() != 1 {
+        return true;
+    }
+
+    !workspace_additions.is_empty()
+        || !output_route_changes.is_empty()
+        || !removed_workspaces.is_empty()
+        || !removed_outputs.is_empty()
+        || !removed_output_routes.is_empty()
+        || primary_output.as_ref().is_some_and(|primary_output| primary_output.is_changed())
+        || focused_output.as_ref().is_some_and(|focused_output| focused_output.is_changed())
 }
 
 /// Applies create/switch/destroy requests and keeps child window relationships in sync when a
@@ -99,11 +159,6 @@ pub fn workspace_command_system(
                         active: false,
                     })
                     .id();
-                workspace_commands.entity_index.insert_workspace(
-                    workspace_entity,
-                    workspace_id,
-                    workspace_name.clone(),
-                );
                 snapshot.push((workspace_entity, workspace_id, workspace_name, false));
             }
             WorkspaceControl::SwitchOrCreate { target } => {
@@ -120,11 +175,6 @@ pub fn workspace_command_system(
                                 active: true,
                             })
                             .id();
-                        workspace_commands.entity_index.insert_workspace(
-                            workspace_entity,
-                            workspace_id,
-                            workspace_name.clone(),
-                        );
                         (workspace_entity, workspace_id, workspace_name)
                     });
 
@@ -202,7 +252,6 @@ pub fn workspace_command_system(
                     existing_workspace.workspace.active = existing_workspace.id().0 == fallback_id;
                 }
 
-                workspace_commands.entity_index.remove_workspace_entity(target_entity);
                 commands.entity(target_entity).despawn();
 
                 snapshot.retain(|(_, id, _, _)| *id != target_id);
@@ -218,7 +267,6 @@ pub fn workspace_command_system(
 /// multiple outputs at once.
 pub fn output_workspace_housekeeping_system(
     mut commands: Commands,
-    mut entity_index: ResMut<EntityIndex>,
     mut remembered_outputs: ResMut<RememberedOutputWorkspaceState>,
     outputs: Query<(Entity, &OutputDevice, Option<&OutputCurrentWorkspace>)>,
     mut workspaces: Query<(Entity, WorkspaceRuntime), Allow<Disabled>>,
@@ -276,11 +324,6 @@ pub fn output_workspace_housekeeping_system(
                             active: false,
                         })
                         .id();
-                    entity_index.insert_workspace(
-                        workspace_entity,
-                        workspace_id,
-                        workspace_name.clone(),
-                    );
                     snapshot.push((workspace_entity, workspace_id, workspace_name.clone()));
                     (workspace_entity, workspace_id, workspace_name)
                 })
@@ -334,8 +377,12 @@ pub fn sync_active_workspace_marker_system(
         });
 
     for (entity, mut workspace, has_active_marker) in &mut workspaces {
-        workspace.workspace.active = Some(entity) == active_workspace;
-        if Some(entity) == active_workspace {
+        let is_active = Some(entity) == active_workspace;
+        if workspace.workspace.active != is_active {
+            workspace.workspace.active = is_active;
+        }
+
+        if is_active {
             if !has_active_marker {
                 commands.entity(entity).insert(ActiveWorkspace);
             }
@@ -496,6 +543,7 @@ fn resolve_preferred_workspace_id(
 mod tests {
     use bevy_ecs::entity_disabling::Disabled;
     use bevy_ecs::hierarchy::ChildOf;
+    use bevy_ecs::prelude::{ResMut, Resource};
     use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
@@ -513,7 +561,15 @@ mod tests {
         RememberedOutputWorkspaceState, output_workspace_housekeeping_system,
         remember_output_workspace_routes_system, sync_active_workspace_marker_system,
         sync_workspace_disabled_state_system, workspace_command_system,
+        workspace_reconciliation_needed,
     };
+
+    #[derive(Debug, Default, Resource)]
+    struct WorkspaceReconciliationAudit(u32);
+
+    fn record_workspace_reconciliation(mut audit: ResMut<WorkspaceReconciliationAudit>) {
+        audit.0 += 1;
+    }
 
     #[test]
     fn destroying_workspace_reparents_windows_to_fallback_workspace() {
@@ -715,6 +771,66 @@ mod tests {
         };
         assert!(preferred_workspace_state.active);
         assert!(world.get::<ActiveWorkspace>(preferred_workspace).is_some());
+    }
+
+    #[test]
+    fn workspace_reconciliation_condition_stops_ticking_when_state_is_stable() {
+        let mut app = NekolandApp::new("workspace-reconciliation-condition-test");
+        app.insert_resource(PendingWorkspaceControls::default())
+            .insert_resource(FocusedOutputState { name: Some("Virtual-1".to_owned()) })
+            .insert_resource(PrimaryOutputState { name: Some("Virtual-1".to_owned()) })
+            .insert_resource(WorkspaceReconciliationAudit::default());
+        app.inner_mut().add_systems(
+            LayoutSchedule,
+            record_workspace_reconciliation.run_if(workspace_reconciliation_needed),
+        );
+
+        app.inner_mut().world_mut().spawn((
+            Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true },
+            ActiveWorkspace,
+        ));
+        app.inner_mut().world_mut().spawn((
+            OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "one".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1280,
+                    height: 720,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                ..Default::default()
+            },
+            OutputCurrentWorkspace { workspace: WorkspaceId(1) },
+        ));
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        {
+            let Some(audit) = app.inner().world().get_resource::<WorkspaceReconciliationAudit>()
+            else {
+                panic!("workspace reconciliation audit should exist");
+            };
+            assert_eq!(
+                audit.0, 1,
+                "stable workspace routing should stop re-triggering the condition"
+            );
+        }
+
+        app.inner_mut().world_mut().resource_mut::<FocusedOutputState>().name =
+            Some("HDMI-A-1".to_owned());
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let Some(audit) = app.inner().world().get_resource::<WorkspaceReconciliationAudit>() else {
+            panic!("workspace reconciliation audit should still exist");
+        };
+        assert_eq!(audit.0, 2, "focused-output changes should re-trigger reconciliation once");
     }
 
     #[test]

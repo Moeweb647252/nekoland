@@ -42,7 +42,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 pub use plugin::{
     ProtocolCursorImage, ProtocolCursorState, ProtocolDmabufSupport, ProtocolPlugin,
-    ProtocolSeatDispatchSet, ProtocolServerState, XWaylandServerState,
+    ProtocolSeatDispatchSystems, ProtocolServerState, XWaylandServerState,
 };
 
 /// Trait implemented by protocol-state marker types that advertise one or more Wayland globals.

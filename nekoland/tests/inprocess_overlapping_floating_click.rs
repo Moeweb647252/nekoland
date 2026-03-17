@@ -18,7 +18,7 @@ use nekoland_ecs::resources::{
     PendingProtocolInputEvents, PendingWindowControls, RenderList,
 };
 use nekoland_ecs::selectors::SurfaceId;
-use nekoland_protocol::{ProtocolSeatDispatchSet, ProtocolServerState};
+use nekoland_protocol::{ProtocolSeatDispatchSystems, ProtocolServerState};
 use tempfile::tempfile;
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
@@ -134,9 +134,10 @@ fn overlapping_floating_click_targets_topmost_wayland_client() {
         frame_timeout: Duration::from_millis(1),
         max_frames: Some(180),
     });
-    app.inner_mut()
-        .init_resource::<OverlapClickPump>()
-        .add_systems(PresentSchedule, drive_overlap_click_scenario.after(ProtocolSeatDispatchSet));
+    app.inner_mut().init_resource::<OverlapClickPump>().add_systems(
+        PresentSchedule,
+        drive_overlap_click_scenario.after(ProtocolSeatDispatchSystems),
+    );
 
     let socket_path = {
         let world = app.inner().world();

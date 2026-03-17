@@ -5,13 +5,13 @@ use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::events::{
     ExternalCommandFailed, ExternalCommandLaunched, WindowClosed, WindowCreated, WindowMoved,
 };
+use nekoland_ecs::resources::register_entity_index_hooks;
 use nekoland_ecs::resources::{
     CommandHistoryState, PendingExternalCommandRequests, PendingLayerRequests,
     PendingPopupServerRequests, PendingWindowControls, PendingWindowServerRequests,
     PendingWorkspaceControls, PendingX11Requests, PendingXdgRequests, SurfacePresentationSnapshot,
     WindowStackingState, WorkArea, WorkspaceTilingState,
 };
-use nekoland_ecs::resources::{EntityIndex, rebuild_entity_index_system};
 
 use crate::{
     commands, decorations, focus,
@@ -35,7 +35,6 @@ impl NekolandPlugin for ShellPlugin {
             .init_resource::<PendingWindowServerRequests>()
             .init_resource::<PendingWorkspaceControls>()
             .init_resource::<WorkArea>()
-            .init_resource::<EntityIndex>()
             .init_resource::<ActiveWindowGrab>()
             .init_resource::<WindowStackingState>()
             .init_resource::<WorkspaceTilingState>()
@@ -43,8 +42,11 @@ impl NekolandPlugin for ShellPlugin {
             .init_resource::<workspace::RememberedOutputWorkspaceState>()
             .init_resource::<CommandHistoryState>()
             .init_resource::<commands::StartupActionState>()
-            .init_resource::<PendingExternalCommandRequests>()
-            .add_message::<WindowCreated>()
+            .init_resource::<PendingExternalCommandRequests>();
+
+        register_entity_index_hooks(app.world_mut());
+
+        app.add_message::<WindowCreated>()
             .add_message::<WindowClosed>()
             .add_message::<WindowMoved>()
             .add_message::<ExternalCommandLaunched>()
@@ -55,18 +57,23 @@ impl NekolandPlugin for ShellPlugin {
                 // normalized state to derive geometry, focus, and server-side decorations.
                 (
                     (
-                        rebuild_entity_index_system,
                         commands::startup_action_queue_system,
                         commands::external_command_launch_system,
                         commands::command_history_system,
-                        workspace::workspace_switch_system,
-                        workspace::workspace_command_system,
-                        workspace::output_workspace_housekeeping_system,
-                        workspace::remember_output_workspace_routes_system,
-                        workspace::sync_active_workspace_marker_system,
-                        workspace::sync_workspace_disabled_state_system,
+                        (
+                            workspace::workspace_switch_system,
+                            workspace::workspace_command_system,
+                            workspace::output_workspace_housekeeping_system,
+                            workspace::remember_output_workspace_routes_system,
+                            workspace::sync_active_workspace_marker_system,
+                            workspace::sync_workspace_disabled_state_system,
+                        )
+                            .chain()
+                            .run_if(workspace::workspace_reconciliation_needed),
                         layer::arrange::layer_lifecycle_system,
-                        layer::arrange::sync_layer_output_relationships_system,
+                        layer::arrange::sync_layer_output_relationships_system.run_if(
+                            layer::arrange::layer_output_relationship_reconciliation_needed,
+                        ),
                         xdg::toplevel::toplevel_lifecycle_system,
                         xdg::popup::popup_management_system,
                         xdg::configure::configure_sequence_system,

@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
+use bevy_ecs::lifecycle::RemovedComponents;
 use bevy_ecs::prelude::{Commands, Entity, Query, ResMut, With};
+use bevy_ecs::query::{Added, Changed, Or};
 use nekoland_ecs::bundles::{LayerSurfaceBundle, LayerSurfaceBundleSpec};
 use nekoland_ecs::components::{
     BufferState, DesiredOutputName, LayerAnchor, LayerOnOutput, LayerShellSurface, OutputDevice,
@@ -9,7 +11,7 @@ use nekoland_ecs::components::{
 use nekoland_ecs::resources::{
     EntityIndex, LayerLifecycleAction, PendingLayerRequests, PrimaryOutputState, WorkArea,
 };
-use nekoland_ecs::views::OutputRuntime;
+use nekoland_ecs::views::{LayerOutputBindingRuntime, OutputRuntime};
 
 type LayerLifecycleSurfaces<'w, 's> = Query<
     'w,
@@ -25,12 +27,16 @@ type LayerLifecycleSurfaces<'w, 's> = Query<
     With<LayerShellSurface>,
 >;
 type LayerOutputDevices<'w, 's> = Query<'w, 's, (Entity, &'static OutputDevice)>;
-type LayerRelationshipQuery<'w, 's> = Query<
+type LayerRelationshipQuery<'w, 's> =
+    Query<'w, 's, (Entity, LayerOutputBindingRuntime), With<LayerShellSurface>>;
+type LayerOutputRelationshipChanges<'w, 's> = Query<
     'w,
     's,
-    (Entity, Option<&'static DesiredOutputName>, Option<&'static LayerOnOutput>),
-    With<LayerShellSurface>,
+    (),
+    (With<LayerShellSurface>, Or<(Added<DesiredOutputName>, Changed<DesiredOutputName>)>),
 >;
+type LayerOutputDeviceChanges<'w, 's> =
+    Query<'w, 's, (), Or<(Added<OutputDevice>, Changed<OutputDevice>)>>;
 type LayerOutputs<'w, 's> = Query<'w, 's, (Entity, OutputRuntime)>;
 type ArrangedLayers<'w, 's> = Query<
     'w,
@@ -159,19 +165,33 @@ pub fn layer_lifecycle_system(
 }
 
 /// Keeps each layer surface attached to the output entity named in its protocol state.
+pub(crate) fn layer_output_relationship_reconciliation_needed(
+    layer_output_changes: LayerOutputRelationshipChanges<'_, '_>,
+    output_changes: LayerOutputDeviceChanges<'_, '_>,
+    removed_output_names: RemovedComponents<DesiredOutputName>,
+    removed_outputs: RemovedComponents<OutputDevice>,
+) -> bool {
+    !layer_output_changes.is_empty()
+        || !output_changes.is_empty()
+        || !removed_output_names.is_empty()
+        || !removed_outputs.is_empty()
+}
+
 pub fn sync_layer_output_relationships_system(
     mut commands: Commands,
     entity_index: bevy_ecs::prelude::Res<EntityIndex>,
     outputs: LayerOutputDevices<'_, '_>,
     layers: LayerRelationshipQuery<'_, '_>,
 ) {
-    for (entity, desired_output_name, layer_output) in &layers {
+    for (entity, binding) in &layers {
         let desired_output = resolve_output_entity(
-            desired_output_name.and_then(|desired_output_name| desired_output_name.0.as_deref()),
+            binding
+                .desired_output_name
+                .and_then(|desired_output_name| desired_output_name.0.as_deref()),
             &entity_index,
             &outputs,
         );
-        match (desired_output, layer_output.map(|layer_output| layer_output.0)) {
+        match (desired_output, binding.layer_output.map(|layer_output| layer_output.0)) {
             (Some(desired_output), Some(current_output)) if desired_output == current_output => {}
             (Some(desired_output), _) => {
                 commands.entity(entity).insert(LayerOnOutput(desired_output));
@@ -458,26 +478,27 @@ mod tests {
         WlSurfaceHandle,
     };
     use nekoland_ecs::resources::{
-        EntityIndex, LayerLifecycleAction, LayerSurfaceCreateSpec, PendingLayerRequests,
-        PrimaryOutputState, WorkArea, rebuild_entity_index_system,
+        LayerLifecycleAction, LayerSurfaceCreateSpec, PendingLayerRequests, PrimaryOutputState,
+        WorkArea, register_entity_index_hooks,
     };
 
     use super::{
-        layer_arrangement_system, layer_lifecycle_system, sync_layer_output_relationships_system,
+        layer_arrangement_system, layer_lifecycle_system,
+        layer_output_relationship_reconciliation_needed, sync_layer_output_relationships_system,
         work_area_system,
     };
 
     #[test]
     fn layer_creation_inserts_output_relationship_when_output_exists() {
         let mut app = NekolandApp::new("layer-output-relationship-test");
-        app.insert_resource(EntityIndex::default())
-            .insert_resource(PendingLayerRequests::default());
+        app.insert_resource(PendingLayerRequests::default());
+        register_entity_index_hooks(app.inner_mut().world_mut());
         app.inner_mut().add_systems(
             LayoutSchedule,
             (
-                rebuild_entity_index_system,
                 layer_lifecycle_system,
-                sync_layer_output_relationships_system,
+                sync_layer_output_relationships_system
+                    .run_if(layer_output_relationship_reconciliation_needed),
             )
                 .chain(),
         );
@@ -901,9 +922,11 @@ mod tests {
     #[test]
     fn sync_layer_output_relationships_insert_when_output_appears_late() {
         let mut app = NekolandApp::new("layer-output-sync-insert-test");
-        app.insert_resource(EntityIndex::default()).inner_mut().add_systems(
+        register_entity_index_hooks(app.inner_mut().world_mut());
+        app.inner_mut().add_systems(
             LayoutSchedule,
-            (rebuild_entity_index_system, sync_layer_output_relationships_system).chain(),
+            sync_layer_output_relationships_system
+                .run_if(layer_output_relationship_reconciliation_needed),
         );
 
         let layer = app
@@ -959,9 +982,11 @@ mod tests {
     #[test]
     fn sync_layer_output_relationships_remove_when_output_disappears() {
         let mut app = NekolandApp::new("layer-output-sync-remove-test");
-        app.insert_resource(EntityIndex::default()).inner_mut().add_systems(
+        register_entity_index_hooks(app.inner_mut().world_mut());
+        app.inner_mut().add_systems(
             LayoutSchedule,
-            (rebuild_entity_index_system, sync_layer_output_relationships_system).chain(),
+            sync_layer_output_relationships_system
+                .run_if(layer_output_relationship_reconciliation_needed),
         );
 
         let output = app
