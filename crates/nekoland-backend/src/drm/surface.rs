@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use drm_fourcc::DrmFourcc;
 use nekoland_ecs::resources::{
-    CompositorConfig, CursorRenderState, DamageRect, OutputDamageRegions, RenderPlan, RenderRect,
+    CompositorConfig, CursorRenderState, DamageRect, OutputDamageRegions, RenderPassGraph,
+    RenderPlan, RenderRect,
 };
 use nekoland_protocol::{ProtocolCursorState, ProtocolSurfaceRegistry};
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags};
@@ -25,7 +26,7 @@ use smithay::render_elements;
 use smithay::utils::{Physical, Rectangle, Size, Transform};
 
 use crate::common::cursor::{SoftwareCursorCache, cursor_position_on_output, cursor_render_source};
-use crate::common::render_order::render_plan_output_surfaces_in_presentation_order;
+use crate::common::render_order::render_graph_output_surfaces_in_presentation_order;
 use crate::traits::OutputSnapshot;
 
 use super::device::{ConnectorInfo, SharedDrmState};
@@ -54,6 +55,7 @@ pub(crate) struct DrmPresentCtx<'a> {
     pub cursor_render: Option<&'a CursorRenderState>,
     pub cursor_image: Option<&'a ProtocolCursorState>,
     pub output_damage_regions: &'a OutputDamageRegions,
+    pub render_graph: &'a RenderPassGraph,
     pub render_plan: &'a RenderPlan,
     pub surface_registry: Option<&'a ProtocolSurfaceRegistry>,
     pub session_state: &'a SharedDrmSessionState,
@@ -77,6 +79,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         cursor_render,
         cursor_image,
         output_damage_regions,
+        render_graph,
         render_plan,
         surface_registry,
         session_state,
@@ -198,9 +201,11 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
             }
         }
         let mut elements = cursor_elements;
-        for render_element in
-            render_plan_output_surfaces_in_presentation_order(render_plan, output.output_id)
-        {
+        for render_element in render_graph_output_surfaces_in_presentation_order(
+            render_graph,
+            render_plan,
+            output.output_id,
+        ) {
             let Some(clip_rect) = render_element.instance.visible_rect() else {
                 continue;
             };

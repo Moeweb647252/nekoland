@@ -15,7 +15,8 @@ use nekoland_ecs::resources::{
     FocusedOutputState, GlobalPointerPosition, OutputDamageRegions, OutputPresentationState,
     PendingBackendInputEvents, PendingOutputControls, PendingOutputPresentationEvents,
     PendingOutputServerRequests, PendingProtocolInputEvents, PresentAuditState, PrimaryOutputState,
-    RenderPlan, SurfacePresentationRole, SurfacePresentationSnapshot, VirtualOutputCaptureState,
+    RenderPassGraph, RenderPlan, SurfacePresentationRole, SurfacePresentationSnapshot,
+    VirtualOutputCaptureState,
 };
 use nekoland_ecs::views::{BackendPresentSurfaceRuntime, OutputRuntime};
 use nekoland_protocol::{
@@ -71,6 +72,7 @@ struct BackendPresentState<'w, 's> {
     primary_output: Option<Res<'w, PrimaryOutputState>>,
     output_damage_regions: Res<'w, OutputDamageRegions>,
     surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
+    render_graph: Res<'w, RenderPassGraph>,
     render_plan: Res<'w, RenderPlan>,
     present_audit: ResMut<'w, PresentAuditState>,
     protocol_cursor: Option<NonSend<'w, ProtocolCursorState>>,
@@ -216,6 +218,7 @@ fn backend_present_system(
         primary_output,
         output_damage_regions,
         surface_presentation,
+        render_graph,
         render_plan,
         mut present_audit,
         protocol_cursor,
@@ -333,6 +336,7 @@ fn backend_present_system(
         cursor_image: protocol_cursor.as_deref(),
         output_damage_regions: &output_damage_regions,
         outputs: &output_snapshots,
+        render_graph: &render_graph,
         render_plan: &render_plan,
         surfaces: &surface_snapshots,
         surface_registry: surface_registry.as_deref(),
@@ -347,6 +351,7 @@ fn backend_present_system(
         frame,
         uptime_millis,
         &output_snapshots,
+        &render_graph,
         &render_plan,
         &surface_snapshots,
     );
@@ -381,8 +386,9 @@ mod tests {
         OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry, WlSurfaceHandle,
     };
     use nekoland_ecs::resources::{
-        CompositorClock, OutputDamageRegions, OutputRenderPlan, PresentAuditState,
-        RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
+        CompositorClock, OutputDamageRegions, OutputExecutionPlan, OutputRenderPlan,
+        PresentAuditState, RenderItemInstance, RenderPassGraph, RenderPassId, RenderPassNode,
+        RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderTargetId, RenderTargetKind,
         SurfacePresentationSnapshot, SurfacePresentationState, SurfaceRenderItem,
         VirtualOutputCaptureState,
     };
@@ -435,6 +441,7 @@ mod tests {
             .init_resource::<OutputDamageRegions>()
             .init_resource::<PresentAuditState>()
             .init_resource::<VirtualOutputCaptureState>()
+            .init_resource::<RenderPassGraph>()
             .add_systems(PresentSchedule, backend_present_system);
 
         let hdmi = app
@@ -580,6 +587,50 @@ mod tests {
                                 },
                             }),
                         ],
+                    },
+                ),
+            ]),
+        });
+        app.world_mut().insert_resource(RenderPassGraph {
+            outputs: std::collections::BTreeMap::from([
+                (
+                    hdmi_id,
+                    OutputExecutionPlan {
+                        targets: std::collections::BTreeMap::from([(
+                            RenderTargetId(1),
+                            RenderTargetKind::OutputSwapchain(hdmi_id),
+                        )]),
+                        passes: std::collections::BTreeMap::from([(
+                            RenderPassId(1),
+                            RenderPassNode::scene(
+                                RenderSceneRole::Desktop,
+                                RenderTargetId(1),
+                                Vec::new(),
+                                vec![0, 1],
+                            ),
+                        )]),
+                        ordered_passes: vec![RenderPassId(1)],
+                        terminal_passes: vec![RenderPassId(1)],
+                    },
+                ),
+                (
+                    dp_id,
+                    OutputExecutionPlan {
+                        targets: std::collections::BTreeMap::from([(
+                            RenderTargetId(2),
+                            RenderTargetKind::OutputSwapchain(dp_id),
+                        )]),
+                        passes: std::collections::BTreeMap::from([(
+                            RenderPassId(2),
+                            RenderPassNode::scene(
+                                RenderSceneRole::Desktop,
+                                RenderTargetId(2),
+                                Vec::new(),
+                                vec![0, 1],
+                            ),
+                        )]),
+                        ordered_passes: vec![RenderPassId(2)],
+                        terminal_passes: vec![RenderPassId(2)],
                     },
                 ),
             ]),

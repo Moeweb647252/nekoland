@@ -1,59 +1,47 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
-use bevy_ecs::hierarchy::ChildOf;
-use bevy_ecs::prelude::{Entity, Local, Query, Res, ResMut, With};
+use bevy_ecs::prelude::{Local, Query, Res, ResMut};
 use bevy_ecs::system::SystemParam;
-use nekoland_ecs::components::{
-    BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputDevice, OutputId,
-    SurfaceContentVersion, SurfaceGeometry, WlSurfaceHandle, XdgPopup, XdgWindow,
-};
-use nekoland_ecs::presentation_logic::{managed_window_visible, popup_visible};
+use nekoland_ecs::components::{OutputId, SurfaceContentVersion, WlSurfaceHandle};
 use nekoland_ecs::resources::{
-    DamageRect, DamageState, OutputDamageRegions, PrimaryOutputState, SurfacePresentationRole,
-    SurfacePresentationSnapshot,
+    DamageRect, DamageState, OutputDamageRegions, RenderPassGraph, RenderPassKind, RenderPlan,
+    RenderPlanItem, RenderRect, RenderTargetKind, SurfacePresentationSnapshot,
 };
-use nekoland_ecs::views::{PopupSnapshotRuntime, WindowSnapshotRuntime};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DamageTracker;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct TrackedSurfaceDamage {
+struct TrackedSceneDamage {
     rect: DamageRect,
-    content_version: u64,
+    render_signature: u64,
 }
 
-type OutputDamageSnapshot = BTreeMap<OutputId, BTreeMap<u64, TrackedSurfaceDamage>>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum TrackedSceneItemKey {
+    Surface { pass_id: nekoland_ecs::resources::RenderPassId, item_index: usize, surface_id: u64 },
+    SolidRect { pass_id: nekoland_ecs::resources::RenderPassId, item_index: usize },
+    Backdrop { pass_id: nekoland_ecs::resources::RenderPassId, item_index: usize },
+}
+
+type OutputDamageSnapshot = BTreeMap<OutputId, BTreeMap<TrackedSceneItemKey, TrackedSceneDamage>>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DamageTrackerState {
     previous_snapshot: Option<OutputDamageSnapshot>,
 }
 
-type DamageLayers<'w, 's> = Query<
-    'w,
-    's,
-    (
-        &'static WlSurfaceHandle,
-        &'static SurfaceGeometry,
-        &'static BufferState,
-        &'static SurfaceContentVersion,
-        Option<&'static LayerOnOutput>,
-        Option<&'static DesiredOutputName>,
-    ),
-    With<LayerShellSurface>,
->;
-type DamageWindows<'w, 's> = Query<'w, 's, (Entity, WindowSnapshotRuntime), With<XdgWindow>>;
-type DamagePopups<'w, 's> = Query<'w, 's, PopupSnapshotRuntime, With<XdgPopup>>;
-type DamageOutputs<'w, 's> = Query<'w, 's, (Entity, &'static OutputId, &'static OutputDevice)>;
+type DamageSurfaceVersions<'w, 's> =
+    Query<'w, 's, (&'static WlSurfaceHandle, &'static SurfaceContentVersion)>;
+type DamageOutputs<'w, 's> = Query<'w, 's, &'static OutputId>;
 
 #[derive(SystemParam)]
 pub(crate) struct DamageTrackingParams<'w, 's> {
-    layers: DamageLayers<'w, 's>,
-    windows: DamageWindows<'w, 's>,
-    popups: DamagePopups<'w, 's>,
+    surface_versions: DamageSurfaceVersions<'w, 's>,
     outputs: DamageOutputs<'w, 's>,
-    primary_output: Option<Res<'w, PrimaryOutputState>>,
+    render_plan: Res<'w, RenderPlan>,
+    render_graph: Res<'w, RenderPassGraph>,
     surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
     damage_state: ResMut<'w, DamageState>,
     output_damage_regions: ResMut<'w, OutputDamageRegions>,
@@ -67,209 +55,72 @@ pub(crate) struct DamageTrackingParams<'w, 's> {
 /// full current rect, and disappearing geometry emits the previous rect.
 pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
     let DamageTrackingParams {
-        layers,
-        windows,
-        popups,
+        surface_versions,
         outputs,
-        primary_output,
+        render_plan,
+        render_graph,
         surface_presentation,
         mut damage_state,
         mut output_damage_regions,
         mut tracker_state,
     } = damage;
 
-    let live_output_ids =
-        outputs.iter().map(|(_, output_id, _)| *output_id).collect::<BTreeSet<_>>();
-    let output_ids_by_entity = outputs
-        .iter()
-        .map(|(entity, output_id, _)| (entity, *output_id))
-        .collect::<HashMap<_, _>>();
-    let output_ids_by_name = outputs
-        .iter()
-        .map(|(_, output_id, output)| (output.name.clone(), *output_id))
-        .collect::<HashMap<_, _>>();
-    let primary_output_id = primary_output
-        .and_then(|primary_output| primary_output.id)
-        .or_else(|| live_output_ids.iter().next().copied());
+    let live_output_ids = outputs.iter().copied().collect::<BTreeSet<_>>();
     let mut current_snapshot = live_output_ids
         .iter()
         .copied()
         .map(|output_id| (output_id, BTreeMap::new()))
         .collect::<OutputDamageSnapshot>();
-
-    let surface_presentation = surface_presentation.as_deref();
-    let visible_windows = windows
+    let surface_versions = surface_versions
         .iter()
-        .filter_map(|(entity, window)| {
-            let state = surface_presentation
-                .and_then(|snapshot| snapshot.surfaces.get(&window.surface_id()));
-            let visible = state.map_or_else(
-                || {
-                    managed_window_visible(
-                        *window.mode,
-                        window.viewport_visibility.visible,
-                        *window.role,
-                    )
-                },
-                |state| state.visible && state.damage_enabled,
-            );
-            visible.then_some((
-                entity,
-                window.surface_id(),
-                state.is_some_and(|state| state.role == SurfacePresentationRole::OutputBackground)
-                    || window.role.is_output_background(),
-                state.and_then(|state| state.target_output).or_else(|| {
-                    window
-                        .background
-                        .map(|background| background.output)
-                        .or(window.viewport_visibility.output)
-                }),
-                TrackedSurfaceDamage {
-                    rect: state.map_or_else(
-                        || DamageRect {
-                            x: window.geometry.x,
-                            y: window.geometry.y,
-                            width: window.geometry.width,
-                            height: window.geometry.height,
-                        },
-                        |state| DamageRect {
-                            x: state.geometry.x,
-                            y: state.geometry.y,
-                            width: state.geometry.width,
-                            height: state.geometry.height,
-                        },
-                    ),
-                    content_version: window.content_version.value,
-                },
-            ))
-        })
-        .collect::<Vec<_>>();
-    let visible_windows = visible_windows
-        .into_iter()
-        .fold(BTreeMap::new(), |mut deduped, window| {
-            let (entity, surface_id, is_background, output_name, rect) = window;
-            let dedupe_key = is_background
-                .then(|| output_name.clone())
-                .flatten()
-                .map(|output_id| format!("background:{output_id:?}"));
-            if let Some(dedupe_key) = dedupe_key {
-                match deduped.get(&dedupe_key) {
-                    Some((_, current_surface_id, _, _)) if *current_surface_id >= surface_id => {}
-                    _ => {
-                        deduped.insert(dedupe_key, (entity, surface_id, output_name, rect));
-                    }
+        .map(|(surface, content_version)| (surface.id, content_version.value))
+        .collect::<HashMap<_, _>>();
+    let surface_presentation = surface_presentation.as_deref();
+
+    for output_id in &live_output_ids {
+        let Some(output_plan) = render_plan.outputs.get(output_id) else {
+            continue;
+        };
+        let Some(execution) = render_graph.outputs.get(output_id) else {
+            continue;
+        };
+
+        for pass_id in execution.reachable_passes_in_order() {
+            let Some(pass) = execution.passes.get(&pass_id) else {
+                continue;
+            };
+            if pass.kind != RenderPassKind::Scene {
+                continue;
+            }
+            if execution
+                .targets
+                .get(&pass.output_target)
+                .is_some_and(|target| matches!(target, RenderTargetKind::Offscreen))
+            {
+                continue;
+            }
+
+            for item_index in &pass.item_indices {
+                let Some(item) = output_plan.items.get(*item_index) else {
+                    continue;
+                };
+                if surface_damage_disabled(item, surface_presentation) {
+                    continue;
                 }
-            } else {
-                deduped.insert(
-                    format!("window:{surface_id}"),
-                    (entity, surface_id, output_name, rect),
+                let Some(rect) = item.instance().visible_rect().map(damage_rect_from_render_rect)
+                else {
+                    continue;
+                };
+
+                current_snapshot.entry(*output_id).or_default().insert(
+                    tracked_scene_item_key(pass_id, *item_index, item),
+                    TrackedSceneDamage {
+                        rect,
+                        render_signature: render_signature_for_item(item, &surface_versions),
+                    },
                 );
             }
-            deduped
-        })
-        .into_values()
-        .collect::<Vec<_>>();
-    let active_window_entities =
-        visible_windows.iter().map(|(entity, ..)| *entity).collect::<BTreeSet<_>>();
-    let window_output_names = visible_windows
-        .iter()
-        .map(|(entity, _, output_name, _)| (*entity, *output_name))
-        .collect::<HashMap<_, _>>();
-
-    for (_, surface_id, output_name, rect) in &visible_windows {
-        record_surface_geometry(
-            &mut current_snapshot,
-            *surface_id,
-            *output_name,
-            &live_output_ids,
-            rect.clone(),
-        );
-    }
-
-    for (surface, geometry, buffer, content_version, layer_output, desired_output_name) in &layers {
-        let state = surface_presentation.and_then(|snapshot| snapshot.surfaces.get(&surface.id));
-        if !state.map_or(buffer.attached, |state| state.visible && state.damage_enabled) {
-            continue;
         }
-
-        let output_name = state.and_then(|state| state.target_output).or_else(|| {
-            layer_output
-                .and_then(|layer_output| output_ids_by_entity.get(&layer_output.0).copied())
-                .or_else(|| {
-                    desired_output_name
-                        .and_then(|desired_output_name| desired_output_name.0.as_deref())
-                        .and_then(|output_name| output_ids_by_name.get(output_name).copied())
-                })
-                .or(primary_output_id)
-        });
-        record_surface_geometry(
-            &mut current_snapshot,
-            surface.id,
-            output_name,
-            &live_output_ids,
-            TrackedSurfaceDamage {
-                rect: state.map_or_else(
-                    || DamageRect {
-                        x: geometry.x,
-                        y: geometry.y,
-                        width: geometry.width,
-                        height: geometry.height,
-                    },
-                    |state| DamageRect {
-                        x: state.geometry.x,
-                        y: state.geometry.y,
-                        width: state.geometry.width,
-                        height: state.geometry.height,
-                    },
-                ),
-                content_version: content_version.value,
-            },
-        );
-    }
-
-    for popup in &popups {
-        let state =
-            surface_presentation.and_then(|snapshot| snapshot.surfaces.get(&popup.surface_id()));
-        if !state.map_or(
-            popup_visible(
-                popup.buffer.attached,
-                popup_parent_visible(popup.child_of, &active_window_entities),
-            ),
-            |state| {
-                state.visible
-                    && state.damage_enabled
-                    && state.role == SurfacePresentationRole::Popup
-            },
-        ) {
-            continue;
-        }
-
-        let output_name = state
-            .and_then(|state| state.target_output)
-            .or_else(|| window_output_names.get(&popup.child_of.parent()).copied().flatten());
-        record_surface_geometry(
-            &mut current_snapshot,
-            popup.surface_id(),
-            output_name,
-            &live_output_ids,
-            TrackedSurfaceDamage {
-                rect: state.map_or_else(
-                    || DamageRect {
-                        x: popup.geometry.x,
-                        y: popup.geometry.y,
-                        width: popup.geometry.width,
-                        height: popup.geometry.height,
-                    },
-                    |state| DamageRect {
-                        x: state.geometry.x,
-                        y: state.geometry.y,
-                        width: state.geometry.width,
-                        height: state.geometry.height,
-                    },
-                ),
-                content_version: popup.content_version.value,
-            },
-        );
     }
 
     let damage_regions = tracker_state
@@ -297,26 +148,62 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
     tracing::trace!(count, full_redraw = damage_state.full_redraw, "damage tracking tick");
 }
 
-/// Popups only contribute damage while their parent toplevel is still visible.
-fn popup_parent_visible(child_of: &ChildOf, active_window_entities: &BTreeSet<Entity>) -> bool {
-    active_window_entities.contains(&child_of.parent())
+fn tracked_scene_item_key(
+    pass_id: nekoland_ecs::resources::RenderPassId,
+    item_index: usize,
+    item: &RenderPlanItem,
+) -> TrackedSceneItemKey {
+    match item {
+        RenderPlanItem::Surface(item) => {
+            TrackedSceneItemKey::Surface { pass_id, item_index, surface_id: item.surface_id }
+        }
+        RenderPlanItem::SolidRect(_) => TrackedSceneItemKey::SolidRect { pass_id, item_index },
+        RenderPlanItem::Backdrop(_) => TrackedSceneItemKey::Backdrop { pass_id, item_index },
+    }
 }
 
-fn record_surface_geometry(
-    snapshot: &mut OutputDamageSnapshot,
-    surface_id: u64,
-    output_id: Option<OutputId>,
-    live_output_ids: &BTreeSet<OutputId>,
-    surface: TrackedSurfaceDamage,
-) {
-    if live_output_ids.is_empty() {
-        return;
+fn surface_damage_disabled(
+    item: &RenderPlanItem,
+    surface_presentation: Option<&SurfacePresentationSnapshot>,
+) -> bool {
+    let Some(surface_id) = item.surface_id() else {
+        return false;
+    };
+
+    surface_presentation
+        .and_then(|snapshot| snapshot.surfaces.get(&surface_id))
+        .is_some_and(|state| !state.damage_enabled)
+}
+
+fn damage_rect_from_render_rect(rect: RenderRect) -> DamageRect {
+    DamageRect { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+}
+
+fn render_signature_for_item(item: &RenderPlanItem, surface_versions: &HashMap<u64, u64>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+
+    match item {
+        RenderPlanItem::Surface(item) => {
+            0_u8.hash(&mut hasher);
+            item.surface_id.hash(&mut hasher);
+            surface_versions.get(&item.surface_id).copied().unwrap_or_default().hash(&mut hasher);
+            item.instance.opacity.to_bits().hash(&mut hasher);
+        }
+        RenderPlanItem::SolidRect(item) => {
+            1_u8.hash(&mut hasher);
+            item.color.r.hash(&mut hasher);
+            item.color.g.hash(&mut hasher);
+            item.color.b.hash(&mut hasher);
+            item.color.a.hash(&mut hasher);
+            item.instance.opacity.to_bits().hash(&mut hasher);
+        }
+        RenderPlanItem::Backdrop(_) => {
+            2_u8.hash(&mut hasher);
+            item.instance().opacity.to_bits().hash(&mut hasher);
+        }
     }
 
-    let Some(output_id) = output_id.filter(|output_id| live_output_ids.contains(output_id)) else {
-        return;
-    };
-    snapshot.entry(output_id).or_default().insert(surface_id, surface);
+    hasher.finish()
 }
 
 fn diff_damage_snapshots(
@@ -339,7 +226,7 @@ fn diff_damage_snapshots(
                 let previous = previous_surfaces.and_then(|surfaces| surfaces.get(&surface_id));
                 match (previous, current) {
                     (Some(previous), Some(current)) if previous != current => {
-                        if previous.content_version != current.content_version {
+                        if previous.render_signature != current.render_signature {
                             damage.push(previous.rect.clone());
                             damage.push(current.rect.clone());
                         } else {
@@ -428,7 +315,7 @@ fn normalize_damage_rects(rects: Vec<DamageRect>) -> Vec<DamageRect> {
 
 #[cfg(test)]
 mod tests {
-    use bevy_ecs::hierarchy::ChildOf;
+    use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
@@ -437,7 +324,12 @@ mod tests {
         OutputProperties, SurfaceContentVersion, SurfaceGeometry, WindowViewportVisibility,
         WlSurfaceHandle, XdgPopup, XdgWindow,
     };
-    use nekoland_ecs::resources::{DamageState, OutputDamageRegions};
+    use nekoland_ecs::resources::{
+        DamageState, OutputDamageRegions, RenderPassGraph, RenderPlan, SurfacePresentationRole,
+        SurfacePresentationSnapshot, SurfacePresentationState, WindowStackingState,
+    };
+
+    use crate::{compositor_render::compose_frame_system, render_graph::build_render_graph_system};
 
     use super::damage_tracking_system;
 
@@ -450,13 +342,23 @@ mod tests {
             .unwrap_or_else(|| panic!("missing output id for {name}"))
     }
 
+    fn install_damage_pipeline(app: &mut NekolandApp) {
+        app.inner_mut()
+            .init_resource::<RenderPlan>()
+            .init_resource::<RenderPassGraph>()
+            .init_resource::<WindowStackingState>()
+            .init_resource::<DamageState>()
+            .init_resource::<OutputDamageRegions>()
+            .add_systems(
+                RenderSchedule,
+                (compose_frame_system, build_render_graph_system, damage_tracking_system).chain(),
+            );
+    }
+
     #[test]
     fn damage_regions_are_scoped_per_output_and_recompute_on_output_change() {
         let mut app = NekolandApp::new("damage-tracker-output-routing-test");
-        app.inner_mut()
-            .init_resource::<DamageState>()
-            .init_resource::<OutputDamageRegions>()
-            .add_systems(RenderSchedule, damage_tracking_system);
+        install_damage_pipeline(&mut app);
 
         app.inner_mut().world_mut().spawn(OutputBundle {
             output: OutputDevice {
@@ -520,7 +422,7 @@ mod tests {
             XdgPopup::default(),
             BufferState { attached: true, scale: 1 },
             SurfaceGeometry { x: 5, y: 7, width: 30, height: 20 },
-            ChildOf(secondary_window),
+            bevy_ecs::hierarchy::ChildOf(secondary_window),
         ));
         app.inner_mut().world_mut().spawn((
             LayerShellSurface::default(),
@@ -529,6 +431,54 @@ mod tests {
             BufferState { attached: true, scale: 1 },
             DesiredOutputName(Some("Virtual-1".to_owned())),
         ));
+        app.inner_mut().world_mut().insert_resource(SurfacePresentationSnapshot {
+            surfaces: std::collections::BTreeMap::from([
+                (
+                    1,
+                    SurfacePresentationState {
+                        visible: true,
+                        target_output: Some(virtual_id),
+                        geometry: SurfaceGeometry { x: 10, y: 15, width: 100, height: 80 },
+                        input_enabled: true,
+                        damage_enabled: true,
+                        role: SurfacePresentationRole::Window,
+                    },
+                ),
+                (
+                    2,
+                    SurfacePresentationState {
+                        visible: true,
+                        target_output: Some(hdmi_id),
+                        geometry: SurfaceGeometry { x: 20, y: 30, width: 120, height: 90 },
+                        input_enabled: true,
+                        damage_enabled: true,
+                        role: SurfacePresentationRole::Window,
+                    },
+                ),
+                (
+                    3,
+                    SurfacePresentationState {
+                        visible: true,
+                        target_output: Some(hdmi_id),
+                        geometry: SurfaceGeometry { x: 5, y: 7, width: 30, height: 20 },
+                        input_enabled: true,
+                        damage_enabled: true,
+                        role: SurfacePresentationRole::Popup,
+                    },
+                ),
+                (
+                    4,
+                    SurfacePresentationState {
+                        visible: true,
+                        target_output: Some(virtual_id),
+                        geometry: SurfaceGeometry { x: 0, y: 0, width: 1280, height: 32 },
+                        input_enabled: true,
+                        damage_enabled: true,
+                        role: SurfacePresentationRole::Layer,
+                    },
+                ),
+            ]),
+        });
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 
@@ -569,6 +519,16 @@ mod tests {
             panic!("window viewport visibility should remain present");
         };
         visibility.output = Some(virtual_id);
+        if let Some(mut snapshot) =
+            app.inner_mut().world_mut().get_resource_mut::<SurfacePresentationSnapshot>()
+        {
+            if let Some(state) = snapshot.surfaces.get_mut(&2) {
+                state.target_output = Some(virtual_id);
+            }
+            if let Some(state) = snapshot.surfaces.get_mut(&3) {
+                state.target_output = Some(virtual_id);
+            }
+        }
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 
         let world = app.inner().world();
@@ -614,10 +574,7 @@ mod tests {
     #[test]
     fn resizing_window_emits_border_damage_instead_of_full_window_redraw() {
         let mut app = NekolandApp::new("damage-tracker-resize-diff-test");
-        app.inner_mut()
-            .init_resource::<DamageState>()
-            .init_resource::<OutputDamageRegions>()
-            .add_systems(RenderSchedule, damage_tracking_system);
+        install_damage_pipeline(&mut app);
 
         app.inner_mut().world_mut().spawn(OutputBundle {
             output: OutputDevice {
@@ -650,6 +607,19 @@ mod tests {
                 ..Default::default()
             })
             .id();
+        app.inner_mut().world_mut().insert_resource(SurfacePresentationSnapshot {
+            surfaces: std::collections::BTreeMap::from([(
+                10,
+                SurfacePresentationState {
+                    visible: true,
+                    target_output: Some(virtual_id),
+                    geometry: SurfaceGeometry { x: 10, y: 20, width: 100, height: 80 },
+                    input_enabled: true,
+                    damage_enabled: true,
+                    role: SurfacePresentationRole::Window,
+                },
+            )]),
+        });
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
         app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();
@@ -660,6 +630,12 @@ mod tests {
             panic!("window geometry should remain present");
         };
         geometry.width = 120;
+        if let Some(mut snapshot) =
+            app.inner_mut().world_mut().get_resource_mut::<SurfacePresentationSnapshot>()
+            && let Some(state) = snapshot.surfaces.get_mut(&10)
+        {
+            state.geometry.width = 120;
+        }
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 
         let world = app.inner().world();
@@ -675,10 +651,7 @@ mod tests {
     #[test]
     fn content_commit_without_geometry_change_damages_current_rect() {
         let mut app = NekolandApp::new("damage-tracker-content-commit-test");
-        app.inner_mut()
-            .init_resource::<DamageState>()
-            .init_resource::<OutputDamageRegions>()
-            .add_systems(RenderSchedule, damage_tracking_system);
+        install_damage_pipeline(&mut app);
 
         app.inner_mut().world_mut().spawn(OutputBundle {
             output: OutputDevice {
@@ -711,6 +684,19 @@ mod tests {
                 ..Default::default()
             })
             .id();
+        app.inner_mut().world_mut().insert_resource(SurfacePresentationSnapshot {
+            surfaces: std::collections::BTreeMap::from([(
+                10,
+                SurfacePresentationState {
+                    visible: true,
+                    target_output: Some(virtual_id),
+                    geometry: SurfaceGeometry { x: 10, y: 20, width: 100, height: 80 },
+                    input_enabled: true,
+                    damage_enabled: true,
+                    role: SurfacePresentationRole::Window,
+                },
+            )]),
+        });
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
         app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();

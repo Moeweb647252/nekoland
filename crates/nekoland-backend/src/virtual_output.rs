@@ -8,7 +8,7 @@ use crate::common::outputs::{
     BackendOutputBlueprint, BackendOutputChange, BackendOutputEventRecord,
 };
 use crate::common::presentation::{OutputPresentationRuntime, emit_present_completion_events};
-use crate::common::render_order::render_plan_output_present_audit_elements;
+use crate::common::render_order::render_graph_output_present_audit_elements;
 use crate::traits::{
     Backend, BackendApplyCtx, BackendCapabilities, BackendDescriptor, BackendExtractCtx, BackendId,
     BackendKind, BackendPresentCtx, BackendRole,
@@ -159,7 +159,8 @@ impl Backend for VirtualRuntime {
         let Some(clock) = cx.clock else {
             return Ok(());
         };
-        let mut elements = render_plan_output_present_audit_elements(
+        let mut elements = render_graph_output_present_audit_elements(
+            cx.render_graph,
             cx.render_plan,
             cx.surfaces,
             output.output_id,

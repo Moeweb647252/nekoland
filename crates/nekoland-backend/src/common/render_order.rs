@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
     OutputPresentAudit, PresentAuditElement, PresentAuditElementKind, RenderColor,
-    RenderItemInstance, RenderPlan, RenderPlanItem,
+    RenderItemInstance, RenderPassGraph, RenderPassKind, RenderPlan, RenderPlanItem,
 };
 
 use crate::traits::{OutputSnapshot, RenderSurfaceRole, RenderSurfaceSnapshot};
@@ -32,46 +32,51 @@ pub(crate) enum OutputRenderRecord {
     Backdrop(OutputBackdropRenderRecord),
 }
 
-pub(crate) fn render_plan_output_records(
+pub(crate) fn render_graph_output_records(
+    render_graph: &RenderPassGraph,
     render_plan: &RenderPlan,
     output_id: OutputId,
 ) -> Vec<OutputRenderRecord> {
-    render_plan
-        .outputs
-        .get(&output_id)
+    let Some(execution) = render_graph.outputs.get(&output_id) else {
+        return Vec::new();
+    };
+    let Some(output_plan) = render_plan.outputs.get(&output_id) else {
+        return Vec::new();
+    };
+
+    execution
+        .reachable_passes_in_order()
         .into_iter()
-        .flat_map(|output_plan| output_plan.items.iter())
-        .map(|item| match item {
-            RenderPlanItem::Surface(item) => {
-                OutputRenderRecord::Surface(OutputSurfaceRenderRecord {
-                    surface_id: item.surface_id,
-                    instance: item.instance,
-                })
-            }
-            RenderPlanItem::SolidRect(item) => {
-                OutputRenderRecord::SolidRect(OutputSolidRectRenderRecord {
-                    color: item.color,
-                    instance: item.instance,
-                })
-            }
-            RenderPlanItem::Backdrop(item) => {
-                OutputRenderRecord::Backdrop(OutputBackdropRenderRecord { instance: item.instance })
-            }
-        })
-        .collect()
+        .filter_map(|pass_id| execution.passes.get(&pass_id))
+        .filter(|pass| pass.kind == RenderPassKind::Scene)
+        .flat_map(|pass| pass.item_indices.iter())
+        .filter_map(|item_index| output_plan.items.get(*item_index))
+        .map(output_record_from_plan_item)
+        .collect::<Vec<_>>()
 }
 
 /// Returns output-local surfaces in the front-to-back presentation order expected by backend
 /// renderers.
-pub(crate) fn render_plan_output_surfaces_in_presentation_order(
+pub(crate) fn render_graph_output_surfaces_in_presentation_order(
+    render_graph: &RenderPassGraph,
     render_plan: &RenderPlan,
     output_id: OutputId,
 ) -> Vec<OutputSurfaceRenderRecord> {
-    render_plan
-        .outputs
-        .get(&output_id)
+    let Some(execution) = render_graph.outputs.get(&output_id) else {
+        return Vec::new();
+    };
+    let Some(output_plan) = render_plan.outputs.get(&output_id) else {
+        return Vec::new();
+    };
+
+    execution
+        .reachable_passes_in_order()
         .into_iter()
-        .flat_map(|output_plan| output_plan.items.iter().rev())
+        .rev()
+        .filter_map(|pass_id| execution.passes.get(&pass_id))
+        .filter(|pass| pass.kind == RenderPassKind::Scene)
+        .flat_map(|pass| pass.item_indices.iter().rev())
+        .filter_map(|item_index| output_plan.items.get(*item_index))
         .filter_map(|item| match item {
             RenderPlanItem::Surface(item) => Some(OutputSurfaceRenderRecord {
                 surface_id: item.surface_id,
@@ -79,15 +84,16 @@ pub(crate) fn render_plan_output_surfaces_in_presentation_order(
             }),
             RenderPlanItem::SolidRect(_) | RenderPlanItem::Backdrop(_) => None,
         })
-        .collect()
+        .collect::<Vec<_>>()
 }
 
-pub(crate) fn render_plan_output_present_audit_elements(
+pub(crate) fn render_graph_output_present_audit_elements(
+    render_graph: &RenderPassGraph,
     render_plan: &RenderPlan,
     surfaces: &HashMap<u64, RenderSurfaceSnapshot>,
     output_id: OutputId,
 ) -> Vec<PresentAuditElement> {
-    render_plan_output_records(render_plan, output_id)
+    render_graph_output_records(render_graph, render_plan, output_id)
         .into_iter()
         .filter_map(|record| match record {
             OutputRenderRecord::Surface(record) => {
@@ -115,14 +121,19 @@ pub(crate) fn snapshot_present_audit_outputs(
     frame: u64,
     uptime_millis: u64,
     outputs: &[OutputSnapshot],
+    render_graph: &RenderPassGraph,
     render_plan: &RenderPlan,
     surfaces: &HashMap<u64, RenderSurfaceSnapshot>,
 ) -> BTreeMap<OutputId, OutputPresentAudit> {
     outputs
         .iter()
         .map(|output| {
-            let elements =
-                render_plan_output_present_audit_elements(render_plan, surfaces, output.output_id);
+            let elements = render_graph_output_present_audit_elements(
+                render_graph,
+                render_plan,
+                surfaces,
+                output.output_id,
+            );
             (
                 output.output_id,
                 OutputPresentAudit {
@@ -134,6 +145,24 @@ pub(crate) fn snapshot_present_audit_outputs(
             )
         })
         .collect()
+}
+
+fn output_record_from_plan_item(item: &RenderPlanItem) -> OutputRenderRecord {
+    match item {
+        RenderPlanItem::Surface(item) => OutputRenderRecord::Surface(OutputSurfaceRenderRecord {
+            surface_id: item.surface_id,
+            instance: item.instance,
+        }),
+        RenderPlanItem::SolidRect(item) => {
+            OutputRenderRecord::SolidRect(OutputSolidRectRenderRecord {
+                color: item.color,
+                instance: item.instance,
+            })
+        }
+        RenderPlanItem::Backdrop(item) => {
+            OutputRenderRecord::Backdrop(OutputBackdropRenderRecord { instance: item.instance })
+        }
+    }
 }
 
 fn present_audit_element_kind(role: RenderSurfaceRole) -> PresentAuditElementKind {
@@ -153,19 +182,20 @@ mod tests {
         OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry,
     };
     use nekoland_ecs::resources::{
-        OutputRenderPlan, PresentAuditElementKind, RenderItemInstance, RenderPlan, RenderPlanItem,
-        RenderRect, RenderSceneRole, SurfaceRenderItem,
+        OutputExecutionPlan, OutputRenderPlan, PresentAuditElementKind, RenderItemInstance,
+        RenderPassGraph, RenderPassId, RenderPassNode, RenderPlan, RenderPlanItem, RenderRect,
+        RenderSceneRole, RenderTargetId, RenderTargetKind, SurfaceRenderItem,
     };
 
     use crate::traits::{OutputSnapshot, RenderSurfaceRole, RenderSurfaceSnapshot};
 
     use super::{
-        render_plan_output_present_audit_elements, render_plan_output_records,
-        render_plan_output_surfaces_in_presentation_order, snapshot_present_audit_outputs,
+        render_graph_output_present_audit_elements, render_graph_output_records,
+        render_graph_output_surfaces_in_presentation_order, snapshot_present_audit_outputs,
     };
 
     #[test]
-    fn render_plan_records_drive_present_and_audit_outputs() {
+    fn render_graph_records_drive_present_and_audit_outputs() {
         let surfaces = HashMap::from([
             (
                 11,
@@ -228,9 +258,31 @@ mod tests {
             .into_iter()
             .collect(),
         };
+        let render_graph = RenderPassGraph {
+            outputs: std::collections::BTreeMap::from([(
+                OutputId(7),
+                OutputExecutionPlan {
+                    targets: std::collections::BTreeMap::from([(
+                        RenderTargetId(1),
+                        RenderTargetKind::OutputSwapchain(OutputId(7)),
+                    )]),
+                    passes: std::collections::BTreeMap::from([(
+                        RenderPassId(1),
+                        RenderPassNode::scene(
+                            RenderSceneRole::Desktop,
+                            RenderTargetId(1),
+                            Vec::new(),
+                            vec![0, 1],
+                        ),
+                    )]),
+                    ordered_passes: vec![RenderPassId(1)],
+                    terminal_passes: vec![RenderPassId(1)],
+                },
+            )]),
+        };
 
         assert_eq!(
-            render_plan_output_records(&render_plan, OutputId(7))
+            render_graph_output_records(&render_graph, &render_plan, OutputId(7))
                 .into_iter()
                 .filter_map(|record| match record {
                     super::OutputRenderRecord::Surface(record) => Some(record.surface_id),
@@ -240,20 +292,34 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![11, 22]
         );
-        let elements =
-            render_plan_output_present_audit_elements(&render_plan, &surfaces, OutputId(7));
+        let elements = render_graph_output_present_audit_elements(
+            &render_graph,
+            &render_plan,
+            &surfaces,
+            OutputId(7),
+        );
         assert_eq!(elements[0].kind, PresentAuditElementKind::Window);
         assert_eq!(elements[1].kind, PresentAuditElementKind::Layer);
         assert_eq!(
-            render_plan_output_surfaces_in_presentation_order(&render_plan, OutputId(7))
-                .into_iter()
-                .map(|record| record.surface_id)
-                .collect::<Vec<_>>(),
+            render_graph_output_surfaces_in_presentation_order(
+                &render_graph,
+                &render_plan,
+                OutputId(7),
+            )
+            .into_iter()
+            .map(|record| record.surface_id)
+            .collect::<Vec<_>>(),
             vec![22, 11]
         );
 
-        let audit_outputs =
-            snapshot_present_audit_outputs(12, 345, &[output.clone()], &render_plan, &surfaces);
+        let audit_outputs = snapshot_present_audit_outputs(
+            12,
+            345,
+            &[output.clone()],
+            &render_graph,
+            &render_plan,
+            &surfaces,
+        );
         let audit = &audit_outputs[&OutputId(7)];
         assert_eq!(audit.output_name, "HDMI-A-1");
         assert_eq!(audit.frame, 12);

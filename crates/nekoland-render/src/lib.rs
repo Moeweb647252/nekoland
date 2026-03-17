@@ -7,6 +7,7 @@ pub mod effects;
 pub mod frame_callback;
 pub mod plugin;
 pub mod presentation_feedback;
+pub mod render_graph;
 pub mod screenshot;
 pub mod surface_visual;
 

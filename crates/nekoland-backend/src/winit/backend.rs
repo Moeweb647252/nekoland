@@ -34,7 +34,7 @@ use crate::common::outputs::{
     BackendOutputPropertyUpdate, parse_output_mode,
 };
 use crate::common::presentation::{OutputPresentationRuntime, emit_present_completion_events_at};
-use crate::common::render_order::render_plan_output_surfaces_in_presentation_order;
+use crate::common::render_order::render_graph_output_surfaces_in_presentation_order;
 use crate::traits::{
     Backend, BackendApplyCtx, BackendCapabilities, BackendDescriptor, BackendExtractCtx, BackendId,
     BackendKind, BackendPresentCtx, BackendRole, OutputSnapshot,
@@ -477,9 +477,11 @@ impl Backend for WinitRuntime {
             // Smithay consumes elements in front-to-back presentation order, so the cursor must
             // stay ahead of scene surfaces to remain visually on top.
             let mut elements = cursor_elements;
-            for render_element in
-                render_plan_output_surfaces_in_presentation_order(cx.render_plan, output.output_id)
-            {
+            for render_element in render_graph_output_surfaces_in_presentation_order(
+                cx.render_graph,
+                cx.render_plan,
+                output.output_id,
+            ) {
                 let Some(clip_rect) = render_element.instance.visible_rect() else {
                     continue;
                 };

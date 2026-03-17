@@ -153,6 +153,7 @@ impl Backend for DrmRuntime {
             cursor_render: cx.cursor_render,
             cursor_image: cx.cursor_image,
             output_damage_regions: cx.output_damage_regions,
+            render_graph: cx.render_graph,
             render_plan: cx.render_plan,
             surface_registry: cx.surface_registry,
             session_state: &self.session_state,
