@@ -3231,21 +3231,21 @@ impl ForeignToplevelListHandler for ProtocolRuntimeState {
 impl XdgDecorationHandler for ProtocolRuntimeState {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(XdgDecorationMode::ServerSide);
+            state.decoration_mode = Some(XdgDecorationMode::ClientSide);
         });
         toplevel.send_configure();
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: XdgDecorationMode) {
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(XdgDecorationMode::ServerSide);
+            state.decoration_mode = Some(XdgDecorationMode::ClientSide);
         });
         toplevel.send_configure();
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(XdgDecorationMode::ServerSide);
+            state.decoration_mode = Some(XdgDecorationMode::ClientSide);
         });
         toplevel.send_configure();
     }
@@ -4277,7 +4277,10 @@ mod tests {
     use smithay::reexports::wayland_server::Display;
     use wayland_client::protocol::{wl_compositor, wl_output, wl_registry, wl_surface};
     use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
-    use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+    use wayland_protocols::xdg::{
+        decoration::zv1::client::{zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1},
+        shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
+    };
 
     use super::{
         DEFAULT_KEYBOARD_REPEAT_RATE, ForeignToplevelSnapshot, PointerFocusInputs,
@@ -4289,6 +4292,7 @@ mod tests {
     struct ClientSummary {
         globals: Vec<String>,
         configure_serial: u32,
+        decoration_mode: Option<zxdg_toplevel_decoration_v1::Mode>,
         wm_capabilities: Vec<xdg_toplevel::WmCapabilities>,
     }
 
@@ -4299,7 +4303,10 @@ mod tests {
         output: Option<wl_output::WlOutput>,
         wm_base: Option<xdg_wm_base::XdgWmBase>,
         xdg_surface: Option<(xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel)>,
+        xdg_decoration_manager: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
+        xdg_toplevel_decoration: Option<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
         configure_serial: Option<u32>,
+        decoration_mode: Option<zxdg_toplevel_decoration_v1::Mode>,
         wm_capabilities: Vec<xdg_toplevel::WmCapabilities>,
         request_fullscreen_on_first_configure: bool,
         sent_fullscreen_request: bool,
@@ -4355,6 +4362,11 @@ mod tests {
         };
 
         assert_globals_present(&summary.globals);
+        assert_eq!(
+            summary.decoration_mode,
+            Some(zxdg_toplevel_decoration_v1::Mode::ClientSide),
+            "client should observe client-side decoration preference",
+        );
         assert!(
             summary.wm_capabilities.contains(&xdg_toplevel::WmCapabilities::Maximize),
             "client should see maximize advertised in wm_capabilities: {:?}",
@@ -4682,6 +4694,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(2);
 
         while state.configure_serial.is_none()
+            || (state.xdg_toplevel_decoration.is_some() && state.decoration_mode.is_none())
             || (request_fullscreen_on_first_configure && !state.sent_fullscreen_request)
         {
             client_dispatch_once(&mut event_queue, &mut state)
@@ -4700,6 +4713,7 @@ mod tests {
             configure_serial: state
                 .configure_serial
                 .ok_or_else(|| "client never received xdg_surface.configure".to_owned())?,
+            decoration_mode: state.decoration_mode,
             wm_capabilities: state.wm_capabilities,
         })
     }
@@ -4814,6 +4828,18 @@ mod tests {
                             Some(registry.bind::<xdg_wm_base::XdgWmBase, _, _>(name, 6, qh, ()));
                         state.maybe_init_toplevel(qh);
                     }
+                    "zxdg_decoration_manager_v1" => {
+                        state.xdg_decoration_manager = Some(
+                            registry
+                                .bind::<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1, _, _>(
+                                    name,
+                                    1,
+                                    qh,
+                                    (),
+                                ),
+                        );
+                        state.maybe_init_decoration(qh);
+                    }
                     "wl_output" => {
                         state.output =
                             Some(registry.bind::<wl_output::WlOutput, _, _>(name, 4, qh, ()));
@@ -4869,6 +4895,7 @@ mod tests {
     delegate_noop!(TestClientState: ignore wl_compositor::WlCompositor);
     delegate_noop!(TestClientState: ignore wl_output::WlOutput);
     delegate_noop!(TestClientState: ignore wl_surface::WlSurface);
+    delegate_noop!(TestClientState: ignore zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
     impl Dispatch<xdg_toplevel::XdgToplevel, ()> for TestClientState {
         fn event(
             state: &mut Self,
@@ -4884,23 +4911,63 @@ mod tests {
         }
     }
 
+    impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for TestClientState {
+        fn event(
+            state: &mut Self,
+            _decoration: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+            event: zxdg_toplevel_decoration_v1::Event,
+            _data: &(),
+            _conn: &Connection,
+            _qh: &QueueHandle<Self>,
+        ) {
+            if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event
+                && let wayland_client::WEnum::Value(mode) = mode
+            {
+                state.decoration_mode = Some(mode);
+            }
+        }
+    }
+
     impl TestClientState {
         fn maybe_init_toplevel(&mut self, qh: &QueueHandle<Self>) {
             if self.base_surface.is_none() || self.wm_base.is_none() || self.xdg_surface.is_some() {
                 return;
             }
 
-            let Some(surface) = self.base_surface.as_ref() else {
+            let Some(surface) = self.base_surface.as_ref().cloned() else {
                 panic!("surface presence checked immediately above");
             };
             let Some(wm_base) = self.wm_base.as_ref() else {
                 panic!("wm_base presence checked immediately above");
             };
 
-            let xdg_surface = wm_base.get_xdg_surface(surface, qh, ());
+            let xdg_surface = wm_base.get_xdg_surface(&surface, qh, ());
             let toplevel = xdg_surface.get_toplevel(qh, ());
-            surface.commit();
             self.xdg_surface = Some((xdg_surface, toplevel));
+            self.maybe_init_decoration(qh);
+            surface.commit();
+        }
+
+        fn maybe_init_decoration(&mut self, qh: &QueueHandle<Self>) {
+            if self.xdg_decoration_manager.is_none()
+                || self.xdg_surface.is_none()
+                || self.xdg_toplevel_decoration.is_some()
+            {
+                return;
+            }
+
+            let Some(manager) = self.xdg_decoration_manager.as_ref() else {
+                panic!("decoration manager presence checked immediately above");
+            };
+            let Some((_, toplevel)) = self.xdg_surface.as_ref() else {
+                panic!("xdg toplevel presence checked immediately above");
+            };
+
+            let decoration = manager.get_toplevel_decoration(toplevel, qh, ());
+            // Ask for server-side decorations so the round-trip asserts the compositor still
+            // prefers client-side decorations.
+            decoration.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+            self.xdg_toplevel_decoration = Some(decoration);
         }
     }
 
