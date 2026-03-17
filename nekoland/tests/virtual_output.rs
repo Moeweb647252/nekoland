@@ -8,11 +8,11 @@ use nekoland_backend::{BackendStatus, traits::BackendKind};
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    OutputDevice, OutputKind, OutputProperties, SurfaceGeometry, WindowLayout, WindowMode,
-    WlSurfaceHandle, XdgWindow,
+    OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry, WindowLayout,
+    WindowMode, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::{
-    OutputPresentationState, VirtualOutputCaptureState, VirtualOutputElementKind,
+    OutputPresentationState, PresentAuditState, VirtualOutputCaptureState, VirtualOutputElementKind,
 };
 
 mod common;
@@ -49,16 +49,18 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
         panic!("backend status should remain available");
     };
     let backend_status = backend_status.clone();
-    let output_state = world
-        .query::<(&OutputDevice, &OutputProperties)>()
-        .iter(world)
-        .next()
-        .map(|(output, properties)| (output.clone(), properties.clone()));
-    let Some((output, properties)) = output_state else {
+    let output_state =
+        world.query::<(&OutputId, &OutputDevice, &OutputProperties)>().iter(world).next().map(
+            |(output_id, output, properties)| (*output_id, output.clone(), properties.clone()),
+        );
+    let Some((output_id, output, properties)) = output_state else {
         panic!("virtual backend should publish one output");
     };
     let Some(capture_state) = world.get_resource::<VirtualOutputCaptureState>() else {
         panic!("virtual output capture state should be available");
+    };
+    let Some(present_audit) = world.get_resource::<PresentAuditState>() else {
+        panic!("present audit state should be available");
     };
     let Some(presentation_state) = world.get_resource::<OutputPresentationState>() else {
         panic!("output presentation state should be available");
@@ -90,11 +92,24 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
     assert_eq!(window.y, 48);
     assert_eq!(window.width, 400);
     assert_eq!(window.height, 240);
+    let audit = present_audit
+        .outputs
+        .get(&output_id)
+        .unwrap_or_else(|| panic!("present audit should publish the active output"));
+    assert_eq!(audit.output_name, output.name);
+    assert_eq!(
+        audit
+            .elements
+            .iter()
+            .find(|element| element.surface_id == TEST_SURFACE_ID)
+            .map(|element| (element.x, element.y, element.width, element.height)),
+        Some((64, 48, 400, 240))
+    );
 
     let presentation = presentation_state
         .outputs
         .iter()
-        .find(|timeline| timeline.output_name == output.name)
+        .find(|timeline| timeline.output_id == output_id)
         .unwrap_or_else(|| {
             panic!("virtual backend should publish a presentation timeline for its output")
         });

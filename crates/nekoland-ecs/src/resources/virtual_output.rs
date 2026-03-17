@@ -37,6 +37,7 @@ pub struct VirtualOutputFrame {
     pub height: u32,
     pub scale: u32,
     pub background_color: String,
+    /// Canonical present-path elements captured from the active `RenderPlan` consumer path.
     pub elements: Vec<VirtualOutputElement>,
 }
 

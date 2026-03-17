@@ -35,15 +35,15 @@ pub fn surface_presentation_snapshot_system(
     layers: LayerPresentationQuery<'_, '_>,
     mut snapshot: ResMut<SurfacePresentationSnapshot>,
 ) {
-    let live_output_names =
-        outputs.iter().map(|(_, output)| output.name().to_owned()).collect::<BTreeSet<_>>();
-    let output_names_by_entity = outputs
+    let live_output_ids = outputs.iter().map(|(_, output)| output.id()).collect::<BTreeSet<_>>();
+    let output_ids_by_name = outputs
         .iter()
-        .map(|(entity, output)| (entity, output.name().to_owned()))
+        .map(|(_, output)| (output.name().to_owned(), output.id()))
         .collect::<HashMap<_, _>>();
-    let primary_output_name = primary_output
-        .and_then(|primary_output| primary_output.name.clone())
-        .or_else(|| live_output_names.iter().next().cloned());
+    let primary_output = primary_output.as_deref();
+    let primary_output_id = primary_output
+        .and_then(|primary_output| primary_output.id)
+        .or_else(|| live_output_ids.iter().next().copied());
 
     let mut surfaces = BTreeMap::new();
     let mut window_presentation_by_entity = HashMap::new();
@@ -56,9 +56,9 @@ pub fn surface_presentation_snapshot_system(
         };
         let target_output = window
             .background
-            .map(|background| background.output.clone())
+            .and_then(|background| output_ids_by_name.get(&background.output).copied())
             .or_else(|| window.viewport_visibility.output.clone())
-            .filter(|output_name| live_output_names.contains(output_name));
+            .filter(|output_id| live_output_ids.contains(output_id));
         let visible = match role {
             SurfacePresentationRole::OutputBackground => output_background_window_visible(
                 *window.mode,
@@ -105,12 +105,19 @@ pub fn surface_presentation_snapshot_system(
 
     for (surface, geometry, buffer, layer_output, desired_output_name) in layers.iter() {
         let target_output = layer_output
-            .and_then(|layer_output| output_names_by_entity.get(&layer_output.0).cloned())
-            .or_else(|| {
-                desired_output_name.and_then(|desired_output_name| desired_output_name.0.clone())
+            .and_then(|layer_output| {
+                outputs
+                    .iter()
+                    .find(|(entity, _)| *entity == layer_output.0)
+                    .map(|(_, output)| output.id())
             })
-            .or_else(|| primary_output_name.clone())
-            .filter(|output_name| live_output_names.contains(output_name));
+            .or_else(|| {
+                desired_output_name
+                    .and_then(|desired_output_name| desired_output_name.0.as_deref())
+                    .and_then(|output_name| output_ids_by_name.get(output_name).copied())
+            })
+            .or(primary_output_id)
+            .filter(|output_id| live_output_ids.contains(output_id));
         let visible = layer_visible(buffer.attached, target_output.is_some());
         surfaces.insert(
             surface.id,

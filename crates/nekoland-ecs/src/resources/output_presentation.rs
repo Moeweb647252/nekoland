@@ -1,12 +1,13 @@
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
+use crate::components::OutputId;
 use crate::kinds::BackendEventQueue;
 
 /// Latest presentation timeline values known for one output.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputPresentationTimeline {
-    pub output_name: String,
+    pub output_id: OutputId,
     pub refresh_interval_nanos: u64,
     pub present_time_nanos: u64,
     pub sequence: u64,
@@ -15,7 +16,7 @@ pub struct OutputPresentationTimeline {
 /// One presentation event emitted by a backend for a specific output.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputPresentationEventRecord {
-    pub output_name: String,
+    pub output_id: OutputId,
     pub refresh_interval_nanos: u64,
     pub present_time_nanos: u64,
     pub sequence: u64,

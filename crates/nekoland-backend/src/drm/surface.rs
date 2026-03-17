@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use drm_fourcc::DrmFourcc;
 use nekoland_ecs::resources::{
-    CompositorConfig, CursorRenderState, DamageRect, OutputDamageRegions, RenderList,
+    CompositorConfig, CursorRenderState, DamageRect, OutputDamageRegions, RenderPlan,
 };
 use nekoland_protocol::{ProtocolCursorState, ProtocolSurfaceRegistry};
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags};
@@ -24,8 +24,8 @@ use smithay::render_elements;
 use smithay::utils::{Physical, Rectangle, Size, Transform};
 
 use crate::common::cursor::{SoftwareCursorCache, cursor_position_on_output, cursor_render_source};
-use crate::common::render_order::output_surfaces_in_presentation_order;
-use crate::traits::{OutputSnapshot, RenderSurfaceSnapshot};
+use crate::common::render_order::render_plan_output_surfaces_in_presentation_order;
+use crate::traits::OutputSnapshot;
 
 use super::device::{ConnectorInfo, SharedDrmState};
 use super::gbm::{GbmState, SharedGbmState};
@@ -53,8 +53,7 @@ pub(crate) struct DrmPresentCtx<'a> {
     pub cursor_render: Option<&'a CursorRenderState>,
     pub cursor_image: Option<&'a ProtocolCursorState>,
     pub output_damage_regions: &'a OutputDamageRegions,
-    pub render_list: &'a RenderList,
-    pub surfaces: &'a HashMap<u64, RenderSurfaceSnapshot>,
+    pub render_plan: &'a RenderPlan,
     pub surface_registry: Option<&'a ProtocolSurfaceRegistry>,
     pub session_state: &'a SharedDrmSessionState,
     pub drm_shared: &'a SharedDrmState,
@@ -76,8 +75,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         cursor_render,
         cursor_image,
         output_damage_regions,
-        render_list,
-        surfaces,
+        render_plan,
         surface_registry,
         session_state,
         drm_shared,
@@ -157,7 +155,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         let scale = output.properties.scale.max(1) as f64;
         let mut cursor_elements = Vec::<BackendDrmRenderElement>::new();
         if let Some((cursor_x, cursor_y)) =
-            cursor_position_on_output(cursor_render, &output.device.name)
+            cursor_position_on_output(cursor_render, output.output_id)
         {
             match cursor_render_source(cursor_image) {
                 crate::common::cursor::CursorRenderSource::Hidden => {}
@@ -198,8 +196,8 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
             }
         }
         let mut elements = cursor_elements;
-        for (render_element, geometry) in
-            output_surfaces_in_presentation_order(render_list, surfaces, &output.device.name)
+        for render_element in
+            render_plan_output_surfaces_in_presentation_order(render_plan, output.output_id)
         {
             let Some(wl_surface) = surface_registry.surface(render_element.surface_id) else {
                 continue;
@@ -207,7 +205,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
             elements.extend(render_elements_from_surface_tree::<_, BackendDrmRenderElement>(
                 renderer,
                 wl_surface,
-                (geometry.geometry.x, geometry.geometry.y),
+                (render_element.x, render_element.y),
                 scale,
                 render_element.opacity,
                 Kind::Unspecified,
@@ -216,7 +214,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         elements.extend(
             ecs_damage_render_elements(
                 output_damage_regions,
-                &output.device.name,
+                output.output_id,
                 output.properties.scale.max(1),
             )
             .into_iter()
@@ -261,12 +259,12 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
 
 fn ecs_damage_render_elements(
     output_damage_regions: &OutputDamageRegions,
-    output_name: &str,
+    output_id: nekoland_ecs::components::OutputId,
     scale: u32,
 ) -> Vec<SolidColorRenderElement> {
     output_damage_regions
         .regions
-        .get(output_name)
+        .get(&output_id)
         .into_iter()
         .flatten()
         .filter_map(|rect| damage_rect_to_physical(rect, scale))
@@ -468,12 +466,22 @@ mod tests {
     fn ecs_damage_render_elements_follow_output_routing() {
         let output_damage_regions = OutputDamageRegions {
             regions: std::collections::BTreeMap::from([
-                ("Virtual-1".to_owned(), vec![DamageRect { x: 5, y: 6, width: 20, height: 10 }]),
-                ("HDMI-A-1".to_owned(), vec![DamageRect { x: 100, y: 200, width: 40, height: 30 }]),
+                (
+                    nekoland_ecs::components::OutputId(1),
+                    vec![DamageRect { x: 5, y: 6, width: 20, height: 10 }],
+                ),
+                (
+                    nekoland_ecs::components::OutputId(2),
+                    vec![DamageRect { x: 100, y: 200, width: 40, height: 30 }],
+                ),
             ]),
         };
 
-        let elements = ecs_damage_render_elements(&output_damage_regions, "HDMI-A-1", 1);
+        let elements = ecs_damage_render_elements(
+            &output_damage_regions,
+            nekoland_ecs::components::OutputId(2),
+            1,
+        );
 
         assert_eq!(elements.len(), 1);
         let geometry = elements[0].geometry(Scale::from(1.0));

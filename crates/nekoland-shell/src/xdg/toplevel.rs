@@ -613,7 +613,7 @@ mod tests {
         let mut app = NekolandApp::new("toplevel-restore-placement-test");
         app.insert_resource(CompositorConfig::default())
             .insert_resource(WorkArea { x: 0, y: 0, width: 640, height: 480 })
-            .insert_resource(PrimaryOutputState { name: Some("Virtual-1".to_owned()) })
+            .insert_resource(PrimaryOutputState::default())
             .insert_resource(PendingXdgRequests::default())
             .insert_resource(PendingPopupServerRequests::default())
             .insert_resource(EntityIndex::default());
@@ -632,25 +632,29 @@ mod tests {
             .world_mut()
             .spawn(Workspace { id: WorkspaceId(2), name: "2".to_owned(), active: false })
             .id();
-        app.inner_mut().world_mut().spawn((
-            OutputBundle {
-                output: OutputDevice {
-                    name: "Virtual-1".to_owned(),
-                    kind: OutputKind::Virtual,
-                    make: "test".to_owned(),
-                    model: "one".to_owned(),
+        let virtual_output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "Virtual-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "test".to_owned(),
+                        model: "one".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 640,
+                        height: 480,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    work_area: OutputWorkArea { x: 0, y: 0, width: 640, height: 480 },
+                    ..Default::default()
                 },
-                properties: OutputProperties {
-                    width: 640,
-                    height: 480,
-                    refresh_millihz: 60_000,
-                    scale: 1,
-                },
-                work_area: OutputWorkArea { x: 0, y: 0, width: 640, height: 480 },
-                ..Default::default()
-            },
-            OutputCurrentWorkspace { workspace: WorkspaceId(1) },
-        ));
+                OutputCurrentWorkspace { workspace: WorkspaceId(1) },
+            ))
+            .id();
         app.inner_mut().world_mut().spawn((
             OutputBundle {
                 output: OutputDevice {
@@ -670,6 +674,13 @@ mod tests {
             },
             OutputCurrentWorkspace { workspace: WorkspaceId(2) },
         ));
+        let virtual_output_id = *app
+            .inner()
+            .world()
+            .get::<nekoland_ecs::components::OutputId>(virtual_output)
+            .expect("virtual output id");
+        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id =
+            Some(virtual_output_id);
         let window_entity = app
             .inner_mut()
             .world_mut()

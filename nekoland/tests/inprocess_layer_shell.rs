@@ -1,4 +1,4 @@
-//! In-process integration test for layer-shell surfaces reaching ECS state, render lists, and
+//! In-process integration test for layer-shell surfaces reaching ECS state, render plans, and
 //! work-area updates.
 
 use std::io::Write;
@@ -12,7 +12,7 @@ use nekoland_core::app::{NekolandApp, RunLoopSettings};
 use nekoland_ecs::components::{
     LayerShellSurface, OutputProperties, SurfaceGeometry, WlSurfaceHandle, XdgWindow,
 };
-use nekoland_ecs::resources::{RenderList, WorkArea};
+use nekoland_ecs::resources::{RenderPlan, RenderPlanItem, WorkArea};
 use nekoland_protocol::{ProtocolServerState, ProtocolSurfaceRegistry};
 use tempfile::tempfile;
 use wayland_client::protocol::{
@@ -216,9 +216,9 @@ impl LayerClientState {
     }
 }
 
-/// Verifies that a mapped layer-shell surface appears in ECS and the render list.
+/// Verifies that a mapped layer-shell surface appears in ECS and the render plan.
 #[test]
-fn layer_shell_surface_reaches_ecs_and_render_list() {
+fn layer_shell_surface_reaches_ecs_and_render_plan() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-layer-shell-runtime");
@@ -263,7 +263,7 @@ fn layer_shell_surface_reaches_ecs_and_render_list() {
     common::assert_globals_present(&summary.globals);
     assert!(summary.configure_serial > 0, "layer-shell client should ack a configure");
 
-    let (surface_id, geometry, namespace, render_elements, wl_surface) = {
+    let (surface_id, geometry, namespace, render_surface_ids, wl_surface) = {
         let world = app.inner_mut().world_mut();
         let mut layers = world.query::<(&WlSurfaceHandle, &SurfaceGeometry, &LayerShellSurface)>();
         let layer_row = layers.iter(world).next().map(|(surface, geometry, layer_surface)| {
@@ -272,17 +272,24 @@ fn layer_shell_surface_reaches_ecs_and_render_list() {
         let Some((surface_id, geometry, namespace)) = layer_row else {
             panic!("layer-shell client should create a layer entity");
         };
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be available");
+        let Some(render_plan) = world.get_resource::<RenderPlan>() else {
+            panic!("render plan should be available");
         };
-        let render_elements = render_list.elements.clone();
+        let render_surface_ids = render_plan
+            .outputs
+            .values()
+            .flat_map(|output_plan| output_plan.items.iter())
+            .filter_map(|item| match item {
+                RenderPlanItem::Surface(item) => Some(item.surface_id),
+            })
+            .collect::<Vec<_>>();
         let Some(registry) = world.get_non_send_resource::<ProtocolSurfaceRegistry>() else {
             panic!("protocol surface registry should be initialized");
         };
         let Some(wl_surface) = registry.surface(surface_id).cloned() else {
             panic!("layer shell surface should be tracked in protocol surface registry");
         };
-        (surface_id, geometry, namespace, render_elements, wl_surface)
+        (surface_id, geometry, namespace, render_surface_ids, wl_surface)
     };
 
     assert_eq!(namespace, LayerClientOptions::standard_panel().namespace);
@@ -291,8 +298,8 @@ fn layer_shell_surface_reaches_ecs_and_render_list() {
     assert_eq!(geometry.width, TEST_LAYER_WIDTH);
     assert_eq!(geometry.height, TEST_LAYER_HEIGHT);
     assert!(
-        render_elements.iter().any(|element| element.surface_id == surface_id),
-        "render list should contain the mapped layer surface: {render_elements:?}"
+        render_surface_ids.contains(&surface_id),
+        "render plan should contain the mapped layer surface: {render_surface_ids:?}"
     );
     let _ = wl_surface;
 }

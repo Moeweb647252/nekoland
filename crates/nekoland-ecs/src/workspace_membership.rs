@@ -2,7 +2,7 @@ use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, Query};
 use bevy_ecs::query::QueryFilter;
 
-use crate::components::Workspace;
+use crate::components::{OutputId, Workspace};
 use crate::resources::{EntityIndex, FocusedOutputState, PrimaryOutputState};
 use crate::views::{OutputRuntime, WorkspaceRuntime};
 
@@ -104,21 +104,31 @@ pub fn output_name_for_workspace_runtime_id(
     })
 }
 
+pub fn output_name_for_output_id(
+    output_id: OutputId,
+    outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
+) -> Option<String> {
+    outputs
+        .iter()
+        .find(|(_, output)| output.id() == output_id)
+        .map(|(_, output)| output.name().to_owned())
+}
+
 pub fn focused_or_primary_output_name(
     outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
     focused_output: Option<&FocusedOutputState>,
     primary_output: Option<&PrimaryOutputState>,
 ) -> Option<String> {
-    if let Some(output_name) = focused_output.and_then(|focused| focused.name.as_deref())
-        && outputs.iter().any(|(_, output)| output.name() == output_name)
+    if let Some(output_id) = focused_output.and_then(|focused| focused.id)
+        && let Some(output_name) = output_name_for_output_id(output_id, outputs)
     {
-        return Some(output_name.to_owned());
+        return Some(output_name);
     }
 
-    if let Some(output_name) = primary_output.and_then(|primary| primary.name.as_deref())
-        && outputs.iter().any(|(_, output)| output.name() == output_name)
+    if let Some(output_id) = primary_output.and_then(|primary| primary.id)
+        && let Some(output_name) = output_name_for_output_id(output_id, outputs)
     {
-        return Some(output_name.to_owned());
+        return Some(output_name);
     }
 
     outputs.iter().next().map(|(_, output)| output.name().to_owned())
@@ -141,6 +151,23 @@ pub fn current_workspace_runtime_target_for_output_name(
         .or_else(|| entity_index.entity_for_workspace_id(fallback_workspace_id))
 }
 
+pub fn current_workspace_runtime_target_for_output_id(
+    output_id: OutputId,
+    outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
+    entity_index: &EntityIndex,
+    fallback_workspace_id: u32,
+) -> Option<Entity> {
+    outputs
+        .iter()
+        .find(|(_, output)| output.id() == output_id)
+        .and_then(|(_, output)| {
+            output.current_workspace.as_ref().and_then(|current_workspace| {
+                entity_index.entity_for_workspace_id(current_workspace.workspace.0)
+            })
+        })
+        .or_else(|| entity_index.entity_for_workspace_id(fallback_workspace_id))
+}
+
 pub fn focused_or_primary_workspace_runtime_target(
     outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
     focused_output: Option<&FocusedOutputState>,
@@ -148,6 +175,24 @@ pub fn focused_or_primary_workspace_runtime_target(
     entity_index: &EntityIndex,
     fallback_workspace_id: u32,
 ) -> Option<Entity> {
+    if let Some(output_id) = focused_output.and_then(|focused| focused.id) {
+        return current_workspace_runtime_target_for_output_id(
+            output_id,
+            outputs,
+            entity_index,
+            fallback_workspace_id,
+        );
+    }
+
+    if let Some(output_id) = primary_output.and_then(|primary| primary.id) {
+        return current_workspace_runtime_target_for_output_id(
+            output_id,
+            outputs,
+            entity_index,
+            fallback_workspace_id,
+        );
+    }
+
     focused_or_primary_output_name(outputs, focused_output, primary_output)
         .and_then(|output_name| {
             current_workspace_runtime_target_for_output_name(

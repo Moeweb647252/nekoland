@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 
+use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::CursorRenderState;
 use nekoland_protocol::{ProtocolCursorImage, ProtocolCursorState};
 use smithay::backend::allocator::Fourcc;
@@ -113,10 +114,10 @@ impl SoftwareCursorCache {
 
 pub(crate) fn cursor_position_on_output(
     cursor_render: Option<&CursorRenderState>,
-    output_name: &str,
+    output_id: OutputId,
 ) -> Option<(f64, f64)> {
     let cursor_render = cursor_render?;
-    if !cursor_render.visible || cursor_render.output_name.as_deref() != Some(output_name) {
+    if !cursor_render.visible || cursor_render.output_id != Some(output_id) {
         return None;
     }
     Some((cursor_render.x, cursor_render.y))

@@ -13,8 +13,9 @@ pub use popup::PopupCommand;
 pub use query::{
     ClipboardSnapshot, CommandSnapshot, CommandStatusSnapshot, ConfigOutputSnapshot,
     ConfigSnapshot, KeyboardLayoutEntrySnapshot, KeyboardLayoutsSnapshot, OutputSnapshot,
-    PopupSnapshot, PrimarySelectionSnapshot, QueryCommand, SelectionOwnerSnapshot, TreeSnapshot,
-    WindowSnapshot, WorkspaceSnapshot,
+    PopupSnapshot, PresentAuditElementSnapshot, PresentAuditOutputSnapshot,
+    PrimarySelectionSnapshot, QueryCommand, SelectionOwnerSnapshot, TreeSnapshot, WindowSnapshot,
+    WorkspaceSnapshot,
 };
 pub use window::{SplitAxis, WindowCommand};
 pub use workspace::WorkspaceCommand;

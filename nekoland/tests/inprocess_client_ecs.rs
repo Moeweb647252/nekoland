@@ -1,5 +1,5 @@
 //! In-process integration test that verifies live Wayland client traffic materializes ECS window
-//! state and render output.
+//! state and render-plan output.
 
 use std::path::PathBuf;
 use std::thread;
@@ -10,12 +10,12 @@ use nekoland_core::app::RunLoopSettings;
 use nekoland_ecs::components::{
     WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
 };
-use nekoland_ecs::resources::{CursorRenderState, KeyboardFocusState, RenderList};
+use nekoland_ecs::resources::{CursorRenderState, KeyboardFocusState, RenderPlan, RenderPlanItem};
 use nekoland_protocol::ProtocolServerState;
 
 mod common;
 
-/// Verifies that a live client round-trip creates window entities, render elements, and focus.
+/// Verifies that a live client round-trip creates window entities, render-plan items, and focus.
 #[test]
 fn live_client_roundtrip_populates_window_entities_and_render_state() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -76,7 +76,7 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
         Err(_) => panic!("client thread should exit cleanly"),
     }
 
-    let (window_rows, render_elements, cursor_state, focused_surface) = {
+    let (window_rows, render_surface_ids, cursor_state, focused_surface) = {
         let world = app.inner_mut().world_mut();
         let mut windows =
             world.query::<(&WlSurfaceHandle, &XdgWindow, &WindowLayout, &WindowMode)>();
@@ -90,10 +90,17 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
                 )
             })
             .collect::<Vec<_>>();
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be initialized by RenderPlugin");
+        let Some(render_plan) = world.get_resource::<RenderPlan>() else {
+            panic!("render plan should be initialized by RenderPlugin");
         };
-        let render_elements = render_list.elements.clone();
+        let render_surface_ids = render_plan
+            .outputs
+            .values()
+            .flat_map(|output_plan| output_plan.items.iter())
+            .filter_map(|item| match item {
+                RenderPlanItem::Surface(item) => Some(item.surface_id),
+            })
+            .collect::<Vec<_>>();
         let Some(cursor_state) = world.get_resource::<CursorRenderState>() else {
             panic!("cursor render state should be initialized by RenderPlugin");
         };
@@ -102,7 +109,7 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
             panic!("keyboard focus state should be initialized by InputPlugin");
         };
         let focused_surface = keyboard_focus.focused_surface;
-        (window_rows, render_elements, cursor_state, focused_surface)
+        (window_rows, render_surface_ids, cursor_state, focused_surface)
     };
 
     assert!(
@@ -118,8 +125,8 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
         "newly mapped client window should remain visible"
     );
     assert!(
-        render_elements.iter().any(|element| element.surface_id == surface_id),
-        "render list should include the client window surface: {render_elements:?}"
+        render_surface_ids.contains(&surface_id),
+        "render plan should include the client window surface: {render_surface_ids:?}"
     );
     assert!(cursor_state.visible, "cursor render state should stay visible: {cursor_state:?}");
     assert_eq!(

@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
+use crate::components::OutputId;
+
 /// One damaged rectangle in output-local coordinates.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DamageRect {
@@ -21,5 +23,5 @@ pub struct DamageState {
 /// Per-output damage rectangles derived for the current frame.
 #[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputDamageRegions {
-    pub regions: BTreeMap<String, Vec<DamageRect>>,
+    pub regions: BTreeMap<OutputId, Vec<DamageRect>>,
 }

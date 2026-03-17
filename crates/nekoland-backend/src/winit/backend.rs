@@ -32,7 +32,7 @@ use crate::common::outputs::{
     BackendOutputPropertyUpdate, parse_output_mode,
 };
 use crate::common::presentation::{OutputPresentationRuntime, emit_present_completion_events_at};
-use crate::common::render_order::output_surfaces_in_presentation_order;
+use crate::common::render_order::render_plan_output_surfaces_in_presentation_order;
 use crate::traits::{
     Backend, BackendApplyCtx, BackendCapabilities, BackendDescriptor, BackendExtractCtx, BackendId,
     BackendKind, BackendPresentCtx, BackendRole, OutputSnapshot,
@@ -339,9 +339,7 @@ impl Backend for WinitRuntime {
 
         for present_time_nanos in pending_timestamps_nanos {
             emit_present_completion_events_at(
-                owned_outputs
-                    .iter()
-                    .map(|output| (output.device.name.clone(), output.properties.clone())),
+                owned_outputs.iter().map(|output| (output.output_id, output.properties.clone())),
                 cx.presentation_events,
                 &mut self.presentation_runtime,
                 present_time_nanos,
@@ -422,7 +420,7 @@ impl Backend for WinitRuntime {
             let mut cursor_elements = Vec::<WinitRenderElement>::new();
 
             if let Some((cursor_x, cursor_y)) =
-                cursor_position_on_output(cx.cursor_render, &output.device.name)
+                cursor_position_on_output(cx.cursor_render, output.output_id)
             {
                 match cursor_render_source(cx.cursor_image) {
                     crate::common::cursor::CursorRenderSource::Hidden => {}
@@ -468,18 +466,16 @@ impl Backend for WinitRuntime {
             // Smithay consumes elements in front-to-back presentation order, so the cursor must
             // stay ahead of scene surfaces to remain visually on top.
             let mut elements = cursor_elements;
-            for (render_element, geometry) in output_surfaces_in_presentation_order(
-                cx.render_list,
-                cx.surfaces,
-                &output.device.name,
-            ) {
+            for render_element in
+                render_plan_output_surfaces_in_presentation_order(cx.render_plan, output.output_id)
+            {
                 let Some(surface) = surface_registry.surface(render_element.surface_id) else {
                     continue;
                 };
                 elements.extend(render_elements_from_surface_tree(
                     renderer,
                     surface,
-                    (geometry.geometry.x, geometry.geometry.y),
+                    (render_element.x, render_element.y),
                     mode.scale as f64,
                     render_element.opacity,
                     Kind::Unspecified,
@@ -506,7 +502,7 @@ impl Backend for WinitRuntime {
                 smithay_damage,
                 output_damage_regions_physical(
                     cx.output_damage_regions,
-                    &output.device.name,
+                    output.output_id,
                     mode.scale,
                 ),
             )
@@ -554,12 +550,12 @@ fn current_refresh_interval(outputs: &[OutputSnapshot]) -> Option<Duration> {
 
 fn output_damage_regions_physical(
     output_damage_regions: &OutputDamageRegions,
-    output_name: &str,
+    output_id: nekoland_ecs::components::OutputId,
     scale: u32,
 ) -> Vec<Rectangle<i32, Physical>> {
     output_damage_regions
         .regions
-        .get(output_name)
+        .get(&output_id)
         .into_iter()
         .flatten()
         .filter_map(|rect| damage_rect_to_physical(rect, scale))
@@ -930,7 +926,12 @@ mod tests {
         let metadata = AppMetadata { name: "nekoland".to_owned() };
         let outputs = vec![OutputSnapshot {
             entity: bevy_ecs::entity::Entity::PLACEHOLDER,
+            output_id: nekoland_ecs::components::OutputId(1),
             backend_id: Some(BackendId(1)),
+            backend_output_id: Some(crate::traits::BackendOutputId {
+                backend_id: BackendId(1),
+                output_name: "Winit-1".to_owned(),
+            }),
             device: OutputDevice {
                 name: "Winit-1".to_owned(),
                 kind: OutputKind::Nested,
@@ -968,12 +969,13 @@ mod tests {
     fn output_damage_regions_are_converted_to_physical_submit_damage() {
         let damage = OutputDamageRegions {
             regions: std::collections::BTreeMap::from([(
-                "Virtual-1".to_owned(),
+                nekoland_ecs::components::OutputId(1),
                 vec![DamageRect { x: 10, y: -5, width: 30, height: 20 }],
             )]),
         };
 
-        let physical = output_damage_regions_physical(&damage, "Virtual-1", 2);
+        let physical =
+            output_damage_regions_physical(&damage, nekoland_ecs::components::OutputId(1), 2);
 
         assert_eq!(physical.len(), 1);
         assert_eq!(physical[0].loc.x, 20);

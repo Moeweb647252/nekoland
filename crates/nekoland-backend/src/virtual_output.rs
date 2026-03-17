@@ -8,14 +8,15 @@ use crate::common::outputs::{
     BackendOutputBlueprint, BackendOutputChange, BackendOutputEventRecord,
 };
 use crate::common::presentation::{OutputPresentationRuntime, emit_present_completion_events};
+use crate::common::render_order::render_plan_output_present_audit_elements;
 use crate::traits::{
     Backend, BackendApplyCtx, BackendCapabilities, BackendDescriptor, BackendExtractCtx, BackendId,
-    BackendKind, BackendPresentCtx, BackendRole, RenderSurfaceRole,
+    BackendKind, BackendPresentCtx, BackendRole,
 };
 
 const DEFAULT_CURSOR_SIZE: u32 = 24;
 
-/// Offscreen backend that mirrors the compositor render list into a synthetic
+/// Offscreen backend that mirrors the compositor render plan into a synthetic
 /// capture stream and presentation timeline.
 pub(crate) struct VirtualRuntime {
     /// Public descriptor surfaced through backend status snapshots.
@@ -125,9 +126,7 @@ impl Backend for VirtualRuntime {
 
         let owned_outputs = self.owned_outputs(cx.outputs).cloned().collect::<Vec<_>>();
         emit_present_completion_events(
-            owned_outputs
-                .iter()
-                .map(|output| (output.device.name.clone(), output.properties.clone())),
+            owned_outputs.iter().map(|output| (output.output_id, output.properties.clone())),
             cx.presentation_events,
             &mut self.presentation_runtime,
             &mut self.monotonic_clock,
@@ -157,43 +156,19 @@ impl Backend for VirtualRuntime {
         let Some(clock) = cx.clock else {
             return Ok(());
         };
-
-        // Serialize the current render list into a backend-agnostic capture
-        // frame so tests and tooling can inspect what would have been presented.
-        let mut elements = Vec::with_capacity(cx.render_list.elements.len().saturating_add(1));
-        for render_element in &cx.render_list.elements {
-            let Some(surface) = cx.surfaces.get(&render_element.surface_id) else {
-                continue;
-            };
-            if surface
-                .target_output
-                .as_ref()
-                .is_some_and(|target_output| target_output != &output.device.name)
-            {
-                continue;
-            }
-
-            let kind = match surface.role {
-                RenderSurfaceRole::Window => VirtualOutputElementKind::Window,
-                RenderSurfaceRole::Popup => VirtualOutputElementKind::Popup,
-                RenderSurfaceRole::Layer => VirtualOutputElementKind::Layer,
-                RenderSurfaceRole::Unknown => VirtualOutputElementKind::Unknown,
-            };
-
-            elements.push(VirtualOutputElement {
-                surface_id: render_element.surface_id,
-                kind,
-                x: surface.geometry.x,
-                y: surface.geometry.y,
-                width: surface.geometry.width,
-                height: surface.geometry.height,
-                z_index: render_element.z_index,
-                opacity: render_element.opacity,
-            });
-        }
+        let mut elements = render_plan_output_present_audit_elements(
+            cx.render_plan,
+            cx.surfaces,
+            output.output_id,
+        )
+        .into_iter()
+        .map(virtual_output_element_from_audit)
+        .collect::<Vec<_>>();
+        // Serialize the current output-local render plan into a backend-agnostic capture frame so
+        // tests and tooling can inspect what would have been presented.
 
         if let Some((cursor_x, cursor_y)) =
-            cursor_position_on_output(cx.cursor_render, &output.device.name)
+            cursor_position_on_output(cx.cursor_render, output.output_id)
         {
             match cursor_render_source(cx.cursor_image) {
                 crate::common::cursor::CursorRenderSource::Hidden => {}
@@ -250,5 +225,36 @@ impl Backend for VirtualRuntime {
         });
 
         Ok(())
+    }
+}
+
+fn virtual_output_element_from_audit(
+    element: nekoland_ecs::resources::PresentAuditElement,
+) -> VirtualOutputElement {
+    VirtualOutputElement {
+        surface_id: element.surface_id,
+        kind: match element.kind {
+            nekoland_ecs::resources::PresentAuditElementKind::Window => {
+                VirtualOutputElementKind::Window
+            }
+            nekoland_ecs::resources::PresentAuditElementKind::Popup => {
+                VirtualOutputElementKind::Popup
+            }
+            nekoland_ecs::resources::PresentAuditElementKind::Layer => {
+                VirtualOutputElementKind::Layer
+            }
+            nekoland_ecs::resources::PresentAuditElementKind::Cursor => {
+                VirtualOutputElementKind::Cursor
+            }
+            nekoland_ecs::resources::PresentAuditElementKind::Unknown => {
+                VirtualOutputElementKind::Unknown
+            }
+        },
+        x: element.x,
+        y: element.y,
+        width: element.width,
+        height: element.height,
+        z_index: element.z_index,
+        opacity: element.opacity,
     }
 }

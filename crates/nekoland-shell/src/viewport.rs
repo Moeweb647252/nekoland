@@ -2,8 +2,8 @@ use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::{Entity, Query, Res, With};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{
-    OutputProperties, OutputViewport, OutputWorkArea, SurfaceGeometry, WindowFullscreenTarget,
-    WindowMode, WindowSceneGeometry, XdgWindow,
+    OutputId, OutputProperties, OutputViewport, OutputWorkArea, SurfaceGeometry,
+    WindowFullscreenTarget, WindowMode, WindowSceneGeometry, XdgWindow,
 };
 use nekoland_ecs::resources::PrimaryOutputState;
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
@@ -77,8 +77,8 @@ pub(crate) fn resolve_active_output_state<'w, 's>(
     outputs: &'w Query<'w, 's, OutputRuntime>,
     primary_output: Option<&PrimaryOutputState>,
 ) -> Option<(&'w OutputProperties, &'w OutputViewport)> {
-    if let Some(primary_output_name) = primary_output.and_then(|primary| primary.name.as_deref())
-        && let Some(output) = outputs.iter().find(|output| output.name() == primary_output_name)
+    if let Some(primary_output_id) = primary_output.and_then(|primary| primary.id)
+        && let Some(output) = outputs.iter().find(|output| output.id() == primary_output_id)
     {
         return Some((output.properties, output.viewport));
     }
@@ -90,7 +90,7 @@ pub(crate) fn resolve_output_state_for_workspace<'w, 's>(
     outputs: &'w Query<'w, 's, (Entity, OutputRuntime)>,
     workspace_id: Option<u32>,
     primary_output: Option<&PrimaryOutputState>,
-) -> Option<(String, &'w OutputProperties, &'w OutputViewport, &'w OutputWorkArea)> {
+) -> Option<(OutputId, &'w OutputProperties, &'w OutputViewport, &'w OutputWorkArea)> {
     if let Some(workspace_id) = workspace_id {
         if let Some((_, output)) = outputs.iter().find(|(_, output)| {
             output
@@ -98,42 +98,33 @@ pub(crate) fn resolve_output_state_for_workspace<'w, 's>(
                 .as_ref()
                 .is_some_and(|current_workspace| current_workspace.workspace.0 == workspace_id)
         }) {
-            return Some((
-                output.name().to_owned(),
-                output.properties,
-                output.viewport,
-                output.work_area,
-            ));
+            return Some((output.id(), output.properties, output.viewport, output.work_area));
         }
 
         return None;
     }
 
-    if let Some(primary_output_name) = primary_output.and_then(|primary| primary.name.as_deref())
+    if let Some(primary_output_id) = primary_output.and_then(|primary| primary.id)
         && let Some((_, output)) =
-            outputs.iter().find(|(_, output)| output.name() == primary_output_name)
+            outputs.iter().find(|(_, output)| output.id() == primary_output_id)
     {
-        return Some((
-            output.name().to_owned(),
-            output.properties,
-            output.viewport,
-            output.work_area,
-        ));
+        return Some((output.id(), output.properties, output.viewport, output.work_area));
     }
 
-    outputs.iter().next().map(|(_, output)| {
-        (output.name().to_owned(), output.properties, output.viewport, output.work_area)
-    })
+    outputs
+        .iter()
+        .next()
+        .map(|(_, output)| (output.id(), output.properties, output.viewport, output.work_area))
 }
 
 pub(crate) fn resolve_output_state_by_name<'w, 's>(
     outputs: &'w Query<'w, 's, (Entity, OutputRuntime)>,
     output_name: &str,
-) -> Option<(&'w OutputProperties, &'w OutputViewport, &'w OutputWorkArea)> {
+) -> Option<(OutputId, &'w OutputProperties, &'w OutputViewport, &'w OutputWorkArea)> {
     outputs
         .iter()
         .find(|(_, output)| output.name() == output_name)
-        .map(|(_, output)| (output.properties, output.viewport, output.work_area))
+        .map(|(_, output)| (output.id(), output.properties, output.viewport, output.work_area))
 }
 
 pub(crate) fn resolve_output_state_for_window<'w, 's>(
@@ -141,14 +132,14 @@ pub(crate) fn resolve_output_state_for_window<'w, 's>(
     workspace_id: Option<u32>,
     fullscreen_target: Option<&WindowFullscreenTarget>,
     primary_output: Option<&PrimaryOutputState>,
-) -> Option<(String, &'w OutputProperties, &'w OutputViewport, &'w OutputWorkArea)> {
+) -> Option<(OutputId, &'w OutputProperties, &'w OutputViewport, &'w OutputWorkArea)> {
     if let Some(output_name) = fullscreen_target
         .and_then(|target| target.output.as_ref())
         .map(nekoland_ecs::selectors::OutputName::as_str)
-        && let Some((output, viewport, work_area)) =
+        && let Some((output_id, output, viewport, work_area)) =
             resolve_output_state_by_name(outputs, output_name)
     {
-        return Some((output_name.to_owned(), output, viewport, work_area));
+        return Some((output_id, output, viewport, work_area));
     }
 
     resolve_output_state_for_workspace(outputs, workspace_id, primary_output)
@@ -162,14 +153,15 @@ pub fn window_viewport_projection_system(
 ) {
     for mut window in &mut windows {
         if let Some(background) = window.background.as_ref() {
-            let Some((output, _, _)) = resolve_output_state_by_name(&outputs, &background.output)
+            let Some((output_id, output, _, _)) =
+                resolve_output_state_by_name(&outputs, &background.output)
             else {
                 *window.viewport_visibility =
                     nekoland_ecs::components::WindowViewportVisibility::default();
                 continue;
             };
             window.viewport_visibility.visible = *window.mode != WindowMode::Hidden;
-            window.viewport_visibility.output = Some(background.output.clone());
+            window.viewport_visibility.output = Some(output_id);
             window.geometry.x = 0;
             window.geometry.y = 0;
             window.geometry.width = output.width.max(1);
@@ -188,7 +180,7 @@ pub fn window_viewport_projection_system(
         } else {
             resolve_output_state_for_workspace(&outputs, workspace_id, primary_output.as_deref())
         };
-        let Some((output_name, output, viewport, _)) = output_state else {
+        let Some((output_id, output, viewport, _)) = output_state else {
             *window.viewport_visibility =
                 nekoland_ecs::components::WindowViewportVisibility { visible: false, output: None };
             continue;
@@ -211,7 +203,7 @@ pub fn window_viewport_projection_system(
         };
 
         window.viewport_visibility.visible = visible;
-        window.viewport_visibility.output = visible.then_some(output_name);
+        window.viewport_visibility.output = visible.then_some(output_id);
     }
 
     tracing::trace!("window viewport projection tick");

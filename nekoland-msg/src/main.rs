@@ -20,7 +20,7 @@ use nekoland_ipc::{
 
 const USAGE: &str = "usage:
   nekoland-msg <query|window|popup|workspace|output|action> ...
-  nekoland-msg subscribe <window|popup|workspace|output|command|config|keyboard-layout|clipboard|primary-selection|focus|tree|all> [--pretty|--jsonl] [--no-payloads] [--event <name|prefix*>]...";
+  nekoland-msg subscribe <window|popup|workspace|output|command|config|keyboard-layout|clipboard|primary-selection|present-audit|focus|tree|all> [--pretty|--jsonl] [--no-payloads] [--event <name|prefix*>]...";
 const SUBSCRIPTION_HELP_EXAMPLES: &[&str] = &[
     "nekoland-msg subscribe workspace",
     "nekoland-msg subscribe command --event command_*",
@@ -67,6 +67,8 @@ enum RootCommand {
     GetClipboard,
     #[command(name = "get_primary_selection", hide = true)]
     GetPrimarySelection,
+    #[command(name = "get_present_audit", hide = true)]
+    GetPresentAudit,
     #[command(external_subcommand)]
     Raw(Vec<String>),
 }
@@ -90,6 +92,7 @@ enum QueryTarget {
     Config,
     Clipboard,
     PrimarySelection,
+    PresentAudit,
 }
 
 /// Arguments for the `window` subcommand family.
@@ -327,6 +330,7 @@ enum SubscriptionTopicArg {
     KeyboardLayout,
     Clipboard,
     PrimarySelection,
+    PresentAudit,
     Focus,
     Tree,
     All,
@@ -410,6 +414,7 @@ where
             QueryTarget::Config => IpcCommand::Query(QueryCommand::GetConfig),
             QueryTarget::Clipboard => IpcCommand::Query(QueryCommand::GetClipboard),
             QueryTarget::PrimarySelection => IpcCommand::Query(QueryCommand::GetPrimarySelection),
+            QueryTarget::PresentAudit => IpcCommand::Query(QueryCommand::GetPresentAudit),
         })),
         RootCommand::Window(window) => Ok(ParsedAction::Request(match window.action {
             WindowAction::Focus { surface_id } => {
@@ -532,6 +537,9 @@ where
         RootCommand::GetPrimarySelection => {
             Ok(ParsedAction::Request(IpcCommand::Query(QueryCommand::GetPrimarySelection)))
         }
+        RootCommand::GetPresentAudit => {
+            Ok(ParsedAction::Request(IpcCommand::Query(QueryCommand::GetPresentAudit)))
+        }
         RootCommand::Raw(raw) => Ok(ParsedAction::Request(IpcCommand::Raw(raw.join(" ")))),
     }
 }
@@ -596,6 +604,7 @@ impl From<SubscriptionTopicArg> for SubscriptionTopic {
             SubscriptionTopicArg::KeyboardLayout => SubscriptionTopic::KeyboardLayout,
             SubscriptionTopicArg::Clipboard => SubscriptionTopic::Clipboard,
             SubscriptionTopicArg::PrimarySelection => SubscriptionTopic::PrimarySelection,
+            SubscriptionTopicArg::PresentAudit => SubscriptionTopic::PresentAudit,
             SubscriptionTopicArg::Focus => SubscriptionTopic::Focus,
             SubscriptionTopicArg::Tree => SubscriptionTopic::Tree,
             SubscriptionTopicArg::All => SubscriptionTopic::All,
@@ -846,6 +855,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_query_present_audit_alias() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "query", "present-audit"]),
+            ParsedAction::Request(IpcCommand::Query(QueryCommand::GetPresentAudit))
+        );
+        assert_eq!(
+            parse_ok(["nekoland-msg", "get_present_audit"]),
+            ParsedAction::Request(IpcCommand::Query(QueryCommand::GetPresentAudit))
+        );
+    }
+
+    #[test]
     fn parses_window_move() {
         assert_eq!(
             parse_ok(["nekoland-msg", "window", "move", "7", "12", "-4"]),
@@ -1083,6 +1104,27 @@ mod tests {
                     topic: SubscriptionTopic::PrimarySelection,
                     include_payloads: true,
                     events: vec!["primary_selection_changed".to_owned()],
+                },
+                output_mode: SubscriptionOutputMode::Pretty,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_present_audit_subscription() {
+        assert_eq!(
+            parse_ok([
+                "nekoland-msg",
+                "subscribe",
+                "present-audit",
+                "--event",
+                "present_audit_changed",
+            ]),
+            ParsedAction::Subscribe(SubscriptionCommand {
+                subscription: IpcSubscription {
+                    topic: SubscriptionTopic::PresentAudit,
+                    include_payloads: true,
+                    events: vec!["present_audit_changed".to_owned()],
                 },
                 output_mode: SubscriptionOutputMode::Pretty,
             })

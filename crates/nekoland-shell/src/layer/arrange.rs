@@ -450,15 +450,15 @@ fn primary_output_from_state_or_sizes(
     output_sizes: &[(Entity, i32, i32)],
     outputs: &LayerOutputs<'_, '_>,
 ) -> Option<(Entity, i32, i32)> {
-    let Some(primary_output_name) =
-        primary_output_state.and_then(|primary_output_state| primary_output_state.name.as_deref())
+    let Some(primary_output_id) =
+        primary_output_state.and_then(|primary_output_state| primary_output_state.id)
     else {
         return primary_output_from_sizes(output_sizes);
     };
 
     outputs
         .iter()
-        .find(|(_, output)| output.name() == primary_output_name)
+        .find(|(_, output)| output.id() == primary_output_id)
         .map(|(entity, output)| {
             (entity, output.properties.width.max(1) as i32, output.properties.height.max(1) as i32)
         })
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn explicit_primary_output_state_overrides_largest_output_fallback() {
         let mut app = NekolandApp::new("layer-primary-output-state-test");
-        app.insert_resource(PrimaryOutputState { name: Some("HDMI-A-1".to_owned()) });
+        app.insert_resource(PrimaryOutputState::default());
         app.insert_resource(WorkArea::default());
         app.inner_mut()
             .add_systems(LayoutSchedule, (layer_arrangement_system, work_area_system).chain());
@@ -820,21 +820,31 @@ mod tests {
             },
             ..Default::default()
         });
-        app.inner_mut().world_mut().spawn(OutputBundle {
-            output: OutputDevice {
-                name: "HDMI-A-1".to_owned(),
-                kind: OutputKind::Virtual,
-                make: "test".to_owned(),
-                model: "selected".to_owned(),
-            },
-            properties: OutputProperties {
-                width: 800,
-                height: 600,
-                refresh_millihz: 60_000,
-                scale: 1,
-            },
-            ..Default::default()
-        });
+        let hdmi_output = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "HDMI-A-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "test".to_owned(),
+                    model: "selected".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 800,
+                    height: 600,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                ..Default::default()
+            })
+            .id();
+        let hdmi_output_id = *app
+            .inner()
+            .world()
+            .get::<nekoland_ecs::components::OutputId>(hdmi_output)
+            .expect("hdmi output id");
+        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id = Some(hdmi_output_id);
         let layer = app
             .inner_mut()
             .world_mut()

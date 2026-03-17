@@ -88,8 +88,12 @@ mod tests {
     #[test]
     fn fullscreen_layout_prefers_named_target_output_over_workspace_output() {
         let mut app = NekolandApp::new("fullscreen-target-output-test");
-        app.insert_resource(PrimaryOutputState { name: Some("Virtual-1".to_owned()) })
-            .insert_resource(WorkArea { x: 0, y: 0, width: 800, height: 600 });
+        app.insert_resource(PrimaryOutputState::default()).insert_resource(WorkArea {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        });
         app.inner_mut().add_systems(
             LayoutSchedule,
             (fullscreen_layout_system, window_viewport_projection_system).chain(),
@@ -106,46 +110,66 @@ mod tests {
             active: false,
         });
 
-        app.inner_mut().world_mut().spawn((
-            OutputBundle {
-                output: OutputDevice {
-                    name: "Virtual-1".to_owned(),
-                    kind: OutputKind::Virtual,
-                    make: "test".to_owned(),
-                    model: "one".to_owned(),
+        let virtual_output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "Virtual-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "test".to_owned(),
+                        model: "one".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 800,
+                        height: 600,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    viewport: OutputViewport::default(),
+                    work_area: OutputWorkArea { x: 0, y: 0, width: 800, height: 600 },
+                    ..Default::default()
                 },
-                properties: OutputProperties {
-                    width: 800,
-                    height: 600,
-                    refresh_millihz: 60_000,
-                    scale: 1,
+                OutputCurrentWorkspace { workspace: WorkspaceId(1) },
+            ))
+            .id();
+        let hdmi_output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "HDMI-A-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "test".to_owned(),
+                        model: "two".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 1920,
+                        height: 1080,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    viewport: OutputViewport::default(),
+                    work_area: OutputWorkArea { x: 0, y: 0, width: 1920, height: 1080 },
+                    ..Default::default()
                 },
-                viewport: OutputViewport::default(),
-                work_area: OutputWorkArea { x: 0, y: 0, width: 800, height: 600 },
-                ..Default::default()
-            },
-            OutputCurrentWorkspace { workspace: WorkspaceId(1) },
-        ));
-        app.inner_mut().world_mut().spawn((
-            OutputBundle {
-                output: OutputDevice {
-                    name: "HDMI-A-1".to_owned(),
-                    kind: OutputKind::Virtual,
-                    make: "test".to_owned(),
-                    model: "two".to_owned(),
-                },
-                properties: OutputProperties {
-                    width: 1920,
-                    height: 1080,
-                    refresh_millihz: 60_000,
-                    scale: 1,
-                },
-                viewport: OutputViewport::default(),
-                work_area: OutputWorkArea { x: 0, y: 0, width: 1920, height: 1080 },
-                ..Default::default()
-            },
-            OutputCurrentWorkspace { workspace: WorkspaceId(2) },
-        ));
+                OutputCurrentWorkspace { workspace: WorkspaceId(2) },
+            ))
+            .id();
+        let virtual_output_id = *app
+            .inner()
+            .world()
+            .get::<nekoland_ecs::components::OutputId>(virtual_output)
+            .expect("virtual output id");
+        let hdmi_output_id = *app
+            .inner()
+            .world()
+            .get::<nekoland_ecs::components::OutputId>(hdmi_output)
+            .expect("hdmi output id");
+        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id =
+            Some(virtual_output_id);
 
         let window_entity = app
             .inner_mut()
@@ -185,6 +209,6 @@ mod tests {
         assert_eq!((geometry.x, geometry.y), (0, 0));
         assert_eq!((geometry.width, geometry.height), (1920, 1080));
         assert!(visibility.visible);
-        assert_eq!(visibility.output.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(visibility.output, Some(hdmi_output_id));
     }
 }

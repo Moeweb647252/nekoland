@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::components::WorkspaceId;
+use crate::components::{OutputId, WorkspaceId};
 
 /// Typed wrapper around compositor surface ids at the control-plane boundary.
 #[derive(
@@ -146,6 +146,7 @@ pub enum OutputSelector {
     Primary,
     Focused,
     Name(OutputName),
+    Id(OutputId),
 }
 
 impl OutputSelector {
@@ -163,5 +164,11 @@ impl OutputSelector {
 impl From<OutputName> for OutputSelector {
     fn from(value: OutputName) -> Self {
         Self::Name(value)
+    }
+}
+
+impl From<OutputId> for OutputSelector {
+    fn from(value: OutputId) -> Self {
+        Self::Id(value)
     }
 }

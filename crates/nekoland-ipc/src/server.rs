@@ -25,8 +25,9 @@ use serde::{Deserialize, Serialize};
 use crate::commands::query::{
     ClipboardSnapshot, CommandSnapshot, CommandStatusSnapshot, ConfigOutputSnapshot,
     ConfigSnapshot, KeyboardLayoutEntrySnapshot, KeyboardLayoutsSnapshot, OutputSnapshot,
-    PopupSnapshot, PrimarySelectionSnapshot, QueryCommand, SelectionOwnerSnapshot, TreeSnapshot,
-    WindowSnapshot, WorkspaceSnapshot,
+    PopupSnapshot, PresentAuditElementSnapshot, PresentAuditOutputSnapshot,
+    PrimarySelectionSnapshot, QueryCommand, SelectionOwnerSnapshot, TreeSnapshot, WindowSnapshot,
+    WorkspaceSnapshot,
 };
 use crate::commands::{
     ActionCommand, OutputCommand, PopupCommand, WindowCommand, WorkspaceCommand,
@@ -43,7 +44,8 @@ use nekoland_ecs::resources::{
     CompositorClock, CompositorConfig, EntityIndex, ExternalCommandRequest, KeyboardFocusState,
     KeyboardLayoutState, PendingExternalCommandRequests, PendingOutputControls,
     PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls, PopupServerAction,
-    PopupServerRequest, PrimarySelectionState, RenderList, SelectionOwner,
+    PopupServerRequest, PresentAuditElementKind, PresentAuditState, PrimarySelectionState,
+    RenderPlan, RenderPlanItem, SelectionOwner,
 };
 use nekoland_ecs::views::{
     OutputRuntime, PopupSnapshotRuntime, WindowSnapshotRuntime, WorkspaceRuntime,
@@ -142,20 +144,21 @@ pub(crate) struct IpcQuerySnapshotInputs<'w, 's> {
     windows: IpcWindowQuery<'w, 's>,
     popups: IpcPopupQuery<'w, 's>,
     surfaces: IpcSurfaceQuery<'w, 's>,
-    render_list: Res<'w, RenderList>,
+    render_plan: Res<'w, RenderPlan>,
     keyboard_focus: Res<'w, KeyboardFocusState>,
     clock: Res<'w, CompositorClock>,
     command_history: Res<'w, CommandHistoryState>,
     config: Res<'w, CompositorConfig>,
     keyboard_layout_state: Res<'w, KeyboardLayoutState>,
     backend_outputs: Option<Res<'w, BackendOutputRegistry>>,
+    present_audit: Option<Res<'w, PresentAuditState>>,
     clipboard_selection: Res<'w, ClipboardSelectionState>,
     primary_selection: Res<'w, PrimarySelectionState>,
     config_source: Option<Res<'w, LoadedConfigSource>>,
     entity_index: Option<Res<'w, EntityIndex>>,
 }
 
-#[derive(Resource, Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Resource, Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct IpcQueryCache {
     pub tree: TreeSnapshot,
     pub outputs: Vec<OutputSnapshot>,
@@ -165,6 +168,7 @@ pub struct IpcQueryCache {
     pub config: ConfigSnapshot,
     pub clipboard: ClipboardSnapshot,
     pub primary_selection: PrimarySelectionSnapshot,
+    pub present_audit: Vec<PresentAuditOutputSnapshot>,
 }
 
 impl IpcQueryCache {
@@ -181,6 +185,7 @@ impl IpcQueryCache {
             QueryCommand::GetConfig => serde_json::to_value(&self.config),
             QueryCommand::GetClipboard => serde_json::to_value(&self.clipboard),
             QueryCommand::GetPrimarySelection => serde_json::to_value(&self.primary_selection),
+            QueryCommand::GetPresentAudit => serde_json::to_value(&self.present_audit),
         }
         .ok();
 
@@ -551,13 +556,14 @@ pub(crate) fn refresh_query_cache_system(
         windows,
         popups,
         surfaces,
-        render_list,
+        render_plan,
         keyboard_focus,
         clock,
         command_history,
         config,
         keyboard_layout_state,
         backend_outputs,
+        present_audit,
         clipboard_selection,
         primary_selection,
         config_source,
@@ -567,13 +573,13 @@ pub(crate) fn refresh_query_cache_system(
     let connected_output_names = backend_outputs
         .as_deref()
         .map(|registry| {
-            registry.connected_outputs.iter().cloned().collect::<std::collections::BTreeSet<_>>()
+            registry.connected_by_id.values().cloned().collect::<std::collections::BTreeSet<_>>()
         })
         .unwrap_or_else(|| outputs.iter().map(|output| output.device.name.clone()).collect());
     let enabled_output_names = backend_outputs
         .as_deref()
         .map(|registry| {
-            registry.enabled_outputs.iter().cloned().collect::<std::collections::BTreeSet<_>>()
+            registry.enabled_by_id.values().cloned().collect::<std::collections::BTreeSet<_>>()
         })
         .unwrap_or_else(|| outputs.iter().map(|output| output.device.name.clone()).collect());
     let mut output_snapshots = outputs
@@ -647,11 +653,19 @@ pub(crate) fn refresh_query_cache_system(
         ))
     });
 
-    let render_indices = render_list
-        .elements
+    let render_order = flattened_render_plan_surface_order(
+        &outputs
+            .iter()
+            .map(|output| {
+                (output.placement.y, output.placement.x, output.device.name.clone(), output.id())
+            })
+            .collect::<Vec<_>>(),
+        &render_plan,
+    );
+    let render_indices = render_order
         .iter()
         .enumerate()
-        .map(|(index, element)| (element.surface_id, index))
+        .map(|(index, surface_id)| (*surface_id, index))
         .collect::<HashMap<_, _>>();
     let focused_workspace = keyboard_focus.focused_surface.and_then(|focused_surface| {
         windows
@@ -664,6 +678,10 @@ pub(crate) fn refresh_query_cache_system(
         .filter_map(|output| {
             output.current_workspace.map(|workspace| (workspace, output.name.clone()))
         })
+        .collect::<HashMap<_, _>>();
+    let output_names_by_id = outputs
+        .iter()
+        .map(|output| (output.id(), output.name().to_owned()))
         .collect::<HashMap<_, _>>();
 
     let mut window_snapshots = windows
@@ -689,7 +707,10 @@ pub(crate) fn refresh_query_cache_system(
             height: window.geometry.height,
             state: window_state_label(*window.layout, *window.mode),
             workspace: window_workspace_runtime_id(window.child_of, &workspaces),
-            output: window.viewport_visibility.output.clone(),
+            output: window
+                .viewport_visibility
+                .output
+                .and_then(|output_id| output_names_by_id.get(&output_id).cloned()),
             focused: keyboard_focus.focused_surface == Some(window.surface_id()),
             visible_in_viewport: window.viewport_visibility.visible,
             render_index: render_indices.get(&window.surface_id()).copied(),
@@ -846,6 +867,23 @@ pub(crate) fn refresh_query_cache_system(
             .map(|selection| selection.persisted_mime_types.clone())
             .unwrap_or_default(),
     };
+    query_cache.present_audit = present_audit
+        .as_deref()
+        .map(|present_audit| {
+            let mut outputs = present_audit
+                .outputs
+                .values()
+                .map(|output| PresentAuditOutputSnapshot {
+                    output_name: output.output_name.clone(),
+                    frame: output.frame,
+                    uptime_millis: output.uptime_millis,
+                    elements: output.elements.iter().map(present_audit_element_snapshot).collect(),
+                })
+                .collect::<Vec<_>>();
+            outputs.sort_by(|left, right| left.output_name.cmp(&right.output_name));
+            outputs
+        })
+        .unwrap_or_default();
 
     let popups = popups
         .iter()
@@ -872,7 +910,7 @@ pub(crate) fn refresh_query_cache_system(
         workspaces: query_cache.workspaces.clone(),
         windows: window_snapshots,
         popups,
-        render_order: render_list.elements.iter().map(|element| element.surface_id).collect(),
+        render_order,
     };
 }
 
@@ -881,6 +919,50 @@ fn selection_owner_snapshot(owner: SelectionOwner) -> SelectionOwnerSnapshot {
         SelectionOwner::Client => SelectionOwnerSnapshot::Client,
         SelectionOwner::Compositor => SelectionOwnerSnapshot::Compositor,
     }
+}
+
+fn present_audit_element_snapshot(
+    element: &nekoland_ecs::resources::PresentAuditElement,
+) -> PresentAuditElementSnapshot {
+    PresentAuditElementSnapshot {
+        surface_id: element.surface_id,
+        kind: match element.kind {
+            PresentAuditElementKind::Window => "window",
+            PresentAuditElementKind::Popup => "popup",
+            PresentAuditElementKind::Layer => "layer",
+            PresentAuditElementKind::Cursor => "cursor",
+            PresentAuditElementKind::Unknown => "unknown",
+        }
+        .to_owned(),
+        x: element.x,
+        y: element.y,
+        width: element.width,
+        height: element.height,
+        z_index: element.z_index,
+        opacity: element.opacity,
+    }
+}
+
+fn flattened_render_plan_surface_order(
+    output_scene_order: &[(i32, i32, String, nekoland_ecs::components::OutputId)],
+    render_plan: &RenderPlan,
+) -> Vec<u64> {
+    let mut output_scene_order = output_scene_order.to_vec();
+    output_scene_order.sort();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut ordered = Vec::new();
+
+    for (_, _, _, output_id) in output_scene_order {
+        let Some(output_plan) = render_plan.outputs.get(&output_id) else { continue };
+        for item in &output_plan.items {
+            let RenderPlanItem::Surface(item) = item;
+            if seen.insert(item.surface_id) {
+                ordered.push(item.surface_id);
+            }
+        }
+    }
+
+    ordered
 }
 
 fn keyboard_layout_entry_snapshot(
@@ -1407,7 +1489,8 @@ mod tests {
         ClipboardSelectionState, CompositorClock, CompositorConfig, EntityIndex,
         KeyboardFocusState, KeyboardLayoutState, PendingExternalCommandRequests,
         PendingOutputControls, PendingPopupServerRequests, PendingWindowControls,
-        PendingWorkspaceControls, PrimarySelectionState, RenderList,
+        PendingWorkspaceControls, PresentAuditElement, PresentAuditElementKind, PresentAuditState,
+        PrimarySelectionState, RenderPlan,
     };
 
     use super::{
@@ -1456,7 +1539,7 @@ mod tests {
     #[test]
     fn refresh_query_cache_derives_workspace_from_relationship() {
         let mut world = bevy_ecs::world::World::new();
-        world.insert_resource(RenderList::default());
+        world.insert_resource(RenderPlan::default());
         world.insert_resource(KeyboardFocusState::default());
         world.insert_resource(CompositorClock::default());
         world.insert_resource(nekoland_ecs::resources::CommandHistoryState::default());
@@ -1465,6 +1548,28 @@ mod tests {
         world.insert_resource(ClipboardSelectionState::default());
         world.insert_resource(PrimarySelectionState::default());
         world.insert_resource(EntityIndex::default());
+        world.insert_resource({
+            let mut audit = PresentAuditState::default();
+            audit.outputs.insert(
+                nekoland_ecs::components::OutputId(7),
+                nekoland_ecs::resources::OutputPresentAudit {
+                    output_name: "Virtual-1".to_owned(),
+                    frame: 3,
+                    uptime_millis: 33,
+                    elements: vec![PresentAuditElement {
+                        surface_id: 42,
+                        kind: PresentAuditElementKind::Window,
+                        x: 10,
+                        y: 20,
+                        width: 800,
+                        height: 600,
+                        z_index: 0,
+                        opacity: 1.0,
+                    }],
+                },
+            );
+            audit
+        });
         world.insert_resource(IpcQueryCache::default());
 
         let workspace_entity =
@@ -1530,6 +1635,10 @@ mod tests {
         };
         assert!(live_output.connected);
         assert_eq!(live_output.current_workspace, Some(1));
+        assert_eq!(cache.present_audit.len(), 1, "expected one present-audit snapshot");
+        assert_eq!(cache.present_audit[0].output_name, "Virtual-1");
+        assert_eq!(cache.present_audit[0].elements.len(), 1);
+        assert_eq!(cache.present_audit[0].elements[0].kind, "window");
     }
 
     #[test]

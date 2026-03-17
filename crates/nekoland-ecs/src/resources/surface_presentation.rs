@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
-use crate::components::SurfaceGeometry;
+use crate::components::{OutputId, SurfaceGeometry};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -18,7 +18,7 @@ pub enum SurfacePresentationRole {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SurfacePresentationState {
     pub visible: bool,
-    pub target_output: Option<String>,
+    pub target_output: Option<OutputId>,
     pub geometry: SurfaceGeometry,
     pub input_enabled: bool,
     pub damage_enabled: bool,

@@ -730,7 +730,7 @@ mod tests {
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::{OutputBundle, X11WindowBundle};
     use nekoland_ecs::components::{
-        BorderTheme, BufferState, OutputCurrentWorkspace, OutputDevice, OutputKind,
+        BorderTheme, BufferState, OutputCurrentWorkspace, OutputDevice, OutputId, OutputKind,
         OutputProperties, OutputWorkArea, ServerDecoration, SurfaceGeometry, WindowAnimation,
         WindowLayout, WindowMode, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle,
         Workspace, WorkspaceId, X11Window, XdgWindow,
@@ -817,7 +817,7 @@ mod tests {
             .insert_resource(WindowStackingState::default())
             .insert_resource(PendingX11Requests::default())
             .insert_resource(nekoland_ecs::resources::PendingPopupServerRequests::default())
-            .insert_resource(PrimaryOutputState { name: Some("Virtual-1".to_owned()) })
+            .insert_resource(PrimaryOutputState::default())
             .insert_resource(WorkArea { x: 0, y: 0, width: 800, height: 600 });
         app.inner_mut()
             .add_message::<PointerButton>()
@@ -846,44 +846,58 @@ mod tests {
             .spawn(Workspace { id: WorkspaceId(2), name: "2".to_owned(), active: false })
             .id();
 
-        app.inner_mut().world_mut().spawn((
-            OutputBundle {
-                output: OutputDevice {
-                    name: "Virtual-1".to_owned(),
-                    kind: OutputKind::Virtual,
-                    make: "test".to_owned(),
-                    model: "one".to_owned(),
+        let virtual_output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "Virtual-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "test".to_owned(),
+                        model: "one".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 800,
+                        height: 600,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    work_area: OutputWorkArea { x: 0, y: 0, width: 800, height: 600 },
+                    ..Default::default()
                 },
-                properties: OutputProperties {
-                    width: 800,
-                    height: 600,
-                    refresh_millihz: 60_000,
-                    scale: 1,
+                OutputCurrentWorkspace { workspace: WorkspaceId(1) },
+            ))
+            .id();
+        let hdmi_output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "HDMI-A-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "test".to_owned(),
+                        model: "two".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 1600,
+                        height: 900,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    work_area: OutputWorkArea { x: 40, y: 80, width: 1000, height: 700 },
+                    ..Default::default()
                 },
-                work_area: OutputWorkArea { x: 0, y: 0, width: 800, height: 600 },
-                ..Default::default()
-            },
-            OutputCurrentWorkspace { workspace: WorkspaceId(1) },
-        ));
-        app.inner_mut().world_mut().spawn((
-            OutputBundle {
-                output: OutputDevice {
-                    name: "HDMI-A-1".to_owned(),
-                    kind: OutputKind::Virtual,
-                    make: "test".to_owned(),
-                    model: "two".to_owned(),
-                },
-                properties: OutputProperties {
-                    width: 1600,
-                    height: 900,
-                    refresh_millihz: 60_000,
-                    scale: 1,
-                },
-                work_area: OutputWorkArea { x: 40, y: 80, width: 1000, height: 700 },
-                ..Default::default()
-            },
-            OutputCurrentWorkspace { workspace: WorkspaceId(2) },
-        ));
+                OutputCurrentWorkspace { workspace: WorkspaceId(2) },
+            ))
+            .id();
+        let virtual_output_id =
+            *app.inner().world().get::<OutputId>(virtual_output).expect("virtual output id");
+        let _hdmi_output_id =
+            *app.inner().world().get::<OutputId>(hdmi_output).expect("hdmi output id");
+        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id =
+            Some(virtual_output_id);
 
         let entity = app
             .inner_mut()
@@ -1137,7 +1151,13 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let world = app.inner().world();
+        let world = app.inner_mut().world_mut();
+        let hdmi_output_id = world
+            .query::<(&OutputId, &OutputDevice)>()
+            .iter(world)
+            .find(|(_, output)| output.name == "HDMI-A-1")
+            .map(|(output_id, _)| *output_id)
+            .expect("hdmi output id");
         let Some(geometry) = world.get::<SurfaceGeometry>(entity) else {
             panic!("x11 window geometry should exist after maximize");
         };
@@ -1147,11 +1167,10 @@ mod tests {
         let Some(visibility) = world.get::<WindowViewportVisibility>(entity) else {
             panic!("x11 window viewport visibility should exist after maximize");
         };
-
         assert_eq!(*mode, WindowMode::Maximized);
         assert_eq!((geometry.x, geometry.y), (56, 96));
         assert_eq!((geometry.width, geometry.height), (968, 668));
-        assert_eq!(visibility.output.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(visibility.output, Some(hdmi_output_id));
     }
 
     #[test]
@@ -1164,7 +1183,13 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let world = app.inner().world();
+        let world = app.inner_mut().world_mut();
+        let hdmi_output_id = world
+            .query::<(&OutputId, &OutputDevice)>()
+            .iter(world)
+            .find(|(_, output)| output.name == "HDMI-A-1")
+            .map(|(output_id, _)| *output_id)
+            .expect("hdmi output id");
         let Some(geometry) = world.get::<SurfaceGeometry>(entity) else {
             panic!("x11 window geometry should exist after fullscreen");
         };
@@ -1174,10 +1199,9 @@ mod tests {
         let Some(visibility) = world.get::<WindowViewportVisibility>(entity) else {
             panic!("x11 window viewport visibility should exist after fullscreen");
         };
-
         assert_eq!(*mode, WindowMode::Fullscreen);
         assert_eq!((geometry.x, geometry.y), (0, 0));
         assert_eq!((geometry.width, geometry.height), (1600, 900));
-        assert_eq!(visibility.output.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(visibility.output, Some(hdmi_output_id));
     }
 }

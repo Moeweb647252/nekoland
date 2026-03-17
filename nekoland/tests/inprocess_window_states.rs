@@ -23,7 +23,7 @@ use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, FramePacingState, GlobalPointerPosition,
     KeyboardFocusState, PendingPopupServerRequests, PendingProtocolInputEvents,
-    PendingWindowServerRequests, PopupServerAction, PopupServerRequest, RenderList,
+    PendingWindowServerRequests, PopupServerAction, PopupServerRequest, RenderPlan, RenderPlanItem,
     WindowServerAction, WindowServerRequest, WorkArea,
 };
 use nekoland_ipc::commands::{
@@ -161,6 +161,21 @@ struct InteractiveSeatInputPump {
     tick: u8,
 }
 
+fn render_plan_surface_ids(world: &mut bevy_ecs::world::World) -> Vec<u64> {
+    let Some(render_plan) = world.get_resource::<RenderPlan>() else {
+        panic!("render plan should be initialized");
+    };
+    render_plan
+        .outputs
+        .values()
+        .flat_map(|output_plan| output_plan.items.iter())
+        .filter_map(|item| match item {
+            RenderPlanItem::Surface(item) if item.surface_id != 0 => Some(item.surface_id),
+            RenderPlanItem::Surface(_) => None,
+        })
+        .collect()
+}
+
 #[test]
 fn maximize_request_updates_window_state_and_geometry() {
     let Some((app, summary)) = run_scenario(WindowScenario::Maximize) else {
@@ -180,7 +195,7 @@ fn maximize_request_updates_window_state_and_geometry() {
 }
 
 #[test]
-fn fullscreen_and_popup_requests_populate_popup_entity_and_render_list() {
+fn fullscreen_and_popup_requests_populate_popup_entity_and_render_plan() {
     let Some((mut app, summary)) = run_scenario(WindowScenario::FullscreenPopup) else {
         return;
     };
@@ -200,7 +215,7 @@ fn fullscreen_and_popup_requests_populate_popup_entity_and_render_list() {
         output,
         popup_parent,
         popup_grab_active,
-        render_elements,
+        render_surface_ids,
     ) = {
         let world = app.inner_mut().world_mut();
 
@@ -238,11 +253,7 @@ fn fullscreen_and_popup_requests_populate_popup_entity_and_render_list() {
         };
         let popup_parent = popup_parent_surface.id;
 
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be initialized");
-        };
-        let render_elements =
-            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
+        let render_surface_ids = render_plan_surface_ids(world);
 
         (
             window_surface_id,
@@ -251,7 +262,7 @@ fn fullscreen_and_popup_requests_populate_popup_entity_and_render_list() {
             output,
             popup_parent,
             popup_grab_active,
-            render_elements,
+            render_surface_ids,
         )
     };
 
@@ -262,12 +273,12 @@ fn fullscreen_and_popup_requests_populate_popup_entity_and_render_list() {
     assert_eq!(popup_parent, window_surface_id);
     assert!(!popup_grab_active, "popup scenario should create a non-grab popup by default");
     assert!(
-        render_elements.iter().any(|element| element.surface_id == window_surface_id),
-        "render list should include the fullscreen window: {render_elements:?}"
+        render_surface_ids.contains(&window_surface_id),
+        "render plan should include the fullscreen window: {render_surface_ids:?}"
     );
     assert!(
-        render_elements.iter().any(|element| element.surface_id == popup_surface_id),
-        "render list should include the popup surface: {render_elements:?}"
+        render_surface_ids.contains(&popup_surface_id),
+        "render plan should include the popup surface: {render_surface_ids:?}"
     );
 }
 
@@ -329,7 +340,7 @@ fn minimize_request_hides_window_clears_focus_and_removes_render_entry() {
         "minimize scenario should create the toplevel before minimizing: {summary:?}"
     );
 
-    let (surface_id, state, focus, render_elements) = {
+    let (surface_id, state, focus, render_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let mut window_query =
             world.query::<(&WlSurfaceHandle, &WindowLayout, &WindowMode, &XdgWindow)>();
@@ -346,20 +357,16 @@ fn minimize_request_hides_window_clears_focus_and_removes_render_entry() {
             panic!("keyboard focus state should be initialized");
         };
         let focus = keyboard_focus.focused_surface;
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be initialized");
-        };
-        let render_elements =
-            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
+        let render_surface_ids = render_plan_surface_ids(world);
 
-        (surface_id, state, focus, render_elements)
+        (surface_id, state, focus, render_surface_ids)
     };
 
     assert_eq!(state, WindowDisplayState::Hidden);
     assert_eq!(focus, None, "hidden window should not retain keyboard focus");
     assert!(
-        !render_elements.iter().any(|element| element.surface_id == surface_id),
-        "hidden window should be removed from the render list: {render_elements:?}"
+        !render_surface_ids.contains(&surface_id),
+        "hidden window should be removed from the render plan: {render_surface_ids:?}"
     );
 }
 
@@ -514,24 +521,20 @@ fn server_dismiss_of_grabbed_popup_sends_popup_done_and_cleans_up_popup_state() 
         "server popup dismiss should notify the client with popup_done: {summary:?}"
     );
 
-    let (popup_count, window_count, render_elements) = {
+    let (popup_count, window_count, render_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be initialized");
-        };
-        let render_elements =
-            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
-        (popup_count, window_count, render_elements)
+        let render_surface_ids = render_plan_surface_ids(world);
+        (popup_count, window_count, render_surface_ids)
     };
 
     assert_eq!(popup_count, 0, "server popup dismiss should remove the popup entity");
     assert_eq!(window_count, 1, "server popup dismiss should keep the toplevel alive");
     assert_eq!(
-        render_elements.len(),
+        render_surface_ids.len(),
         1,
-        "render list should only contain the toplevel after server popup dismissal"
+        "render plan should only contain the toplevel after server popup dismissal"
     );
 }
 
@@ -553,24 +556,20 @@ fn ipc_dismiss_of_grabbed_popup_sends_popup_done_and_cleans_up_popup_state() {
         "IPC popup dismiss should notify the client with popup_done: {summary:?}"
     );
 
-    let (popup_count, window_count, render_elements) = {
+    let (popup_count, window_count, render_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be initialized");
-        };
-        let render_elements =
-            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
-        (popup_count, window_count, render_elements)
+        let render_surface_ids = render_plan_surface_ids(world);
+        (popup_count, window_count, render_surface_ids)
     };
 
     assert_eq!(popup_count, 0, "IPC popup dismiss should remove the popup entity");
     assert_eq!(window_count, 1, "IPC popup dismiss should keep the toplevel alive");
     assert_eq!(
-        render_elements.len(),
+        render_surface_ids.len(),
         1,
-        "render list should only contain the toplevel after IPC popup dismissal"
+        "render plan should only contain the toplevel after IPC popup dismissal"
     );
 }
 
@@ -592,24 +591,20 @@ fn popup_grab_request_with_invalid_serial_is_dismissed() {
         "invalid popup grab scenario should not consume a real pointer serial"
     );
 
-    let (popup_count, window_count, render_elements) = {
+    let (popup_count, window_count, render_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be initialized");
-        };
-        let render_elements =
-            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
-        (popup_count, window_count, render_elements)
+        let render_surface_ids = render_plan_surface_ids(world);
+        (popup_count, window_count, render_surface_ids)
     };
 
     assert_eq!(popup_count, 0, "invalid popup grab should remove the popup entity");
     assert_eq!(window_count, 1, "invalid popup grab should not remove the toplevel");
     assert_eq!(
-        render_elements.len(),
+        render_surface_ids.len(),
         1,
-        "render list should only contain the toplevel after popup dismissal"
+        "render plan should only contain the toplevel after popup dismissal"
     );
 }
 
@@ -658,24 +653,20 @@ fn popup_destroy_request_removes_popup_entity_and_render_entry() {
         "popup destroy scenario should configure the popup before destroying it: {summary:?}"
     );
 
-    let (popup_count, render_elements, window_count) = {
+    let (popup_count, render_surface_ids, window_count) = {
         let world = app.inner_mut().world_mut();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be initialized");
-        };
-        let render_elements =
-            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
-        (popup_count, render_elements, window_count)
+        let render_surface_ids = render_plan_surface_ids(world);
+        (popup_count, render_surface_ids, window_count)
     };
 
     assert_eq!(popup_count, 0, "popup entity should be removed after xdg_popup.destroy");
     assert_eq!(window_count, 1, "destroying a popup should not remove the toplevel window");
     assert_eq!(
-        render_elements.len(),
+        render_surface_ids.len(),
         1,
-        "render list should only contain the toplevel after popup destroy"
+        "render plan should only contain the toplevel after popup destroy"
     );
 }
 
@@ -689,7 +680,7 @@ fn toplevel_destroy_removes_window_records_close_and_clears_render_focus() {
         "toplevel destroy scenario should configure the toplevel before destroying it: {summary:?}"
     );
 
-    let (window_count, popup_count, focus, render_elements, closed_surface_ids) = {
+    let (window_count, popup_count, focus, render_surface_ids, closed_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
@@ -697,27 +688,23 @@ fn toplevel_destroy_removes_window_records_close_and_clears_render_focus() {
             panic!("keyboard focus state should be initialized");
         };
         let focus = keyboard_focus.focused_surface;
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be initialized");
-        };
-        let render_elements =
-            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
+        let render_surface_ids = render_plan_surface_ids(world);
         let Some(closed_window_audit) = world.get_resource::<ClosedWindowAudit>() else {
             panic!("closed window audit should be initialized");
         };
         let closed_surface_ids = closed_window_audit.surface_ids.clone();
 
-        (window_count, popup_count, focus, render_elements, closed_surface_ids)
+        (window_count, popup_count, focus, render_surface_ids, closed_surface_ids)
     };
 
     assert_eq!(window_count, 0, "destroyed toplevel should be removed from ECS");
     assert_eq!(popup_count, 0, "destroying the only toplevel should not leave stray popups");
     assert_eq!(focus, None, "destroyed toplevel should clear keyboard focus");
     assert_eq!(
-        render_elements.len(),
+        render_surface_ids.len(),
         0,
-        "destroyed toplevel should be removed from render list. Elements left: {:?}",
-        render_elements
+        "destroyed toplevel should be removed from render plan. Elements left: {:?}",
+        render_surface_ids
     );
     assert_eq!(closed_surface_ids.len(), 1, "destroy path should emit one WindowClosed message");
 }
@@ -732,29 +719,25 @@ fn server_close_request_emits_close_event_and_cleans_up_window() {
         "client should receive xdg_toplevel.close in server-close scenario: {summary:?}"
     );
 
-    let (window_count, focus, render_elements, closed_surface_ids) = {
+    let (window_count, focus, render_surface_ids, closed_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
         let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
             panic!("keyboard focus state should be initialized");
         };
         let focus = keyboard_focus.focused_surface;
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be initialized");
-        };
-        let render_elements =
-            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
+        let render_surface_ids = render_plan_surface_ids(world);
         let Some(closed_window_audit) = world.get_resource::<ClosedWindowAudit>() else {
             panic!("closed window audit should be initialized");
         };
         let closed_surface_ids = closed_window_audit.surface_ids.clone();
 
-        (window_count, focus, render_elements, closed_surface_ids)
+        (window_count, focus, render_surface_ids, closed_surface_ids)
     };
 
     assert_eq!(window_count, 0, "client should destroy the toplevel after receiving close");
     assert_eq!(focus, None, "closed toplevel should not retain keyboard focus");
-    assert!(render_elements.is_empty(), "closed toplevel should be removed from render list");
+    assert!(render_surface_ids.is_empty(), "closed toplevel should be removed from render plan");
     assert_eq!(
         closed_surface_ids.len(),
         1,
@@ -772,29 +755,28 @@ fn ipc_close_request_emits_close_event_and_cleans_up_window() {
         "IPC close scenario should receive xdg_toplevel.close: {summary:?}"
     );
 
-    let (window_count, focus, render_elements, closed_surface_ids) = {
+    let (window_count, focus, render_surface_ids, closed_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let window_count = world.query::<(&WlSurfaceHandle, &XdgWindow)>().iter(world).count();
         let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
             panic!("keyboard focus should remain available");
         };
         let focus = keyboard_focus.focused_surface;
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be initialized");
-        };
-        let render_elements =
-            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
+        let render_surface_ids = render_plan_surface_ids(world);
         let Some(closed_window_audit) = world.get_resource::<ClosedWindowAudit>() else {
             panic!("closed window audit should be initialized");
         };
         let closed_surface_ids = closed_window_audit.surface_ids.clone();
 
-        (window_count, focus, render_elements, closed_surface_ids)
+        (window_count, focus, render_surface_ids, closed_surface_ids)
     };
 
     assert_eq!(window_count, 0, "IPC close should remove the toplevel window entity");
     assert_eq!(focus, None, "IPC close should clear keyboard focus");
-    assert!(render_elements.is_empty(), "IPC close should remove the window from the render list");
+    assert!(
+        render_surface_ids.is_empty(),
+        "IPC close should remove the window from the render plan"
+    );
     assert_eq!(closed_surface_ids.len(), 1, "IPC close should emit exactly one WindowClosed");
 }
 
@@ -816,7 +798,7 @@ fn ipc_close_of_parent_window_dismisses_child_popup_and_cleans_up_everything() {
         "closing a parent window should dismiss its popup over protocol: {summary:?}"
     );
 
-    let (window_count, popup_count, focus, render_elements, closed_surface_ids) = {
+    let (window_count, popup_count, focus, render_surface_ids, closed_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let window_count = world.query::<(&WlSurfaceHandle, &XdgWindow)>().iter(world).count();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
@@ -824,23 +806,19 @@ fn ipc_close_of_parent_window_dismisses_child_popup_and_cleans_up_everything() {
             panic!("keyboard focus should remain available");
         };
         let focus = keyboard_focus.focused_surface;
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be initialized");
-        };
-        let render_elements =
-            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
+        let render_surface_ids = render_plan_surface_ids(world);
         let Some(closed_window_audit) = world.get_resource::<ClosedWindowAudit>() else {
             panic!("closed window audit should be initialized");
         };
         let closed_surface_ids = closed_window_audit.surface_ids.clone();
 
-        (window_count, popup_count, focus, render_elements, closed_surface_ids)
+        (window_count, popup_count, focus, render_surface_ids, closed_surface_ids)
     };
 
     assert_eq!(window_count, 0, "IPC close should remove the parent toplevel entity");
     assert_eq!(popup_count, 0, "IPC close should also remove child popup entities");
     assert_eq!(focus, None, "IPC close with popup should clear keyboard focus");
-    assert!(render_elements.is_empty(), "IPC close with popup should clear the render list");
+    assert!(render_surface_ids.is_empty(), "IPC close with popup should clear the render plan");
     assert_eq!(closed_surface_ids.len(), 1, "IPC close should emit one WindowClosed");
 }
 
@@ -905,15 +883,11 @@ fn workspace_switch_dismisses_popups_and_reconfigures_reactivated_toplevels() {
         "switching back to the active workspace should reconfigure the toplevel: {summary:?}"
     );
 
-    let (popup_count, window_count, render_elements, active_workspaces, frame_pacing) = {
+    let (popup_count, window_count, render_surface_ids, active_workspaces, frame_pacing) = {
         let world = app.inner_mut().world_mut();
         let popup_count = world.query::<&XdgPopup>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should be initialized");
-        };
-        let render_elements =
-            render_list.elements.iter().filter(|e| e.surface_id != 0).cloned().collect::<Vec<_>>();
+        let render_surface_ids = render_plan_surface_ids(world);
         let active_workspaces = world
             .query::<&nekoland_ecs::components::Workspace>()
             .iter(world)
@@ -925,14 +899,14 @@ fn workspace_switch_dismisses_popups_and_reconfigures_reactivated_toplevels() {
         };
         let frame_pacing = frame_pacing.clone();
 
-        (popup_count, window_count, render_elements, active_workspaces, frame_pacing)
+        (popup_count, window_count, render_surface_ids, active_workspaces, frame_pacing)
     };
 
     assert_eq!(popup_count, 0, "popup should be gone after popup_done-driven teardown");
     assert_eq!(window_count, 1, "workspace visibility changes should not destroy the toplevel");
     assert_eq!(active_workspaces, vec![1], "workspace 1 should be active again after switch back");
     assert_eq!(
-        render_elements.len(),
+        render_surface_ids.len(),
         1,
         "only the reactivated toplevel should remain renderable after popup dismissal"
     );

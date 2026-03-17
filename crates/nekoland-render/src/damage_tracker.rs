@@ -4,7 +4,7 @@ use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, Local, Query, Res, ResMut, With};
 use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{
-    BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputDevice,
+    BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputDevice, OutputId,
     SurfaceContentVersion, SurfaceGeometry, WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::presentation_logic::{managed_window_visible, popup_visible};
@@ -23,7 +23,7 @@ struct TrackedSurfaceDamage {
     content_version: u64,
 }
 
-type OutputDamageSnapshot = BTreeMap<String, BTreeMap<u64, TrackedSurfaceDamage>>;
+type OutputDamageSnapshot = BTreeMap<OutputId, BTreeMap<u64, TrackedSurfaceDamage>>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DamageTrackerState {
@@ -45,7 +45,7 @@ type DamageLayers<'w, 's> = Query<
 >;
 type DamageWindows<'w, 's> = Query<'w, 's, (Entity, WindowSnapshotRuntime), With<XdgWindow>>;
 type DamagePopups<'w, 's> = Query<'w, 's, PopupSnapshotRuntime, With<XdgPopup>>;
-type DamageOutputs<'w, 's> = Query<'w, 's, (Entity, &'static OutputDevice)>;
+type DamageOutputs<'w, 's> = Query<'w, 's, (Entity, &'static OutputId, &'static OutputDevice)>;
 
 #[derive(SystemParam)]
 pub(crate) struct DamageTrackingParams<'w, 's> {
@@ -78,26 +78,24 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
         mut tracker_state,
     } = damage;
 
-    let live_output_names =
-        outputs.iter().map(|(_, output)| output.name.clone()).collect::<BTreeSet<_>>();
-    let output_names_by_entity = outputs
+    let live_output_ids =
+        outputs.iter().map(|(_, output_id, _)| *output_id).collect::<BTreeSet<_>>();
+    let output_ids_by_entity = outputs
         .iter()
-        .map(|(entity, output)| (entity, output.name.clone()))
+        .map(|(entity, output_id, _)| (entity, *output_id))
         .collect::<HashMap<_, _>>();
-    let primary_output_name = primary_output
-        .and_then(|primary_output| primary_output.name.clone())
-        .or_else(|| live_output_names.iter().next().cloned());
-    let fallback_output_name =
-        live_output_names.iter().next().cloned().unwrap_or_else(|| "Virtual-1".to_owned());
-    let mut current_snapshot = if live_output_names.is_empty() {
-        BTreeMap::from([(fallback_output_name.clone(), BTreeMap::new())])
-    } else {
-        live_output_names
-            .iter()
-            .cloned()
-            .map(|output_name| (output_name, BTreeMap::new()))
-            .collect::<OutputDamageSnapshot>()
-    };
+    let output_ids_by_name = outputs
+        .iter()
+        .map(|(_, output_id, output)| (output.name.clone(), *output_id))
+        .collect::<HashMap<_, _>>();
+    let primary_output_id = primary_output
+        .and_then(|primary_output| primary_output.id)
+        .or_else(|| live_output_ids.iter().next().copied());
+    let mut current_snapshot = live_output_ids
+        .iter()
+        .copied()
+        .map(|output_id| (output_id, BTreeMap::new()))
+        .collect::<OutputDamageSnapshot>();
 
     let surface_presentation = surface_presentation.as_deref();
     let visible_windows = windows
@@ -120,11 +118,11 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
                 window.surface_id(),
                 state.is_some_and(|state| state.role == SurfacePresentationRole::OutputBackground)
                     || window.role.is_output_background(),
-                state.and_then(|state| state.target_output.clone()).or_else(|| {
+                state.and_then(|state| state.target_output).or_else(|| {
                     window
                         .background
-                        .map(|background| background.output.clone())
-                        .or_else(|| window.viewport_visibility.output.clone())
+                        .and_then(|background| output_ids_by_name.get(&background.output).copied())
+                        .or(window.viewport_visibility.output)
                 }),
                 TrackedSurfaceDamage {
                     rect: state.map_or_else(
@@ -153,7 +151,7 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
             let dedupe_key = is_background
                 .then(|| output_name.clone())
                 .flatten()
-                .map(|output_name| format!("background:{output_name}"));
+                .map(|output_id| format!("background:{output_id:?}"));
             if let Some(dedupe_key) = dedupe_key {
                 match deduped.get(&dedupe_key) {
                     Some((_, current_surface_id, _, _)) if *current_surface_id >= surface_id => {}
@@ -175,16 +173,15 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
         visible_windows.iter().map(|(entity, ..)| *entity).collect::<BTreeSet<_>>();
     let window_output_names = visible_windows
         .iter()
-        .map(|(entity, _, output_name, _)| (*entity, output_name.clone()))
+        .map(|(entity, _, output_name, _)| (*entity, *output_name))
         .collect::<HashMap<_, _>>();
 
     for (_, surface_id, output_name, rect) in &visible_windows {
         record_surface_geometry(
             &mut current_snapshot,
             *surface_id,
-            output_name.clone(),
-            &live_output_names,
-            &fallback_output_name,
+            *output_name,
+            &live_output_ids,
             rect.clone(),
         );
     }
@@ -195,21 +192,21 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
             continue;
         }
 
-        let output_name = state.and_then(|state| state.target_output.clone()).or_else(|| {
+        let output_name = state.and_then(|state| state.target_output).or_else(|| {
             layer_output
-                .and_then(|layer_output| output_names_by_entity.get(&layer_output.0).cloned())
+                .and_then(|layer_output| output_ids_by_entity.get(&layer_output.0).copied())
                 .or_else(|| {
                     desired_output_name
-                        .and_then(|desired_output_name| desired_output_name.0.clone())
+                        .and_then(|desired_output_name| desired_output_name.0.as_deref())
+                        .and_then(|output_name| output_ids_by_name.get(output_name).copied())
                 })
-                .or_else(|| primary_output_name.clone())
+                .or(primary_output_id)
         });
         record_surface_geometry(
             &mut current_snapshot,
             surface.id,
             output_name,
-            &live_output_names,
-            &fallback_output_name,
+            &live_output_ids,
             TrackedSurfaceDamage {
                 rect: state.map_or_else(
                     || DamageRect {
@@ -248,14 +245,13 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
         }
 
         let output_name = state
-            .and_then(|state| state.target_output.clone())
-            .or_else(|| window_output_names.get(&popup.child_of.parent()).cloned().flatten());
+            .and_then(|state| state.target_output)
+            .or_else(|| window_output_names.get(&popup.child_of.parent()).copied().flatten());
         record_surface_geometry(
             &mut current_snapshot,
             popup.surface_id(),
             output_name,
-            &live_output_names,
-            &fallback_output_name,
+            &live_output_ids,
             TrackedSurfaceDamage {
                 rect: state.map_or_else(
                     || DamageRect {
@@ -283,9 +279,9 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
         .unwrap_or_else(|| {
             current_snapshot
                 .iter()
-                .map(|(output_name, surfaces)| {
+                .map(|(output_id, surfaces)| {
                     (
-                        output_name.clone(),
+                        *output_id,
                         normalize_damage_rects(
                             surfaces.values().map(|surface| surface.rect.clone()).collect(),
                         ),
@@ -309,32 +305,28 @@ fn popup_parent_visible(child_of: &ChildOf, active_window_entities: &BTreeSet<En
 fn record_surface_geometry(
     snapshot: &mut OutputDamageSnapshot,
     surface_id: u64,
-    output_name: Option<String>,
-    live_output_names: &BTreeSet<String>,
-    fallback_output_name: &str,
+    output_id: Option<OutputId>,
+    live_output_ids: &BTreeSet<OutputId>,
     surface: TrackedSurfaceDamage,
 ) {
-    if live_output_names.is_empty() {
-        snapshot.entry(fallback_output_name.to_owned()).or_default().insert(surface_id, surface);
+    if live_output_ids.is_empty() {
         return;
     }
 
-    let Some(output_name) =
-        output_name.filter(|output_name| live_output_names.contains(output_name))
-    else {
+    let Some(output_id) = output_id.filter(|output_id| live_output_ids.contains(output_id)) else {
         return;
     };
-    snapshot.entry(output_name).or_default().insert(surface_id, surface);
+    snapshot.entry(output_id).or_default().insert(surface_id, surface);
 }
 
 fn diff_damage_snapshots(
     previous_snapshot: &OutputDamageSnapshot,
     current_snapshot: &OutputDamageSnapshot,
-) -> BTreeMap<String, Vec<DamageRect>> {
+) -> BTreeMap<OutputId, Vec<DamageRect>> {
     current_snapshot
         .iter()
-        .map(|(output_name, current_surfaces)| {
-            let previous_surfaces = previous_snapshot.get(output_name);
+        .map(|(output_id, current_surfaces)| {
+            let previous_surfaces = previous_snapshot.get(output_id);
             let surface_ids = current_surfaces
                 .keys()
                 .chain(previous_surfaces.into_iter().flat_map(|surfaces| surfaces.keys()))
@@ -360,7 +352,7 @@ fn diff_damage_snapshots(
                 }
             }
 
-            (output_name.clone(), normalize_damage_rects(damage))
+            (*output_id, normalize_damage_rects(damage))
         })
         .collect()
 }
@@ -441,13 +433,22 @@ mod tests {
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
-        BufferState, DesiredOutputName, LayerShellSurface, OutputDevice, OutputKind,
+        BufferState, DesiredOutputName, LayerShellSurface, OutputDevice, OutputId, OutputKind,
         OutputProperties, SurfaceContentVersion, SurfaceGeometry, WindowViewportVisibility,
         WlSurfaceHandle, XdgPopup, XdgWindow,
     };
     use nekoland_ecs::resources::{DamageState, OutputDamageRegions};
 
     use super::damage_tracking_system;
+
+    fn output_id_by_name(world: &mut bevy_ecs::world::World, name: &str) -> OutputId {
+        world
+            .query::<(&OutputId, &OutputDevice)>()
+            .iter(world)
+            .find(|(_, output)| output.name == name)
+            .map(|(output_id, _)| *output_id)
+            .unwrap_or_else(|| panic!("missing output id for {name}"))
+    }
 
     #[test]
     fn damage_regions_are_scoped_per_output_and_recompute_on_output_change() {
@@ -487,6 +488,8 @@ mod tests {
             },
             ..Default::default()
         });
+        let virtual_id = output_id_by_name(app.inner_mut().world_mut(), "Virtual-1");
+        let hdmi_id = output_id_by_name(app.inner_mut().world_mut(), "HDMI-A-1");
 
         let secondary_window = app
             .inner_mut()
@@ -496,7 +499,7 @@ mod tests {
                 geometry: SurfaceGeometry { x: 20, y: 30, width: 120, height: 90 },
                 viewport_visibility: WindowViewportVisibility {
                     visible: true,
-                    output: Some("HDMI-A-1".to_owned()),
+                    output: Some(hdmi_id),
                 },
                 window: XdgWindow::default(),
                 ..Default::default()
@@ -507,7 +510,7 @@ mod tests {
             geometry: SurfaceGeometry { x: 10, y: 15, width: 100, height: 80 },
             viewport_visibility: WindowViewportVisibility {
                 visible: true,
-                output: Some("Virtual-1".to_owned()),
+                output: Some(virtual_id),
             },
             window: XdgWindow::default(),
             ..Default::default()
@@ -534,25 +537,25 @@ mod tests {
             let damage = world.resource::<OutputDamageRegions>();
             let state = world.resource::<DamageState>();
             assert!(state.full_redraw);
-            assert!(damage.regions["Virtual-1"].contains(&nekoland_ecs::resources::DamageRect {
+            assert!(damage.regions[&virtual_id].contains(&nekoland_ecs::resources::DamageRect {
                 x: 10,
                 y: 15,
                 width: 100,
                 height: 80,
             }));
-            assert!(damage.regions["Virtual-1"].contains(&nekoland_ecs::resources::DamageRect {
+            assert!(damage.regions[&virtual_id].contains(&nekoland_ecs::resources::DamageRect {
                 x: 0,
                 y: 0,
                 width: 1280,
                 height: 32,
             }));
-            assert!(damage.regions["HDMI-A-1"].contains(&nekoland_ecs::resources::DamageRect {
+            assert!(damage.regions[&hdmi_id].contains(&nekoland_ecs::resources::DamageRect {
                 x: 20,
                 y: 30,
                 width: 120,
                 height: 90,
             }));
-            assert!(damage.regions["HDMI-A-1"].contains(&nekoland_ecs::resources::DamageRect {
+            assert!(damage.regions[&hdmi_id].contains(&nekoland_ecs::resources::DamageRect {
                 x: 5,
                 y: 7,
                 width: 30,
@@ -565,34 +568,34 @@ mod tests {
         else {
             panic!("window viewport visibility should remain present");
         };
-        visibility.output = Some("Virtual-1".to_owned());
+        visibility.output = Some(virtual_id);
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 
         let world = app.inner().world();
         let damage = world.resource::<OutputDamageRegions>();
         let state = world.resource::<DamageState>();
         assert!(state.full_redraw, "output routing changes should trigger a redraw");
-        assert!(damage.regions["HDMI-A-1"].contains(&nekoland_ecs::resources::DamageRect {
+        assert!(damage.regions[&hdmi_id].contains(&nekoland_ecs::resources::DamageRect {
             x: 20,
             y: 30,
             width: 120,
             height: 90,
         }));
-        assert!(damage.regions["HDMI-A-1"].contains(&nekoland_ecs::resources::DamageRect {
+        assert!(damage.regions[&hdmi_id].contains(&nekoland_ecs::resources::DamageRect {
             x: 5,
             y: 7,
             width: 30,
             height: 20,
         }));
         assert_eq!(
-            damage.regions["Virtual-1"]
+            damage.regions[&virtual_id]
                 .iter()
                 .filter(|rect| rect.width == 120 && rect.height == 90)
                 .count(),
             1,
         );
         assert_eq!(
-            damage.regions["Virtual-1"]
+            damage.regions[&virtual_id]
                 .iter()
                 .filter(|rect| rect.width == 30 && rect.height == 20)
                 .count(),
@@ -631,6 +634,7 @@ mod tests {
             },
             ..Default::default()
         });
+        let virtual_id = output_id_by_name(app.inner_mut().world_mut(), "Virtual-1");
 
         let window = app
             .inner_mut()
@@ -640,7 +644,7 @@ mod tests {
                 geometry: SurfaceGeometry { x: 10, y: 20, width: 100, height: 80 },
                 viewport_visibility: WindowViewportVisibility {
                     visible: true,
-                    output: Some("Virtual-1".to_owned()),
+                    output: Some(virtual_id),
                 },
                 window: XdgWindow::default(),
                 ..Default::default()
@@ -663,7 +667,7 @@ mod tests {
         let state = world.resource::<DamageState>();
         assert!(state.full_redraw);
         assert_eq!(
-            damage.regions["Virtual-1"],
+            damage.regions[&virtual_id],
             vec![nekoland_ecs::resources::DamageRect { x: 110, y: 20, width: 20, height: 80 }],
         );
     }
@@ -691,6 +695,7 @@ mod tests {
             },
             ..Default::default()
         });
+        let virtual_id = output_id_by_name(app.inner_mut().world_mut(), "Virtual-1");
 
         let window = app
             .inner_mut()
@@ -700,7 +705,7 @@ mod tests {
                 geometry: SurfaceGeometry { x: 10, y: 20, width: 100, height: 80 },
                 viewport_visibility: WindowViewportVisibility {
                     visible: true,
-                    output: Some("Virtual-1".to_owned()),
+                    output: Some(virtual_id),
                 },
                 window: XdgWindow::default(),
                 ..Default::default()
@@ -724,7 +729,7 @@ mod tests {
         let state = world.resource::<DamageState>();
         assert!(state.full_redraw);
         assert_eq!(
-            damage.regions["Virtual-1"],
+            damage.regions[&virtual_id],
             vec![nekoland_ecs::resources::DamageRect { x: 10, y: 20, width: 100, height: 80 }],
         );
     }

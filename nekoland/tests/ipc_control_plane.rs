@@ -16,7 +16,7 @@ use nekoland_ecs::components::{
     OutputDevice, OutputProperties, OutputViewport, SurfaceGeometry, WindowLayout, WindowMode,
     WindowSceneGeometry, WlSurfaceHandle, Workspace, WorkspaceId, XdgWindow,
 };
-use nekoland_ecs::resources::{FramePacingState, KeyboardFocusState, RenderList};
+use nekoland_ecs::resources::{FramePacingState, KeyboardFocusState, RenderPlan, RenderPlanItem};
 use nekoland_ipc::commands::{
     OutputCommand, OutputSnapshot, QueryCommand, SplitAxis, TreeSnapshot, WindowCommand,
     WorkspaceCommand, WorkspaceSnapshot,
@@ -99,7 +99,7 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
         workspaces,
         output_properties,
         output_viewport,
-        render_list,
+        render_surface_ids,
         frame_pacing,
     ) = {
         let world = app.inner_mut().world_mut();
@@ -150,10 +150,17 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
         let Some(output_viewport) = output_viewport else {
             panic!("configured output viewport should remain present");
         };
-        let Some(render_list) = world.get_resource::<RenderList>() else {
-            panic!("render list should remain available");
+        let Some(render_plan) = world.get_resource::<RenderPlan>() else {
+            panic!("render plan should remain available");
         };
-        let render_list = render_list.elements.clone();
+        let render_surface_ids = render_plan
+            .outputs
+            .values()
+            .flat_map(|output_plan| output_plan.items.iter())
+            .filter_map(|item| match item {
+                RenderPlanItem::Surface(item) => Some(item.surface_id),
+            })
+            .collect::<Vec<_>>();
         let Some(frame_pacing) = world.get_resource::<FramePacingState>() else {
             panic!("frame pacing state should remain available");
         };
@@ -168,7 +175,7 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
             workspaces,
             output_properties,
             output_viewport,
-            render_list,
+            render_surface_ids,
             frame_pacing,
         )
     };
@@ -198,12 +205,12 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
     assert_eq!(output_viewport.origin_x, 320);
     assert_eq!(output_viewport.origin_y, 480);
     assert!(
-        render_list.iter().any(|element| element.surface_id == TARGET_SURFACE_ID),
-        "active workspace should still render the target window: {render_list:?}"
+        render_surface_ids.contains(&TARGET_SURFACE_ID),
+        "active workspace should still render the target window: {render_surface_ids:?}"
     );
     assert!(
-        !render_list.iter().any(|element| element.surface_id == PRIMARY_SURFACE_ID),
-        "inactive workspace window should be filtered from render output: {render_list:?}"
+        !render_surface_ids.contains(&PRIMARY_SURFACE_ID),
+        "inactive workspace window should be filtered from render output: {render_surface_ids:?}"
     );
     assert!(
         frame_pacing.callback_surface_ids.contains(&TARGET_SURFACE_ID),

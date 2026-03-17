@@ -4,7 +4,7 @@
 ///
 /// When implementing GPU-side blur:
 /// 1. In `blur_effect_system`, read `Res<BlurEffectConfig>` to check `enabled`.
-/// 2. For each surface in the `RenderList`, render a downsampled, blurred
+/// 2. For each relevant surface instance in the `RenderPlan`, render a downsampled, blurred
 ///    version of the background into a separate framebuffer.
 /// 3. Composite the blurred framebuffer behind the surface using Smithay's
 ///    render element API.

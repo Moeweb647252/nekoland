@@ -6,7 +6,7 @@ use nekoland_ecs::views::OutputRuntime;
 pub struct CursorRenderer;
 
 /// Tracks the cursor against the current output layout so present backends can render it without
-/// smuggling a fake surface through the composed render list.
+/// smuggling a fake surface through the composed desktop scene.
 pub fn cursor_render_system(
     pointer: Res<GlobalPointerPosition>,
     outputs: Query<OutputRuntime>,
@@ -22,19 +22,19 @@ pub fn cursor_render_system(
 
     if let Some(output) = next_output {
         cursor_state.visible = true;
-        cursor_state.output_name = Some(output.name().to_owned());
+        cursor_state.output_id = Some(output.id());
         cursor_state.x = pointer.x - f64::from(output.placement.x);
         cursor_state.y = pointer.y - f64::from(output.placement.y);
     } else {
         cursor_state.visible = false;
-        cursor_state.output_name = None;
+        cursor_state.output_id = None;
         cursor_state.x = 0.0;
         cursor_state.y = 0.0;
     }
 
     tracing::trace!(
         visible = cursor_state.visible,
-        output = cursor_state.output_name.as_deref().unwrap_or("<none>"),
+        output_id = ?cursor_state.output_id,
         x = cursor_state.x,
         y = cursor_state.y,
         "cursor render tick"
@@ -46,7 +46,9 @@ mod tests {
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::bundles::OutputBundle;
-    use nekoland_ecs::components::{OutputDevice, OutputKind, OutputPlacement, OutputProperties};
+    use nekoland_ecs::components::{
+        OutputDevice, OutputId, OutputKind, OutputPlacement, OutputProperties,
+    };
     use nekoland_ecs::resources::{CursorRenderState, GlobalPointerPosition};
 
     use super::cursor_render_system;
@@ -59,22 +61,26 @@ mod tests {
             .init_resource::<CursorRenderState>()
             .add_systems(RenderSchedule, cursor_render_system);
 
-        app.inner_mut().world_mut().spawn(OutputBundle {
-            output: OutputDevice {
-                name: "DP-1".to_owned(),
-                kind: OutputKind::Nested,
-                make: "Nekoland".to_owned(),
-                model: "test".to_owned(),
-            },
-            properties: OutputProperties {
-                width: 1920,
-                height: 1080,
-                refresh_millihz: 60_000,
-                scale: 1,
-            },
-            placement: OutputPlacement { x: 640, y: 360 },
-            ..Default::default()
-        });
+        let output = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "DP-1".to_owned(),
+                    kind: OutputKind::Nested,
+                    make: "Nekoland".to_owned(),
+                    model: "test".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1920,
+                    height: 1080,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                placement: OutputPlacement { x: 640, y: 360 },
+                ..Default::default()
+            })
+            .id();
 
         {
             let mut pointer = app.inner_mut().world_mut().resource_mut::<GlobalPointerPosition>();
@@ -86,7 +92,7 @@ mod tests {
 
         let cursor = app.inner().world().resource::<CursorRenderState>();
         assert!(cursor.visible);
-        assert_eq!(cursor.output_name.as_deref(), Some("DP-1"));
+        assert_eq!(cursor.output_id, app.inner().world().get::<OutputId>(output).copied());
         assert_eq!(cursor.x, 60.0);
         assert_eq!(cursor.y, 40.0);
     }
@@ -109,6 +115,6 @@ mod tests {
 
         let cursor = app.inner().world().resource::<CursorRenderState>();
         assert!(!cursor.visible);
-        assert_eq!(cursor.output_name, None);
+        assert_eq!(cursor.output_id, None);
     }
 }

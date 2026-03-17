@@ -59,7 +59,7 @@ fn startup_registers_protocol_globals_and_runtime_state() {
         "startup should either publish a Wayland socket or record why binding failed: {server_state:?}"
     );
     assert!(
-        outputs.connected_outputs.iter().any(|name| !name.is_empty()),
+        outputs.connected_by_id.values().any(|name| !name.is_empty()),
         "startup should seed at least one output: {outputs:?}"
     );
     assert!(

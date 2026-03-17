@@ -22,7 +22,8 @@ use serde_json::Value;
 
 use crate::commands::{
     ClipboardSnapshot, ConfigSnapshot, KeyboardLayoutsSnapshot, PopupSnapshot,
-    PrimarySelectionSnapshot, TreeSnapshot, WindowSnapshot, WorkspaceSnapshot,
+    PresentAuditOutputSnapshot, PrimarySelectionSnapshot, TreeSnapshot, WindowSnapshot,
+    WorkspaceSnapshot,
 };
 use crate::server::{IpcQueryCache, default_socket_path};
 use crate::{IpcCommand, IpcReply, IpcRequest};
@@ -39,6 +40,7 @@ pub const SUPPORTED_SUBSCRIPTION_TOPIC_NAMES: &[&str] = &[
     "keyboard-layout",
     "clipboard",
     "primary-selection",
+    "present-audit",
     "focus",
     "tree",
     "all",
@@ -68,6 +70,7 @@ pub const KNOWN_SUBSCRIPTION_EVENT_NAMES: &[&str] = &[
     "keyboard_layout_switched",
     "clipboard_changed",
     "primary_selection_changed",
+    "present_audit_changed",
     "focus_changed",
     "window_focus_changed",
     "tree_changed",
@@ -84,6 +87,7 @@ pub enum SubscriptionTopic {
     KeyboardLayout,
     Clipboard,
     PrimarySelection,
+    PresentAudit,
     Focus,
     Tree,
     #[default]
@@ -199,6 +203,7 @@ pub(crate) struct SubscriptionSnapshotState {
     last_keyboard_layouts: Option<KeyboardLayoutsSnapshot>,
     last_clipboard: Option<ClipboardSnapshot>,
     last_primary_selection: Option<PrimarySelectionSnapshot>,
+    last_present_audit: Option<Vec<PresentAuditOutputSnapshot>>,
 }
 
 #[derive(SystemParam)]
@@ -370,6 +375,7 @@ pub(crate) fn subscription_dispatch_system(
         snapshots.last_keyboard_layouts = Some(query_cache.keyboard_layouts.clone());
         snapshots.last_clipboard = Some(query_cache.clipboard.clone());
         snapshots.last_primary_selection = Some(query_cache.primary_selection.clone());
+        snapshots.last_present_audit = Some(query_cache.present_audit.clone());
         return;
     }
 
@@ -446,6 +452,7 @@ pub(crate) fn subscription_dispatch_system(
         snapshots.last_keyboard_layouts = Some(query_cache.keyboard_layouts.clone());
         snapshots.last_clipboard = Some(query_cache.clipboard.clone());
         snapshots.last_primary_selection = Some(query_cache.primary_selection.clone());
+        snapshots.last_present_audit = Some(query_cache.present_audit.clone());
         return;
     };
     let previous_windows = last_tree
@@ -619,6 +626,14 @@ pub(crate) fn subscription_dispatch_system(
         });
     }
 
+    if snapshots.last_present_audit.as_ref() != Some(&query_cache.present_audit) {
+        pending_events.push(IpcSubscriptionEvent {
+            topic: SubscriptionTopic::PresentAudit,
+            event: "present_audit_changed".to_owned(),
+            payload: serde_json::to_value(&query_cache.present_audit).ok(),
+        });
+    }
+
     if last_tree.focused_surface != query_cache.tree.focused_surface {
         pending_events.push(IpcSubscriptionEvent {
             topic: SubscriptionTopic::Focus,
@@ -654,6 +669,7 @@ pub(crate) fn subscription_dispatch_system(
     snapshots.last_keyboard_layouts = Some(query_cache.keyboard_layouts.clone());
     snapshots.last_clipboard = Some(query_cache.clipboard.clone());
     snapshots.last_primary_selection = Some(query_cache.primary_selection.clone());
+    snapshots.last_present_audit = Some(query_cache.present_audit.clone());
 }
 
 fn window_geometry_changed(previous: &WindowSnapshot, current: &WindowSnapshot) -> bool {
@@ -697,4 +713,68 @@ fn tree_structure_changed(previous: &TreeSnapshot, current: &TreeSnapshot) -> bo
         || previous.windows != current.windows
         || previous.popups != current.popups
         || previous.render_order != current.render_order
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_ecs::message::Messages;
+    use bevy_ecs::prelude::World;
+    use bevy_ecs::schedule::Schedule;
+
+    use nekoland_ecs::events::{
+        ExternalCommandFailed, ExternalCommandLaunched, OutputConnected, OutputDisconnected,
+        WindowClosed, WindowCreated, WindowMoved,
+    };
+
+    use crate::commands::{PresentAuditElementSnapshot, PresentAuditOutputSnapshot};
+
+    use super::{PendingSubscriptionEvents, SubscriptionTopic, subscription_dispatch_system};
+
+    #[test]
+    fn subscription_dispatch_emits_present_audit_changed_when_audit_snapshot_changes() {
+        let mut world = World::default();
+        world.insert_resource(crate::server::IpcQueryCache::default());
+        world.insert_resource(PendingSubscriptionEvents::default());
+        world.insert_resource(Messages::<WindowCreated>::default());
+        world.insert_resource(Messages::<WindowClosed>::default());
+        world.insert_resource(Messages::<WindowMoved>::default());
+        world.insert_resource(Messages::<OutputConnected>::default());
+        world.insert_resource(Messages::<OutputDisconnected>::default());
+        world.insert_resource(Messages::<ExternalCommandLaunched>::default());
+        world.insert_resource(Messages::<ExternalCommandFailed>::default());
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(subscription_dispatch_system);
+
+        schedule.run(&mut world);
+        assert!(
+            world.resource::<PendingSubscriptionEvents>().is_empty(),
+            "initial subscription tick should only seed baselines"
+        );
+
+        world.resource_mut::<crate::server::IpcQueryCache>().present_audit =
+            vec![PresentAuditOutputSnapshot {
+                output_name: "Virtual-1".to_owned(),
+                frame: 4,
+                uptime_millis: 44,
+                elements: vec![PresentAuditElementSnapshot {
+                    surface_id: 42,
+                    kind: "window".to_owned(),
+                    x: 10,
+                    y: 20,
+                    width: 800,
+                    height: 600,
+                    z_index: 0,
+                    opacity: 1.0,
+                }],
+            }];
+
+        schedule.run(&mut world);
+
+        let events = world.resource::<PendingSubscriptionEvents>().as_slice().to_vec();
+        assert_eq!(events.len(), 1, "expected one present-audit subscription event");
+        assert_eq!(events[0].topic, SubscriptionTopic::PresentAudit);
+        assert_eq!(events[0].event, "present_audit_changed");
+        assert!(events[0].payload.is_some());
+    }
 }

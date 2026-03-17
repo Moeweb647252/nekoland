@@ -1,7 +1,7 @@
 use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 
-use crate::components::WorkspaceCoord;
+use crate::components::{OutputId, WorkspaceCoord};
 use crate::selectors::OutputName;
 
 /// Metadata tracked for a mapped XDG toplevel surface.
@@ -40,7 +40,7 @@ pub struct WindowSceneGeometry {
 #[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowViewportVisibility {
     pub visible: bool,
-    pub output: Option<String>,
+    pub output: Option<OutputId>,
 }
 
 impl Default for WindowViewportVisibility {

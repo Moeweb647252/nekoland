@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 
 use nekoland_core::error::NekolandError;
 use nekoland_core::prelude::AppMetadata;
-use nekoland_ecs::components::{OutputDevice, OutputProperties, SurfaceGeometry};
+use nekoland_ecs::components::{OutputDevice, OutputId, OutputProperties, SurfaceGeometry};
 use nekoland_ecs::resources::{
     CompositorClock, CompositorConfig, CursorRenderState, GlobalPointerPosition,
     OutputDamageRegions, PendingBackendInputEvents, PendingOutputPresentationEvents,
-    PendingProtocolInputEvents, RenderList, VirtualOutputCaptureState,
+    PendingProtocolInputEvents, RenderPlan, VirtualOutputCaptureState,
 };
 use nekoland_protocol::{ProtocolCursorState, ProtocolDmabufSupport, ProtocolSurfaceRegistry};
 
@@ -86,11 +86,20 @@ pub struct BackendDescriptor {
     pub description: String,
 }
 
+/// Backend-scoped identity for one output runtime object.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BackendOutputId {
+    pub backend_id: BackendId,
+    pub output_name: String,
+}
+
 /// ECS-side output snapshot exposed to backend runtimes through constrained contexts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputSnapshot {
     pub entity: Entity,
+    pub output_id: OutputId,
     pub backend_id: Option<BackendId>,
+    pub backend_output_id: Option<BackendOutputId>,
     pub device: OutputDevice,
     pub properties: OutputProperties,
 }
@@ -109,7 +118,7 @@ pub enum RenderSurfaceRole {
 pub struct RenderSurfaceSnapshot {
     pub geometry: SurfaceGeometry,
     pub role: RenderSurfaceRole,
-    pub target_output: Option<String>,
+    pub target_output: Option<OutputId>,
 }
 
 /// Constrained extract context that keeps backend runtimes ECS-native without handing them an
@@ -143,7 +152,7 @@ pub struct BackendPresentCtx<'a> {
     pub cursor_image: Option<&'a ProtocolCursorState>,
     pub output_damage_regions: &'a OutputDamageRegions,
     pub outputs: &'a [OutputSnapshot],
-    pub render_list: &'a RenderList,
+    pub render_plan: &'a RenderPlan,
     pub surfaces: &'a std::collections::HashMap<u64, RenderSurfaceSnapshot>,
     pub surface_registry: Option<&'a ProtocolSurfaceRegistry>,
     pub virtual_output_capture: Option<&'a mut VirtualOutputCaptureState>,

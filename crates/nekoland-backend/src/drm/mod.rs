@@ -125,9 +125,7 @@ impl Backend for DrmRuntime {
 
         let owned_outputs = self.owned_outputs(cx.outputs).cloned().collect::<Vec<_>>();
         emit_present_completion_events(
-            owned_outputs
-                .iter()
-                .map(|output| (output.device.name.clone(), output.properties.clone())),
+            owned_outputs.iter().map(|output| (output.output_id, output.properties.clone())),
             cx.presentation_events,
             &mut self.presentation_runtime,
             &mut self.monotonic_clock,
@@ -154,8 +152,7 @@ impl Backend for DrmRuntime {
             cursor_render: cx.cursor_render,
             cursor_image: cx.cursor_image,
             output_damage_regions: cx.output_damage_regions,
-            render_list: cx.render_list,
-            surfaces: cx.surfaces,
+            render_plan: cx.render_plan,
             surface_registry: cx.surface_registry,
             session_state: &self.session_state,
             drm_shared: &self.device_state,

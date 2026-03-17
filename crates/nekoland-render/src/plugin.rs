@@ -3,7 +3,7 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{PostRenderSchedule, PreRenderSchedule, RenderSchedule};
 use nekoland_ecs::resources::{
-    CursorRenderState, DamageState, FramePacingState, OutputDamageRegions, RenderList,
+    CursorRenderState, DamageState, FramePacingState, OutputDamageRegions, RenderPlan,
     SurfaceVisualSnapshot,
 };
 
@@ -19,7 +19,7 @@ impl NekolandPlugin for RenderPlugin {
     /// Register render-stage resources plus the strictly ordered render pipeline
     /// that keeps compositor-internal rendering separate from user-facing visual state.
     fn build(&self, app: &mut App) {
-        app.init_resource::<RenderList>()
+        app.init_resource::<RenderPlan>()
             .init_resource::<CursorRenderState>()
             .init_resource::<DamageState>()
             .init_resource::<FramePacingState>()

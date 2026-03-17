@@ -15,7 +15,7 @@ use nekoland_core::schedules::PresentSchedule;
 use nekoland_ecs::components::{SurfaceGeometry, WindowLayout, WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, KeyboardFocusState, PendingBackendInputEvents,
-    PendingProtocolInputEvents, PendingWindowControls, RenderList,
+    PendingProtocolInputEvents, PendingWindowControls, RenderPlan, RenderPlanItem,
 };
 use nekoland_ecs::selectors::SurfaceId;
 use nekoland_protocol::{ProtocolSeatDispatchSystems, ProtocolServerState};
@@ -202,7 +202,7 @@ fn overlapping_floating_click_targets_topmost_wayland_client() {
     );
     assert_eq!(
         pump.top_render_surface_before_click, pump.top_surface_id,
-        "render list should show the top window above the bottom window before the click: {pump:?}"
+        "render plan should show the top window above the bottom window before the click: {pump:?}"
     );
 
     assert_eq!(
@@ -224,7 +224,7 @@ fn drive_overlap_click_scenario(
     mut pending_window_controls: ResMut<PendingWindowControls>,
     mut pending_backend_inputs: ResMut<PendingBackendInputEvents>,
     mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
-    render_list: Res<RenderList>,
+    render_plan: Res<RenderPlan>,
     keyboard_focus: Res<KeyboardFocusState>,
     windows: Query<
         (&WlSurfaceHandle, &XdgWindow, &SurfaceGeometry, &WindowLayout),
@@ -279,12 +279,15 @@ fn drive_overlap_click_scenario(
         return;
     }
 
-    let top_render_surface = render_list
-        .elements
-        .iter()
-        .rev()
-        .find(|element| element.surface_id != 0)
-        .map(|element| element.surface_id);
+    let top_render_surface = render_plan
+        .outputs
+        .values()
+        .flat_map(|output_plan| output_plan.items.iter())
+        .filter_map(|item| match item {
+            RenderPlanItem::Surface(item) if item.surface_id != 0 => Some(item.surface_id),
+            RenderPlanItem::Surface(_) => None,
+        })
+        .last();
     if top_render_surface != Some(top_id) {
         return;
     }

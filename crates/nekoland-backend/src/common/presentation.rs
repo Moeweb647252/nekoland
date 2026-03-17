@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use bevy_ecs::prelude::{Query, ResMut};
-use nekoland_ecs::components::{OutputDevice, OutputProperties};
+use nekoland_ecs::components::{OutputDevice, OutputId, OutputProperties};
 use nekoland_ecs::resources::{
     OutputPresentationEventRecord, OutputPresentationState, OutputPresentationTimeline,
     PendingOutputPresentationEvents,
@@ -13,7 +13,7 @@ use smithay::utils::{Clock, Monotonic};
 /// be projected into the normalized ECS presentation stream.
 #[derive(Debug, Default)]
 pub struct OutputPresentationRuntime {
-    outputs: BTreeMap<String, OutputPresentationClock>,
+    outputs: BTreeMap<OutputId, OutputPresentationClock>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -28,27 +28,27 @@ struct OutputPresentationClock {
 
 /// Apply backend-produced presentation events into the normalized ECS snapshot.
 pub fn apply_output_presentation_events_system(
-    outputs: Query<&OutputDevice>,
+    outputs: Query<(&OutputId, &OutputDevice)>,
     mut pending_presentation_events: ResMut<PendingOutputPresentationEvents>,
     mut presentation_state: ResMut<OutputPresentationState>,
 ) {
-    let known_outputs = outputs.iter().map(|output| output.name.clone()).collect::<BTreeSet<_>>();
+    let known_outputs = outputs.iter().map(|(output_id, _)| *output_id).collect::<BTreeSet<_>>();
     let mut timelines = presentation_state
         .outputs
         .drain(..)
-        .filter(|timeline| known_outputs.contains(&timeline.output_name))
-        .map(|timeline| (timeline.output_name.clone(), timeline))
+        .filter(|timeline| known_outputs.contains(&timeline.output_id))
+        .map(|timeline| (timeline.output_id, timeline))
         .collect::<BTreeMap<_, _>>();
 
     for event in pending_presentation_events.drain() {
-        if !known_outputs.contains(&event.output_name) {
+        if !known_outputs.contains(&event.output_id) {
             continue;
         }
 
         timelines.insert(
-            event.output_name.clone(),
+            event.output_id,
             OutputPresentationTimeline {
-                output_name: event.output_name,
+                output_id: event.output_id,
                 refresh_interval_nanos: event.refresh_interval_nanos,
                 present_time_nanos: event.present_time_nanos,
                 sequence: event.sequence,
@@ -61,7 +61,7 @@ pub fn apply_output_presentation_events_system(
 
 /// Emit completion events using the current monotonic clock as the backend time source.
 pub fn emit_present_completion_events(
-    outputs: impl IntoIterator<Item = (String, OutputProperties)>,
+    outputs: impl IntoIterator<Item = (OutputId, OutputProperties)>,
     pending_presentation_events: &mut PendingOutputPresentationEvents,
     presentation_runtime: &mut OutputPresentationRuntime,
     monotonic_clock: &mut Option<Clock<Monotonic>>,
@@ -81,23 +81,22 @@ pub fn emit_present_completion_events(
 /// presented for the current frame; this function only normalizes timestamps and
 /// sequence numbers.
 pub fn emit_present_completion_events_at(
-    outputs: impl IntoIterator<Item = (String, OutputProperties)>,
+    outputs: impl IntoIterator<Item = (OutputId, OutputProperties)>,
     pending_presentation_events: &mut PendingOutputPresentationEvents,
     presentation_runtime: &mut OutputPresentationRuntime,
     now_nanos: u64,
 ) {
     let mut known_outputs = BTreeSet::new();
 
-    for (output_name, properties) in outputs {
-        known_outputs.insert(output_name.clone());
+    for (output_id, properties) in outputs {
+        known_outputs.insert(output_id);
         let refresh_interval_nanos = refresh_interval_nanos(properties.refresh_millihz);
-        let clock = presentation_runtime.outputs.entry(output_name.clone()).or_insert(
-            OutputPresentationClock {
+        let clock =
+            presentation_runtime.outputs.entry(output_id).or_insert(OutputPresentationClock {
                 anchor_nanos: now_nanos,
                 refresh_interval_nanos,
                 sequence: 0,
-            },
-        );
+            });
 
         if clock.refresh_interval_nanos != refresh_interval_nanos {
             clock.anchor_nanos = now_nanos;
@@ -118,14 +117,14 @@ pub fn emit_present_completion_events_at(
         };
 
         pending_presentation_events.push(OutputPresentationEventRecord {
-            output_name,
+            output_id,
             refresh_interval_nanos,
             present_time_nanos,
             sequence,
         });
     }
 
-    presentation_runtime.outputs.retain(|output_name, _| known_outputs.contains(output_name));
+    presentation_runtime.outputs.retain(|output_id, _| known_outputs.contains(output_id));
 }
 
 /// Convert millihertz refresh values into one-frame intervals in nanoseconds.

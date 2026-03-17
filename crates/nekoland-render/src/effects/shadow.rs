@@ -5,7 +5,7 @@
 /// When implementing drop shadows:
 /// 1. In `shadow_effect_system`, read `Res<ShadowEffectConfig>`.
 /// 2. For each visible window, emit a `ShadowRenderElement` behind the surface
-///    element in the render list.
+///    instance in the `RenderPlan`.
 /// 3. The shadow element renders a blurred, offset, semi-transparent rectangle
 ///    using a custom Smithay render element implementation.
 ///

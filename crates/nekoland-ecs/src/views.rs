@@ -3,11 +3,11 @@ use bevy_ecs::query::QueryData;
 
 use crate::components::{
     BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow,
-    OutputCurrentWorkspace, OutputDevice, OutputPlacement, OutputProperties, OutputViewport,
-    OutputWorkArea, PopupGrab, SurfaceContentVersion, SurfaceGeometry, WindowFullscreenTarget,
-    WindowLayout, WindowMode, WindowPlacement, WindowPolicyState, WindowRestoreSnapshot,
-    WindowRole, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle, Workspace,
-    X11Window, XdgPopup, XdgWindow,
+    OutputCurrentWorkspace, OutputDevice, OutputId, OutputPlacement, OutputProperties,
+    OutputViewport, OutputWorkArea, PopupGrab, SurfaceContentVersion, SurfaceGeometry,
+    WindowFullscreenTarget, WindowLayout, WindowMode, WindowPlacement, WindowPolicyState,
+    WindowRestoreSnapshot, WindowRole, WindowSceneGeometry, WindowViewportVisibility,
+    WlSurfaceHandle, Workspace, X11Window, XdgPopup, XdgWindow,
 };
 
 /// Common read-only runtime view over one surface-backed entity with committed geometry.
@@ -288,6 +288,7 @@ impl<'w, 's> WorkspaceRuntimeReadOnlyItem<'w, 's> {
 #[derive(QueryData)]
 #[query_data(mutable)]
 pub struct OutputRuntime {
+    pub output_id: &'static OutputId,
     pub device: &'static OutputDevice,
     pub properties: &'static mut OutputProperties,
     pub placement: &'static mut OutputPlacement,
@@ -297,12 +298,20 @@ pub struct OutputRuntime {
 }
 
 impl<'w, 's> OutputRuntimeItem<'w, 's> {
+    pub fn id(&self) -> OutputId {
+        *self.output_id
+    }
+
     pub fn name(&self) -> &str {
         &self.device.name
     }
 }
 
 impl<'w, 's> OutputRuntimeReadOnlyItem<'w, 's> {
+    pub fn id(&self) -> OutputId {
+        *self.output_id
+    }
+
     pub fn name(&self) -> &str {
         &self.device.name
     }

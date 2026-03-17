@@ -6,7 +6,7 @@ use bevy_ecs::prelude::{Entity, Query, Resource};
 use bevy_ecs::query::Allow;
 use bevy_ecs::world::{DeferredWorld, World};
 
-use crate::components::{OutputDevice, WlSurfaceHandle, Workspace};
+use crate::components::{OutputDevice, OutputId, WlSurfaceHandle, Workspace};
 
 /// Indexes runtime entities by stable external identifiers.
 ///
@@ -18,6 +18,7 @@ pub struct EntityIndex {
     entity_to_surface: HashMap<Entity, u64>,
     workspace_id_to_entity: BTreeMap<u32, Entity>,
     workspace_name_to_entity: BTreeMap<String, Entity>,
+    output_id_to_entity: BTreeMap<OutputId, Entity>,
     output_name_to_entity: BTreeMap<String, Entity>,
 }
 
@@ -28,6 +29,7 @@ impl EntityIndex {
         self.entity_to_surface.clear();
         self.workspace_id_to_entity.clear();
         self.workspace_name_to_entity.clear();
+        self.output_id_to_entity.clear();
         self.output_name_to_entity.clear();
     }
 
@@ -67,6 +69,11 @@ impl EntityIndex {
         self.output_name_to_entity.get(output_name).copied()
     }
 
+    /// Looks up an output entity by runtime output id.
+    pub fn entity_for_output_id(&self, output_id: OutputId) -> Option<Entity> {
+        self.output_id_to_entity.get(&output_id).copied()
+    }
+
     /// Inserts or refreshes the cached workspace lookup entries for one entity.
     pub fn insert_workspace(
         &mut self,
@@ -90,12 +97,21 @@ impl EntityIndex {
     }
 
     /// Inserts or refreshes the cached output lookup entry for one entity.
-    pub fn insert_output(&mut self, output_entity: Entity, output_name: String) {
+    pub fn insert_output(
+        &mut self,
+        output_entity: Entity,
+        output_id: Option<OutputId>,
+        output_name: String,
+    ) {
+        if let Some(output_id) = output_id {
+            self.output_id_to_entity.insert(output_id, output_entity);
+        }
         self.output_name_to_entity.insert(output_name, output_entity);
     }
 
     /// Removes every output lookup that points at the removed entity.
     pub fn remove_output_entity(&mut self, output_entity: Entity) {
+        self.output_id_to_entity.retain(|_, entity| *entity != output_entity);
         self.output_name_to_entity.retain(|_, entity| *entity != output_entity);
     }
 }
@@ -118,6 +134,11 @@ pub fn register_entity_index_hooks(world: &mut World) {
     output_hooks.try_on_insert(index_output_inserted);
     output_hooks.try_on_replace(index_output_removed);
     output_hooks.try_on_remove(index_output_removed);
+
+    let output_id_hooks = world.register_component_hooks::<OutputId>();
+    output_id_hooks.try_on_insert(index_output_identity_inserted);
+    output_id_hooks.try_on_replace(index_output_removed);
+    output_id_hooks.try_on_remove(index_output_removed);
 }
 
 fn index_surface_handle_inserted(mut world: DeferredWorld, context: HookContext) {
@@ -153,13 +174,27 @@ fn index_workspace_removed(mut world: DeferredWorld, context: HookContext) {
 }
 
 fn index_output_inserted(mut world: DeferredWorld, context: HookContext) {
+    let Some((output_id, output_name)) = world
+        .get::<OutputDevice>(context.entity)
+        .map(|output| (world.get::<OutputId>(context.entity).copied(), output.name.clone()))
+    else {
+        return;
+    };
+
+    world.resource_mut::<EntityIndex>().insert_output(context.entity, output_id, output_name);
+}
+
+fn index_output_identity_inserted(mut world: DeferredWorld, context: HookContext) {
+    let Some(output_id) = world.get::<OutputId>(context.entity).copied() else {
+        return;
+    };
     let Some(output_name) =
         world.get::<OutputDevice>(context.entity).map(|output| output.name.clone())
     else {
         return;
     };
 
-    world.resource_mut::<EntityIndex>().insert_output(context.entity, output_name);
+    world.resource_mut::<EntityIndex>().insert_output(context.entity, Some(output_id), output_name);
 }
 
 fn index_output_removed(mut world: DeferredWorld, context: HookContext) {
@@ -171,7 +206,7 @@ pub fn rebuild_entity_index_system(
     mut index: bevy_ecs::prelude::ResMut<EntityIndex>,
     surfaces: Query<(Entity, &WlSurfaceHandle), Allow<Disabled>>,
     workspaces: Query<(Entity, &Workspace), Allow<Disabled>>,
-    outputs: Query<(Entity, &OutputDevice)>,
+    outputs: Query<(Entity, &OutputId, &OutputDevice)>,
 ) {
     index.clear();
 
@@ -183,8 +218,8 @@ pub fn rebuild_entity_index_system(
         index.insert_workspace(entity, workspace.id.0, workspace.name.clone());
     }
 
-    for (entity, output) in &outputs {
-        index.insert_output(entity, output.name.clone());
+    for (entity, output_id, output) in &outputs {
+        index.insert_output(entity, Some(*output_id), output.name.clone());
     }
 }
 
@@ -193,7 +228,9 @@ mod tests {
     use bevy_ecs::world::World;
 
     use super::{EntityIndex, register_entity_index_hooks};
-    use crate::components::{OutputDevice, OutputKind, WlSurfaceHandle, Workspace, WorkspaceId};
+    use crate::components::{
+        OutputDevice, OutputId, OutputKind, WlSurfaceHandle, Workspace, WorkspaceId,
+    };
 
     #[test]
     fn component_hooks_track_entity_index_incrementally() {
@@ -218,6 +255,8 @@ mod tests {
         assert_eq!(index.entity_for_workspace_id(7), Some(workspace));
         assert_eq!(index.entity_for_workspace_name("7"), Some(workspace));
         assert_eq!(index.entity_for_output_name("Virtual-1"), Some(output));
+        let output_id = world.get::<OutputId>(output).copied().expect("output should have id");
+        assert_eq!(index.entity_for_output_id(output_id), Some(output));
     }
 
     #[test]
@@ -256,6 +295,8 @@ mod tests {
             assert_eq!(index.entity_for_workspace_name("2"), Some(workspace));
             assert_eq!(index.entity_for_output_name("Virtual-1"), None);
             assert_eq!(index.entity_for_output_name("HDMI-A-1"), Some(output));
+            let output_id = world.get::<OutputId>(output).copied().expect("output should have id");
+            assert_eq!(index.entity_for_output_id(output_id), Some(output));
         }
 
         world.despawn(workspace);

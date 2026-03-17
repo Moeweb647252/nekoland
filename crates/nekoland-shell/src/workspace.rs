@@ -6,7 +6,8 @@ use bevy_ecs::prelude::{Commands, Entity, Has, Query, Res, ResMut, Resource, Wit
 use bevy_ecs::query::{Added, Allow, Changed, Or};
 use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{
-    ActiveWorkspace, OutputCurrentWorkspace, OutputDevice, Workspace, WorkspaceId, XdgWindow,
+    ActiveWorkspace, OutputCurrentWorkspace, OutputDevice, OutputId, Workspace, WorkspaceId,
+    XdgWindow,
 };
 use nekoland_ecs::resources::{
     FocusedOutputState, PendingWorkspaceControls, PrimaryOutputState, WorkspaceControl,
@@ -20,13 +21,33 @@ pub struct WorkspaceManager;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
 pub struct RememberedOutputWorkspaceState {
-    pub workspaces: std::collections::BTreeMap<String, WorkspaceId>,
+    pub by_id: std::collections::BTreeMap<OutputId, WorkspaceId>,
+    pub ids_by_name: std::collections::BTreeMap<String, OutputId>,
+}
+
+impl RememberedOutputWorkspaceState {
+    pub fn workspace_for_output_name(&self, output_name: &str) -> Option<WorkspaceId> {
+        self.ids_by_name.get(output_name).and_then(|output_id| self.by_id.get(output_id)).copied()
+    }
+
+    pub fn remember(
+        &mut self,
+        output_id: OutputId,
+        output_name: String,
+        workspace_id: WorkspaceId,
+    ) {
+        self.ids_by_name.insert(output_name, output_id);
+        self.by_id.insert(output_id, workspace_id);
+    }
 }
 
 type WorkspaceWindows<'w, 's> =
     Query<'w, 's, (Entity, Option<&'static ChildOf>), (With<XdgWindow>, Allow<Disabled>)>;
-type WorkspaceOutputs<'w, 's> =
-    Query<'w, 's, (Entity, &'static OutputDevice, Option<&'static OutputCurrentWorkspace>)>;
+type WorkspaceOutputs<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static OutputId, &'static OutputDevice, Option<&'static OutputCurrentWorkspace>),
+>;
 type WorkspaceEntities<'w, 's> = Query<'w, 's, (), With<Workspace>>;
 type ActiveWorkspaceEntities<'w, 's> = Query<'w, 's, (), With<ActiveWorkspace>>;
 type WorkspaceAdditions<'w, 's> = Query<'w, 's, (), Added<Workspace>>;
@@ -135,9 +156,10 @@ pub fn workspace_command_system(
     let output_snapshot = workspace_commands
         .outputs
         .iter()
-        .map(|(entity, output, current_workspace)| {
+        .map(|(entity, output_id, output, current_workspace)| {
             (
                 entity,
+                *output_id,
                 output.name.clone(),
                 current_workspace.map(|current_workspace| current_workspace.workspace.0),
             )
@@ -232,7 +254,7 @@ pub fn workspace_command_system(
                     }
                 }
 
-                for (output_entity, _, current_workspace) in &workspace_commands.outputs {
+                for (output_entity, _, _, current_workspace) in &workspace_commands.outputs {
                     if current_workspace
                         .is_some_and(|current_workspace| current_workspace.workspace.0 == target_id)
                         && let Some(fallback_entity) = fallback_entity
@@ -268,7 +290,7 @@ pub fn workspace_command_system(
 pub fn output_workspace_housekeeping_system(
     mut commands: Commands,
     mut remembered_outputs: ResMut<RememberedOutputWorkspaceState>,
-    outputs: Query<(Entity, &OutputDevice, Option<&OutputCurrentWorkspace>)>,
+    outputs: Query<(Entity, &OutputId, &OutputDevice, Option<&OutputCurrentWorkspace>)>,
     mut workspaces: Query<(Entity, WorkspaceRuntime), Allow<Disabled>>,
 ) {
     if outputs.is_empty() {
@@ -282,11 +304,11 @@ pub fn output_workspace_housekeeping_system(
     let mut assigned = std::collections::BTreeSet::new();
     let mut needs_assignment = Vec::new();
 
-    for (output_entity, output, current_workspace) in &outputs {
+    for (output_entity, output_id, output, current_workspace) in &outputs {
         let Some(workspace_id) =
             current_workspace.map(|current_workspace| current_workspace.workspace.0)
         else {
-            needs_assignment.push((output_entity, output.name.clone()));
+            needs_assignment.push((output_entity, *output_id, output.name.clone()));
             continue;
         };
 
@@ -294,13 +316,12 @@ pub fn output_workspace_housekeeping_system(
             continue;
         }
 
-        needs_assignment.push((output_entity, output.name.clone()));
+        needs_assignment.push((output_entity, *output_id, output.name.clone()));
     }
 
-    for (output_entity, output_name) in needs_assignment {
+    for (output_entity, output_id, output_name) in needs_assignment {
         let remembered_workspace = remembered_outputs
-            .workspaces
-            .get(&output_name)
+            .workspace_for_output_name(&output_name)
             .map(|workspace_id| workspace_id.0)
             .filter(|workspace_id| !assigned.contains(workspace_id))
             .and_then(|workspace_id| {
@@ -333,17 +354,21 @@ pub fn output_workspace_housekeeping_system(
         commands
             .entity(output_entity)
             .insert(OutputCurrentWorkspace { workspace: WorkspaceId(next_workspace.1) });
-        remembered_outputs.workspaces.insert(output_name, WorkspaceId(next_workspace.1));
+        remembered_outputs.remember(output_id, output_name, WorkspaceId(next_workspace.1));
     }
 }
 
 pub fn remember_output_workspace_routes_system(
-    outputs: Query<(&OutputDevice, Option<&OutputCurrentWorkspace>)>,
+    outputs: Query<(&OutputId, &OutputDevice, Option<&OutputCurrentWorkspace>)>,
     mut remembered_outputs: ResMut<RememberedOutputWorkspaceState>,
 ) {
-    for (output, current_workspace) in &outputs {
+    for (output_id, output, current_workspace) in &outputs {
         if let Some(current_workspace) = current_workspace {
-            remembered_outputs.workspaces.insert(output.name.clone(), current_workspace.workspace);
+            remembered_outputs.remember(
+                *output_id,
+                output.name.clone(),
+                current_workspace.workspace,
+            );
         }
     }
 }
@@ -482,25 +507,25 @@ fn create_workspace_identity(
 }
 
 fn resolve_workspace_control_output_entity(
-    outputs: &[(Entity, String, Option<u32>)],
+    outputs: &[(Entity, OutputId, String, Option<u32>)],
     focused_output: Option<&FocusedOutputState>,
     primary_output: Option<&PrimaryOutputState>,
 ) -> Option<Entity> {
-    if let Some(output_name) =
-        focused_output.and_then(|focused_output| focused_output.name.as_deref())
-        && let Some((entity, _, _)) = outputs.iter().find(|(_, name, _)| name == output_name)
+    if let Some(output_id) = focused_output.and_then(|focused_output| focused_output.id)
+        && let Some((entity, _, _, _)) =
+            outputs.iter().find(|(_, candidate_id, _, _)| *candidate_id == output_id)
     {
         return Some(*entity);
     }
 
-    if let Some(output_name) =
-        primary_output.and_then(|primary_output| primary_output.name.as_deref())
-        && let Some((entity, _, _)) = outputs.iter().find(|(_, name, _)| name == output_name)
+    if let Some(output_id) = primary_output.and_then(|primary_output| primary_output.id)
+        && let Some((entity, _, _, _)) =
+            outputs.iter().find(|(_, candidate_id, _, _)| *candidate_id == output_id)
     {
         return Some(*entity);
     }
 
-    outputs.first().map(|(entity, _, _)| *entity)
+    outputs.first().map(|(entity, _, _, _)| *entity)
 }
 
 fn resolve_preferred_workspace_id(
@@ -508,10 +533,9 @@ fn resolve_preferred_workspace_id(
     focused_output: Option<&FocusedOutputState>,
     primary_output: Option<&PrimaryOutputState>,
 ) -> Option<u32> {
-    if let Some(output_name) =
-        focused_output.and_then(|focused_output| focused_output.name.as_deref())
+    if let Some(output_id) = focused_output.and_then(|focused_output| focused_output.id)
         && let Some(workspace_id) =
-            outputs.iter().find(|output| output.name() == output_name).and_then(|output| {
+            outputs.iter().find(|output| output.id() == output_id).and_then(|output| {
                 output
                     .current_workspace
                     .as_ref()
@@ -521,10 +545,9 @@ fn resolve_preferred_workspace_id(
         return Some(workspace_id);
     }
 
-    if let Some(output_name) =
-        primary_output.and_then(|primary_output| primary_output.name.as_deref())
+    if let Some(output_id) = primary_output.and_then(|primary_output| primary_output.id)
         && let Some(workspace_id) =
-            outputs.iter().find(|output| output.name() == output_name).and_then(|output| {
+            outputs.iter().find(|output| output.id() == output_id).and_then(|output| {
                 output
                     .current_workspace
                     .as_ref()
@@ -549,7 +572,7 @@ mod tests {
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
-        ActiveWorkspace, BorderTheme, BufferState, OutputCurrentWorkspace, OutputDevice,
+        ActiveWorkspace, BorderTheme, BufferState, OutputCurrentWorkspace, OutputDevice, OutputId,
         OutputKind, OutputProperties, ServerDecoration, SurfaceGeometry, WindowAnimation,
         WindowLayout, WindowMode, WlSurfaceHandle, Workspace, WorkspaceId, XdgWindow,
     };
@@ -777,8 +800,8 @@ mod tests {
     fn workspace_reconciliation_condition_stops_ticking_when_state_is_stable() {
         let mut app = NekolandApp::new("workspace-reconciliation-condition-test");
         app.insert_resource(PendingWorkspaceControls::default())
-            .insert_resource(FocusedOutputState { name: Some("Virtual-1".to_owned()) })
-            .insert_resource(PrimaryOutputState { name: Some("Virtual-1".to_owned()) })
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(PrimaryOutputState::default())
             .insert_resource(WorkspaceReconciliationAudit::default());
         app.inner_mut().add_systems(
             LayoutSchedule,
@@ -789,24 +812,32 @@ mod tests {
             Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true },
             ActiveWorkspace,
         ));
-        app.inner_mut().world_mut().spawn((
-            OutputBundle {
-                output: OutputDevice {
-                    name: "Virtual-1".to_owned(),
-                    kind: OutputKind::Virtual,
-                    make: "test".to_owned(),
-                    model: "one".to_owned(),
+        let output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "Virtual-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "test".to_owned(),
+                        model: "one".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 1280,
+                        height: 720,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    ..Default::default()
                 },
-                properties: OutputProperties {
-                    width: 1280,
-                    height: 720,
-                    refresh_millihz: 60_000,
-                    scale: 1,
-                },
-                ..Default::default()
-            },
-            OutputCurrentWorkspace { workspace: WorkspaceId(1) },
-        ));
+                OutputCurrentWorkspace { workspace: WorkspaceId(1) },
+            ))
+            .id();
+        let output_id =
+            *app.inner().world().get::<OutputId>(output).expect("output id should exist");
+        app.inner_mut().world_mut().resource_mut::<FocusedOutputState>().id = Some(output_id);
+        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id = Some(output_id);
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
@@ -822,8 +853,8 @@ mod tests {
             );
         }
 
-        app.inner_mut().world_mut().resource_mut::<FocusedOutputState>().name =
-            Some("HDMI-A-1".to_owned());
+        app.inner_mut().world_mut().resource_mut::<FocusedOutputState>().id =
+            Some(OutputId(u64::MAX));
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
@@ -900,8 +931,8 @@ mod tests {
         app.insert_resource(EntityIndex::default())
             .insert_resource(RememberedOutputWorkspaceState::default())
             .insert_resource(PendingWorkspaceControls::default())
-            .insert_resource(FocusedOutputState { name: Some("HDMI-A-1".to_owned()) })
-            .insert_resource(PrimaryOutputState { name: Some("Virtual-1".to_owned()) })
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(PrimaryOutputState::default())
             .inner_mut()
             .add_systems(
                 LayoutSchedule,
@@ -923,42 +954,60 @@ mod tests {
             name: "2".to_owned(),
             active: false,
         });
-        app.inner_mut().world_mut().spawn((
-            OutputBundle {
-                output: OutputDevice {
-                    name: "Virtual-1".to_owned(),
-                    kind: OutputKind::Virtual,
-                    make: "test".to_owned(),
-                    model: "one".to_owned(),
+        let virtual_output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "Virtual-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "test".to_owned(),
+                        model: "one".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 1280,
+                        height: 720,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    ..Default::default()
                 },
-                properties: OutputProperties {
-                    width: 1280,
-                    height: 720,
-                    refresh_millihz: 60_000,
-                    scale: 1,
+                OutputCurrentWorkspace { workspace: WorkspaceId(1) },
+            ))
+            .id();
+        let hdmi_output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "HDMI-A-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "test".to_owned(),
+                        model: "two".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 1920,
+                        height: 1080,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            },
-            OutputCurrentWorkspace { workspace: WorkspaceId(1) },
-        ));
-        app.inner_mut().world_mut().spawn((
-            OutputBundle {
-                output: OutputDevice {
-                    name: "HDMI-A-1".to_owned(),
-                    kind: OutputKind::Virtual,
-                    make: "test".to_owned(),
-                    model: "two".to_owned(),
-                },
-                properties: OutputProperties {
-                    width: 1920,
-                    height: 1080,
-                    refresh_millihz: 60_000,
-                    scale: 1,
-                },
-                ..Default::default()
-            },
-            OutputCurrentWorkspace { workspace: WorkspaceId(2) },
-        ));
+                OutputCurrentWorkspace { workspace: WorkspaceId(2) },
+            ))
+            .id();
+        let virtual_output_id = *app
+            .inner()
+            .world()
+            .get::<OutputId>(virtual_output)
+            .expect("virtual output id should exist");
+        let hdmi_output_id =
+            *app.inner().world().get::<OutputId>(hdmi_output).expect("hdmi output id should exist");
+        app.inner_mut().world_mut().resource_mut::<FocusedOutputState>().id = Some(hdmi_output_id);
+        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id =
+            Some(virtual_output_id);
 
         app.inner_mut()
             .world_mut()
@@ -981,11 +1030,11 @@ mod tests {
     fn output_workspace_housekeeping_restores_remembered_workspace_for_reconnected_output() {
         let mut app = NekolandApp::new("output-workspace-reconnect-test");
         app.insert_resource(EntityIndex::default())
-            .insert_resource(RememberedOutputWorkspaceState {
-                workspaces: std::collections::BTreeMap::from([(
-                    "Virtual-1".to_owned(),
-                    WorkspaceId(2),
-                )]),
+            .insert_resource({
+                let mut remembered = RememberedOutputWorkspaceState::default();
+                remembered.ids_by_name.insert("Virtual-1".to_owned(), OutputId(1));
+                remembered.by_id.insert(OutputId(1), WorkspaceId(2));
+                remembered
             })
             .inner_mut()
             .add_systems(LayoutSchedule, output_workspace_housekeeping_system);

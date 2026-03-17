@@ -1,7 +1,30 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{WorkspaceCoord, WorkspaceId};
+
+static NEXT_OUTPUT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Runtime-stable identity for one output entity.
+#[derive(
+    Component, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(transparent)]
+pub struct OutputId(pub u64);
+
+impl OutputId {
+    pub fn fresh() -> Self {
+        Self(NEXT_OUTPUT_ID.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl Default for OutputId {
+    fn default() -> Self {
+        Self::fresh()
+    }
+}
 
 /// Broad output families exposed by the compositor.
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,7 +84,7 @@ pub struct OutputCurrentWorkspace {
 
 /// Stable identity metadata for an output entity.
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[require(OutputProperties, OutputViewport, OutputPlacement, OutputWorkArea)]
+#[require(OutputId, OutputProperties, OutputViewport, OutputPlacement, OutputWorkArea)]
 pub struct OutputDevice {
     pub name: String,
     pub kind: OutputKind,

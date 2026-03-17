@@ -5,8 +5,8 @@
 /// When implementing rounded corners:
 /// 1. Implement a custom Smithay `RenderElement` that draws a window surface
 ///    with a corner-masking shader (e.g. SDF circle mask in the fragment shader).
-/// 2. In `rounded_corner_effect_system`, wrap each surface element from
-///    `RenderList` in the custom element.
+/// 2. In `rounded_corner_effect_system`, wrap each relevant `RenderPlan` surface item in the
+///    custom element before backend presentation.
 /// 3. Read `Res<RoundedCornerEffectConfig>` to determine the active radius and
 ///    whether the effect is enabled.
 ///

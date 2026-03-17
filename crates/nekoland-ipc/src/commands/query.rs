@@ -16,6 +16,7 @@ pub enum QueryCommand {
     GetConfig,
     GetClipboard,
     GetPrimarySelection,
+    GetPresentAudit,
 }
 
 /// Stable snapshot of one compositor output for IPC clients.
@@ -195,6 +196,28 @@ pub struct PrimarySelectionSnapshot {
     pub mime_types: Vec<String>,
     pub owner: Option<SelectionOwnerSnapshot>,
     pub persisted_mime_types: Vec<String>,
+}
+
+/// One output-local present-audit element exposed for debug queries.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PresentAuditElementSnapshot {
+    pub surface_id: u64,
+    pub kind: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub z_index: i32,
+    pub opacity: f32,
+}
+
+/// Output-local present-audit snapshot exposed through `query present-audit`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PresentAuditOutputSnapshot {
+    pub output_name: String,
+    pub frame: u64,
+    pub uptime_millis: u64,
+    pub elements: Vec<PresentAuditElementSnapshot>,
 }
 
 /// Normalized ownership marker for clipboard-style selections.

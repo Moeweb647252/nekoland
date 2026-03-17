@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::{Entity, Local, Query, Res, ResMut, With};
 use bevy_ecs::system::SystemParam;
-use nekoland_ecs::components::{SurfaceGeometry, WindowLayout, WindowMode, XdgWindow};
+use nekoland_ecs::components::{OutputId, SurfaceGeometry, WindowLayout, WindowMode, XdgWindow};
 use nekoland_ecs::events::PointerButton;
 use nekoland_ecs::resources::{
     CompositorConfig, GlobalPointerPosition, KeyboardFocusState, UNASSIGNED_WORKSPACE_STACK_ID,
@@ -69,7 +69,7 @@ pub fn pointer_button_focus_system(
                 output_context.as_ref().map_or_else(
                     || pointer_in_geometry(pointer.x, pointer.y, geometry),
                     |(pointer_output, local_x, local_y)| {
-                        output_name.as_deref() == Some(pointer_output.as_str())
+                        output_name == &Some(*pointer_output)
                             && pointer_in_geometry(*local_x, *local_y, geometry)
                     },
                 )
@@ -124,7 +124,7 @@ pub fn focus_management_system(
                         && output_context.as_ref().map_or_else(
                             || pointer_in_geometry(pointer.x, pointer.y, geometry),
                             |(pointer_output, local_x, local_y)| {
-                                output_name.as_deref() == Some(pointer_output.as_str())
+                                output_name == &Some(*pointer_output)
                                     && pointer_in_geometry(*local_x, *local_y, geometry)
                             },
                         )
@@ -166,7 +166,7 @@ pub fn focus_management_system(
 fn visible_window_geometries(
     windows: &Query<WindowFocusRuntime, With<XdgWindow>>,
     workspaces: &Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
-) -> BTreeMap<u64, (SurfaceGeometry, u32, Option<String>, WindowLayout)> {
+) -> BTreeMap<u64, (SurfaceGeometry, u32, Option<OutputId>, WindowLayout)> {
     windows
         .iter()
         .filter_map(|window| {
@@ -191,14 +191,14 @@ fn visible_window_geometries(
 fn pointer_output_context(
     pointer: &GlobalPointerPosition,
     outputs: &Query<OutputRuntime>,
-) -> Option<(String, f64, f64)> {
+) -> Option<(OutputId, f64, f64)> {
     outputs.iter().find_map(|output| {
         let left = f64::from(output.placement.x);
         let top = f64::from(output.placement.y);
         let right = left + f64::from(output.properties.width.max(1));
         let bottom = top + f64::from(output.properties.height.max(1));
         (pointer.x >= left && pointer.x < right && pointer.y >= top && pointer.y < bottom)
-            .then(|| (output.name().to_owned(), pointer.x - left, pointer.y - top))
+            .then(|| (output.id(), pointer.x - left, pointer.y - top))
     })
 }
 

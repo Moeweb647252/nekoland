@@ -7,12 +7,12 @@ use nekoland_ecs::resources::{
     PendingBackendInputEvents, PendingInputEvents, PendingOutputControls, PhysicalPointerPosition,
     PointerDelta, PressedKeys, ViewportPointerPanState,
 };
-use nekoland_ecs::selectors::OutputName;
+use nekoland_ecs::selectors::OutputSelector;
 use nekoland_ecs::views::OutputRuntime;
 
 #[derive(Debug, Default)]
 pub(crate) struct ViewportPointerPanGestureState {
-    active_output: Option<OutputName>,
+    active_output: Option<OutputSelector>,
     remainder_x: f64,
     remainder_y: f64,
     engaged: bool,
@@ -166,15 +166,16 @@ pub fn focused_output_tracking_system(
             let bottom = top + f64::from(output.properties.height.max(1));
             pointer.x >= left && pointer.x < right && pointer.y >= top && pointer.y < bottom
         })
-        .map(|output| output.name().to_owned())
+        .map(|output| Some(output.id()))
         .or_else(|| {
-            focused_output.name.as_ref().and_then(|current| {
-                outputs.iter().any(|output| output.name() == current).then_some(current.clone())
+            focused_output.id.and_then(|current| {
+                outputs.iter().find(|output| output.id() == current).map(|_| Some(current))
             })
         });
 
-    if focused_output.name != next_output {
-        focused_output.name = next_output;
+    let next_id = next_output.flatten();
+    if focused_output.id != next_id {
+        focused_output.id = next_id;
     }
 }
 
@@ -187,9 +188,8 @@ fn clamp_pointer_to_active_output(
     let output = focused_output
         .and_then(|focused_output| {
             focused_output
-                .name
-                .as_deref()
-                .and_then(|output_name| outputs.iter().find(|output| output.name() == output_name))
+                .id
+                .and_then(|output_id| outputs.iter().find(|output| output.id() == output_id))
         })
         .or_else(|| {
             outputs.iter().find(|output| {
@@ -251,11 +251,10 @@ pub(crate) fn viewport_pointer_pan_system(
     }
 
     if gesture.active_output.is_none() {
-        gesture.active_output =
-            focused_output.name.as_ref().map(|name| OutputName::from(name.clone()));
+        gesture.active_output = focused_output.id.map(OutputSelector::Id);
     }
 
-    let Some(output_name) = gesture.active_output.clone() else {
+    let Some(output_selector) = gesture.active_output.clone() else {
         viewport_pan.active = false;
         return;
     };
@@ -276,7 +275,7 @@ pub(crate) fn viewport_pointer_pan_system(
     }
 
     gesture.engaged = true;
-    pending_output_controls.named(output_name).pan_viewport_by(pan_x, pan_y);
+    pending_output_controls.select(output_selector).pan_viewport_by(pan_x, pan_y);
     pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
         source: "pointer:viewport".to_owned(),
         detail: format!("panned viewport by ({pan_x}, {pan_y})"),
@@ -313,7 +312,10 @@ mod tests {
         world.init_resource::<PendingInputEvents>();
         world.init_resource::<ViewportPointerPanState>();
         world.init_resource::<Messages<PointerMotion>>();
-        world.insert_resource(FocusedOutputState { name: Some("DP-1".to_owned()) });
+        world.insert_resource(FocusedOutputState {
+            name: Some("DP-1".to_owned()),
+            ..Default::default()
+        });
 
         {
             let mut pressed_keys = world.resource_mut::<PressedKeys>();
@@ -363,7 +365,10 @@ mod tests {
         world.init_resource::<PendingOutputControls>();
         world.init_resource::<PendingInputEvents>();
         world.init_resource::<ViewportPointerPanState>();
-        world.insert_resource(FocusedOutputState { name: Some("DP-1".to_owned()) });
+        world.insert_resource(FocusedOutputState {
+            name: Some("DP-1".to_owned()),
+            ..Default::default()
+        });
 
         {
             let mut pressed_keys = world.resource_mut::<PressedKeys>();
@@ -421,7 +426,10 @@ mod tests {
         let mut world = World::default();
         world.insert_resource(GlobalPointerPosition { x: 90.0, y: 40.0 });
         world.insert_resource(PointerDelta { dx: 20.0, dy: 30.0 });
-        world.insert_resource(FocusedOutputState { name: Some("DP-1".to_owned()) });
+        world.insert_resource(FocusedOutputState {
+            name: Some("DP-1".to_owned()),
+            ..Default::default()
+        });
         world.init_resource::<Messages<PointerMotion>>();
         world.spawn(OutputBundle {
             output: OutputDevice {

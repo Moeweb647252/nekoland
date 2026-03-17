@@ -14,8 +14,8 @@ use nekoland_ecs::resources::{
     BackendOutputRegistry, CompositorClock, CompositorConfig, CursorRenderState,
     FocusedOutputState, GlobalPointerPosition, OutputDamageRegions, OutputPresentationState,
     PendingBackendInputEvents, PendingOutputControls, PendingOutputPresentationEvents,
-    PendingOutputServerRequests, PendingProtocolInputEvents, PrimaryOutputState, RenderList,
-    SurfacePresentationRole, SurfacePresentationSnapshot, VirtualOutputCaptureState,
+    PendingOutputServerRequests, PendingProtocolInputEvents, PresentAuditState, PrimaryOutputState,
+    RenderPlan, SurfacePresentationRole, SurfacePresentationSnapshot, VirtualOutputCaptureState,
 };
 use nekoland_ecs::views::{BackendPresentSurfaceRuntime, OutputRuntime};
 use nekoland_protocol::{
@@ -32,6 +32,7 @@ use crate::common::outputs::{
     synchronize_backend_outputs_system,
 };
 use crate::common::presentation::apply_output_presentation_events_system;
+use crate::common::render_order::snapshot_present_audit_outputs;
 use crate::components::OutputBackend;
 use crate::manager::{BackendManager, BackendStatus};
 use crate::traits::{
@@ -70,7 +71,8 @@ struct BackendPresentState<'w, 's> {
     primary_output: Option<Res<'w, PrimaryOutputState>>,
     output_damage_regions: Res<'w, OutputDamageRegions>,
     surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
-    render_list: Res<'w, RenderList>,
+    render_plan: Res<'w, RenderPlan>,
+    present_audit: ResMut<'w, PresentAuditState>,
     protocol_cursor: Option<NonSend<'w, ProtocolCursorState>>,
     surface_registry: Option<NonSend<'w, ProtocolSurfaceRegistry>>,
     virtual_output_capture: ResMut<'w, VirtualOutputCaptureState>,
@@ -86,6 +88,7 @@ impl NekolandPlugin for BackendPlugin {
         app.insert_resource(BackendStatus::default())
             .insert_resource(BackendOutputRegistry::default())
             .insert_resource(RememberedOutputViewportState::default())
+            .init_resource::<PresentAuditState>()
             .init_resource::<VirtualOutputCaptureState>()
             .init_resource::<PendingBackendInputEvents>()
             .init_resource::<PendingProtocolInputEvents>()
@@ -198,7 +201,7 @@ fn backend_apply_system(
     manager.apply_all(&mut ctx).map_err(Into::into)
 }
 
-/// Let backends present the current render list using backend-specific surfaces.
+/// Let backends present the current render plan using backend-specific surfaces.
 fn backend_present_system(
     mut manager: NonSendMut<BackendManager>,
     outputs: BackendOutputQuery<'_, '_>,
@@ -213,13 +216,15 @@ fn backend_present_system(
         primary_output,
         output_damage_regions,
         surface_presentation,
-        render_list,
+        render_plan,
+        mut present_audit,
         protocol_cursor,
         surface_registry,
         mut virtual_output_capture,
         ..
     } = state;
     let output_snapshots = collect_output_snapshots(&outputs);
+    let primary_output = primary_output.as_deref();
     let surface_snapshots = if let Some(surface_presentation) = surface_presentation.as_deref() {
         surfaces
             .iter()
@@ -237,30 +242,36 @@ fn backend_present_system(
             })
             .collect::<HashMap<_, _>>()
     } else {
-        let output_names = outputs
+        let output_ids = outputs
             .iter()
-            .map(|(entity, output, _)| (entity, output.name().to_owned()))
+            .map(|(entity, output, _)| (entity, output.id()))
             .collect::<HashMap<_, _>>();
-        let primary_output_name =
-            primary_output.and_then(|primary_output| primary_output.name.clone());
+        let output_ids_by_name = outputs
+            .iter()
+            .map(|(_, output, _)| (output.name().to_owned(), output.id()))
+            .collect::<HashMap<_, _>>();
+        let primary_output_id = primary_output.and_then(|primary_output| primary_output.id);
         let window_target_outputs = surfaces
             .iter()
             .filter_map(|(entity, surface)| {
                 surface.window.map(|_| {
                     (
                         entity,
-                        surface.background.map(|background| background.output.clone()).or_else(
-                            || {
+                        surface
+                            .background
+                            .and_then(|background| {
+                                output_ids_by_name.get(&background.output).copied()
+                            })
+                            .or_else(|| {
                                 surface.viewport_visibility.and_then(|viewport_visibility| {
                                     viewport_visibility.output.clone()
                                 })
-                            },
-                        ),
+                            }),
                         surface.surface_id(),
                     )
                 })
             })
-            .collect::<Vec<(Entity, Option<String>, u64)>>();
+            .collect::<Vec<(Entity, Option<nekoland_ecs::components::OutputId>, u64)>>();
         let window_entity_target_outputs = window_target_outputs
             .iter()
             .map(|(entity, target_output, _)| (*entity, target_output.clone()))
@@ -282,11 +293,14 @@ fn backend_present_system(
                     RenderSurfaceRole::Unknown
                 };
                 let target_output = if surface.window.is_some() {
-                    surface.background.map(|background| background.output.clone()).or_else(|| {
-                        surface
-                            .viewport_visibility
-                            .and_then(|viewport_visibility| viewport_visibility.output.clone())
-                    })
+                    surface
+                        .background
+                        .and_then(|background| output_ids_by_name.get(&background.output).copied())
+                        .or_else(|| {
+                            surface
+                                .viewport_visibility
+                                .and_then(|viewport_visibility| viewport_visibility.output.clone())
+                        })
                 } else if surface.popup.is_some() {
                     surface.child_of.and_then(|child_of| {
                         window_entity_target_outputs.get(&child_of.parent()).cloned().flatten()
@@ -294,13 +308,16 @@ fn backend_present_system(
                 } else if surface.layer.is_some() {
                     surface
                         .layer_output
-                        .and_then(|layer_output| output_names.get(&layer_output.0).cloned())
+                        .and_then(|layer_output| output_ids.get(&layer_output.0).copied())
                         .or_else(|| {
                             surface
                                 .desired_output_name
-                                .and_then(|desired_output_name| desired_output_name.0.clone())
+                                .and_then(|desired_output_name| desired_output_name.0.as_deref())
+                                .and_then(|output_name| {
+                                    output_ids_by_name.get(output_name).copied()
+                                })
                         })
-                        .or_else(|| primary_output_name.clone())
+                        .or(primary_output_id)
                 } else {
                     window_surface_target_outputs.get(&surface.surface_id()).cloned().flatten()
                 };
@@ -324,11 +341,23 @@ fn backend_present_system(
         cursor_image: protocol_cursor.as_deref(),
         output_damage_regions: &output_damage_regions,
         outputs: &output_snapshots,
-        render_list: &render_list,
+        render_plan: &render_plan,
         surfaces: &surface_snapshots,
         surface_registry: surface_registry.as_deref(),
         virtual_output_capture: Some(&mut virtual_output_capture),
     };
+
+    let (frame, uptime_millis) = clock
+        .as_deref()
+        .map(|clock| (clock.frame, clock.uptime_millis.min(u128::from(u64::MAX)) as u64))
+        .unwrap_or((0, 0));
+    present_audit.outputs = snapshot_present_audit_outputs(
+        frame,
+        uptime_millis,
+        &output_snapshots,
+        &render_plan,
+        &surface_snapshots,
+    );
 
     manager.present_all(&mut ctx).map_err(Into::into)
 }
@@ -355,9 +384,20 @@ mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
 
     use nekoland_core::schedules::{PresentSchedule, install_core_schedules};
+    use nekoland_ecs::bundles::OutputBundle;
+    use nekoland_ecs::components::{
+        OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry, WlSurfaceHandle,
+    };
+    use nekoland_ecs::resources::{
+        CompositorClock, OutputDamageRegions, OutputRenderPlan, PresentAuditState, RenderPlan,
+        RenderPlanItem, RenderRect, RenderSceneRole, SurfacePresentationSnapshot,
+        SurfacePresentationState, SurfaceRenderItem, VirtualOutputCaptureState,
+    };
     use nekoland_protocol::ProtocolSeatDispatchSystems;
 
-    use super::BackendPresentSystems;
+    use crate::manager::BackendManager;
+
+    use super::{BackendPresentSystems, backend_present_system};
 
     #[derive(Debug, Default, Resource)]
     struct PresentOrderAudit(Vec<&'static str>);
@@ -391,5 +431,180 @@ mod tests {
             panic!("present order audit should exist");
         };
         assert_eq!(audit.0, vec!["protocol", "backend"]);
+    }
+
+    #[test]
+    fn backend_present_system_populates_multi_output_present_audit() {
+        let mut app = App::new();
+        install_core_schedules(&mut app);
+        app.insert_non_send_resource(BackendManager::default())
+            .insert_resource(CompositorClock { frame: 7, uptime_millis: 1234 })
+            .init_resource::<OutputDamageRegions>()
+            .init_resource::<PresentAuditState>()
+            .init_resource::<VirtualOutputCaptureState>()
+            .add_systems(PresentSchedule, backend_present_system);
+
+        let hdmi = app
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "HDMI-A-1".to_owned(),
+                    kind: OutputKind::Nested,
+                    make: "Nekoland".to_owned(),
+                    model: "hdmi".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1920,
+                    height: 1080,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                ..Default::default()
+            })
+            .id();
+        let dp = app
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "DP-1".to_owned(),
+                    kind: OutputKind::Nested,
+                    make: "Nekoland".to_owned(),
+                    model: "dp".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 2560,
+                    height: 1440,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                ..Default::default()
+            })
+            .id();
+        let hdmi_id = app.world().get::<OutputId>(hdmi).copied().expect("hdmi output id");
+        let dp_id = app.world().get::<OutputId>(dp).copied().expect("dp output id");
+        app.world_mut().insert_resource(SurfacePresentationSnapshot {
+            surfaces: std::collections::BTreeMap::from([
+                (
+                    11,
+                    SurfacePresentationState {
+                        visible: true,
+                        target_output: Some(hdmi_id),
+                        geometry: SurfaceGeometry { x: 10, y: 20, width: 300, height: 200 },
+                        input_enabled: true,
+                        damage_enabled: true,
+                        role: nekoland_ecs::resources::SurfacePresentationRole::Window,
+                    },
+                ),
+                (
+                    22,
+                    SurfacePresentationState {
+                        visible: true,
+                        target_output: Some(dp_id),
+                        geometry: SurfaceGeometry { x: 40, y: 50, width: 320, height: 240 },
+                        input_enabled: true,
+                        damage_enabled: true,
+                        role: nekoland_ecs::resources::SurfacePresentationRole::Window,
+                    },
+                ),
+                (
+                    33,
+                    SurfacePresentationState {
+                        visible: true,
+                        target_output: None,
+                        geometry: SurfaceGeometry { x: 70, y: 80, width: 128, height: 96 },
+                        input_enabled: true,
+                        damage_enabled: true,
+                        role: nekoland_ecs::resources::SurfacePresentationRole::Layer,
+                    },
+                ),
+            ]),
+        });
+
+        app.world_mut().spawn((
+            WlSurfaceHandle { id: 11 },
+            SurfaceGeometry { x: 10, y: 20, width: 300, height: 200 },
+        ));
+        app.world_mut().spawn((
+            WlSurfaceHandle { id: 22 },
+            SurfaceGeometry { x: 40, y: 50, width: 320, height: 240 },
+        ));
+        app.world_mut().spawn((
+            WlSurfaceHandle { id: 33 },
+            SurfaceGeometry { x: 70, y: 80, width: 128, height: 96 },
+        ));
+
+        app.world_mut().insert_resource(RenderPlan {
+            outputs: std::collections::BTreeMap::from([
+                (
+                    hdmi_id,
+                    OutputRenderPlan {
+                        items: vec![
+                            RenderPlanItem::Surface(SurfaceRenderItem {
+                                surface_id: 11,
+                                rect: RenderRect { x: 10, y: 20, width: 300, height: 200 },
+                                opacity: 1.0,
+                                z_index: 0,
+                                clip_rect: None,
+                                scene_role: RenderSceneRole::Desktop,
+                            }),
+                            RenderPlanItem::Surface(SurfaceRenderItem {
+                                surface_id: 33,
+                                rect: RenderRect { x: 70, y: 80, width: 128, height: 96 },
+                                opacity: 0.5,
+                                z_index: 1,
+                                clip_rect: None,
+                                scene_role: RenderSceneRole::Desktop,
+                            }),
+                        ],
+                    },
+                ),
+                (
+                    dp_id,
+                    OutputRenderPlan {
+                        items: vec![
+                            RenderPlanItem::Surface(SurfaceRenderItem {
+                                surface_id: 33,
+                                rect: RenderRect { x: 70, y: 80, width: 128, height: 96 },
+                                opacity: 0.5,
+                                z_index: 0,
+                                clip_rect: None,
+                                scene_role: RenderSceneRole::Desktop,
+                            }),
+                            RenderPlanItem::Surface(SurfaceRenderItem {
+                                surface_id: 22,
+                                rect: RenderRect { x: 40, y: 50, width: 320, height: 240 },
+                                opacity: 0.7,
+                                z_index: 2,
+                                clip_rect: None,
+                                scene_role: RenderSceneRole::Desktop,
+                            }),
+                        ],
+                    },
+                ),
+            ]),
+        });
+
+        app.world_mut().run_schedule(PresentSchedule);
+
+        let audit = app.world().resource::<PresentAuditState>();
+        assert_eq!(audit.outputs.len(), 2);
+
+        let hdmi_audit = &audit.outputs[&hdmi_id];
+        assert_eq!(hdmi_audit.output_name, "HDMI-A-1");
+        assert_eq!(hdmi_audit.frame, 7);
+        assert_eq!(hdmi_audit.uptime_millis, 1234);
+        assert_eq!(
+            hdmi_audit.elements.iter().map(|element| element.surface_id).collect::<Vec<_>>(),
+            vec![11, 33]
+        );
+
+        let dp_audit = &audit.outputs[&dp_id];
+        assert_eq!(dp_audit.output_name, "DP-1");
+        assert_eq!(dp_audit.frame, 7);
+        assert_eq!(dp_audit.uptime_millis, 1234);
+        assert_eq!(
+            dp_audit.elements.iter().map(|element| element.surface_id).collect::<Vec<_>>(),
+            vec![33, 22]
+        );
     }
 }

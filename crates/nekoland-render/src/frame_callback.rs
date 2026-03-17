@@ -4,22 +4,28 @@ use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::{Query, Res, ResMut, With};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{WlSurfaceHandle, XdgPopup, XdgWindow};
-use nekoland_ecs::resources::{DamageState, FramePacingState, RenderList};
+use nekoland_ecs::resources::{DamageState, FramePacingState, RenderPlan, RenderPlanItem};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrameCallbackDispatcher;
 
-/// Computes which surfaces should receive frame callbacks from the current render list and marks
+/// Computes which surfaces should receive frame callbacks from the current render plan and marks
 /// the rest as throttled for pacing diagnostics.
 pub fn frame_callback_system(
-    render_list: Res<RenderList>,
+    render_plan: Res<RenderPlan>,
     surfaces: Query<&WlSurfaceHandle, (With<XdgWindow>, Allow<Disabled>)>,
     popups: Query<&WlSurfaceHandle, (With<XdgPopup>, Allow<Disabled>)>,
     mut damage_state: ResMut<DamageState>,
     mut frame_pacing: ResMut<FramePacingState>,
 ) {
-    let callback_surface_ids =
-        render_list.elements.iter().map(|element| element.surface_id).collect::<BTreeSet<_>>();
+    let callback_surface_ids = render_plan
+        .outputs
+        .values()
+        .flat_map(|plan| plan.items.iter())
+        .filter_map(|item| match item {
+            RenderPlanItem::Surface(item) => Some(item.surface_id),
+        })
+        .collect::<BTreeSet<_>>();
     let known_surface_ids =
         surfaces.iter().chain(popups.iter()).map(|surface| surface.id).collect::<BTreeSet<_>>();
 
