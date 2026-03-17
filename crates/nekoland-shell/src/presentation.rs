@@ -123,8 +123,8 @@ mod tests {
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::{WindowBundle, X11WindowBundle};
     use nekoland_ecs::components::{
-        OutputBackgroundWindow, WindowLayout, WindowRestoreState, WindowRole, WindowSceneGeometry,
-        WlSurfaceHandle, X11Window,
+        OutputBackgroundWindow, OutputId, WindowLayout, WindowRestoreState, WindowRole,
+        WindowSceneGeometry, WlSurfaceHandle, X11Window,
     };
     use nekoland_ecs::resources::{
         PendingWindowServerRequests, SurfaceExtent, WindowServerAction, X11WindowGeometry,
@@ -162,7 +162,7 @@ mod tests {
             },
             WindowRole::OutputBackground,
             OutputBackgroundWindow {
-                output: "Virtual-1".to_owned(),
+                output: OutputId(7),
                 restore: WindowRestoreState {
                     geometry: WindowSceneGeometry { x: 200, y: 300, width: 640, height: 480 },
                     layout: WindowLayout::Floating,

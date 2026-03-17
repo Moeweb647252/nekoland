@@ -54,6 +54,8 @@ impl RememberedOutputViewportState {
 /// Output metadata that a backend runtime wants the ECS world to materialize.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackendOutputBlueprint {
+    /// Backend-local opaque identity for the output within one runtime instance.
+    pub local_id: String,
     /// Device identity inserted into ECS for the materialized output.
     pub device: OutputDevice,
     /// Initial output properties inserted alongside the device identity.
@@ -65,8 +67,10 @@ pub struct BackendOutputBlueprint {
 pub struct BackendOutputEventRecord {
     /// Backend runtime that originated the event.
     pub backend_id: BackendId,
-    /// Stable output name used to match existing ECS entities.
+    /// Human-readable output name surfaced through device metadata and public events.
     pub output_name: String,
+    /// Backend-local opaque identity used to match existing ECS entities.
+    pub local_id: String,
     /// Connect or disconnect transition requested by the backend.
     pub change: BackendOutputChange,
 }
@@ -94,8 +98,10 @@ pub type PendingBackendOutputEvents =
 pub struct BackendOutputPropertyUpdate {
     /// Backend runtime that owns the output being refreshed.
     pub backend_id: BackendId,
-    /// Stable output name used to find the ECS entity to update.
+    /// Human-readable output name associated with the refreshed output.
     pub output_name: String,
+    /// Backend-local opaque identity used to find the ECS entity to update.
+    pub local_id: String,
     /// Replacement output properties produced by the backend extract phase.
     pub properties: OutputProperties,
 }
@@ -401,13 +407,12 @@ pub fn synchronize_backend_outputs_system(
         match record.change {
             BackendOutputChange::Connected(blueprint) => {
                 if let Some((entity, output_id, _, _)) =
-                    existing_outputs.iter().find(|(_, _, output, owner)| {
-                        output.name == record.output_name
-                            && owner.output_id
-                                == (BackendOutputId {
-                                    backend_id: record.backend_id,
-                                    output_name: record.output_name.clone(),
-                                })
+                    existing_outputs.iter().find(|(_, _, _, owner)| {
+                        owner.output_id
+                            == (BackendOutputId {
+                                backend_id: record.backend_id,
+                                local_id: record.local_id.clone(),
+                            })
                     })
                 {
                     commands
@@ -434,7 +439,7 @@ pub fn synchronize_backend_outputs_system(
                         backend_id: record.backend_id,
                         output_id: BackendOutputId {
                             backend_id: record.backend_id,
-                            output_name: record.output_name.clone(),
+                            local_id: blueprint.local_id.clone(),
                         },
                     },
                 ));
@@ -444,16 +449,15 @@ pub fn synchronize_backend_outputs_system(
             }
             BackendOutputChange::Disconnected => {
                 for (entity, _, output, owner) in &existing_outputs {
-                    if output.name == record.output_name
-                        && owner.output_id
-                            == (BackendOutputId {
-                                backend_id: record.backend_id,
-                                output_name: record.output_name.clone(),
-                            })
+                    if owner.output_id
+                        == (BackendOutputId {
+                            backend_id: record.backend_id,
+                            local_id: record.local_id.clone(),
+                        })
                     {
                         commands.entity(entity).despawn();
-                        output_registry.forget_connected_name(&record.output_name);
-                        remembered_viewports.forget_name(&record.output_name);
+                        output_registry.forget_connected_name(&output.name);
+                        remembered_viewports.forget_name(&output.name);
                     }
                 }
                 output_disconnected.write(OutputDisconnected { name: record.output_name.clone() });
@@ -470,13 +474,12 @@ pub fn apply_backend_output_updates_system(
     mut pending_updates: ResMut<PendingBackendOutputUpdates>,
 ) {
     for update in pending_updates.drain() {
-        for (output, owner, mut properties) in &mut outputs {
-            if output.name == update.output_name
-                && owner.output_id
-                    == (BackendOutputId {
-                        backend_id: update.backend_id,
-                        output_name: update.output_name.clone(),
-                    })
+        for (_, owner, mut properties) in &mut outputs {
+            if owner.output_id
+                == (BackendOutputId {
+                    backend_id: update.backend_id,
+                    local_id: update.local_id.clone(),
+                })
             {
                 *properties = update.properties.clone();
                 break;
@@ -554,13 +557,15 @@ pub(crate) fn apply_output_server_requests_system(ctx: OutputServerRequestCtx<'_
                     });
                     continue;
                 };
+                let crate::manager::SeededBackendOutput { backend_id, blueprint } = seed;
+                let BackendOutputBlueprint { local_id, device, properties } = blueprint;
 
                 let output_id = OutputId::fresh();
                 commands.spawn((
                     output_id,
                     OutputBundle {
-                        output: seed.blueprint.device,
-                        properties: seed.blueprint.properties,
+                        output: device,
+                        properties,
                         viewport: remembered_viewports
                             .viewport_for_output_name(&output)
                             .cloned()
@@ -568,11 +573,8 @@ pub(crate) fn apply_output_server_requests_system(ctx: OutputServerRequestCtx<'_
                         ..Default::default()
                     },
                     OutputBackend {
-                        backend_id: seed.backend_id,
-                        output_id: BackendOutputId {
-                            backend_id: seed.backend_id,
-                            output_name: output.clone(),
-                        },
+                        backend_id,
+                        output_id: BackendOutputId { backend_id, local_id },
                     },
                 ));
                 output_registry.remember_connected(output_id, output.clone());
@@ -939,7 +941,9 @@ mod tests {
             BackendOutputEventRecord {
                 backend_id: BackendId(7),
                 output_name: "Virtual-1".to_owned(),
+                local_id: "virtual-primary".to_owned(),
                 change: BackendOutputChange::Connected(BackendOutputBlueprint {
+                    local_id: "virtual-primary".to_owned(),
                     device: OutputDevice {
                         name: "Virtual-1".to_owned(),
                         kind: OutputKind::Virtual,

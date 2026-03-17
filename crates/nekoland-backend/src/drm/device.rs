@@ -28,6 +28,7 @@ pub struct DrmDeviceState {
 #[derive(Debug, Clone)]
 pub struct ConnectorInfo {
     pub handle: connector::Handle,
+    pub local_id: String,
     pub name: String,
     pub connected: bool,
     pub crtc: Option<crtc::Handle>,
@@ -37,6 +38,7 @@ pub struct ConnectorInfo {
 impl ConnectorInfo {
     pub fn output_blueprint(&self, descriptor: &BackendDescriptor) -> BackendOutputBlueprint {
         BackendOutputBlueprint {
+            local_id: self.local_id.clone(),
             device: OutputDevice {
                 name: self.name.clone(),
                 kind: OutputKind::Physical,
@@ -148,7 +150,14 @@ fn open_drm_device(
                 .and_then(|enc| device_fd.get_encoder(enc).ok())
                 .and_then(|enc| enc.crtc());
             let properties = preferred_output_properties(&info);
-            Some(ConnectorInfo { handle, name, connected, crtc, properties })
+            Some(ConnectorInfo {
+                handle,
+                local_id: connector_local_id(handle),
+                name,
+                connected,
+                crtc,
+                properties,
+            })
         })
         .collect();
 
@@ -182,6 +191,10 @@ fn connector_name(info: &connector::Info) -> String {
         _ => "Unknown",
     };
     format!("{}-{}", interface, info.interface_id())
+}
+
+fn connector_local_id(handle: connector::Handle) -> String {
+    format!("{handle:?}")
 }
 
 fn preferred_output_properties(info: &connector::Info) -> OutputProperties {

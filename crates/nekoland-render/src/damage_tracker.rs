@@ -121,7 +121,7 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
                 state.and_then(|state| state.target_output).or_else(|| {
                     window
                         .background
-                        .and_then(|background| output_ids_by_name.get(&background.output).copied())
+                        .map(|background| background.output)
                         .or(window.viewport_visibility.output)
                 }),
                 TrackedSurfaceDamage {

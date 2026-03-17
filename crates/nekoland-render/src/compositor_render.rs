@@ -54,10 +54,6 @@ pub fn compose_frame_system(composition: FrameCompositionInputs<'_, '_>) {
     let surface_visual = surface_visual.as_deref();
     let live_outputs =
         outputs.iter().map(|output| (output.id(), output.name().to_owned())).collect::<Vec<_>>();
-    let output_ids_by_name = live_outputs
-        .iter()
-        .map(|(output_id, output_name)| (output_name.clone(), *output_id))
-        .collect::<BTreeMap<_, _>>();
     let mut plans = live_outputs
         .iter()
         .map(|(output_id, _)| (*output_id, OutputRenderPlan::default()))
@@ -80,12 +76,9 @@ pub fn compose_frame_system(composition: FrameCompositionInputs<'_, '_>) {
             if !visible {
                 return None;
             }
-            let output_id = state.and_then(|state| state.target_output.clone()).or_else(|| {
-                window
-                    .background
-                    .as_ref()
-                    .and_then(|background| output_ids_by_name.get(&background.output).copied())
-            })?;
+            let output_id = state
+                .and_then(|state| state.target_output)
+                .or_else(|| window.background.as_ref().map(|background| background.output))?;
             Some((
                 output_id,
                 (window.surface_id(), surface_opacity(window.surface_id(), surface_visual)),
@@ -276,22 +269,31 @@ mod tests {
 
     use super::compose_frame_system;
 
-    fn spawn_default_output(app: &mut NekolandApp) {
-        app.inner_mut().world_mut().spawn(OutputBundle {
-            output: OutputDevice {
-                name: "Virtual-1".to_owned(),
-                kind: OutputKind::Virtual,
-                make: "Nekoland".to_owned(),
-                model: "test".to_owned(),
-            },
-            properties: OutputProperties {
-                width: 1280,
-                height: 720,
-                refresh_millihz: 60_000,
-                scale: 1,
-            },
-            ..Default::default()
-        });
+    fn spawn_default_output(app: &mut NekolandApp) -> nekoland_ecs::components::OutputId {
+        let output = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "Nekoland".to_owned(),
+                    model: "test".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1280,
+                    height: 720,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                ..Default::default()
+            })
+            .id();
+        app.inner()
+            .world()
+            .get::<nekoland_ecs::components::OutputId>(output)
+            .copied()
+            .expect("output id should exist")
     }
 
     fn single_output_surface_order(app: &NekolandApp) -> Vec<u64> {
@@ -401,6 +403,7 @@ mod tests {
                 )]),
             })
             .add_systems(RenderSchedule, compose_frame_system);
+        let output_id = spawn_default_output(&mut app);
 
         app.inner_mut().world_mut().spawn((
             WindowBundle {
@@ -414,7 +417,7 @@ mod tests {
             },
             WindowRole::OutputBackground,
             OutputBackgroundWindow {
-                output: "Virtual-1".to_owned(),
+                output: output_id,
                 restore: nekoland_ecs::components::WindowRestoreState {
                     geometry: Default::default(),
                     layout: nekoland_ecs::components::WindowLayout::Floating,
@@ -432,7 +435,6 @@ mod tests {
             },
             ..Default::default()
         });
-        spawn_default_output(&mut app);
         set_surface_states(
             &mut app,
             [
@@ -454,6 +456,7 @@ mod tests {
             .init_resource::<RenderPlan>()
             .insert_resource(WindowStackingState::default())
             .add_systems(RenderSchedule, compose_frame_system);
+        let output_id = spawn_default_output(&mut app);
 
         app.inner_mut().world_mut().spawn((
             WindowBundle {
@@ -467,7 +470,7 @@ mod tests {
             },
             WindowRole::OutputBackground,
             OutputBackgroundWindow {
-                output: "Virtual-1".to_owned(),
+                output: output_id,
                 restore: nekoland_ecs::components::WindowRestoreState {
                     geometry: Default::default(),
                     layout: nekoland_ecs::components::WindowLayout::Floating,
@@ -485,7 +488,6 @@ mod tests {
             },
             ..Default::default()
         });
-        spawn_default_output(&mut app);
         set_surface_states(
             &mut app,
             [(11, SurfacePresentationRole::OutputBackground), (22, SurfacePresentationRole::Layer)],
@@ -545,6 +547,7 @@ mod tests {
             .init_resource::<RenderPlan>()
             .insert_resource(WindowStackingState::default())
             .add_systems(RenderSchedule, compose_frame_system);
+        let output_id = spawn_default_output(&mut app);
 
         for surface_id in [11, 22] {
             app.inner_mut().world_mut().spawn((
@@ -559,7 +562,7 @@ mod tests {
                 },
                 WindowRole::OutputBackground,
                 OutputBackgroundWindow {
-                    output: "Virtual-1".to_owned(),
+                    output: output_id,
                     restore: nekoland_ecs::components::WindowRestoreState {
                         geometry: Default::default(),
                         layout: nekoland_ecs::components::WindowLayout::Floating,
@@ -569,7 +572,6 @@ mod tests {
                 },
             ));
         }
-        spawn_default_output(&mut app);
         set_surface_states(
             &mut app,
             [

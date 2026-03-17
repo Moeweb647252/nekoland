@@ -23,7 +23,7 @@ use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_tar
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
 use crate::window_policy::{
     WindowBackgroundState, apply_window_policy, lock_window_policy, refresh_window_policy,
-    restore_window_policy, sync_window_background_role,
+    resolve_background_output_id, restore_window_policy, sync_window_background_role,
 };
 
 /// Bridges XWayland lifecycle requests into the same ECS window model used by native XDG windows.
@@ -66,6 +66,7 @@ pub struct X11BridgeParams<'w, 's> {
 struct X11MutationContext<'a, 'w, 's> {
     config: &'a CompositorConfig,
     entity_index: &'a EntityIndex,
+    outputs: &'a Query<'w, 's, (Entity, OutputRuntime)>,
     windows: &'a mut X11Windows<'w, 's>,
 }
 
@@ -137,6 +138,7 @@ pub fn xwayland_bridge_system(
                 let mut context = X11MutationContext {
                     config: &config,
                     entity_index: &entity_index,
+                    outputs: &outputs,
                     windows: &mut windows,
                 };
                 map_x11_window(
@@ -169,6 +171,7 @@ pub fn xwayland_bridge_system(
                 let mut context = X11MutationContext {
                     config: &config,
                     entity_index: &entity_index,
+                    outputs: &outputs,
                     windows: &mut windows,
                 };
                 if !reconfigure_x11_window(
@@ -346,10 +349,12 @@ fn map_x11_window(
         xdg_window.app_id = app_id.clone();
         apply_window_policy(policy, &mut window.layout, &mut window.mode, &mut window.policy_state);
         let current_background = window.background.as_ref().map(|background| (*background).clone());
+        let background_output_id =
+            resolve_background_output_id(context.outputs, background.as_ref());
         sync_window_background_role(
             commands,
             entity,
-            background,
+            background_output_id,
             WindowBackgroundState::new(
                 &mut window.role,
                 &mut window.scene_geometry,
@@ -443,10 +448,11 @@ fn map_x11_window(
     let mut role = WindowRole::Managed;
     let mut layout = policy.layout;
     let mut mode = policy.mode;
+    let background_output_id = resolve_background_output_id(context.outputs, background.as_ref());
     sync_window_background_role(
         commands,
         window_entity,
-        background,
+        background_output_id,
         WindowBackgroundState::new(
             &mut role,
             &mut scene_geometry,
@@ -531,10 +537,11 @@ fn reconfigure_x11_window(
         &mut window.policy_state,
     );
     let current_background = window.background.as_ref().map(|background| (*background).clone());
+    let background_output_id = resolve_background_output_id(context.outputs, background.as_ref());
     sync_window_background_role(
         commands,
         entity,
-        background,
+        background_output_id,
         WindowBackgroundState::new(
             &mut window.role,
             &mut window.scene_geometry,

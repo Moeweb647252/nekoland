@@ -28,7 +28,8 @@ use crate::layout::floating::{
 };
 use crate::viewport::resolve_output_state_for_workspace;
 use crate::window_policy::{
-    WindowBackgroundState, refresh_window_policy, sync_window_background_role,
+    WindowBackgroundState, refresh_window_policy, resolve_background_output_id,
+    sync_window_background_role,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -105,6 +106,8 @@ pub fn toplevel_lifecycle_system(
                 let policy = config.resolve_window_policy("org.nekoland.demo", &title, false);
                 let background =
                     config.resolve_window_background("org.nekoland.demo", &title, false);
+                let background_output_id =
+                    resolve_background_output_id(&outputs, background.as_ref());
                 let mut role = WindowRole::Managed;
                 let mut scene_geometry = WindowSceneGeometry {
                     x: 0,
@@ -149,7 +152,7 @@ pub fn toplevel_lifecycle_system(
                 sync_window_background_role(
                     &mut commands,
                     window_entity,
-                    background,
+                    background_output_id,
                     WindowBackgroundState::new(
                         &mut role,
                         &mut scene_geometry,
@@ -311,12 +314,14 @@ pub fn toplevel_lifecycle_system(
                 );
                 let background =
                     config.resolve_window_background(&window_app_id, &window_title, false);
+                let background_output_id =
+                    resolve_background_output_id(&outputs, background.as_ref());
                 let current_background =
                     window_runtime.background.as_ref().map(|background| (*background).clone());
                 sync_window_background_role(
                     &mut commands,
                     entity,
-                    background,
+                    background_output_id,
                     WindowBackgroundState::new(
                         &mut window_runtime.role,
                         &mut window_runtime.scene_geometry,

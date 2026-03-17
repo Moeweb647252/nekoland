@@ -105,6 +105,7 @@ impl Backend for DrmRuntime {
             cx.output_events.push(BackendOutputEventRecord {
                 backend_id: self.id(),
                 output_name: connector.name.clone(),
+                local_id: connector.local_id.clone(),
                 change: BackendOutputChange::Connected(
                     connector.output_blueprint(&self.descriptor),
                 ),

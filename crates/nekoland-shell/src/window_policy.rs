@@ -1,10 +1,11 @@
 use bevy_ecs::prelude::{Commands, Entity};
-use nekoland_ecs::components::WindowRestoreState;
 use nekoland_ecs::components::{
     OutputBackgroundWindow, WindowFullscreenTarget, WindowLayout, WindowMode, WindowPolicy,
     WindowPolicyState, WindowRestoreSnapshot, WindowRole, WindowSceneGeometry,
 };
+use nekoland_ecs::components::{OutputId, WindowRestoreState};
 use nekoland_ecs::selectors::OutputName;
+use nekoland_ecs::views::OutputRuntime;
 
 /// Applies a newly resolved default policy to a window and marks policy updates as unlocked.
 pub fn apply_window_policy(
@@ -89,15 +90,22 @@ impl<'a> WindowBackgroundState<'a> {
     }
 }
 
+pub fn resolve_background_output_id<'w, 's>(
+    outputs: &bevy_ecs::prelude::Query<'w, 's, (Entity, OutputRuntime)>,
+    desired_output: Option<&OutputName>,
+) -> Option<OutputId> {
+    let output_name = desired_output.map(OutputName::as_str)?;
+    outputs.iter().find(|(_, output)| output.name() == output_name).map(|(_, output)| output.id())
+}
+
 pub fn sync_window_background_role(
     commands: &mut Commands,
     entity: Entity,
-    desired_output: Option<OutputName>,
+    desired_output: Option<OutputId>,
     window: WindowBackgroundState<'_>,
     current_background: Option<OutputBackgroundWindow>,
 ) {
     let WindowBackgroundState { role, scene_geometry, fullscreen_target, layout, mode } = window;
-    let desired_output = desired_output.map(|output| output.as_str().to_owned());
     let current_output = current_background.as_ref().map(|background| background.output.clone());
 
     if desired_output == current_output {
@@ -135,10 +143,9 @@ pub fn sync_window_background_role(
 mod tests {
     use bevy_ecs::prelude::World;
     use nekoland_ecs::components::{
-        OutputBackgroundWindow, WindowFullscreenTarget, WindowRestoreState, WindowRole,
+        OutputBackgroundWindow, OutputId, WindowFullscreenTarget, WindowRestoreState, WindowRole,
         WindowSceneGeometry,
     };
-    use nekoland_ecs::selectors::OutputName;
 
     use super::{
         WindowBackgroundState, WindowLayout, WindowMode, WindowPolicy, WindowPolicyState,
@@ -254,7 +261,7 @@ mod tests {
             sync_window_background_role(
                 &mut commands,
                 entity,
-                Some(OutputName::from("Virtual-1")),
+                Some(OutputId(7)),
                 WindowBackgroundState::new(
                     &mut role,
                     &mut scene_geometry,
@@ -271,7 +278,7 @@ mod tests {
             panic!("background role should exist");
         };
         let background = background.clone();
-        assert_eq!(background.output, "Virtual-1");
+        assert_eq!(background.output, OutputId(7));
         assert_eq!(role, WindowRole::OutputBackground);
         assert_eq!(mode, WindowMode::Fullscreen);
 

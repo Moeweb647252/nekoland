@@ -3913,7 +3913,7 @@ fn pointer_focus_target(
             continue;
         }
         let target_output = background
-            .and_then(|background| output_ids_by_name.get(&background.output).copied())
+            .map(|background| background.output)
             .or_else(|| viewport_visibility.and_then(|visibility| visibility.output.clone()));
         window_target_outputs_by_entity.insert(entity, target_output.clone());
         surface_bounds.insert(

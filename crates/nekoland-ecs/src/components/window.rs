@@ -200,7 +200,7 @@ pub struct WindowFullscreenTarget {
 /// Output-scoped background role that removes a window from the normal workspace scene.
 #[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputBackgroundWindow {
-    pub output: String,
+    pub output: OutputId,
     pub restore: WindowRestoreState,
 }
 

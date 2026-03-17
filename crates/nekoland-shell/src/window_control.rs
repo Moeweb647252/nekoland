@@ -15,7 +15,8 @@ use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 use crate::viewport::{project_scene_geometry, resolve_output_state_for_workspace};
 use crate::window_policy::{
-    WindowBackgroundState, lock_window_policy, sync_window_background_role,
+    WindowBackgroundState, lock_window_policy, resolve_background_output_id,
+    sync_window_background_role,
 };
 
 type ControlledWindows<'w, 's> = Query<'w, 's, WindowRuntime, (With<XdgWindow>, Allow<Disabled>)>;
@@ -82,10 +83,12 @@ pub fn window_control_request_system(
                     nekoland_ecs::resources::WindowBackgroundControl::Set { output } => {
                         let current_background =
                             window.background.as_ref().map(|background| (*background).clone());
+                        let desired_output =
+                            resolve_background_output_id(&controls.outputs, Some(&output));
                         sync_window_background_role(
                             &mut commands,
                             entity,
-                            Some(output),
+                            desired_output,
                             WindowBackgroundState::new(
                                 &mut window.role,
                                 &mut window.scene_geometry,
@@ -193,10 +196,12 @@ pub fn window_control_request_system(
                 nekoland_ecs::resources::WindowBackgroundControl::Set { output } => {
                     let current_background =
                         window.background.as_ref().map(|background| (*background).clone());
+                    let desired_output =
+                        resolve_background_output_id(&controls.outputs, Some(&output));
                     sync_window_background_role(
                         &mut commands,
                         entity,
-                        Some(output),
+                        desired_output,
                         WindowBackgroundState::new(
                             &mut window.role,
                             &mut window.scene_geometry,
@@ -239,10 +244,10 @@ mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
-    use nekoland_ecs::bundles::WindowBundle;
+    use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
-        OutputBackgroundWindow, OutputProperties, WindowLayout, WindowMode, WindowPlacement,
-        WlSurfaceHandle, Workspace, WorkspaceId,
+        OutputBackgroundWindow, OutputDevice, OutputProperties, WindowLayout, WindowMode,
+        WindowPlacement, WlSurfaceHandle, Workspace, WorkspaceId,
     };
     use nekoland_ecs::events::WindowMoved;
     use nekoland_ecs::resources::{
@@ -536,6 +541,21 @@ mod tests {
                 ..Default::default()
             })
             .id();
+        app.inner_mut().world_mut().spawn(OutputBundle {
+            output: OutputDevice {
+                name: "Virtual-1".to_owned(),
+                kind: nekoland_ecs::components::OutputKind::Virtual,
+                make: "Virtual".to_owned(),
+                model: "test".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+            ..Default::default()
+        });
 
         app.inner_mut()
             .world_mut()
@@ -544,11 +564,20 @@ mod tests {
             .background_on("Virtual-1");
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let world = app.inner().world();
-        let Some(background) = world.get::<OutputBackgroundWindow>(entity) else {
-            panic!("background role should be inserted");
-        };
-        assert_eq!(background.output, "Virtual-1");
+        {
+            let world = app.inner_mut().world_mut();
+            let Some(background) = world.get::<OutputBackgroundWindow>(entity) else {
+                panic!("background role should be inserted");
+            };
+            let background_output = background.output;
+            let output_id = world
+                .query::<(&nekoland_ecs::components::OutputId, &OutputDevice)>()
+                .iter(world)
+                .find(|(_, output)| output.name == "Virtual-1")
+                .map(|(output_id, _)| *output_id)
+                .expect("virtual output id");
+            assert_eq!(background_output, output_id);
+        }
 
         app.inner_mut()
             .world_mut()

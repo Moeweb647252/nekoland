@@ -153,19 +153,19 @@ pub fn window_viewport_projection_system(
 ) {
     for mut window in &mut windows {
         if let Some(background) = window.background.as_ref() {
-            let Some((output_id, output, _, _)) =
-                resolve_output_state_by_name(&outputs, &background.output)
+            let Some((_, output)) =
+                outputs.iter().find(|(_, output)| output.id() == background.output)
             else {
                 *window.viewport_visibility =
                     nekoland_ecs::components::WindowViewportVisibility::default();
                 continue;
             };
             window.viewport_visibility.visible = *window.mode != WindowMode::Hidden;
-            window.viewport_visibility.output = Some(output_id);
+            window.viewport_visibility.output = Some(background.output);
             window.geometry.x = 0;
             window.geometry.y = 0;
-            window.geometry.width = output.width.max(1);
-            window.geometry.height = output.height.max(1);
+            window.geometry.width = output.properties.width.max(1);
+            window.geometry.height = output.properties.height.max(1);
             continue;
         }
 

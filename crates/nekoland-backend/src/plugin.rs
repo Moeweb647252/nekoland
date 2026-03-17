@@ -257,16 +257,11 @@ fn backend_present_system(
                 surface.window.map(|_| {
                     (
                         entity,
-                        surface
-                            .background
-                            .and_then(|background| {
-                                output_ids_by_name.get(&background.output).copied()
-                            })
-                            .or_else(|| {
-                                surface.viewport_visibility.and_then(|viewport_visibility| {
-                                    viewport_visibility.output.clone()
-                                })
-                            }),
+                        surface.background.map(|background| background.output).or_else(|| {
+                            surface
+                                .viewport_visibility
+                                .and_then(|viewport_visibility| viewport_visibility.output.clone())
+                        }),
                         surface.surface_id(),
                     )
                 })
@@ -293,14 +288,11 @@ fn backend_present_system(
                     RenderSurfaceRole::Unknown
                 };
                 let target_output = if surface.window.is_some() {
-                    surface
-                        .background
-                        .and_then(|background| output_ids_by_name.get(&background.output).copied())
-                        .or_else(|| {
-                            surface
-                                .viewport_visibility
-                                .and_then(|viewport_visibility| viewport_visibility.output.clone())
-                        })
+                    surface.background.map(|background| background.output).or_else(|| {
+                        surface
+                            .viewport_visibility
+                            .and_then(|viewport_visibility| viewport_visibility.output.clone())
+                    })
                 } else if surface.popup.is_some() {
                     surface.child_of.and_then(|child_of| {
                         window_entity_target_outputs.get(&child_of.parent()).cloned().flatten()

@@ -90,7 +90,7 @@ pub struct BackendDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BackendOutputId {
     pub backend_id: BackendId,
-    pub output_name: String,
+    pub local_id: String,
 }
 
 /// ECS-side output snapshot exposed to backend runtimes through constrained contexts.

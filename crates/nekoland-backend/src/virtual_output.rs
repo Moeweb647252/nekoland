@@ -15,6 +15,7 @@ use crate::traits::{
 };
 
 const DEFAULT_CURSOR_SIZE: u32 = 24;
+const VIRTUAL_PRIMARY_OUTPUT_LOCAL_ID: &str = "primary";
 
 /// Offscreen backend that mirrors the compositor render plan into a synthetic
 /// capture stream and presentation timeline.
@@ -88,6 +89,7 @@ impl Backend for VirtualRuntime {
 
     fn seed_output(&self, output_name: &str) -> Option<BackendOutputBlueprint> {
         Some(BackendOutputBlueprint {
+            local_id: VIRTUAL_PRIMARY_OUTPUT_LOCAL_ID.to_owned(),
             device: OutputDevice {
                 name: output_name.to_owned(),
                 kind: OutputKind::Virtual,
@@ -119,6 +121,7 @@ impl Backend for VirtualRuntime {
             cx.output_events.push(BackendOutputEventRecord {
                 backend_id: self.id(),
                 output_name: desired_output_name.clone(),
+                local_id: blueprint.local_id.clone(),
                 change: BackendOutputChange::Connected(blueprint),
             });
             self.seeded_output_name = Some(desired_output_name);

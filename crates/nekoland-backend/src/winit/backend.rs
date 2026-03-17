@@ -154,6 +154,7 @@ pub(crate) struct WinitRuntime {
 
 const INACTIVE_PRESENT_POLL_INTERVAL: Duration = Duration::from_millis(16);
 const MIN_PRESENT_INTERVAL: Duration = Duration::from_micros(500);
+const WINIT_PRIMARY_OUTPUT_LOCAL_ID: &str = "primary";
 
 impl WinitRuntime {
     pub fn install(app: &mut App, id: BackendId) -> Self {
@@ -248,6 +249,7 @@ impl Backend for WinitRuntime {
 
     fn seed_output(&self, output_name: &str) -> Option<BackendOutputBlueprint> {
         Some(BackendOutputBlueprint {
+            local_id: WINIT_PRIMARY_OUTPUT_LOCAL_ID.to_owned(),
             device: OutputDevice {
                 name: output_name.to_owned(),
                 kind: OutputKind::Nested,
@@ -273,6 +275,7 @@ impl Backend for WinitRuntime {
             cx.output_events.push(BackendOutputEventRecord {
                 backend_id: self.id(),
                 output_name: desired_output_name.clone(),
+                local_id: blueprint.local_id.clone(),
                 change: BackendOutputChange::Connected(blueprint),
             });
             self.seeded_output_name = Some(desired_output_name);
@@ -287,6 +290,11 @@ impl Backend for WinitRuntime {
                 cx.output_updates.push(BackendOutputPropertyUpdate {
                     backend_id: self.id(),
                     output_name: output.device.name.clone(),
+                    local_id: output
+                        .backend_output_id
+                        .as_ref()
+                        .map(|output_id| output_id.local_id.clone())
+                        .unwrap_or_else(|| WINIT_PRIMARY_OUTPUT_LOCAL_ID.to_owned()),
                     properties: OutputProperties {
                         width,
                         height,
@@ -930,7 +938,7 @@ mod tests {
             backend_id: Some(BackendId(1)),
             backend_output_id: Some(crate::traits::BackendOutputId {
                 backend_id: BackendId(1),
-                output_name: "Winit-1".to_owned(),
+                local_id: "Winit-1".to_owned(),
             }),
             device: OutputDevice {
                 name: "Winit-1".to_owned(),

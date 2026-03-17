@@ -289,6 +289,7 @@ mod tests {
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::RunSystemOnce;
     use nekoland_ecs::bundles::OutputBundle;
+    use nekoland_ecs::components::OutputId;
     use nekoland_ecs::components::{OutputDevice, OutputKind, OutputPlacement, OutputProperties};
     use nekoland_ecs::events::{PointerButton, PointerMotion};
     use nekoland_ecs::resources::{
@@ -297,7 +298,7 @@ mod tests {
         PendingOutputControls, PhysicalPointerPosition, PointerDelta, PressedKeys,
         ViewportPointerPanState,
     };
-    use nekoland_ecs::selectors::{OutputName, OutputSelector};
+    use nekoland_ecs::selectors::OutputSelector;
 
     use super::{cursor_motion_system, pointer_input_system, viewport_pointer_pan_system};
 
@@ -312,10 +313,7 @@ mod tests {
         world.init_resource::<PendingInputEvents>();
         world.init_resource::<ViewportPointerPanState>();
         world.init_resource::<Messages<PointerMotion>>();
-        world.insert_resource(FocusedOutputState {
-            name: Some("DP-1".to_owned()),
-            ..Default::default()
-        });
+        world.insert_resource(FocusedOutputState { id: Some(OutputId(7)) });
 
         {
             let mut pressed_keys = world.resource_mut::<PressedKeys>();
@@ -337,7 +335,7 @@ mod tests {
         assert_eq!(
             output_controls.as_slice(),
             &[nekoland_ecs::resources::PendingOutputControl {
-                selector: OutputSelector::Name(OutputName::from("DP-1")),
+                selector: OutputSelector::Id(OutputId(7)),
                 enabled: None,
                 configuration: None,
                 viewport_origin: None,
@@ -365,10 +363,7 @@ mod tests {
         world.init_resource::<PendingOutputControls>();
         world.init_resource::<PendingInputEvents>();
         world.init_resource::<ViewportPointerPanState>();
-        world.insert_resource(FocusedOutputState {
-            name: Some("DP-1".to_owned()),
-            ..Default::default()
-        });
+        world.insert_resource(FocusedOutputState { id: Some(OutputId(7)) });
 
         {
             let mut pressed_keys = world.resource_mut::<PressedKeys>();
@@ -390,7 +385,7 @@ mod tests {
         assert_eq!(
             output_controls.as_slice(),
             &[nekoland_ecs::resources::PendingOutputControl {
-                selector: OutputSelector::Name(OutputName::from("DP-1")),
+                selector: OutputSelector::Id(OutputId(7)),
                 enabled: None,
                 configuration: None,
                 viewport_origin: None,
@@ -426,10 +421,7 @@ mod tests {
         let mut world = World::default();
         world.insert_resource(GlobalPointerPosition { x: 90.0, y: 40.0 });
         world.insert_resource(PointerDelta { dx: 20.0, dy: 30.0 });
-        world.insert_resource(FocusedOutputState {
-            name: Some("DP-1".to_owned()),
-            ..Default::default()
-        });
+        world.insert_resource(FocusedOutputState { id: Some(OutputId(1)) });
         world.init_resource::<Messages<PointerMotion>>();
         world.spawn(OutputBundle {
             output: OutputDevice {

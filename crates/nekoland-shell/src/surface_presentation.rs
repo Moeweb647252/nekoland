@@ -56,7 +56,7 @@ pub fn surface_presentation_snapshot_system(
         };
         let target_output = window
             .background
-            .and_then(|background| output_ids_by_name.get(&background.output).copied())
+            .map(|background| background.output)
             .or_else(|| window.viewport_visibility.output.clone())
             .filter(|output_id| live_output_ids.contains(output_id));
         let visible = match role {
