@@ -4,12 +4,12 @@ use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{PreRenderSchedule, RenderSchedule};
 use nekoland_ecs::resources::{
     CursorRenderState, DamageState, FramePacingState, OutputDamageRegions, RenderPassGraph,
-    RenderPlan, RenderPlanInjectionState, SurfaceVisualSnapshot,
+    RenderPlan, SurfaceVisualSnapshot,
 };
 
 use crate::{
     compositor_render, cursor, damage_tracker, effects, frame_callback, material,
-    presentation_feedback, render_graph, screenshot, surface_visual,
+    presentation_feedback, render_graph, scene_source, screenshot, surface_visual,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -20,11 +20,13 @@ impl NekolandPlugin for RenderPlugin {
     /// that keeps compositor-internal rendering separate from user-facing visual state.
     fn build(&self, app: &mut App) {
         app.init_resource::<RenderPlan>()
-            .init_resource::<RenderPlanInjectionState>()
             .init_resource::<RenderPassGraph>()
             .init_resource::<material::RenderMaterialRegistry>()
             .init_resource::<material::RenderMaterialParamsStore>()
             .init_resource::<material::RenderMaterialRequestQueue>()
+            .init_resource::<scene_source::RenderSceneContributionQueue>()
+            .init_resource::<scene_source::ExternalSceneContributionState>()
+            .init_resource::<scene_source::RenderSceneIdentityRegistry>()
             .init_resource::<CursorRenderState>()
             .init_resource::<DamageState>()
             .init_resource::<FramePacingState>()
@@ -50,7 +52,10 @@ impl NekolandPlugin for RenderPlugin {
                 // Core rendering stays linear on purpose: damage/render-list/cursor/pacing all
                 // build on the state produced by the previous internal stage.
                 (
-                    compositor_render::compose_frame_system,
+                    scene_source::clear_scene_contributions_system,
+                    compositor_render::emit_desktop_scene_contributions_system,
+                    scene_source::emit_external_scene_contributions_system,
+                    compositor_render::assemble_render_plan_system,
                     render_graph::build_render_graph_system,
                     damage_tracker::damage_tracking_system,
                     cursor::cursor_render_system,

@@ -9,6 +9,7 @@ pub mod material;
 pub mod plugin;
 pub mod presentation_feedback;
 pub mod render_graph;
+pub mod scene_source;
 pub mod screenshot;
 pub mod surface_visual;
 

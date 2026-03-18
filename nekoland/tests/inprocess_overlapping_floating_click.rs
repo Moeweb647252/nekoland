@@ -282,7 +282,7 @@ fn drive_overlap_click_scenario(
     let top_render_surface = render_plan
         .outputs
         .values()
-        .flat_map(|output_plan| output_plan.items.iter())
+        .flat_map(|output_plan| output_plan.iter_ordered())
         .filter_map(|item| match item {
             RenderPlanItem::Surface(item) if item.surface_id != 0 => Some(item.surface_id),
             RenderPlanItem::Surface(_) => None,

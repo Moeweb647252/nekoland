@@ -4,7 +4,7 @@ use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
 use crate::components::OutputId;
-use crate::resources::RenderSceneRole;
+use crate::resources::{RenderItemId, RenderSceneRole};
 
 /// One graph-local render target identifier.
 #[derive(
@@ -55,10 +55,10 @@ pub struct RenderMaterialId(pub u64);
 #[serde(transparent)]
 pub struct MaterialParamsId(pub u64);
 
-/// Scene-pass payload referencing render-plan item indices.
+/// Scene-pass payload referencing render-plan item ids.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScenePassConfig {
-    pub item_indices: Vec<usize>,
+    pub item_ids: Vec<RenderItemId>,
 }
 
 /// Composite-pass payload copying one source target into the destination target.
@@ -107,7 +107,7 @@ impl RenderPassNode {
         scene_role: RenderSceneRole,
         output_target: RenderTargetId,
         dependencies: Vec<RenderPassId>,
-        item_indices: Vec<usize>,
+        item_ids: Vec<RenderItemId>,
     ) -> Self {
         Self {
             kind: RenderPassKind::Scene,
@@ -115,7 +115,7 @@ impl RenderPassNode {
             input_targets: Vec::new(),
             output_target,
             dependencies,
-            payload: RenderPassPayload::Scene(ScenePassConfig { item_indices }),
+            payload: RenderPassPayload::Scene(ScenePassConfig { item_ids }),
         }
     }
 
@@ -173,9 +173,9 @@ impl RenderPassNode {
         }
     }
 
-    pub fn item_indices(&self) -> &[usize] {
+    pub fn item_ids(&self) -> &[RenderItemId] {
         match &self.payload {
-            RenderPassPayload::Scene(config) => &config.item_indices,
+            RenderPassPayload::Scene(config) => &config.item_ids,
             RenderPassPayload::Composite(_)
             | RenderPassPayload::PostProcess(_)
             | RenderPassPayload::Readback(_) => &[],
@@ -288,9 +288,9 @@ mod tests {
 
     use crate::components::OutputId;
     use crate::resources::{
-        MaterialParamsId, OutputExecutionPlan, RenderMaterialId, RenderPassGraph, RenderPassId,
-        RenderPassKind, RenderPassNode, RenderPassPayload, RenderSceneRole, RenderTargetId,
-        RenderTargetKind,
+        MaterialParamsId, OutputExecutionPlan, RenderItemId, RenderMaterialId, RenderPassGraph,
+        RenderPassId, RenderPassKind, RenderPassNode, RenderPassPayload, RenderSceneRole,
+        RenderTargetId, RenderTargetKind,
     };
 
     #[test]
@@ -310,7 +310,7 @@ mod tests {
                         output_target: RenderTargetId(1),
                         dependencies: vec![RenderPassId(2)],
                         payload: RenderPassPayload::Scene(super::ScenePassConfig {
-                            item_indices: vec![0],
+                            item_ids: vec![RenderItemId(1)],
                         }),
                     },
                 ),

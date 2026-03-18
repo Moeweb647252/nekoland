@@ -3834,7 +3834,10 @@ fn pointer_focus_target(
     if let Some(surface_presentation) = focus_inputs.surface_presentation {
         for (output_id, placement_x, placement_y) in &output_contexts {
             let Some(output_plan) = render_plan.outputs.get(output_id) else { continue };
-            for item in output_plan.items.iter().rev() {
+            for item_id in output_plan.ordered_item_ids().iter().rev() {
+                let Some(item) = output_plan.item(*item_id) else {
+                    continue;
+                };
                 let nekoland_ecs::resources::RenderPlanItem::Surface(item) = item else {
                     continue;
                 };
@@ -3873,7 +3876,10 @@ fn pointer_focus_target(
     }
     for (output_id, placement_x, placement_y) in &output_contexts {
         let Some(output_plan) = render_plan.outputs.get(output_id) else { continue };
-        for item in output_plan.items.iter().rev() {
+        for item_id in output_plan.ordered_item_ids().iter().rev() {
+            let Some(item) = output_plan.item(*item_id) else {
+                continue;
+            };
             let nekoland_ecs::resources::RenderPlanItem::Surface(item) = item else {
                 continue;
             };
@@ -4196,8 +4202,8 @@ mod tests {
         SurfaceGeometry, WindowViewportVisibility, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{
-        OutputRenderPlan, RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect,
-        RenderSceneRole, SurfaceRenderItem,
+        OutputRenderPlan, RenderItemId, RenderItemIdentity, RenderItemInstance, RenderPlan,
+        RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId, SurfaceRenderItem,
     };
     use smithay::reexports::wayland_server::Display;
     use wayland_client::protocol::{wl_compositor, wl_output, wl_registry, wl_surface};
@@ -4235,6 +4241,10 @@ mod tests {
         wm_capabilities: Vec<xdg_toplevel::WmCapabilities>,
         request_fullscreen_on_first_configure: bool,
         sent_fullscreen_request: bool,
+    }
+
+    fn identity(id: u64) -> RenderItemIdentity {
+        RenderItemIdentity::new(RenderSourceId(id), RenderItemId(id))
     }
 
     #[test]
@@ -4349,30 +4359,30 @@ mod tests {
         let render_plan = RenderPlan {
             outputs: std::collections::BTreeMap::from([(
                 OutputId(1),
-                OutputRenderPlan {
-                    items: vec![
-                        RenderPlanItem::Surface(SurfaceRenderItem {
-                            surface_id: 11,
-                            instance: RenderItemInstance {
-                                rect: RenderRect { x: 0, y: 0, width: 320, height: 64 },
-                                opacity: 1.0,
-                                clip_rect: None,
-                                z_index: 0,
-                                scene_role: RenderSceneRole::Desktop,
-                            },
-                        }),
-                        RenderPlanItem::Surface(SurfaceRenderItem {
-                            surface_id: 22,
-                            instance: RenderItemInstance {
-                                rect: RenderRect { x: 0, y: 0, width: 320, height: 64 },
-                                opacity: 1.0,
-                                clip_rect: None,
-                                z_index: 1,
-                                scene_role: RenderSceneRole::Desktop,
-                            },
-                        }),
-                    ],
-                },
+                OutputRenderPlan::from_items([
+                    RenderPlanItem::Surface(SurfaceRenderItem {
+                        identity: identity(11),
+                        surface_id: 11,
+                        instance: RenderItemInstance {
+                            rect: RenderRect { x: 0, y: 0, width: 320, height: 64 },
+                            opacity: 1.0,
+                            clip_rect: None,
+                            z_index: 0,
+                            scene_role: RenderSceneRole::Desktop,
+                        },
+                    }),
+                    RenderPlanItem::Surface(SurfaceRenderItem {
+                        identity: identity(22),
+                        surface_id: 22,
+                        instance: RenderItemInstance {
+                            rect: RenderRect { x: 0, y: 0, width: 320, height: 64 },
+                            opacity: 1.0,
+                            clip_rect: None,
+                            z_index: 1,
+                            scene_role: RenderSceneRole::Desktop,
+                        },
+                    }),
+                ]),
             )]),
         };
         let mut system_state = SystemState::<PointerHitTestState<'_, '_>>::new(&mut world);
@@ -4433,18 +4443,17 @@ mod tests {
         let render_plan = RenderPlan {
             outputs: std::collections::BTreeMap::from([(
                 dp2_id,
-                OutputRenderPlan {
-                    items: vec![RenderPlanItem::Surface(SurfaceRenderItem {
-                        surface_id: 42,
-                        instance: RenderItemInstance {
-                            rect: RenderRect { x: 0, y: 0, width: 80, height: 80 },
-                            opacity: 1.0,
-                            clip_rect: None,
-                            z_index: 0,
-                            scene_role: RenderSceneRole::Desktop,
-                        },
-                    })],
-                },
+                OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
+                    identity: identity(42),
+                    surface_id: 42,
+                    instance: RenderItemInstance {
+                        rect: RenderRect { x: 0, y: 0, width: 80, height: 80 },
+                        opacity: 1.0,
+                        clip_rect: None,
+                        z_index: 0,
+                        scene_role: RenderSceneRole::Desktop,
+                    },
+                })]),
             )]),
         };
         let mut system_state = SystemState::<PointerHitTestState<'_, '_>>::new(&mut world);
@@ -4495,18 +4504,17 @@ mod tests {
         let render_plan = RenderPlan {
             outputs: std::collections::BTreeMap::from([(
                 output_id,
-                OutputRenderPlan {
-                    items: vec![RenderPlanItem::Surface(SurfaceRenderItem {
-                        surface_id: 77,
-                        instance: RenderItemInstance {
-                            rect: RenderRect { x: 0, y: 0, width: 80, height: 80 },
-                            opacity: 1.0,
-                            clip_rect: Some(RenderRect { x: 40, y: 0, width: 40, height: 80 }),
-                            z_index: 0,
-                            scene_role: RenderSceneRole::Desktop,
-                        },
-                    })],
-                },
+                OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
+                    identity: identity(77),
+                    surface_id: 77,
+                    instance: RenderItemInstance {
+                        rect: RenderRect { x: 0, y: 0, width: 80, height: 80 },
+                        opacity: 1.0,
+                        clip_rect: Some(RenderRect { x: 40, y: 0, width: 40, height: 80 }),
+                        z_index: 0,
+                        scene_role: RenderSceneRole::Desktop,
+                    },
+                })]),
             )]),
         };
         let mut system_state = SystemState::<PointerHitTestState<'_, '_>>::new(&mut world);

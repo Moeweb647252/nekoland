@@ -5,8 +5,8 @@ use bevy_ecs::prelude::{Local, Query, Res, ResMut};
 use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{OutputId, SurfaceContentVersion, WlSurfaceHandle};
 use nekoland_ecs::resources::{
-    DamageRect, DamageState, OutputDamageRegions, RenderPassGraph, RenderPassKind, RenderPlan,
-    RenderPlanItem, RenderRect, SurfacePresentationSnapshot,
+    DamageRect, DamageState, OutputDamageRegions, RenderItemId, RenderPassGraph, RenderPassKind,
+    RenderPlan, RenderPlanItem, RenderRect, SurfacePresentationSnapshot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -18,14 +18,7 @@ struct TrackedSceneDamage {
     render_signature: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum TrackedSceneItemKey {
-    Surface { pass_id: nekoland_ecs::resources::RenderPassId, item_index: usize, surface_id: u64 },
-    SolidRect { pass_id: nekoland_ecs::resources::RenderPassId, item_index: usize },
-    Backdrop { pass_id: nekoland_ecs::resources::RenderPassId, item_index: usize },
-}
-
-type OutputDamageSnapshot = BTreeMap<OutputId, BTreeMap<TrackedSceneItemKey, TrackedSceneDamage>>;
+type OutputDamageSnapshot = BTreeMap<OutputId, BTreeMap<RenderItemId, TrackedSceneDamage>>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DamageTrackerState {
@@ -93,8 +86,8 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
                 continue;
             }
 
-            for item_index in pass.item_indices() {
-                let Some(item) = output_plan.items.get(*item_index) else {
+            for item_id in pass.item_ids() {
+                let Some(item) = output_plan.item(*item_id) else {
                     continue;
                 };
                 if surface_damage_disabled(item, surface_presentation) {
@@ -106,7 +99,7 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
                 };
 
                 current_snapshot.entry(*output_id).or_default().insert(
-                    tracked_scene_item_key(pass_id, *item_index, item),
+                    *item_id,
                     TrackedSceneDamage {
                         rect,
                         render_signature: render_signature_for_item(item, &surface_versions),
@@ -139,20 +132,6 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
     output_damage_regions.regions = damage_regions;
 
     tracing::trace!(count, full_redraw = damage_state.full_redraw, "damage tracking tick");
-}
-
-fn tracked_scene_item_key(
-    pass_id: nekoland_ecs::resources::RenderPassId,
-    item_index: usize,
-    item: &RenderPlanItem,
-) -> TrackedSceneItemKey {
-    match item {
-        RenderPlanItem::Surface(item) => {
-            TrackedSceneItemKey::Surface { pass_id, item_index, surface_id: item.surface_id }
-        }
-        RenderPlanItem::SolidRect(_) => TrackedSceneItemKey::SolidRect { pass_id, item_index },
-        RenderPlanItem::Backdrop(_) => TrackedSceneItemKey::Backdrop { pass_id, item_index },
-    }
 }
 
 fn surface_damage_disabled(
@@ -319,15 +298,19 @@ mod tests {
     };
     use nekoland_ecs::resources::{
         DamageState, OutputDamageRegions, RenderColor, RenderItemInstance, RenderPassGraph,
-        RenderPlan, RenderPlanInjectionState, RenderPlanItem, RenderRect, RenderSceneRole,
-        SolidRectRenderItem, SurfacePresentationRole, SurfacePresentationSnapshot,
-        SurfacePresentationState, WindowStackingState,
+        RenderPlan, RenderRect, RenderSceneRole, SurfacePresentationRole,
+        SurfacePresentationSnapshot, SurfacePresentationState, WindowStackingState,
     };
 
     use crate::{
-        compositor_render::compose_frame_system,
+        compositor_render::{assemble_render_plan_system, emit_desktop_scene_contributions_system},
         material::{RenderMaterialParamsStore, RenderMaterialRegistry, RenderMaterialRequestQueue},
         render_graph::build_render_graph_system,
+        scene_source::{
+            ExternalSceneContributionState, RenderInstanceKey, RenderSceneContribution,
+            RenderSceneContributionPayload, RenderSceneContributionQueue,
+            RenderSceneIdentityRegistry, RenderSourceKey, clear_scene_contributions_system,
+        },
     };
 
     use super::damage_tracking_system;
@@ -344,17 +327,27 @@ mod tests {
     fn install_damage_pipeline(app: &mut NekolandApp) {
         app.inner_mut()
             .init_resource::<RenderPlan>()
-            .init_resource::<RenderPlanInjectionState>()
             .init_resource::<RenderPassGraph>()
             .init_resource::<RenderMaterialRegistry>()
             .init_resource::<RenderMaterialParamsStore>()
             .init_resource::<RenderMaterialRequestQueue>()
+            .init_resource::<RenderSceneContributionQueue>()
+            .init_resource::<ExternalSceneContributionState>()
+            .init_resource::<RenderSceneIdentityRegistry>()
             .init_resource::<WindowStackingState>()
             .init_resource::<DamageState>()
             .init_resource::<OutputDamageRegions>()
             .add_systems(
                 RenderSchedule,
-                (compose_frame_system, build_render_graph_system, damage_tracking_system).chain(),
+                (
+                    clear_scene_contributions_system,
+                    emit_desktop_scene_contributions_system,
+                    crate::scene_source::emit_external_scene_contributions_system,
+                    assemble_render_plan_system,
+                    build_render_graph_system,
+                    damage_tracking_system,
+                )
+                    .chain(),
             );
     }
 
@@ -744,11 +737,18 @@ mod tests {
             ..Default::default()
         });
         let virtual_id = output_id_by_name(app.inner_mut().world_mut(), "Virtual-1");
-        app.inner_mut().world_mut().resource_mut::<RenderPlanInjectionState>().outputs =
+        app.inner_mut().world_mut().resource_mut::<ExternalSceneContributionState>().outputs =
             std::collections::BTreeMap::from([(
                 virtual_id,
-                vec![RenderPlanItem::SolidRect(SolidRectRenderItem {
-                    color: RenderColor { r: 1, g: 2, b: 3, a: 200 },
+                vec![RenderSceneContribution {
+                    key: RenderInstanceKey::new(
+                        RenderSourceKey::new("test", "solid_rect"),
+                        virtual_id,
+                        0,
+                    ),
+                    payload: RenderSceneContributionPayload::SolidRect {
+                        color: RenderColor { r: 1, g: 2, b: 3, a: 200 },
+                    },
                     instance: RenderItemInstance {
                         rect: RenderRect { x: 10, y: 20, width: 40, height: 30 },
                         opacity: 0.8,
@@ -756,7 +756,7 @@ mod tests {
                         z_index: 1,
                         scene_role: RenderSceneRole::Overlay,
                     },
-                })],
+                }],
             )]);
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
@@ -773,11 +773,18 @@ mod tests {
 
         app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();
         app.inner_mut().world_mut().resource_mut::<DamageState>().full_redraw = false;
-        app.inner_mut().world_mut().resource_mut::<RenderPlanInjectionState>().outputs =
+        app.inner_mut().world_mut().resource_mut::<ExternalSceneContributionState>().outputs =
             std::collections::BTreeMap::from([(
                 virtual_id,
-                vec![RenderPlanItem::SolidRect(SolidRectRenderItem {
-                    color: RenderColor { r: 1, g: 2, b: 3, a: 200 },
+                vec![RenderSceneContribution {
+                    key: RenderInstanceKey::new(
+                        RenderSourceKey::new("test", "solid_rect"),
+                        virtual_id,
+                        0,
+                    ),
+                    payload: RenderSceneContributionPayload::SolidRect {
+                        color: RenderColor { r: 1, g: 2, b: 3, a: 200 },
+                    },
                     instance: RenderItemInstance {
                         rect: RenderRect { x: 20, y: 20, width: 40, height: 30 },
                         opacity: 0.8,
@@ -785,7 +792,7 @@ mod tests {
                         z_index: 1,
                         scene_role: RenderSceneRole::Overlay,
                     },
-                })],
+                }],
             )]);
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 

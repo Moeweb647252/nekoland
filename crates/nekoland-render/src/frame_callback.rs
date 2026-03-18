@@ -21,7 +21,7 @@ pub fn frame_callback_system(
     let callback_surface_ids = render_plan
         .outputs
         .values()
-        .flat_map(|plan| plan.items.iter())
+        .flat_map(|plan| plan.iter_ordered())
         .filter_map(|item| match item {
             RenderPlanItem::Surface(item) => Some(item.surface_id),
             RenderPlanItem::SolidRect(_) | RenderPlanItem::Backdrop(_) => None,

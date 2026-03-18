@@ -53,15 +53,17 @@ pub fn build_render_graph_system(
 
         let mut previous_pass = None;
         for scene_role in ROLE_ORDER {
-            let item_indices = output_plan
-                .items
+            let item_ids = output_plan
+                .ordered_item_ids()
                 .iter()
-                .enumerate()
-                .filter_map(|(index, item)| {
-                    (item.instance().scene_role == scene_role).then_some(index)
+                .copied()
+                .filter(|item_id| {
+                    output_plan
+                        .item(*item_id)
+                        .is_some_and(|item| item.instance().scene_role == scene_role)
                 })
                 .collect::<Vec<_>>();
-            if item_indices.is_empty() {
+            if item_ids.is_empty() {
                 continue;
             }
 
@@ -70,7 +72,7 @@ pub fn build_render_graph_system(
             let dependencies = previous_pass.into_iter().collect::<Vec<_>>();
             execution.passes.insert(
                 pass_id,
-                RenderPassNode::scene(scene_role, scene_target, dependencies, item_indices),
+                RenderPassNode::scene(scene_role, scene_target, dependencies, item_ids),
             );
             execution.ordered_passes.push(pass_id);
             previous_pass = Some(pass_id);
@@ -146,14 +148,18 @@ mod tests {
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::components::OutputId;
     use nekoland_ecs::resources::{
-        MaterialParamsId, OutputRenderPlan, RenderItemInstance, RenderMaterialId, RenderPassGraph,
-        RenderPassKind, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
-        SolidRectRenderItem, SurfaceRenderItem,
+        MaterialParamsId, OutputRenderPlan, RenderItemId, RenderItemIdentity, RenderItemInstance,
+        RenderMaterialId, RenderPassGraph, RenderPassKind, RenderPlan, RenderPlanItem, RenderRect,
+        RenderSceneRole, RenderSourceId, SolidRectRenderItem, SurfaceRenderItem,
     };
 
     use crate::material::{RenderMaterialRequest, RenderMaterialRequestQueue};
 
     use super::build_render_graph_system;
+
+    fn identity(id: u64) -> RenderItemIdentity {
+        RenderItemIdentity::new(RenderSourceId(id), RenderItemId(id))
+    }
 
     #[test]
     fn render_graph_builder_emits_one_output_swapchain_chain_per_output() {
@@ -166,50 +172,44 @@ mod tests {
         app.world_mut().resource_mut::<RenderPlan>().outputs = std::collections::BTreeMap::from([
             (
                 OutputId(1),
-                OutputRenderPlan {
-                    items: vec![RenderPlanItem::Surface(SurfaceRenderItem {
-                        surface_id: 11,
+                OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
+                    identity: identity(11),
+                    surface_id: 11,
+                    instance: RenderItemInstance {
+                        rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
+                        opacity: 1.0,
+                        clip_rect: None,
+                        z_index: 0,
+                        scene_role: RenderSceneRole::Desktop,
+                    },
+                })]),
+            ),
+            (
+                OutputId(2),
+                OutputRenderPlan::from_items([
+                    RenderPlanItem::Surface(SurfaceRenderItem {
+                        identity: identity(22),
+                        surface_id: 22,
                         instance: RenderItemInstance {
-                            rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
+                            rect: RenderRect { x: 10, y: 10, width: 80, height: 80 },
                             opacity: 1.0,
                             clip_rect: None,
                             z_index: 0,
                             scene_role: RenderSceneRole::Desktop,
                         },
-                    })],
-                },
-            ),
-            (
-                OutputId(2),
-                OutputRenderPlan {
-                    items: vec![
-                        RenderPlanItem::Surface(SurfaceRenderItem {
-                            surface_id: 22,
-                            instance: RenderItemInstance {
-                                rect: RenderRect { x: 10, y: 10, width: 80, height: 80 },
-                                opacity: 1.0,
-                                clip_rect: None,
-                                z_index: 0,
-                                scene_role: RenderSceneRole::Desktop,
-                            },
-                        }),
-                        RenderPlanItem::SolidRect(SolidRectRenderItem {
-                            color: nekoland_ecs::resources::RenderColor {
-                                r: 0,
-                                g: 0,
-                                b: 0,
-                                a: 128,
-                            },
-                            instance: RenderItemInstance {
-                                rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
-                                opacity: 1.0,
-                                clip_rect: None,
-                                z_index: 1,
-                                scene_role: RenderSceneRole::Overlay,
-                            },
-                        }),
-                    ],
-                },
+                    }),
+                    RenderPlanItem::SolidRect(SolidRectRenderItem {
+                        identity: identity(23),
+                        color: nekoland_ecs::resources::RenderColor { r: 0, g: 0, b: 0, a: 128 },
+                        instance: RenderItemInstance {
+                            rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
+                            opacity: 1.0,
+                            clip_rect: None,
+                            z_index: 1,
+                            scene_role: RenderSceneRole::Overlay,
+                        },
+                    }),
+                ]),
             ),
         ]);
 
@@ -225,16 +225,16 @@ mod tests {
         let pass = &first.passes[&first.ordered_passes[0]];
         assert_eq!(pass.kind, RenderPassKind::Scene);
         assert_eq!(pass.scene_role, RenderSceneRole::Desktop);
-        assert_eq!(pass.item_indices(), vec![0]);
+        assert_eq!(pass.item_ids(), vec![RenderItemId(11)]);
 
         let second = &graph.outputs[&OutputId(2)];
         assert_eq!(second.ordered_passes.len(), 2);
         let desktop = &second.passes[&second.ordered_passes[0]];
         let overlay = &second.passes[&second.ordered_passes[1]];
         assert_eq!(desktop.scene_role, RenderSceneRole::Desktop);
-        assert_eq!(desktop.item_indices(), vec![0]);
+        assert_eq!(desktop.item_ids(), vec![RenderItemId(22)]);
         assert_eq!(overlay.scene_role, RenderSceneRole::Overlay);
-        assert_eq!(overlay.item_indices(), vec![1]);
+        assert_eq!(overlay.item_ids(), vec![RenderItemId(23)]);
         assert_eq!(overlay.dependencies, vec![second.ordered_passes[0]]);
         assert_eq!(second.terminal_passes, vec![second.ordered_passes[1]]);
     }
@@ -266,18 +266,17 @@ mod tests {
         world.insert_resource(RenderPlan {
             outputs: std::collections::BTreeMap::from([(
                 OutputId(1),
-                OutputRenderPlan {
-                    items: vec![RenderPlanItem::Surface(SurfaceRenderItem {
-                        surface_id: 11,
-                        instance: RenderItemInstance {
-                            rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
-                            opacity: 1.0,
-                            clip_rect: None,
-                            z_index: 0,
-                            scene_role: RenderSceneRole::Desktop,
-                        },
-                    })],
-                },
+                OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
+                    identity: identity(11),
+                    surface_id: 11,
+                    instance: RenderItemInstance {
+                        rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
+                        opacity: 1.0,
+                        clip_rect: None,
+                        z_index: 0,
+                        scene_role: RenderSceneRole::Desktop,
+                    },
+                })]),
             )]),
         });
         world.insert_resource(RenderMaterialRequestQueue {

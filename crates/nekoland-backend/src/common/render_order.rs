@@ -183,9 +183,9 @@ fn execute_output_render_graph(
         match pass.kind {
             RenderPassKind::Scene => {
                 let produced = pass
-                    .item_indices()
+                    .item_ids()
                     .iter()
-                    .filter_map(|item_index| output_plan.items.get(*item_index))
+                    .filter_map(|item_id| output_plan.item(*item_id))
                     .map(output_record_from_plan_item)
                     .collect::<Vec<_>>();
                 targets.entry(pass.output_target).or_default().extend(produced);
@@ -263,10 +263,10 @@ mod tests {
         OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry,
     };
     use nekoland_ecs::resources::{
-        OutputExecutionPlan, OutputRenderPlan, PresentAuditElementKind, RenderColor,
-        RenderItemInstance, RenderPassGraph, RenderPassId, RenderPassNode, RenderPlan,
-        RenderPlanItem, RenderRect, RenderSceneRole, RenderTargetId, RenderTargetKind,
-        SolidRectRenderItem, SurfaceRenderItem,
+        OutputExecutionPlan, OutputRenderPlan, PresentAuditElementKind, RenderColor, RenderItemId,
+        RenderItemIdentity, RenderItemInstance, RenderPassGraph, RenderPassId, RenderPassNode,
+        RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId, RenderTargetId,
+        RenderTargetKind, SolidRectRenderItem, SurfaceRenderItem,
     };
 
     use crate::traits::{OutputSnapshot, RenderSurfaceRole, RenderSurfaceSnapshot};
@@ -276,6 +276,10 @@ mod tests {
         render_graph_output_records_in_presentation_order,
         render_graph_output_surfaces_in_presentation_order, snapshot_present_audit_outputs,
     };
+
+    fn identity(id: u64) -> RenderItemIdentity {
+        RenderItemIdentity::new(RenderSourceId(id), RenderItemId(id))
+    }
 
     #[test]
     fn render_graph_records_drive_present_and_audit_outputs() {
@@ -313,30 +317,30 @@ mod tests {
         let render_plan = RenderPlan {
             outputs: HashMap::from([(
                 OutputId(7),
-                OutputRenderPlan {
-                    items: vec![
-                        RenderPlanItem::Surface(SurfaceRenderItem {
-                            surface_id: 11,
-                            instance: RenderItemInstance {
-                                rect: RenderRect { x: 10, y: 20, width: 30, height: 40 },
-                                opacity: 1.0,
-                                clip_rect: None,
-                                z_index: 0,
-                                scene_role: RenderSceneRole::Desktop,
-                            },
-                        }),
-                        RenderPlanItem::Surface(SurfaceRenderItem {
-                            surface_id: 22,
-                            instance: RenderItemInstance {
-                                rect: RenderRect { x: 50, y: 60, width: 70, height: 80 },
-                                opacity: 0.5,
-                                clip_rect: None,
-                                z_index: 1,
-                                scene_role: RenderSceneRole::Desktop,
-                            },
-                        }),
-                    ],
-                },
+                OutputRenderPlan::from_items([
+                    RenderPlanItem::Surface(SurfaceRenderItem {
+                        identity: identity(11),
+                        surface_id: 11,
+                        instance: RenderItemInstance {
+                            rect: RenderRect { x: 10, y: 20, width: 30, height: 40 },
+                            opacity: 1.0,
+                            clip_rect: None,
+                            z_index: 0,
+                            scene_role: RenderSceneRole::Desktop,
+                        },
+                    }),
+                    RenderPlanItem::Surface(SurfaceRenderItem {
+                        identity: identity(22),
+                        surface_id: 22,
+                        instance: RenderItemInstance {
+                            rect: RenderRect { x: 50, y: 60, width: 70, height: 80 },
+                            opacity: 0.5,
+                            clip_rect: None,
+                            z_index: 1,
+                            scene_role: RenderSceneRole::Desktop,
+                        },
+                    }),
+                ]),
             )])
             .into_iter()
             .collect(),
@@ -356,7 +360,7 @@ mod tests {
                                 RenderSceneRole::Desktop,
                                 RenderTargetId(2),
                                 Vec::new(),
-                                vec![0, 1],
+                                vec![RenderItemId(11), RenderItemId(22)],
                             ),
                         ),
                         (
@@ -442,18 +446,17 @@ mod tests {
         let render_plan = RenderPlan {
             outputs: std::collections::BTreeMap::from([(
                 OutputId(1),
-                OutputRenderPlan {
-                    items: vec![RenderPlanItem::SolidRect(SolidRectRenderItem {
-                        color: RenderColor { r: 20, g: 40, b: 60, a: 128 },
-                        instance: RenderItemInstance {
-                            rect: RenderRect { x: 8, y: 9, width: 50, height: 60 },
-                            opacity: 0.75,
-                            clip_rect: None,
-                            z_index: 5,
-                            scene_role: RenderSceneRole::Overlay,
-                        },
-                    })],
-                },
+                OutputRenderPlan::from_items([RenderPlanItem::SolidRect(SolidRectRenderItem {
+                    identity: identity(1),
+                    color: RenderColor { r: 20, g: 40, b: 60, a: 128 },
+                    instance: RenderItemInstance {
+                        rect: RenderRect { x: 8, y: 9, width: 50, height: 60 },
+                        opacity: 0.75,
+                        clip_rect: None,
+                        z_index: 5,
+                        scene_role: RenderSceneRole::Overlay,
+                    },
+                })]),
             )]),
         };
         let render_graph = RenderPassGraph {
@@ -470,7 +473,7 @@ mod tests {
                             RenderSceneRole::Overlay,
                             RenderTargetId(1),
                             Vec::new(),
-                            vec![0],
+                            vec![RenderItemId(1)],
                         ),
                     )]),
                     ordered_passes: vec![RenderPassId(1)],
@@ -497,30 +500,30 @@ mod tests {
         let render_plan = RenderPlan {
             outputs: std::collections::BTreeMap::from([(
                 OutputId(2),
-                OutputRenderPlan {
-                    items: vec![
-                        RenderPlanItem::Surface(SurfaceRenderItem {
-                            surface_id: 1,
-                            instance: RenderItemInstance {
-                                rect: RenderRect { x: 0, y: 0, width: 20, height: 20 },
-                                opacity: 1.0,
-                                clip_rect: None,
-                                z_index: 0,
-                                scene_role: RenderSceneRole::Desktop,
-                            },
-                        }),
-                        RenderPlanItem::SolidRect(SolidRectRenderItem {
-                            color: RenderColor { r: 0, g: 0, b: 0, a: 180 },
-                            instance: RenderItemInstance {
-                                rect: RenderRect { x: 1, y: 2, width: 30, height: 40 },
-                                opacity: 0.5,
-                                clip_rect: None,
-                                z_index: 1,
-                                scene_role: RenderSceneRole::Overlay,
-                            },
-                        }),
-                    ],
-                },
+                OutputRenderPlan::from_items([
+                    RenderPlanItem::Surface(SurfaceRenderItem {
+                        identity: identity(1),
+                        surface_id: 1,
+                        instance: RenderItemInstance {
+                            rect: RenderRect { x: 0, y: 0, width: 20, height: 20 },
+                            opacity: 1.0,
+                            clip_rect: None,
+                            z_index: 0,
+                            scene_role: RenderSceneRole::Desktop,
+                        },
+                    }),
+                    RenderPlanItem::SolidRect(SolidRectRenderItem {
+                        identity: identity(2),
+                        color: RenderColor { r: 0, g: 0, b: 0, a: 180 },
+                        instance: RenderItemInstance {
+                            rect: RenderRect { x: 1, y: 2, width: 30, height: 40 },
+                            opacity: 0.5,
+                            clip_rect: None,
+                            z_index: 1,
+                            scene_role: RenderSceneRole::Overlay,
+                        },
+                    }),
+                ]),
             )]),
         };
         let render_graph = RenderPassGraph {
@@ -538,7 +541,7 @@ mod tests {
                                 RenderSceneRole::Desktop,
                                 RenderTargetId(1),
                                 Vec::new(),
-                                vec![0],
+                                vec![RenderItemId(1)],
                             ),
                         ),
                         (
@@ -547,7 +550,7 @@ mod tests {
                                 RenderSceneRole::Overlay,
                                 RenderTargetId(1),
                                 vec![RenderPassId(1)],
-                                vec![1],
+                                vec![RenderItemId(2)],
                             ),
                         ),
                     ]),

@@ -5,6 +5,33 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::OutputId;
 
+/// Stable identity for one logical render source across frames.
+#[derive(
+    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(transparent)]
+pub struct RenderSourceId(pub u64);
+
+/// Stable identity for one output-local render item across frames.
+#[derive(
+    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(transparent)]
+pub struct RenderItemId(pub u64);
+
+/// Stable item identity linking one output-local instance back to its source.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RenderItemIdentity {
+    pub source_id: RenderSourceId,
+    pub item_id: RenderItemId,
+}
+
+impl RenderItemIdentity {
+    pub const fn new(source_id: RenderSourceId, item_id: RenderItemId) -> Self {
+        Self { source_id, item_id }
+    }
+}
+
 /// Generic output-local rectangle used by render-plan instances.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RenderRect {
@@ -80,6 +107,7 @@ impl RenderItemInstance {
 /// One surface instance for a specific output in the current frame.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SurfaceRenderItem {
+    pub identity: RenderItemIdentity,
     pub surface_id: u64,
     pub instance: RenderItemInstance,
 }
@@ -96,6 +124,7 @@ pub struct RenderColor {
 /// One solid-color rectangle in the current output-local scene.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SolidRectRenderItem {
+    pub identity: RenderItemIdentity,
     pub color: RenderColor,
     pub instance: RenderItemInstance,
 }
@@ -103,6 +132,7 @@ pub struct SolidRectRenderItem {
 /// One sampled output-local backdrop region reserved for future post-process work.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BackdropRenderItem {
+    pub identity: RenderItemIdentity,
     pub instance: RenderItemInstance,
 }
 
@@ -116,6 +146,22 @@ pub enum RenderPlanItem {
 }
 
 impl RenderPlanItem {
+    pub fn identity(&self) -> RenderItemIdentity {
+        match self {
+            Self::Surface(item) => item.identity,
+            Self::SolidRect(item) => item.identity,
+            Self::Backdrop(item) => item.identity,
+        }
+    }
+
+    pub fn item_id(&self) -> RenderItemId {
+        self.identity().item_id
+    }
+
+    pub fn source_id(&self) -> RenderSourceId {
+        self.identity().source_id
+    }
+
     pub fn instance(&self) -> &RenderItemInstance {
         match self {
             Self::Surface(item) => &item.instance,
@@ -139,71 +185,92 @@ impl RenderPlanItem {
 /// Ordered render items for one output.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct OutputRenderPlan {
-    pub items: Vec<RenderPlanItem>,
+    pub items: BTreeMap<RenderItemId, RenderPlanItem>,
+    pub ordered_items: Vec<RenderItemId>,
 }
 
 impl OutputRenderPlan {
-    pub fn push(&mut self, item: RenderPlanItem) {
-        self.items.push(item);
+    pub fn from_items(items: impl IntoIterator<Item = RenderPlanItem>) -> Self {
+        let mut plan = Self::default();
+        for item in items {
+            plan.insert(item);
+        }
+        plan.sort_by_z_index();
+        plan
+    }
+
+    pub fn insert(&mut self, item: RenderPlanItem) {
+        let item_id = item.item_id();
+        let is_new = self.items.insert(item_id, item).is_none();
+        if is_new {
+            self.ordered_items.push(item_id);
+        }
     }
 
     pub fn sort_by_z_index(&mut self) {
-        self.items.sort_by_key(RenderPlanItem::z_index);
+        self.ordered_items.sort_by_key(|item_id| {
+            self.items.get(item_id).map(RenderPlanItem::z_index).unwrap_or(i32::MAX)
+        });
+    }
+
+    pub fn ordered_item_ids(&self) -> &[RenderItemId] {
+        &self.ordered_items
+    }
+
+    pub fn item(&self, item_id: RenderItemId) -> Option<&RenderPlanItem> {
+        self.items.get(&item_id)
+    }
+
+    pub fn iter_ordered(&self) -> impl Iterator<Item = &RenderPlanItem> {
+        self.ordered_items.iter().filter_map(|item_id| self.items.get(item_id))
     }
 }
 
-/// Output-scoped render plan built in parallel with the legacy render-list path.
+/// Output-scoped frame scene truth built from stable scene-source contributions.
 #[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct RenderPlan {
     pub outputs: BTreeMap<OutputId, OutputRenderPlan>,
-}
-
-/// Test/debug-only scene item injections merged into the current render plan before graph build.
-#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct RenderPlanInjectionState {
-    pub outputs: BTreeMap<OutputId, Vec<RenderPlanItem>>,
 }
 
 #[cfg(test)]
 mod tests {
     use crate::components::OutputId;
     use crate::resources::{
-        BackdropRenderItem, OutputRenderPlan, RenderColor, RenderItemInstance, RenderPlan,
-        RenderPlanItem, RenderRect, RenderSceneRole, SolidRectRenderItem, SurfaceRenderItem,
+        BackdropRenderItem, OutputRenderPlan, RenderColor, RenderItemId, RenderItemIdentity,
+        RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
+        RenderSourceId, SolidRectRenderItem, SurfaceRenderItem,
     };
 
     #[test]
     fn output_render_plan_sorts_by_z_index() {
-        let mut plan = OutputRenderPlan {
-            items: vec![
-                RenderPlanItem::Surface(SurfaceRenderItem {
-                    surface_id: 2,
-                    instance: RenderItemInstance {
-                        rect: RenderRect::default(),
-                        opacity: 1.0,
-                        clip_rect: None,
-                        z_index: 4,
-                        scene_role: RenderSceneRole::Desktop,
-                    },
-                }),
-                RenderPlanItem::SolidRect(SolidRectRenderItem {
-                    color: RenderColor { r: 0, g: 0, b: 0, a: 255 },
-                    instance: RenderItemInstance {
-                        rect: RenderRect::default(),
-                        opacity: 1.0,
-                        clip_rect: None,
-                        z_index: 1,
-                        scene_role: RenderSceneRole::Compositor,
-                    },
-                }),
-            ],
-        };
+        let mut plan = OutputRenderPlan { ..Default::default() };
+        plan.insert(RenderPlanItem::Surface(SurfaceRenderItem {
+            identity: RenderItemIdentity { source_id: RenderSourceId(2), item_id: RenderItemId(2) },
+            surface_id: 2,
+            instance: RenderItemInstance {
+                rect: RenderRect::default(),
+                opacity: 1.0,
+                clip_rect: None,
+                z_index: 4,
+                scene_role: RenderSceneRole::Desktop,
+            },
+        }));
+        plan.insert(RenderPlanItem::SolidRect(SolidRectRenderItem {
+            identity: RenderItemIdentity { source_id: RenderSourceId(1), item_id: RenderItemId(1) },
+            color: RenderColor { r: 0, g: 0, b: 0, a: 255 },
+            instance: RenderItemInstance {
+                rect: RenderRect::default(),
+                opacity: 1.0,
+                clip_rect: None,
+                z_index: 1,
+                scene_role: RenderSceneRole::Compositor,
+            },
+        }));
 
         plan.sort_by_z_index();
 
         let item_kinds = plan
-            .items
-            .into_iter()
+            .iter_ordered()
             .map(|item| match item {
                 RenderPlanItem::Surface(item) => format!("surface-{}", item.surface_id),
                 RenderPlanItem::SolidRect(_) => "solid-rect".to_owned(),
@@ -242,6 +309,7 @@ mod tests {
     #[test]
     fn render_plan_item_surface_id_only_exists_for_surface_items() {
         let surface = RenderPlanItem::Surface(SurfaceRenderItem {
+            identity: RenderItemIdentity { source_id: RenderSourceId(7), item_id: RenderItemId(7) },
             surface_id: 7,
             instance: RenderItemInstance {
                 rect: RenderRect::default(),
@@ -252,6 +320,7 @@ mod tests {
             },
         });
         let backdrop = RenderPlanItem::Backdrop(BackdropRenderItem {
+            identity: RenderItemIdentity { source_id: RenderSourceId(8), item_id: RenderItemId(9) },
             instance: RenderItemInstance {
                 rect: RenderRect::default(),
                 opacity: 1.0,
@@ -263,5 +332,7 @@ mod tests {
 
         assert_eq!(surface.surface_id(), Some(7));
         assert_eq!(backdrop.surface_id(), None);
+        assert_eq!(surface.source_id(), RenderSourceId(7));
+        assert_eq!(surface.item_id(), RenderItemId(7));
     }
 }

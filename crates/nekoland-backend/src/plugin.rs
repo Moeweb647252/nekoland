@@ -387,16 +387,20 @@ mod tests {
     };
     use nekoland_ecs::resources::{
         CompositorClock, OutputDamageRegions, OutputExecutionPlan, OutputRenderPlan,
-        PresentAuditState, RenderItemInstance, RenderPassGraph, RenderPassId, RenderPassNode,
-        RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderTargetId, RenderTargetKind,
-        SurfacePresentationSnapshot, SurfacePresentationState, SurfaceRenderItem,
-        VirtualOutputCaptureState,
+        PresentAuditState, RenderItemId, RenderItemIdentity, RenderItemInstance, RenderPassGraph,
+        RenderPassId, RenderPassNode, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
+        RenderSourceId, RenderTargetId, RenderTargetKind, SurfacePresentationSnapshot,
+        SurfacePresentationState, SurfaceRenderItem, VirtualOutputCaptureState,
     };
     use nekoland_protocol::ProtocolSeatDispatchSystems;
 
     use crate::manager::BackendManager;
 
     use super::{BackendPresentSystems, backend_present_system};
+
+    fn identity(id: u64) -> RenderItemIdentity {
+        RenderItemIdentity::new(RenderSourceId(id), RenderItemId(id))
+    }
 
     #[derive(Debug, Default, Resource)]
     struct PresentOrderAudit(Vec<&'static str>);
@@ -537,57 +541,57 @@ mod tests {
             outputs: std::collections::BTreeMap::from([
                 (
                     hdmi_id,
-                    OutputRenderPlan {
-                        items: vec![
-                            RenderPlanItem::Surface(SurfaceRenderItem {
-                                surface_id: 11,
-                                instance: RenderItemInstance {
-                                    rect: RenderRect { x: 10, y: 20, width: 300, height: 200 },
-                                    opacity: 1.0,
-                                    clip_rect: None,
-                                    z_index: 0,
-                                    scene_role: RenderSceneRole::Desktop,
-                                },
-                            }),
-                            RenderPlanItem::Surface(SurfaceRenderItem {
-                                surface_id: 33,
-                                instance: RenderItemInstance {
-                                    rect: RenderRect { x: 70, y: 80, width: 128, height: 96 },
-                                    opacity: 0.5,
-                                    clip_rect: None,
-                                    z_index: 1,
-                                    scene_role: RenderSceneRole::Desktop,
-                                },
-                            }),
-                        ],
-                    },
+                    OutputRenderPlan::from_items([
+                        RenderPlanItem::Surface(SurfaceRenderItem {
+                            identity: identity(11),
+                            surface_id: 11,
+                            instance: RenderItemInstance {
+                                rect: RenderRect { x: 10, y: 20, width: 300, height: 200 },
+                                opacity: 1.0,
+                                clip_rect: None,
+                                z_index: 0,
+                                scene_role: RenderSceneRole::Desktop,
+                            },
+                        }),
+                        RenderPlanItem::Surface(SurfaceRenderItem {
+                            identity: identity(33),
+                            surface_id: 33,
+                            instance: RenderItemInstance {
+                                rect: RenderRect { x: 70, y: 80, width: 128, height: 96 },
+                                opacity: 0.5,
+                                clip_rect: None,
+                                z_index: 1,
+                                scene_role: RenderSceneRole::Desktop,
+                            },
+                        }),
+                    ]),
                 ),
                 (
                     dp_id,
-                    OutputRenderPlan {
-                        items: vec![
-                            RenderPlanItem::Surface(SurfaceRenderItem {
-                                surface_id: 33,
-                                instance: RenderItemInstance {
-                                    rect: RenderRect { x: 70, y: 80, width: 128, height: 96 },
-                                    opacity: 0.5,
-                                    clip_rect: None,
-                                    z_index: 0,
-                                    scene_role: RenderSceneRole::Desktop,
-                                },
-                            }),
-                            RenderPlanItem::Surface(SurfaceRenderItem {
-                                surface_id: 22,
-                                instance: RenderItemInstance {
-                                    rect: RenderRect { x: 40, y: 50, width: 320, height: 240 },
-                                    opacity: 0.7,
-                                    clip_rect: None,
-                                    z_index: 2,
-                                    scene_role: RenderSceneRole::Desktop,
-                                },
-                            }),
-                        ],
-                    },
+                    OutputRenderPlan::from_items([
+                        RenderPlanItem::Surface(SurfaceRenderItem {
+                            identity: identity(34),
+                            surface_id: 33,
+                            instance: RenderItemInstance {
+                                rect: RenderRect { x: 70, y: 80, width: 128, height: 96 },
+                                opacity: 0.5,
+                                clip_rect: None,
+                                z_index: 0,
+                                scene_role: RenderSceneRole::Desktop,
+                            },
+                        }),
+                        RenderPlanItem::Surface(SurfaceRenderItem {
+                            identity: identity(22),
+                            surface_id: 22,
+                            instance: RenderItemInstance {
+                                rect: RenderRect { x: 40, y: 50, width: 320, height: 240 },
+                                opacity: 0.7,
+                                clip_rect: None,
+                                z_index: 2,
+                                scene_role: RenderSceneRole::Desktop,
+                            },
+                        }),
+                    ]),
                 ),
             ]),
         });
@@ -606,7 +610,7 @@ mod tests {
                                 RenderSceneRole::Desktop,
                                 RenderTargetId(1),
                                 Vec::new(),
-                                vec![0, 1],
+                                vec![RenderItemId(11), RenderItemId(33)],
                             ),
                         )]),
                         ordered_passes: vec![RenderPassId(1)],
@@ -626,7 +630,7 @@ mod tests {
                                 RenderSceneRole::Desktop,
                                 RenderTargetId(2),
                                 Vec::new(),
-                                vec![0, 1],
+                                vec![RenderItemId(34), RenderItemId(22)],
                             ),
                         )]),
                         ordered_passes: vec![RenderPassId(2)],

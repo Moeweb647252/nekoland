@@ -168,7 +168,7 @@ fn render_plan_surface_ids(world: &mut bevy_ecs::world::World) -> Vec<u64> {
     render_plan
         .outputs
         .values()
-        .flat_map(|output_plan| output_plan.items.iter())
+        .flat_map(|output_plan| output_plan.iter_ordered())
         .filter_map(|item| match item {
             RenderPlanItem::Surface(item) if item.surface_id != 0 => Some(item.surface_id),
             RenderPlanItem::Surface(_) => None,

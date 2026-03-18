@@ -957,7 +957,7 @@ fn flattened_render_plan_surface_order(
 
     for (_, _, _, output_id) in output_scene_order {
         let Some(output_plan) = render_plan.outputs.get(&output_id) else { continue };
-        for item in &output_plan.items {
+        for item in output_plan.iter_ordered() {
             let RenderPlanItem::Surface(item) = item else {
                 continue;
             };

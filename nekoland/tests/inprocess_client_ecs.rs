@@ -96,7 +96,7 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
         let render_surface_ids = render_plan
             .outputs
             .values()
-            .flat_map(|output_plan| output_plan.items.iter())
+            .flat_map(|output_plan| output_plan.iter_ordered())
             .filter_map(|item| match item {
                 RenderPlanItem::Surface(item) => Some(item.surface_id),
                 RenderPlanItem::SolidRect(_) | RenderPlanItem::Backdrop(_) => None,
