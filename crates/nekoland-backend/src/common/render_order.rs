@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
-    OutputExecutionPlan, OutputPresentAudit, PresentAuditElement, PresentAuditElementKind,
-    RenderColor, RenderItemInstance, RenderPassGraph, RenderPassKind, RenderPlan, RenderPlanItem,
-    RenderSceneRole, RenderTargetId, RenderTargetKind,
+    CursorRenderSource, OutputExecutionPlan, OutputPresentAudit, PresentAuditElement,
+    PresentAuditElementKind, RenderColor, RenderItemInstance, RenderPassGraph, RenderPassKind,
+    RenderPlan, RenderPlanItem, RenderSceneRole, RenderTargetId, RenderTargetKind,
 };
 
 use crate::traits::{OutputSnapshot, RenderSurfaceRole, RenderSurfaceSnapshot};
@@ -27,10 +27,17 @@ pub(crate) struct OutputBackdropRenderRecord {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OutputCursorRenderRecord {
+    pub source: CursorRenderSource,
+    pub instance: RenderItemInstance,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum OutputRenderRecord {
     Surface(OutputSurfaceRenderRecord),
     SolidRect(OutputSolidRectRenderRecord),
     Backdrop(OutputBackdropRenderRecord),
+    Cursor(OutputCursorRenderRecord),
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -73,7 +80,9 @@ pub(crate) fn render_graph_output_surfaces_in_presentation_order(
         .into_iter()
         .filter_map(|record| match record {
             OutputRenderRecord::Surface(record) => Some(record),
-            OutputRenderRecord::SolidRect(_) | OutputRenderRecord::Backdrop(_) => None,
+            OutputRenderRecord::SolidRect(_)
+            | OutputRenderRecord::Backdrop(_)
+            | OutputRenderRecord::Cursor(_) => None,
         })
         .collect::<Vec<_>>()
 }
@@ -109,6 +118,9 @@ pub(crate) fn render_graph_output_present_audit_elements(
                 ),
                 OutputRenderRecord::Backdrop(record) => {
                     (0, record.instance, PresentAuditElementKind::Backdrop)
+                }
+                OutputRenderRecord::Cursor(record) => {
+                    (0, record.instance, PresentAuditElementKind::Cursor)
                 }
             };
             let visible_rect = instance.visible_rect()?;
@@ -237,6 +249,10 @@ fn output_record_from_plan_item(item: &RenderPlanItem) -> OutputRenderRecord {
         RenderPlanItem::Backdrop(item) => {
             OutputRenderRecord::Backdrop(OutputBackdropRenderRecord { instance: item.instance })
         }
+        RenderPlanItem::Cursor(item) => OutputRenderRecord::Cursor(OutputCursorRenderRecord {
+            source: item.source.clone(),
+            instance: item.instance,
+        }),
     }
 }
 
@@ -263,10 +279,11 @@ mod tests {
         OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry,
     };
     use nekoland_ecs::resources::{
-        OutputExecutionPlan, OutputRenderPlan, PresentAuditElementKind, RenderColor, RenderItemId,
-        RenderItemIdentity, RenderItemInstance, RenderPassGraph, RenderPassId, RenderPassNode,
-        RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId, RenderTargetId,
-        RenderTargetKind, SolidRectRenderItem, SurfaceRenderItem,
+        CursorRenderItem, CursorRenderSource, OutputExecutionPlan, OutputRenderPlan,
+        PresentAuditElementKind, RenderColor, RenderItemId, RenderItemIdentity, RenderItemInstance,
+        RenderPassGraph, RenderPassId, RenderPassNode, RenderPlan, RenderPlanItem, RenderRect,
+        RenderSceneRole, RenderSourceId, RenderTargetId, RenderTargetKind, SolidRectRenderItem,
+        SurfaceRenderItem,
     };
 
     use crate::traits::{OutputSnapshot, RenderSurfaceRole, RenderSurfaceSnapshot};
@@ -385,7 +402,8 @@ mod tests {
                 .filter_map(|record| match record {
                     super::OutputRenderRecord::Surface(record) => Some(record.surface_id),
                     super::OutputRenderRecord::SolidRect(_)
-                    | super::OutputRenderRecord::Backdrop(_) => None,
+                    | super::OutputRenderRecord::Backdrop(_)
+                    | super::OutputRenderRecord::Cursor(_) => None,
                 })
                 .collect::<Vec<_>>(),
             vec![11, 22]
@@ -400,7 +418,8 @@ mod tests {
             .filter_map(|record| match record {
                 super::OutputRenderRecord::Surface(record) => Some(record.surface_id),
                 super::OutputRenderRecord::SolidRect(_)
-                | super::OutputRenderRecord::Backdrop(_) => None,
+                | super::OutputRenderRecord::Backdrop(_)
+                | super::OutputRenderRecord::Cursor(_) => None,
             })
             .collect::<Vec<_>>(),
             vec![22, 11]
@@ -567,5 +586,58 @@ mod tests {
         );
         assert!(matches!(records[0], super::OutputRenderRecord::SolidRect(_)));
         assert!(matches!(records[1], super::OutputRenderRecord::Surface(_)));
+    }
+
+    #[test]
+    fn audit_records_include_cursor_items() {
+        let render_plan = RenderPlan {
+            outputs: std::collections::BTreeMap::from([(
+                OutputId(3),
+                OutputRenderPlan::from_items([RenderPlanItem::Cursor(CursorRenderItem {
+                    identity: identity(30),
+                    source: CursorRenderSource::Named { icon_name: "default".to_owned() },
+                    instance: RenderItemInstance {
+                        rect: RenderRect { x: 12, y: 14, width: 16, height: 24 },
+                        opacity: 1.0,
+                        clip_rect: None,
+                        z_index: i32::MAX,
+                        scene_role: RenderSceneRole::Cursor,
+                    },
+                })]),
+            )]),
+        };
+        let render_graph = RenderPassGraph {
+            outputs: std::collections::BTreeMap::from([(
+                OutputId(3),
+                OutputExecutionPlan {
+                    targets: std::collections::BTreeMap::from([(
+                        RenderTargetId(1),
+                        RenderTargetKind::OutputSwapchain(OutputId(3)),
+                    )]),
+                    passes: std::collections::BTreeMap::from([(
+                        RenderPassId(1),
+                        RenderPassNode::scene(
+                            RenderSceneRole::Cursor,
+                            RenderTargetId(1),
+                            Vec::new(),
+                            vec![RenderItemId(30)],
+                        ),
+                    )]),
+                    ordered_passes: vec![RenderPassId(1)],
+                    terminal_passes: vec![RenderPassId(1)],
+                },
+            )]),
+        };
+
+        let elements = render_graph_output_present_audit_elements(
+            &render_graph,
+            &render_plan,
+            &HashMap::default(),
+            OutputId(3),
+        );
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].kind, PresentAuditElementKind::Cursor);
+        assert_eq!(elements[0].surface_id, 0);
+        assert_eq!((elements[0].x, elements[0].y), (12, 14));
     }
 }

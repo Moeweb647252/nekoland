@@ -3,7 +3,6 @@ use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
 use nekoland_ecs::resources::{VirtualOutputElement, VirtualOutputElementKind, VirtualOutputFrame};
 use smithay::utils::{Clock, Monotonic};
 
-use crate::common::cursor::{SoftwareCursorCache, cursor_position_on_output, cursor_render_source};
 use crate::common::outputs::{
     BackendOutputBlueprint, BackendOutputChange, BackendOutputEventRecord,
 };
@@ -13,8 +12,6 @@ use crate::traits::{
     Backend, BackendApplyCtx, BackendCapabilities, BackendDescriptor, BackendExtractCtx, BackendId,
     BackendKind, BackendPresentCtx, BackendRole,
 };
-
-const DEFAULT_CURSOR_SIZE: u32 = 24;
 const VIRTUAL_PRIMARY_OUTPUT_LOCAL_ID: &str = "primary";
 
 /// Offscreen backend that mirrors the compositor render plan into a synthetic
@@ -28,8 +25,6 @@ pub(crate) struct VirtualRuntime {
     presentation_runtime: OutputPresentationRuntime,
     /// Monotonic clock used to timestamp synthetic presentation completions.
     monotonic_clock: Option<Clock<Monotonic>>,
-    /// Theme-backed fallback cache for cursor capture geometry.
-    cursor: SoftwareCursorCache,
 }
 
 impl VirtualRuntime {
@@ -46,7 +41,6 @@ impl VirtualRuntime {
             seeded_output_name: None,
             presentation_runtime: OutputPresentationRuntime::default(),
             monotonic_clock: None,
-            cursor: SoftwareCursorCache::default(),
         }
     }
 
@@ -159,7 +153,7 @@ impl Backend for VirtualRuntime {
         let Some(clock) = cx.clock else {
             return Ok(());
         };
-        let mut elements = render_graph_output_present_audit_elements(
+        let elements = render_graph_output_present_audit_elements(
             cx.render_graph,
             cx.render_plan,
             cx.surfaces,
@@ -170,49 +164,6 @@ impl Backend for VirtualRuntime {
         .collect::<Vec<_>>();
         // Serialize the current output-local render plan into a backend-agnostic capture frame so
         // tests and tooling can inspect what would have been presented.
-
-        if let Some((cursor_x, cursor_y)) =
-            cursor_position_on_output(cx.cursor_render, output.output_id)
-        {
-            match cursor_render_source(cx.cursor_image) {
-                crate::common::cursor::CursorRenderSource::Hidden => {}
-                crate::common::cursor::CursorRenderSource::Surface {
-                    hotspot_x, hotspot_y, ..
-                } => {
-                    elements.push(VirtualOutputElement {
-                        surface_id: 0,
-                        kind: VirtualOutputElementKind::Cursor,
-                        x: cursor_x.round() as i32 - hotspot_x,
-                        y: cursor_y.round() as i32 - hotspot_y,
-                        width: DEFAULT_CURSOR_SIZE.saturating_mul(output.properties.scale.max(1)),
-                        height: DEFAULT_CURSOR_SIZE.saturating_mul(output.properties.scale.max(1)),
-                        z_index: i32::MAX,
-                        opacity: 1.0,
-                    });
-                }
-                crate::common::cursor::CursorRenderSource::Named(icon) => {
-                    let theme =
-                        cx.config.map(|config| config.cursor_theme.as_str()).unwrap_or("default");
-                    let geometry = self.cursor.capture_geometry(
-                        theme,
-                        icon,
-                        output.properties.scale.max(1),
-                        cursor_x,
-                        cursor_y,
-                    );
-                    elements.push(VirtualOutputElement {
-                        surface_id: 0,
-                        kind: VirtualOutputElementKind::Cursor,
-                        x: geometry.x,
-                        y: geometry.y,
-                        width: geometry.width,
-                        height: geometry.height,
-                        z_index: i32::MAX,
-                        opacity: 1.0,
-                    });
-                }
-            }
-        }
 
         capture_state.push_frame(VirtualOutputFrame {
             output_name: output.device.name.clone(),

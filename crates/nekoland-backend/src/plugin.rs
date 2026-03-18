@@ -11,17 +11,15 @@ use nekoland_core::prelude::AppMetadata;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule};
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::resources::{
-    BackendOutputRegistry, CompositorClock, CompositorConfig, CursorRenderState,
-    FocusedOutputState, GlobalPointerPosition, OutputDamageRegions, OutputPresentationState,
-    PendingBackendInputEvents, PendingOutputControls, PendingOutputPresentationEvents,
-    PendingOutputServerRequests, PendingProtocolInputEvents, PresentAuditState, PrimaryOutputState,
-    RenderPassGraph, RenderPlan, SurfacePresentationRole, SurfacePresentationSnapshot,
-    VirtualOutputCaptureState,
+    BackendOutputRegistry, CompositorClock, CompositorConfig, FocusedOutputState,
+    GlobalPointerPosition, OutputDamageRegions, OutputPresentationState, PendingBackendInputEvents,
+    PendingOutputControls, PendingOutputPresentationEvents, PendingOutputServerRequests,
+    PendingProtocolInputEvents, PresentAuditState, PrimaryOutputState, RenderPassGraph, RenderPlan,
+    SurfacePresentationRole, SurfacePresentationSnapshot, VirtualOutputCaptureState,
 };
 use nekoland_ecs::views::{BackendPresentSurfaceRuntime, OutputRuntime};
 use nekoland_protocol::{
-    ProtocolCursorState, ProtocolDmabufSupport, ProtocolSeatDispatchSystems,
-    ProtocolSurfaceRegistry,
+    ProtocolDmabufSupport, ProtocolSeatDispatchSystems, ProtocolSurfaceRegistry,
 };
 
 use crate::common::outputs::{
@@ -68,14 +66,12 @@ struct BackendPresentState<'w, 's> {
     config: Option<Res<'w, CompositorConfig>>,
     clock: Option<Res<'w, CompositorClock>>,
     pointer: Option<Res<'w, GlobalPointerPosition>>,
-    cursor_render: Option<Res<'w, CursorRenderState>>,
     primary_output: Option<Res<'w, PrimaryOutputState>>,
     output_damage_regions: Res<'w, OutputDamageRegions>,
     surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
     render_graph: Res<'w, RenderPassGraph>,
     render_plan: Res<'w, RenderPlan>,
     present_audit: ResMut<'w, PresentAuditState>,
-    protocol_cursor: Option<NonSend<'w, ProtocolCursorState>>,
     surface_registry: Option<NonSend<'w, ProtocolSurfaceRegistry>>,
     virtual_output_capture: ResMut<'w, VirtualOutputCaptureState>,
     _marker: PhantomData<&'s ()>,
@@ -214,14 +210,12 @@ fn backend_present_system(
         config,
         clock,
         pointer,
-        cursor_render,
         primary_output,
         output_damage_regions,
         surface_presentation,
         render_graph,
         render_plan,
         mut present_audit,
-        protocol_cursor,
         surface_registry,
         mut virtual_output_capture,
         ..
@@ -332,8 +326,6 @@ fn backend_present_system(
         config: config.as_deref(),
         clock: clock.as_deref(),
         pointer: pointer.as_deref(),
-        cursor_render: cursor_render.as_deref(),
-        cursor_image: protocol_cursor.as_deref(),
         output_damage_regions: &output_damage_regions,
         outputs: &output_snapshots,
         render_graph: &render_graph,

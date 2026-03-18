@@ -21,7 +21,7 @@ use bevy_app::App;
 use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::hierarchy::ChildOf;
-use bevy_ecs::prelude::{Entity, Has, Local, NonSend, NonSendMut, Query, Res, ResMut, Resource, With};
+use bevy_ecs::prelude::{Entity, Has, Local, NonSendMut, Query, Res, ResMut, Resource, With};
 use bevy_ecs::query::Allow;
 use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
 use bevy_ecs::system::SystemParam;
@@ -43,13 +43,13 @@ use nekoland_ecs::components::{
 };
 use nekoland_ecs::resources::{
     BackendInputAction, ClipboardSelectionState, CompositorClock, CompositorConfig,
-    DragAndDropState, FramePacingState, GlobalPointerPosition, KeyboardFocusState,
-    KeyboardLayoutState, OutputPresentationState, PendingLayerRequests, PendingOutputEvents,
-    PendingPopupServerRequests, PendingProtocolInputEvents, PendingWindowControls,
-    PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests, PopupPlacement,
-    PopupServerAction, ResizeEdges, PrimarySelectionState, RenderPlan, SurfaceExtent,
-    SurfacePresentationRole, SurfacePresentationSnapshot, WindowServerAction, X11WindowGeometry,
-    XdgSurfaceRole,
+    CursorImageSnapshot, DragAndDropState, FramePacingState, GlobalPointerPosition,
+    KeyboardFocusState, KeyboardLayoutState, OutputPresentationState, PendingLayerRequests,
+    PendingOutputEvents, PendingPopupServerRequests, PendingProtocolInputEvents,
+    PendingWindowControls, PendingWindowServerRequests, PendingX11Requests,
+    PendingXdgRequests, PopupPlacement, PopupServerAction, ResizeEdges, PrimarySelectionState,
+    RenderPlan, SurfaceExtent, SurfacePresentationRole, SurfacePresentationSnapshot,
+    WindowServerAction, X11WindowGeometry, XdgSurfaceRole,
 };
 use nekoland_ecs::views::{
     OutputRuntime, PopupRuntime, WindowVisibilityRuntime, WorkspaceRuntime,
@@ -582,6 +582,7 @@ impl NekolandPlugin for ProtocolPlugin {
             .insert_non_send_resource(server)
             .insert_non_send_resource(ProtocolSurfaceRegistry::default())
             .insert_non_send_resource(ProtocolCursorState::default())
+            .init_resource::<CursorImageSnapshot>()
             .init_resource::<CompositorClock>()
             .init_resource::<PendingProtocolInputEvents>()
             .init_resource::<PendingXdgRequests>()
@@ -665,10 +666,12 @@ fn sync_xwayland_server_state_system(
 }
 
 fn sync_protocol_cursor_state_system(
-    server: NonSend<SmithayProtocolServer>,
+    mut server: NonSendMut<SmithayProtocolServer>,
     mut cursor_state: NonSendMut<ProtocolCursorState>,
+    mut cursor_image_snapshot: ResMut<CursorImageSnapshot>,
 ) {
     server.sync_cursor_state(&mut cursor_state);
+    server.sync_cursor_image_snapshot(&cursor_state, &mut cursor_image_snapshot);
 }
 
 fn dispatch_xwayland_runtime_system(mut server: NonSendMut<SmithayProtocolServer>) {
@@ -1074,6 +1077,18 @@ impl SmithayProtocolServer {
             *cursor_state = runtime.borrow().state.cursor_state.clone();
         } else {
             *cursor_state = ProtocolCursorState::default();
+        }
+    }
+
+    fn sync_cursor_image_snapshot(
+        &mut self,
+        cursor_state: &ProtocolCursorState,
+        cursor_image_snapshot: &mut CursorImageSnapshot,
+    ) {
+        if let Some(runtime) = self.runtime.as_ref() {
+            *cursor_image_snapshot = runtime.borrow_mut().state.cursor_image_snapshot(cursor_state);
+        } else {
+            *cursor_image_snapshot = CursorImageSnapshot::default();
         }
     }
 
@@ -2467,6 +2482,27 @@ impl ProtocolRuntimeState {
         compositor::with_states(surface, |states| {
             states.data_map.get::<SurfaceIdentity>().map(|identity| identity.0)
         })
+    }
+
+    fn cursor_image_snapshot(&mut self, cursor_state: &ProtocolCursorState) -> CursorImageSnapshot {
+        match &cursor_state.image {
+            ProtocolCursorImage::Hidden => CursorImageSnapshot::Hidden,
+            ProtocolCursorImage::Named(icon) => {
+                CursorImageSnapshot::Named { icon_name: icon.name().to_owned() }
+            }
+            ProtocolCursorImage::Surface { surface, hotspot_x, hotspot_y } => {
+                let surface_id = self.surface_id(surface);
+                let size = committed_surface_extent(surface)
+                    .unwrap_or(SurfaceExtent { width: 1, height: 1 });
+                CursorImageSnapshot::Surface {
+                    surface_id,
+                    hotspot_x: *hotspot_x,
+                    hotspot_y: *hotspot_y,
+                    width: size.width,
+                    height: size.height,
+                }
+            }
+        }
     }
 
     fn validate_interactive_request(

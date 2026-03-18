@@ -10,7 +10,9 @@ use nekoland_core::app::RunLoopSettings;
 use nekoland_ecs::components::{
     WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
 };
-use nekoland_ecs::resources::{CursorRenderState, KeyboardFocusState, RenderPlan, RenderPlanItem};
+use nekoland_ecs::resources::{
+    CursorSceneSnapshot, KeyboardFocusState, RenderPlan, RenderPlanItem,
+};
 use nekoland_protocol::ProtocolServerState;
 
 mod common;
@@ -99,11 +101,13 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
             .flat_map(|output_plan| output_plan.iter_ordered())
             .filter_map(|item| match item {
                 RenderPlanItem::Surface(item) => Some(item.surface_id),
-                RenderPlanItem::SolidRect(_) | RenderPlanItem::Backdrop(_) => None,
+                RenderPlanItem::SolidRect(_)
+                | RenderPlanItem::Backdrop(_)
+                | RenderPlanItem::Cursor(_) => None,
             })
             .collect::<Vec<_>>();
-        let Some(cursor_state) = world.get_resource::<CursorRenderState>() else {
-            panic!("cursor render state should be initialized by RenderPlugin");
+        let Some(cursor_state) = world.get_resource::<CursorSceneSnapshot>() else {
+            panic!("cursor scene snapshot should be initialized by RenderPlugin");
         };
         let cursor_state = cursor_state.clone();
         let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
@@ -129,7 +133,7 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
         render_surface_ids.contains(&surface_id),
         "render plan should include the client window surface: {render_surface_ids:?}"
     );
-    assert!(cursor_state.visible, "cursor render state should stay visible: {cursor_state:?}");
+    assert!(cursor_state.visible, "cursor scene snapshot should stay visible: {cursor_state:?}");
     assert_eq!(
         focused_surface,
         Some(surface_id),

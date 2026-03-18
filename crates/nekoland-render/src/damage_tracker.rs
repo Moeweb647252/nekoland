@@ -173,6 +173,19 @@ fn render_signature_for_item(item: &RenderPlanItem, surface_versions: &HashMap<u
             2_u8.hash(&mut hasher);
             item.instance().opacity.to_bits().hash(&mut hasher);
         }
+        RenderPlanItem::Cursor(item) => {
+            3_u8.hash(&mut hasher);
+            match &item.source {
+                nekoland_ecs::resources::CursorRenderSource::Named { icon_name } => {
+                    icon_name.hash(&mut hasher);
+                }
+                nekoland_ecs::resources::CursorRenderSource::Surface { surface_id } => {
+                    surface_id.hash(&mut hasher);
+                    surface_versions.get(surface_id).copied().unwrap_or_default().hash(&mut hasher);
+                }
+            }
+            item.instance.opacity.to_bits().hash(&mut hasher);
+        }
     }
 
     hasher.finish()
@@ -805,6 +818,87 @@ mod tests {
             vec![
                 nekoland_ecs::resources::DamageRect { x: 10, y: 20, width: 10, height: 30 },
                 nekoland_ecs::resources::DamageRect { x: 50, y: 20, width: 10, height: 30 },
+            ],
+        );
+    }
+
+    #[test]
+    fn cursor_contributions_participate_in_damage_diff() {
+        let mut app = NekolandApp::new("damage-tracker-cursor-test");
+        install_damage_pipeline(&mut app);
+
+        app.inner_mut().world_mut().spawn(OutputBundle {
+            output: OutputDevice {
+                name: "Virtual-1".to_owned(),
+                kind: OutputKind::Virtual,
+                make: "Virtual".to_owned(),
+                model: "one".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+            ..Default::default()
+        });
+        let virtual_id = output_id_by_name(app.inner_mut().world_mut(), "Virtual-1");
+        app.inner_mut().world_mut().resource_mut::<ExternalSceneContributionState>().outputs =
+            std::collections::BTreeMap::from([(
+                virtual_id,
+                vec![RenderSceneContribution::cursor(
+                    virtual_id,
+                    nekoland_ecs::resources::CursorRenderSource::Named {
+                        icon_name: "default".to_owned(),
+                    },
+                    RenderItemInstance {
+                        rect: RenderRect { x: 10, y: 20, width: 16, height: 24 },
+                        opacity: 1.0,
+                        clip_rect: None,
+                        z_index: i32::MAX,
+                        scene_role: RenderSceneRole::Cursor,
+                    },
+                )],
+            )]);
+
+        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+        {
+            let world = app.inner().world();
+            let damage = world.resource::<OutputDamageRegions>();
+            assert_eq!(
+                damage.regions[&virtual_id],
+                vec![nekoland_ecs::resources::DamageRect { x: 10, y: 20, width: 16, height: 24 }],
+            );
+        }
+
+        app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();
+        app.inner_mut().world_mut().resource_mut::<DamageState>().full_redraw = false;
+        app.inner_mut().world_mut().resource_mut::<ExternalSceneContributionState>().outputs =
+            std::collections::BTreeMap::from([(
+                virtual_id,
+                vec![RenderSceneContribution::cursor(
+                    virtual_id,
+                    nekoland_ecs::resources::CursorRenderSource::Named {
+                        icon_name: "default".to_owned(),
+                    },
+                    RenderItemInstance {
+                        rect: RenderRect { x: 20, y: 20, width: 16, height: 24 },
+                        opacity: 1.0,
+                        clip_rect: None,
+                        z_index: i32::MAX,
+                        scene_role: RenderSceneRole::Cursor,
+                    },
+                )],
+            )]);
+        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+
+        let world = app.inner().world();
+        let damage = world.resource::<OutputDamageRegions>();
+        assert_eq!(
+            damage.regions[&virtual_id],
+            vec![
+                nekoland_ecs::resources::DamageRect { x: 10, y: 20, width: 10, height: 24 },
+                nekoland_ecs::resources::DamageRect { x: 26, y: 20, width: 10, height: 24 },
             ],
         );
     }

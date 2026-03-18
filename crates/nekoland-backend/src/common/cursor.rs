@@ -1,48 +1,24 @@
 use std::collections::HashSet;
 use std::fs;
 
-use nekoland_ecs::components::OutputId;
-use nekoland_ecs::resources::CursorRenderState;
-use nekoland_protocol::{ProtocolCursorImage, ProtocolCursorState};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
 };
 use smithay::backend::renderer::{ImportMem, Renderer};
-use smithay::input::pointer::CursorIcon;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::Transform;
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum CursorRenderSource<'a> {
-    Hidden,
-    Named(CursorIcon),
-    Surface { surface: &'a WlSurface, hotspot_x: i32, hotspot_y: i32 },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CaptureCursorGeometry {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CursorCacheKey {
     theme: String,
-    icon: CursorIcon,
+    icon_name: String,
     scale: u32,
 }
 
 #[derive(Debug, Clone)]
 struct LoadedSoftwareCursor {
     buffer: MemoryRenderBuffer,
-    hotspot_x: i32,
-    hotspot_y: i32,
-    width: u32,
-    height: u32,
 }
 
 #[derive(Debug, Default)]
@@ -56,22 +32,19 @@ impl SoftwareCursorCache {
         &mut self,
         renderer: &mut R,
         theme: &str,
-        icon: CursorIcon,
+        icon_name: &str,
         scale: u32,
-        x: f64,
-        y: f64,
+        x: i32,
+        y: i32,
     ) -> Result<MemoryRenderBufferRenderElement<R>, R::Error>
     where
         R: Renderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
-        let cursor = self.ensure_loaded(theme, icon, scale);
+        let cursor = self.ensure_loaded(theme, icon_name, scale);
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
-            (
-                f64::from(x.round() as i32 - cursor.hotspot_x),
-                f64::from(y.round() as i32 - cursor.hotspot_y),
-            ),
+            (f64::from(x), f64::from(y)),
             &cursor.buffer,
             Some(1.0),
             None,
@@ -80,75 +53,34 @@ impl SoftwareCursorCache {
         )
     }
 
-    pub(crate) fn capture_geometry(
-        &mut self,
-        theme: &str,
-        icon: CursorIcon,
-        scale: u32,
-        x: f64,
-        y: f64,
-    ) -> CaptureCursorGeometry {
-        let cursor = self.ensure_loaded(theme, icon, scale);
-        CaptureCursorGeometry {
-            x: x.round() as i32 - cursor.hotspot_x,
-            y: y.round() as i32 - cursor.hotspot_y,
-            width: cursor.width,
-            height: cursor.height,
-        }
-    }
-
-    fn ensure_loaded(
-        &mut self,
-        theme: &str,
-        icon: CursorIcon,
-        scale: u32,
-    ) -> &LoadedSoftwareCursor {
-        let key = CursorCacheKey { theme: theme.to_owned(), icon, scale: scale.max(1) };
+    fn ensure_loaded(&mut self, theme: &str, icon_name: &str, scale: u32) -> &LoadedSoftwareCursor {
+        let key = CursorCacheKey {
+            theme: theme.to_owned(),
+            icon_name: icon_name.to_owned(),
+            scale: scale.max(1),
+        };
         if self.key.as_ref() != Some(&key) {
             self.key = Some(key.clone());
             self.cursor = None;
         }
-        self.cursor.get_or_insert_with(|| load_software_cursor(&key.theme, key.icon, key.scale))
+        self.cursor
+            .get_or_insert_with(|| load_software_cursor(&key.theme, &key.icon_name, key.scale))
     }
 }
 
-pub(crate) fn cursor_position_on_output(
-    cursor_render: Option<&CursorRenderState>,
-    output_id: OutputId,
-) -> Option<(f64, f64)> {
-    let cursor_render = cursor_render?;
-    if !cursor_render.visible || cursor_render.output_id != Some(output_id) {
-        return None;
-    }
-    Some((cursor_render.x, cursor_render.y))
-}
-
-pub(crate) fn cursor_render_source(
-    cursor_state: Option<&ProtocolCursorState>,
-) -> CursorRenderSource<'_> {
-    match cursor_state.map(|state| &state.image) {
-        Some(ProtocolCursorImage::Hidden) => CursorRenderSource::Hidden,
-        Some(ProtocolCursorImage::Named(icon)) => CursorRenderSource::Named(*icon),
-        Some(ProtocolCursorImage::Surface { surface, hotspot_x, hotspot_y }) => {
-            CursorRenderSource::Surface { surface, hotspot_x: *hotspot_x, hotspot_y: *hotspot_y }
-        }
-        None => CursorRenderSource::Named(CursorIcon::Default),
-    }
-}
-
-fn load_software_cursor(theme_name: &str, icon: CursorIcon, scale: u32) -> LoadedSoftwareCursor {
-    load_theme_cursor(theme_name, icon, scale).unwrap_or_else(|| fallback_cursor(scale))
+fn load_software_cursor(theme_name: &str, icon_name: &str, scale: u32) -> LoadedSoftwareCursor {
+    load_theme_cursor(theme_name, icon_name, scale).unwrap_or_else(|| fallback_cursor(scale))
 }
 
 fn load_theme_cursor(
     theme_name: &str,
-    icon: CursorIcon,
+    icon_name: &str,
     scale: u32,
 ) -> Option<LoadedSoftwareCursor> {
     let nominal_size = 24_u32.saturating_mul(scale.max(1));
     for theme in theme_candidates(theme_name) {
         let theme = xcursor::CursorTheme::load(&theme);
-        for cursor_name in cursor_name_candidates(icon) {
+        for cursor_name in cursor_name_candidates(icon_name) {
             let Some(path) = theme.load_icon(&cursor_name) else {
                 continue;
             };
@@ -175,10 +107,6 @@ fn load_theme_cursor(
                     Transform::Normal,
                     None,
                 ),
-                hotspot_x: image.xhot as i32,
-                hotspot_y: image.yhot as i32,
-                width: image.width,
-                height: image.height,
             });
         }
     }
@@ -194,15 +122,11 @@ fn theme_candidates(theme_name: &str) -> Vec<String> {
     themes
 }
 
-fn cursor_name_candidates(icon: CursorIcon) -> Vec<String> {
+fn cursor_name_candidates(icon_name: &str) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut names = Vec::new();
 
-    for name in std::iter::once(icon.name())
-        .chain(icon.alt_names().iter().copied())
-        .chain(std::iter::once(CursorIcon::Default.name()))
-        .chain(CursorIcon::Default.alt_names().iter().copied())
-    {
+    for name in [icon_name, "default"] {
         if seen.insert(name) {
             names.push(name.to_owned());
         }
@@ -271,9 +195,5 @@ fn fallback_cursor(scale: u32) -> LoadedSoftwareCursor {
             Transform::Normal,
             None,
         ),
-        hotspot_x: 0,
-        hotspot_y: 0,
-        width: width as u32,
-        height: height as u32,
     }
 }

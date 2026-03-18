@@ -2,10 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use drm_fourcc::DrmFourcc;
 use nekoland_ecs::resources::{
-    CompositorConfig, CursorRenderState, DamageRect, OutputDamageRegions, RenderPassGraph,
-    RenderPlan, RenderRect,
+    CompositorConfig, DamageRect, OutputDamageRegions, RenderPassGraph, RenderPlan, RenderRect,
 };
-use nekoland_protocol::{ProtocolCursorState, ProtocolSurfaceRegistry};
+use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags};
 use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
@@ -25,7 +24,7 @@ use smithay::reexports::drm::control::{Device as ControlDevice, ModeTypeFlags, c
 use smithay::render_elements;
 use smithay::utils::{Physical, Rectangle, Size, Transform};
 
-use crate::common::cursor::{SoftwareCursorCache, cursor_position_on_output, cursor_render_source};
+use crate::common::cursor::SoftwareCursorCache;
 use crate::common::render_order::{
     OutputRenderRecord, render_graph_output_records_in_presentation_order,
 };
@@ -54,8 +53,6 @@ pub(crate) struct DrmRenderState {
 pub(crate) struct DrmPresentCtx<'a> {
     pub outputs: &'a [OutputSnapshot],
     pub config: Option<&'a CompositorConfig>,
-    pub cursor_render: Option<&'a CursorRenderState>,
-    pub cursor_image: Option<&'a ProtocolCursorState>,
     pub output_damage_regions: &'a OutputDamageRegions,
     pub render_graph: &'a RenderPassGraph,
     pub render_plan: &'a RenderPlan,
@@ -78,8 +75,6 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
     let DrmPresentCtx {
         outputs,
         config,
-        cursor_render,
-        cursor_image,
         output_damage_regions,
         render_graph,
         render_plan,
@@ -160,49 +155,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         };
 
         let scale = output.properties.scale.max(1) as f64;
-        let mut cursor_elements = Vec::<BackendDrmRenderElement>::new();
-        if let Some((cursor_x, cursor_y)) =
-            cursor_position_on_output(cursor_render, output.output_id)
-        {
-            match cursor_render_source(cursor_image) {
-                crate::common::cursor::CursorRenderSource::Hidden => {}
-                crate::common::cursor::CursorRenderSource::Surface {
-                    surface,
-                    hotspot_x,
-                    hotspot_y,
-                } => {
-                    cursor_elements.extend(render_elements_from_surface_tree::<
-                        _,
-                        BackendDrmRenderElement,
-                    >(
-                        renderer,
-                        surface,
-                        (cursor_x.round() as i32 - hotspot_x, cursor_y.round() as i32 - hotspot_y),
-                        scale,
-                        1.0,
-                        Kind::Cursor,
-                    ));
-                }
-                crate::common::cursor::CursorRenderSource::Named(icon) => {
-                    let theme =
-                        config.map(|config| config.cursor_theme.as_str()).unwrap_or("default");
-                    match cursor_cache.render_element(
-                        renderer,
-                        theme,
-                        icon,
-                        output.properties.scale.max(1),
-                        cursor_x,
-                        cursor_y,
-                    ) {
-                        Ok(element) => cursor_elements.push(element.into()),
-                        Err(error) => {
-                            tracing::warn!(error = %error, "failed to upload software cursor");
-                        }
-                    }
-                }
-            }
-        }
-        let mut elements = cursor_elements;
+        let mut elements = Vec::<BackendDrmRenderElement>::new();
         for render_record in render_graph_output_records_in_presentation_order(
             render_graph,
             render_plan,
@@ -262,6 +215,56 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
                     )));
                 }
                 OutputRenderRecord::Backdrop(_) => {}
+                OutputRenderRecord::Cursor(render_element) => match &render_element.source {
+                    nekoland_ecs::resources::CursorRenderSource::Named { icon_name } => {
+                        let theme =
+                            config.map(|config| config.cursor_theme.as_str()).unwrap_or("default");
+                        match cursor_cache.render_element(
+                            renderer,
+                            theme,
+                            icon_name,
+                            output.properties.scale.max(1),
+                            render_element.instance.rect.x,
+                            render_element.instance.rect.y,
+                        ) {
+                            Ok(element) => elements.push(element.into()),
+                            Err(error) => {
+                                tracing::warn!(error = %error, "failed to upload software cursor");
+                            }
+                        }
+                    }
+                    nekoland_ecs::resources::CursorRenderSource::Surface { surface_id } => {
+                        let Some(clip_rect) = render_element.instance.visible_rect() else {
+                            continue;
+                        };
+                        let Some(clip_rect) =
+                            render_rect_to_physical(&clip_rect, output.properties.scale)
+                        else {
+                            continue;
+                        };
+                        let Some(wl_surface) = surface_registry.surface(*surface_id) else {
+                            continue;
+                        };
+                        elements.extend(
+                            render_elements_from_surface_tree::<
+                                _,
+                                WaylandSurfaceRenderElement<GlesRenderer>,
+                            >(
+                                renderer,
+                                wl_surface,
+                                (render_element.instance.rect.x, render_element.instance.rect.y),
+                                scale,
+                                render_element.instance.opacity,
+                                Kind::Cursor,
+                            )
+                            .into_iter()
+                            .filter_map(|element| {
+                                CropRenderElement::from_element(element, scale, clip_rect)
+                            })
+                            .map(BackendDrmRenderElement::from),
+                        );
+                    }
+                },
             }
         }
         elements.extend(

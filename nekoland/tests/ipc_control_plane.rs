@@ -159,7 +159,9 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
             .flat_map(|output_plan| output_plan.iter_ordered())
             .filter_map(|item| match item {
                 RenderPlanItem::Surface(item) => Some(item.surface_id),
-                RenderPlanItem::SolidRect(_) | RenderPlanItem::Backdrop(_) => None,
+                RenderPlanItem::SolidRect(_)
+                | RenderPlanItem::Backdrop(_)
+                | RenderPlanItem::Cursor(_) => None,
             })
             .collect::<Vec<_>>();
         let Some(frame_pacing) = world.get_resource::<FramePacingState>() else {

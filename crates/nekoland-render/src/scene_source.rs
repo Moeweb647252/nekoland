@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use bevy_ecs::prelude::{ResMut, Resource};
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
-    BackdropRenderItem, RenderColor, RenderItemId, RenderItemIdentity, RenderItemInstance,
-    RenderPlanItem, RenderSourceId, SolidRectRenderItem, SurfaceRenderItem,
+    BackdropRenderItem, CursorRenderItem, CursorRenderSource, RenderColor, RenderItemId,
+    RenderItemIdentity, RenderItemInstance, RenderPlanItem, RenderSourceId, SolidRectRenderItem,
+    SurfaceRenderItem,
 };
 
 /// Stable render-local source key resolved into ECS-facing `RenderSourceId`.
@@ -44,6 +45,7 @@ pub enum RenderSceneContributionPayload {
     Surface { surface_id: u64 },
     SolidRect { color: RenderColor },
     Backdrop,
+    Cursor { source: CursorRenderSource },
 }
 
 /// One output-local scene contribution awaiting stable-id resolution and render-plan assembly.
@@ -82,6 +84,18 @@ impl RenderSceneContribution {
 
     pub fn backdrop(key: RenderInstanceKey, instance: RenderItemInstance) -> Self {
         Self { key, instance, payload: RenderSceneContributionPayload::Backdrop }
+    }
+
+    pub fn cursor(
+        output_id: OutputId,
+        source: CursorRenderSource,
+        instance: RenderItemInstance,
+    ) -> Self {
+        Self {
+            key: RenderInstanceKey::new(RenderSourceKey::new("cursor", "primary"), output_id, 0),
+            instance,
+            payload: RenderSceneContributionPayload::Cursor { source },
+        }
     }
 }
 
@@ -183,6 +197,13 @@ pub fn contribution_to_plan_item(
             identity,
             instance: contribution.instance,
         }),
+        RenderSceneContributionPayload::Cursor { ref source } => {
+            RenderPlanItem::Cursor(CursorRenderItem {
+                identity,
+                source: source.clone(),
+                instance: contribution.instance,
+            })
+        }
     }
 }
 

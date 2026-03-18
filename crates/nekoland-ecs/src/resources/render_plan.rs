@@ -136,6 +136,22 @@ pub struct BackdropRenderItem {
     pub instance: RenderItemInstance,
 }
 
+/// Cursor-image source carried by one cursor render item.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum CursorRenderSource {
+    Named { icon_name: String },
+    Surface { surface_id: u64 },
+}
+
+/// One output-local cursor item in the current frame scene.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CursorRenderItem {
+    pub identity: RenderItemIdentity,
+    pub source: CursorRenderSource,
+    pub instance: RenderItemInstance,
+}
+
 /// One generic render-plan item.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +159,7 @@ pub enum RenderPlanItem {
     Surface(SurfaceRenderItem),
     SolidRect(SolidRectRenderItem),
     Backdrop(BackdropRenderItem),
+    Cursor(CursorRenderItem),
 }
 
 impl RenderPlanItem {
@@ -151,6 +168,7 @@ impl RenderPlanItem {
             Self::Surface(item) => item.identity,
             Self::SolidRect(item) => item.identity,
             Self::Backdrop(item) => item.identity,
+            Self::Cursor(item) => item.identity,
         }
     }
 
@@ -167,6 +185,7 @@ impl RenderPlanItem {
             Self::Surface(item) => &item.instance,
             Self::SolidRect(item) => &item.instance,
             Self::Backdrop(item) => &item.instance,
+            Self::Cursor(item) => &item.instance,
         }
     }
 
@@ -177,6 +196,10 @@ impl RenderPlanItem {
     pub fn surface_id(&self) -> Option<u64> {
         match self {
             Self::Surface(item) => Some(item.surface_id),
+            Self::Cursor(item) => match &item.source {
+                CursorRenderSource::Surface { surface_id } => Some(*surface_id),
+                CursorRenderSource::Named { .. } => None,
+            },
             Self::SolidRect(_) | Self::Backdrop(_) => None,
         }
     }
@@ -236,9 +259,9 @@ pub struct RenderPlan {
 mod tests {
     use crate::components::OutputId;
     use crate::resources::{
-        BackdropRenderItem, OutputRenderPlan, RenderColor, RenderItemId, RenderItemIdentity,
-        RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
-        RenderSourceId, SolidRectRenderItem, SurfaceRenderItem,
+        BackdropRenderItem, CursorRenderItem, CursorRenderSource, OutputRenderPlan, RenderColor,
+        RenderItemId, RenderItemIdentity, RenderItemInstance, RenderPlan, RenderPlanItem,
+        RenderRect, RenderSceneRole, RenderSourceId, SolidRectRenderItem, SurfaceRenderItem,
     };
 
     #[test]
@@ -275,6 +298,7 @@ mod tests {
                 RenderPlanItem::Surface(item) => format!("surface-{}", item.surface_id),
                 RenderPlanItem::SolidRect(_) => "solid-rect".to_owned(),
                 RenderPlanItem::Backdrop(_) => "backdrop".to_owned(),
+                RenderPlanItem::Cursor(_) => "cursor".to_owned(),
             })
             .collect::<Vec<_>>();
         assert_eq!(item_kinds, vec!["solid-rect", "surface-2"]);
@@ -334,5 +358,25 @@ mod tests {
         assert_eq!(backdrop.surface_id(), None);
         assert_eq!(surface.source_id(), RenderSourceId(7));
         assert_eq!(surface.item_id(), RenderItemId(7));
+    }
+
+    #[test]
+    fn cursor_surface_items_expose_underlying_surface_id() {
+        let cursor = RenderPlanItem::Cursor(CursorRenderItem {
+            identity: RenderItemIdentity {
+                source_id: RenderSourceId(10),
+                item_id: RenderItemId(11),
+            },
+            source: CursorRenderSource::Surface { surface_id: 42 },
+            instance: RenderItemInstance {
+                rect: RenderRect::default(),
+                opacity: 1.0,
+                clip_rect: None,
+                z_index: i32::MAX,
+                scene_role: RenderSceneRole::Cursor,
+            },
+        });
+
+        assert_eq!(cursor.surface_id(), Some(42));
     }
 }

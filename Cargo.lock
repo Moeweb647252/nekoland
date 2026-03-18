@@ -1562,6 +1562,7 @@ dependencies = [
  "nekoland-core",
  "nekoland-ecs",
  "tracing",
+ "xcursor",
 ]
 
 [[package]]

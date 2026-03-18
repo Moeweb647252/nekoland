@@ -11,6 +11,7 @@ bevy_ecs.workspace = true
 nekoland-core = { path = "../nekoland-core" }
 nekoland-ecs = { path = "../nekoland-ecs" }
 tracing.workspace = true
+xcursor = "0.3"
 
 [lints]
 workspace = true

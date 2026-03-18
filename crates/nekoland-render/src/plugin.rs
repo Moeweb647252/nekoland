@@ -3,8 +3,8 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{PreRenderSchedule, RenderSchedule};
 use nekoland_ecs::resources::{
-    CursorRenderState, DamageState, FramePacingState, OutputDamageRegions, RenderPassGraph,
-    RenderPlan, SurfaceVisualSnapshot,
+    CursorImageSnapshot, CursorSceneSnapshot, DamageState, FramePacingState, OutputDamageRegions,
+    RenderPassGraph, RenderPlan, SurfaceVisualSnapshot,
 };
 
 use crate::{
@@ -27,7 +27,9 @@ impl NekolandPlugin for RenderPlugin {
             .init_resource::<scene_source::RenderSceneContributionQueue>()
             .init_resource::<scene_source::ExternalSceneContributionState>()
             .init_resource::<scene_source::RenderSceneIdentityRegistry>()
-            .init_resource::<CursorRenderState>()
+            .init_resource::<CursorSceneSnapshot>()
+            .init_resource::<CursorImageSnapshot>()
+            .init_resource::<cursor::CursorThemeGeometryCache>()
             .init_resource::<DamageState>()
             .init_resource::<FramePacingState>()
             .init_resource::<OutputDamageRegions>()
@@ -55,10 +57,11 @@ impl NekolandPlugin for RenderPlugin {
                     scene_source::clear_scene_contributions_system,
                     compositor_render::emit_desktop_scene_contributions_system,
                     scene_source::emit_external_scene_contributions_system,
+                    cursor::cursor_scene_snapshot_system,
+                    cursor::emit_cursor_scene_contributions_system,
                     compositor_render::assemble_render_plan_system,
                     render_graph::build_render_graph_system,
                     damage_tracker::damage_tracking_system,
-                    cursor::cursor_render_system,
                     frame_callback::frame_callback_system,
                     presentation_feedback::presentation_feedback_system,
                     screenshot::screenshot_system,

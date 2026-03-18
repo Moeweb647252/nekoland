@@ -31,7 +31,7 @@ use smithay::reexports::winit::window::{CursorGrabMode, Window as HostWindow};
 use smithay::render_elements;
 use smithay::utils::{Monotonic, Physical, Rectangle, Size, Transform};
 
-use crate::common::cursor::{SoftwareCursorCache, cursor_position_on_output, cursor_render_source};
+use crate::common::cursor::SoftwareCursorCache;
 use crate::common::outputs::{
     BackendOutputBlueprint, BackendOutputChange, BackendOutputEventRecord,
     BackendOutputPropertyUpdate, parse_output_mode,
@@ -434,55 +434,7 @@ impl Backend for WinitRuntime {
             };
             let age = 0;
 
-            let mut cursor_elements = Vec::<WinitRenderElement>::new();
-
-            if let Some((cursor_x, cursor_y)) =
-                cursor_position_on_output(cx.cursor_render, output.output_id)
-            {
-                match cursor_render_source(cx.cursor_image) {
-                    crate::common::cursor::CursorRenderSource::Hidden => {}
-                    crate::common::cursor::CursorRenderSource::Surface {
-                        surface,
-                        hotspot_x,
-                        hotspot_y,
-                    } => {
-                        cursor_elements.extend(render_elements_from_surface_tree(
-                            renderer,
-                            surface,
-                            (
-                                cursor_x.round() as i32 - hotspot_x,
-                                cursor_y.round() as i32 - hotspot_y,
-                            ),
-                            mode.scale as f64,
-                            1.0,
-                            Kind::Cursor,
-                        ));
-                    }
-                    crate::common::cursor::CursorRenderSource::Named(icon) => {
-                        let theme = cx
-                            .config
-                            .map(|config| config.cursor_theme.as_str())
-                            .unwrap_or("default");
-                        match cursor_cache.render_element(
-                            renderer,
-                            theme,
-                            icon,
-                            mode.scale.max(1),
-                            cursor_x,
-                            cursor_y,
-                        ) {
-                            Ok(element) => cursor_elements.push(element.into()),
-                            Err(error) => {
-                                tracing::warn!(error = %error, "failed to upload software cursor");
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Smithay consumes elements in front-to-back presentation order, so the cursor must
-            // stay ahead of scene surfaces to remain visually on top.
-            let mut elements = cursor_elements;
+            let mut elements = Vec::<WinitRenderElement>::new();
             for render_record in render_graph_output_records_in_presentation_order(
                 cx.render_graph,
                 cx.render_plan,
@@ -544,6 +496,67 @@ impl Backend for WinitRuntime {
                         );
                     }
                     OutputRenderRecord::Backdrop(_) => {}
+                    OutputRenderRecord::Cursor(render_element) => match &render_element.source {
+                        nekoland_ecs::resources::CursorRenderSource::Named { icon_name } => {
+                            let theme = cx
+                                .config
+                                .map(|config| config.cursor_theme.as_str())
+                                .unwrap_or("default");
+                            match cursor_cache.render_element(
+                                renderer,
+                                theme,
+                                icon_name,
+                                mode.scale.max(1),
+                                render_element.instance.rect.x,
+                                render_element.instance.rect.y,
+                            ) {
+                                Ok(element) => elements.push(element.into()),
+                                Err(error) => {
+                                    tracing::warn!(
+                                        error = %error,
+                                        "failed to upload software cursor"
+                                    );
+                                }
+                            }
+                        }
+                        nekoland_ecs::resources::CursorRenderSource::Surface { surface_id } => {
+                            let Some(clip_rect) = render_element.instance.visible_rect() else {
+                                continue;
+                            };
+                            let Some(clip_rect) = render_rect_to_physical(&clip_rect, mode.scale)
+                            else {
+                                continue;
+                            };
+                            let Some(surface) = surface_registry.surface(*surface_id) else {
+                                continue;
+                            };
+                            elements.extend(
+                                render_elements_from_surface_tree::<
+                                    _,
+                                    WaylandSurfaceRenderElement<_>,
+                                >(
+                                    renderer,
+                                    surface,
+                                    (
+                                        render_element.instance.rect.x,
+                                        render_element.instance.rect.y,
+                                    ),
+                                    mode.scale as f64,
+                                    render_element.instance.opacity,
+                                    Kind::Cursor,
+                                )
+                                .into_iter()
+                                .filter_map(|element| {
+                                    CropRenderElement::from_element(
+                                        element,
+                                        mode.scale as f64,
+                                        clip_rect,
+                                    )
+                                })
+                                .map(WinitRenderElement::from),
+                            );
+                        }
+                    },
                 }
             }
 

@@ -5,11 +5,11 @@ use nekoland_core::error::NekolandError;
 use nekoland_core::prelude::AppMetadata;
 use nekoland_ecs::components::{OutputDevice, OutputId, OutputProperties, SurfaceGeometry};
 use nekoland_ecs::resources::{
-    CompositorClock, CompositorConfig, CursorRenderState, GlobalPointerPosition,
-    OutputDamageRegions, PendingBackendInputEvents, PendingOutputPresentationEvents,
-    PendingProtocolInputEvents, RenderPassGraph, RenderPlan, VirtualOutputCaptureState,
+    CompositorClock, CompositorConfig, GlobalPointerPosition, OutputDamageRegions,
+    PendingBackendInputEvents, PendingOutputPresentationEvents, PendingProtocolInputEvents,
+    RenderPassGraph, RenderPlan, VirtualOutputCaptureState,
 };
-use nekoland_protocol::{ProtocolCursorState, ProtocolDmabufSupport, ProtocolSurfaceRegistry};
+use nekoland_protocol::{ProtocolDmabufSupport, ProtocolSurfaceRegistry};
 
 use crate::common::outputs::{
     BackendOutputBlueprint, PendingBackendOutputEvents, PendingBackendOutputUpdates,
@@ -148,8 +148,6 @@ pub struct BackendPresentCtx<'a> {
     pub config: Option<&'a CompositorConfig>,
     pub clock: Option<&'a CompositorClock>,
     pub pointer: Option<&'a GlobalPointerPosition>,
-    pub cursor_render: Option<&'a CursorRenderState>,
-    pub cursor_image: Option<&'a ProtocolCursorState>,
     pub output_damage_regions: &'a OutputDamageRegions,
     pub outputs: &'a [OutputSnapshot],
     pub render_graph: &'a RenderPassGraph,
