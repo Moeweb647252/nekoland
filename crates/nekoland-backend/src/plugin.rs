@@ -11,12 +11,12 @@ use nekoland_core::prelude::AppMetadata;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule};
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::resources::{
-    BackendOutputRegistry, CompositorClock, CompositorConfig, FocusedOutputState,
-    GlobalPointerPosition, OutputDamageRegions, OutputPresentationState, PendingBackendInputEvents,
-    PendingOutputControls, PendingOutputPresentationEvents, PendingOutputServerRequests,
-    PendingProtocolInputEvents, PresentAuditState, PrimaryOutputState, RenderMaterialFrameState,
-    RenderPassGraph, RenderPlan, SurfacePresentationRole, SurfacePresentationSnapshot,
-    VirtualOutputCaptureState,
+    BackendOutputRegistry, CompletedScreenshotFrames, CompositorClock, CompositorConfig,
+    FocusedOutputState, GlobalPointerPosition, OutputDamageRegions, OutputPresentationState,
+    PendingBackendInputEvents, PendingOutputControls, PendingOutputPresentationEvents,
+    PendingOutputServerRequests, PendingProtocolInputEvents, PendingScreenshotRequests,
+    PresentAuditState, PrimaryOutputState, RenderMaterialFrameState, RenderPassGraph, RenderPlan,
+    SurfacePresentationRole, SurfacePresentationSnapshot, VirtualOutputCaptureState,
 };
 use nekoland_ecs::views::{BackendPresentSurfaceRuntime, OutputRuntime};
 use nekoland_protocol::{
@@ -73,6 +73,8 @@ struct BackendPresentState<'w, 's> {
     materials: Res<'w, RenderMaterialFrameState>,
     render_graph: Res<'w, RenderPassGraph>,
     render_plan: Res<'w, RenderPlan>,
+    pending_screenshot_requests: ResMut<'w, PendingScreenshotRequests>,
+    completed_screenshots: ResMut<'w, CompletedScreenshotFrames>,
     present_audit: ResMut<'w, PresentAuditState>,
     surface_registry: Option<NonSend<'w, ProtocolSurfaceRegistry>>,
     virtual_output_capture: ResMut<'w, VirtualOutputCaptureState>,
@@ -218,6 +220,8 @@ fn backend_present_system(
         materials,
         render_graph,
         render_plan,
+        mut pending_screenshot_requests,
+        mut completed_screenshots,
         mut present_audit,
         surface_registry,
         mut virtual_output_capture,
@@ -334,6 +338,8 @@ fn backend_present_system(
         materials: &materials,
         render_graph: &render_graph,
         render_plan: &render_plan,
+        pending_screenshot_requests: &mut pending_screenshot_requests,
+        completed_screenshots: &mut completed_screenshots,
         surfaces: &surface_snapshots,
         surface_registry: surface_registry.as_deref(),
         virtual_output_capture: Some(&mut virtual_output_capture),
@@ -383,12 +389,12 @@ mod tests {
         OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry, WlSurfaceHandle,
     };
     use nekoland_ecs::resources::{
-        CompositorClock, OutputDamageRegions, OutputExecutionPlan, OutputRenderPlan,
-        PresentAuditState, RenderItemId, RenderItemIdentity, RenderItemInstance,
-        RenderMaterialFrameState, RenderPassGraph, RenderPassId, RenderPassNode, RenderPlan,
-        RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId, RenderTargetId,
-        RenderTargetKind, SurfacePresentationSnapshot, SurfacePresentationState, SurfaceRenderItem,
-        VirtualOutputCaptureState,
+        CompletedScreenshotFrames, CompositorClock, OutputDamageRegions, OutputExecutionPlan,
+        OutputRenderPlan, PendingScreenshotRequests, PresentAuditState, RenderItemId,
+        RenderItemIdentity, RenderItemInstance, RenderMaterialFrameState, RenderPassGraph,
+        RenderPassId, RenderPassNode, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
+        RenderSourceId, RenderTargetId, RenderTargetKind, SurfacePresentationSnapshot,
+        SurfacePresentationState, SurfaceRenderItem, VirtualOutputCaptureState,
     };
     use nekoland_protocol::ProtocolSeatDispatchSystems;
 
@@ -443,6 +449,8 @@ mod tests {
             .init_resource::<OutputDamageRegions>()
             .init_resource::<PresentAuditState>()
             .init_resource::<VirtualOutputCaptureState>()
+            .init_resource::<PendingScreenshotRequests>()
+            .init_resource::<CompletedScreenshotFrames>()
             .init_resource::<RenderMaterialFrameState>()
             .init_resource::<RenderPassGraph>()
             .add_systems(PresentSchedule, backend_present_system);

@@ -5,9 +5,10 @@ use nekoland_core::error::NekolandError;
 use nekoland_core::prelude::AppMetadata;
 use nekoland_ecs::components::{OutputDevice, OutputId, OutputProperties, SurfaceGeometry};
 use nekoland_ecs::resources::{
-    CompositorClock, CompositorConfig, GlobalPointerPosition, OutputDamageRegions,
-    PendingBackendInputEvents, PendingOutputPresentationEvents, PendingProtocolInputEvents,
-    RenderMaterialFrameState, RenderPassGraph, RenderPlan, VirtualOutputCaptureState,
+    CompletedScreenshotFrames, CompositorClock, CompositorConfig, GlobalPointerPosition,
+    OutputDamageRegions, PendingBackendInputEvents, PendingOutputPresentationEvents,
+    PendingProtocolInputEvents, PendingScreenshotRequests, RenderMaterialFrameState,
+    RenderPassGraph, RenderPlan, VirtualOutputCaptureState,
 };
 use nekoland_protocol::{ProtocolDmabufSupport, ProtocolSurfaceRegistry};
 
@@ -153,6 +154,8 @@ pub struct BackendPresentCtx<'a> {
     pub materials: &'a RenderMaterialFrameState,
     pub render_graph: &'a RenderPassGraph,
     pub render_plan: &'a RenderPlan,
+    pub pending_screenshot_requests: &'a mut PendingScreenshotRequests,
+    pub completed_screenshots: &'a mut CompletedScreenshotFrames,
     pub surfaces: &'a std::collections::HashMap<u64, RenderSurfaceSnapshot>,
     pub surface_registry: Option<&'a ProtocolSurfaceRegistry>,
     pub virtual_output_capture: Option<&'a mut VirtualOutputCaptureState>,

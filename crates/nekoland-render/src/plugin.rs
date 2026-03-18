@@ -3,8 +3,9 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{PreRenderSchedule, RenderSchedule};
 use nekoland_ecs::resources::{
-    CursorImageSnapshot, CursorSceneSnapshot, DamageState, FramePacingState, OutputDamageRegions,
-    RenderMaterialFrameState, RenderPassGraph, RenderPlan, SurfaceVisualSnapshot,
+    CompletedScreenshotFrames, CursorImageSnapshot, CursorSceneSnapshot, DamageState,
+    FramePacingState, OutputDamageRegions, PendingScreenshotRequests, RenderMaterialFrameState,
+    RenderPassGraph, RenderPlan, SurfaceVisualSnapshot,
 };
 
 use crate::{
@@ -25,6 +26,8 @@ impl NekolandPlugin for RenderPlugin {
             .init_resource::<material::RenderMaterialParamsStore>()
             .init_resource::<material::RenderMaterialRequestQueue>()
             .init_resource::<RenderMaterialFrameState>()
+            .init_resource::<PendingScreenshotRequests>()
+            .init_resource::<CompletedScreenshotFrames>()
             .init_resource::<scene_source::RenderSceneContributionQueue>()
             .init_resource::<scene_source::ExternalSceneContributionState>()
             .init_resource::<scene_source::RenderSceneIdentityRegistry>()

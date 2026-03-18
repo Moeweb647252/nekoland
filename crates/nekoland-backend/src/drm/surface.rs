@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use drm_fourcc::DrmFourcc;
 use nekoland_ecs::resources::{
-    CompositorConfig, DamageRect, OutputDamageRegions, RenderMaterialFrameState, RenderPassGraph,
-    RenderPlan, RenderRect,
+    CompletedScreenshotFrames, CompositorClock, CompositorConfig, DamageRect, OutputDamageRegions,
+    PendingScreenshotRequests, RenderMaterialFrameState, RenderPassGraph, RenderPlan, RenderRect,
 };
 use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags};
@@ -11,23 +11,17 @@ use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::renderer::Color32F;
-use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
-use smithay::backend::renderer::element::surface::{
-    WaylandSurfaceRenderElement, render_elements_from_surface_tree,
-};
-use smithay::backend::renderer::element::utils::CropRenderElement;
 use smithay::backend::renderer::element::{Id, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::drm::control::{Device as ControlDevice, ModeTypeFlags, connector, crtc};
-use smithay::render_elements;
 use smithay::utils::{Physical, Rectangle, Size, Transform};
 
 use crate::common::cursor::SoftwareCursorCache;
-use crate::common::render_order::{
-    OutputRenderRecord, render_graph_output_records_in_presentation_order,
+use crate::common::gles_executor::{
+    CommonGlesRenderElement, GlesExecutionState, execute_output_graph, final_output_texture_element,
 };
 use crate::traits::OutputSnapshot;
 
@@ -49,15 +43,19 @@ pub(crate) struct DrmRenderState {
     pub surfaces: HashMap<String, ConnectorState>,
     pub renderer: Option<GlesRenderer>,
     pub cursor: SoftwareCursorCache,
+    pub execution: GlesExecutionState,
 }
 
 pub(crate) struct DrmPresentCtx<'a> {
     pub outputs: &'a [OutputSnapshot],
     pub config: Option<&'a CompositorConfig>,
+    pub clock: Option<&'a CompositorClock>,
     pub output_damage_regions: &'a OutputDamageRegions,
     pub materials: &'a RenderMaterialFrameState,
     pub render_graph: &'a RenderPassGraph,
     pub render_plan: &'a RenderPlan,
+    pub pending_screenshot_requests: &'a mut PendingScreenshotRequests,
+    pub completed_screenshots: &'a mut CompletedScreenshotFrames,
     pub surface_registry: Option<&'a ProtocolSurfaceRegistry>,
     pub session_state: &'a SharedDrmSessionState,
     pub drm_shared: &'a SharedDrmState,
@@ -65,22 +63,17 @@ pub(crate) struct DrmPresentCtx<'a> {
     pub render_state: &'a mut DrmRenderState,
 }
 
-render_elements! {
-    pub(crate) BackendDrmRenderElement<=GlesRenderer>;
-    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
-    ClippedSurface=CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
-    Damage=SolidColorRenderElement,
-    Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
-}
-
 pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
     let DrmPresentCtx {
         outputs,
         config,
+        clock,
         output_damage_regions,
         materials,
         render_graph,
         render_plan,
+        pending_screenshot_requests,
+        completed_screenshots,
         surface_registry,
         session_state,
         drm_shared,
@@ -157,120 +150,38 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
             continue;
         };
 
-        let scale = output.properties.scale.max(1) as f64;
-        let mut elements = Vec::<BackendDrmRenderElement>::new();
-        for render_record in render_graph_output_records_in_presentation_order(
-            render_graph,
+        let Some(execution) = render_graph.outputs.get(&output.output_id) else {
+            continue;
+        };
+        let Some(executed) = execute_output_graph(
+            renderer,
+            &mut render_state.execution,
+            output,
+            execution,
             render_plan,
             materials,
-            output.output_id,
-        ) {
-            match render_record {
-                OutputRenderRecord::Surface(render_element) => {
-                    let Some(clip_rect) = render_element.instance.visible_rect() else {
-                        continue;
-                    };
-                    let Some(clip_rect) =
-                        render_rect_to_physical(&clip_rect, output.properties.scale)
-                    else {
-                        continue;
-                    };
-                    let Some(wl_surface) = surface_registry.surface(render_element.surface_id)
-                    else {
-                        continue;
-                    };
-                    elements.extend(
-                        render_elements_from_surface_tree::<
-                            _,
-                            WaylandSurfaceRenderElement<GlesRenderer>,
-                        >(
-                            renderer,
-                            wl_surface,
-                            (render_element.instance.rect.x, render_element.instance.rect.y),
-                            scale,
-                            render_element.instance.opacity,
-                            Kind::Unspecified,
-                        )
-                        .into_iter()
-                        .filter_map(|element| {
-                            CropRenderElement::from_element(element, scale, clip_rect)
-                        })
-                        .map(BackendDrmRenderElement::from),
-                    );
-                }
-                OutputRenderRecord::SolidRect(render_element) => {
-                    let Some(visible_rect) = render_element.instance.visible_rect() else {
-                        continue;
-                    };
-                    let Some(geometry) =
-                        render_rect_to_physical(&visible_rect, output.properties.scale)
-                    else {
-                        continue;
-                    };
-                    elements.push(BackendDrmRenderElement::from(SolidColorRenderElement::new(
-                        Id::new(),
-                        geometry,
-                        CommitCounter::default(),
-                        render_color_to_color32f(
-                            render_element.color,
-                            render_element.instance.opacity,
-                        ),
-                        Kind::Unspecified,
-                    )));
-                }
-                OutputRenderRecord::Backdrop(_) => {}
-                OutputRenderRecord::Cursor(render_element) => match &render_element.source {
-                    nekoland_ecs::resources::CursorRenderSource::Named { icon_name } => {
-                        let theme =
-                            config.map(|config| config.cursor_theme.as_str()).unwrap_or("default");
-                        match cursor_cache.render_element(
-                            renderer,
-                            theme,
-                            icon_name,
-                            output.properties.scale.max(1),
-                            render_element.instance.rect.x,
-                            render_element.instance.rect.y,
-                        ) {
-                            Ok(element) => elements.push(element.into()),
-                            Err(error) => {
-                                tracing::warn!(error = %error, "failed to upload software cursor");
-                            }
-                        }
-                    }
-                    nekoland_ecs::resources::CursorRenderSource::Surface { surface_id } => {
-                        let Some(clip_rect) = render_element.instance.visible_rect() else {
-                            continue;
-                        };
-                        let Some(clip_rect) =
-                            render_rect_to_physical(&clip_rect, output.properties.scale)
-                        else {
-                            continue;
-                        };
-                        let Some(wl_surface) = surface_registry.surface(*surface_id) else {
-                            continue;
-                        };
-                        elements.extend(
-                            render_elements_from_surface_tree::<
-                                _,
-                                WaylandSurfaceRenderElement<GlesRenderer>,
-                            >(
-                                renderer,
-                                wl_surface,
-                                (render_element.instance.rect.x, render_element.instance.rect.y),
-                                scale,
-                                render_element.instance.opacity,
-                                Kind::Cursor,
-                            )
-                            .into_iter()
-                            .filter_map(|element| {
-                                CropRenderElement::from_element(element, scale, clip_rect)
-                            })
-                            .map(BackendDrmRenderElement::from),
-                        );
-                    }
-                },
-            }
-        }
+            surface_registry,
+            cursor_cache,
+            config,
+            pending_screenshot_requests,
+            completed_screenshots,
+            clock,
+        )
+        .map_err(|error| {
+            tracing::warn!(connector = %connector_info.name, error = %error, "failed to execute DRM render graph");
+            error
+        })
+        .ok()
+        .flatten()
+        else {
+            continue;
+        };
+
+        let mut elements = vec![final_output_texture_element(
+            renderer,
+            executed.texture,
+            output.properties.scale.max(1),
+        )];
         elements.extend(
             ecs_damage_render_elements(
                 output_damage_regions,
@@ -278,7 +189,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
                 output.properties.scale.max(1),
             )
             .into_iter()
-            .map(BackendDrmRenderElement::from),
+            .map(CommonGlesRenderElement::from),
         );
 
         if elements.is_empty() {
@@ -356,6 +267,7 @@ fn damage_rect_to_physical(rect: &DamageRect, scale: u32) -> Option<Rectangle<i3
     Some(Rectangle::new((x, y).into(), (width, height).into()))
 }
 
+#[allow(dead_code)]
 fn render_rect_to_physical(rect: &RenderRect, scale: u32) -> Option<Rectangle<i32, Physical>> {
     if rect.width == 0 || rect.height == 0 {
         return None;
@@ -372,6 +284,7 @@ fn render_rect_to_physical(rect: &RenderRect, scale: u32) -> Option<Rectangle<i3
     Some(Rectangle::new((x, y).into(), (width, height).into()))
 }
 
+#[allow(dead_code)]
 fn render_color_to_color32f(color: nekoland_ecs::resources::RenderColor, opacity: f32) -> Color32F {
     let alpha = (f32::from(color.a) / 255.0) * opacity.clamp(0.0, 1.0);
     Color32F::new(

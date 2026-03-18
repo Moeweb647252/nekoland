@@ -150,10 +150,13 @@ impl Backend for DrmRuntime {
         surface::render_drm_outputs(surface::DrmPresentCtx {
             outputs: &owned_outputs,
             config: cx.config,
+            clock: cx.clock,
             output_damage_regions: cx.output_damage_regions,
             materials: cx.materials,
             render_graph: cx.render_graph,
             render_plan: cx.render_plan,
+            pending_screenshot_requests: cx.pending_screenshot_requests,
+            completed_screenshots: cx.completed_screenshots,
             surface_registry: cx.surface_registry,
             session_state: &self.session_state,
             drm_shared: &self.device_state,

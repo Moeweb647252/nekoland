@@ -16,30 +16,21 @@ use nekoland_ecs::resources::{
 };
 use nekoland_protocol::ProtocolDmabufSupport;
 use smithay::backend::renderer::Color32F;
-use smithay::backend::renderer::damage::OutputDamageTracker;
-use smithay::backend::renderer::element::Id;
-use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
-use smithay::backend::renderer::element::solid::SolidColorRenderElement;
-use smithay::backend::renderer::element::surface::{
-    WaylandSurfaceRenderElement, render_elements_from_surface_tree,
-};
-use smithay::backend::renderer::element::utils::CropRenderElement;
-use smithay::backend::renderer::utils::CommitCounter;
+use smithay::backend::renderer::utils::draw_render_elements;
+use smithay::backend::renderer::{Frame, Renderer};
 use smithay::reexports::winit::dpi::PhysicalSize;
 use smithay::reexports::winit::window::{CursorGrabMode, Window as HostWindow};
-use smithay::render_elements;
 use smithay::utils::{Monotonic, Physical, Rectangle, Size, Transform};
 
 use crate::common::cursor::SoftwareCursorCache;
+use crate::common::gles_executor::{
+    CommonGlesRenderElement, GlesExecutionState, execute_output_graph, final_output_texture_element,
+};
 use crate::common::outputs::{
     BackendOutputBlueprint, BackendOutputChange, BackendOutputEventRecord,
     BackendOutputPropertyUpdate, parse_output_mode,
 };
 use crate::common::presentation::{OutputPresentationRuntime, emit_present_completion_events_at};
-use crate::common::render_order::{
-    OutputRenderRecord, render_graph_output_records_in_presentation_order,
-};
 use crate::traits::{
     Backend, BackendApplyCtx, BackendCapabilities, BackendDescriptor, BackendExtractCtx, BackendId,
     BackendKind, BackendPresentCtx, BackendRole, OutputSnapshot,
@@ -48,14 +39,6 @@ use crate::winit::host::{
     HOST_WINIT_DEVICE, HostCaptureModeState, HostWinitEvent, HostWinitGraphicsBackend,
     init_host_winit,
 };
-
-render_elements! {
-    WinitRenderElement<=smithay::backend::renderer::gles::GlesRenderer>;
-    Surface=WaylandSurfaceRenderElement<smithay::backend::renderer::gles::GlesRenderer>,
-    ClippedSurface=CropRenderElement<WaylandSurfaceRenderElement<smithay::backend::renderer::gles::GlesRenderer>>,
-    Solid=SolidColorRenderElement,
-    Memory=MemoryRenderBufferRenderElement<smithay::backend::renderer::gles::GlesRenderer>,
-}
 
 #[derive(Debug, Clone, Resource, PartialEq, Eq)]
 pub struct WinitWindowState {
@@ -148,9 +131,9 @@ struct WinitOutputMode {
 
 #[derive(Debug, Default)]
 struct WinitRenderState {
-    damage_tracker: Option<OutputDamageTracker>,
     mode: Option<WinitOutputMode>,
     cursor: SoftwareCursorCache,
+    execution: GlesExecutionState,
 }
 
 pub(crate) struct WinitRuntime {
@@ -403,11 +386,6 @@ impl Backend for WinitRuntime {
             scale: output.properties.scale.max(1),
         };
         if self.render_state.mode != Some(mode) {
-            self.render_state.damage_tracker = Some(OutputDamageTracker::new(
-                (mode.width as i32, mode.height as i32),
-                mode.scale as f64,
-                winit_output_transform(),
-            ));
             self.render_state.mode = Some(mode);
         }
 
@@ -420,9 +398,6 @@ impl Backend for WinitRuntime {
         };
 
         let damage = {
-            let Some(damage_tracker) = self.render_state.damage_tracker.as_mut() else {
-                return Ok(());
-            };
             let cursor_cache = &mut self.render_state.cursor;
 
             let (renderer, mut framebuffer) = match backend.bind() {
@@ -432,159 +407,73 @@ impl Backend for WinitRuntime {
                     return Ok(());
                 }
             };
-            let age = 0;
 
-            let mut elements = Vec::<WinitRenderElement>::new();
-            for render_record in render_graph_output_records_in_presentation_order(
-                cx.render_graph,
+            let Some(execution) = cx.render_graph.outputs.get(&output.output_id) else {
+                return Ok(());
+            };
+            let executed = match execute_output_graph(
+                renderer,
+                &mut self.render_state.execution,
+                &output,
+                execution,
                 cx.render_plan,
                 cx.materials,
-                output.output_id,
+                surface_registry,
+                cursor_cache,
+                cx.config,
+                cx.pending_screenshot_requests,
+                cx.completed_screenshots,
+                cx.clock,
             ) {
-                match render_record {
-                    OutputRenderRecord::Surface(render_element) => {
-                        let Some(clip_rect) = render_element.instance.visible_rect() else {
-                            continue;
-                        };
-                        let Some(clip_rect) = render_rect_to_physical(&clip_rect, mode.scale)
-                        else {
-                            continue;
-                        };
-                        let Some(surface) = surface_registry.surface(render_element.surface_id)
-                        else {
-                            continue;
-                        };
-                        elements.extend(
-                            render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
-                                renderer,
-                                surface,
-                                (render_element.instance.rect.x, render_element.instance.rect.y),
-                                mode.scale as f64,
-                                render_element.instance.opacity,
-                                Kind::Unspecified,
-                            )
-                            .into_iter()
-                            .filter_map(|element| {
-                                CropRenderElement::from_element(
-                                    element,
-                                    mode.scale as f64,
-                                    clip_rect,
-                                )
-                            })
-                            .map(WinitRenderElement::from),
-                        );
-                    }
-                    OutputRenderRecord::SolidRect(render_element) => {
-                        let Some(visible_rect) = render_element.instance.visible_rect() else {
-                            continue;
-                        };
-                        let Some(geometry) = render_rect_to_physical(&visible_rect, mode.scale)
-                        else {
-                            continue;
-                        };
-                        elements.push(
-                            SolidColorRenderElement::new(
-                                Id::new(),
-                                geometry,
-                                CommitCounter::default(),
-                                render_color_to_color32f(
-                                    render_element.color,
-                                    render_element.instance.opacity,
-                                ),
-                                Kind::Unspecified,
-                            )
-                            .into(),
-                        );
-                    }
-                    OutputRenderRecord::Backdrop(_) => {}
-                    OutputRenderRecord::Cursor(render_element) => match &render_element.source {
-                        nekoland_ecs::resources::CursorRenderSource::Named { icon_name } => {
-                            let theme = cx
-                                .config
-                                .map(|config| config.cursor_theme.as_str())
-                                .unwrap_or("default");
-                            match cursor_cache.render_element(
-                                renderer,
-                                theme,
-                                icon_name,
-                                mode.scale.max(1),
-                                render_element.instance.rect.x,
-                                render_element.instance.rect.y,
-                            ) {
-                                Ok(element) => elements.push(element.into()),
-                                Err(error) => {
-                                    tracing::warn!(
-                                        error = %error,
-                                        "failed to upload software cursor"
-                                    );
-                                }
-                            }
-                        }
-                        nekoland_ecs::resources::CursorRenderSource::Surface { surface_id } => {
-                            let Some(clip_rect) = render_element.instance.visible_rect() else {
-                                continue;
-                            };
-                            let Some(clip_rect) = render_rect_to_physical(&clip_rect, mode.scale)
-                            else {
-                                continue;
-                            };
-                            let Some(surface) = surface_registry.surface(*surface_id) else {
-                                continue;
-                            };
-                            elements.extend(
-                                render_elements_from_surface_tree::<
-                                    _,
-                                    WaylandSurfaceRenderElement<_>,
-                                >(
-                                    renderer,
-                                    surface,
-                                    (
-                                        render_element.instance.rect.x,
-                                        render_element.instance.rect.y,
-                                    ),
-                                    mode.scale as f64,
-                                    render_element.instance.opacity,
-                                    Kind::Cursor,
-                                )
-                                .into_iter()
-                                .filter_map(|element| {
-                                    CropRenderElement::from_element(
-                                        element,
-                                        mode.scale as f64,
-                                        clip_rect,
-                                    )
-                                })
-                                .map(WinitRenderElement::from),
-                            );
-                        }
-                    },
-                }
-            }
-
-            let smithay_damage = match damage_tracker.render_output(
-                renderer,
-                &mut framebuffer,
-                age,
-                &elements,
-                clear_color(cx.config),
-            ) {
-                Ok(result) => result.damage.cloned(),
+                Ok(Some(executed)) => executed,
+                Ok(None) => return Ok(()),
                 Err(error) => {
                     tracing::warn!(
                         error = %error,
-                        "failed to render wayland surfaces into winit backend"
+                        "failed to execute render graph for winit output"
                     );
-                    None
+                    return Ok(());
                 }
             };
-            merge_submit_damage(
-                smithay_damage,
-                output_damage_regions_physical(
-                    cx.output_damage_regions,
-                    output.output_id,
-                    mode.scale,
-                ),
-            )
+
+            let full_damage =
+                vec![Rectangle::from_size((mode.width as i32, mode.height as i32).into())];
+            let final_element =
+                final_output_texture_element(renderer, executed.texture, mode.scale);
+            let elements = vec![final_element];
+            let mut frame = match renderer.render(
+                &mut framebuffer,
+                (mode.width as i32, mode.height as i32).into(),
+                winit_output_transform(),
+            ) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "failed to start final winit composite frame"
+                    );
+                    return Ok(());
+                }
+            };
+            if let Err(error) = frame.clear(clear_color(cx.config), &full_damage) {
+                tracing::warn!(error = %error, "failed to clear winit framebuffer");
+                return Ok(());
+            }
+            if let Err(error) = draw_render_elements::<_, _, CommonGlesRenderElement>(
+                &mut frame,
+                mode.scale as f64,
+                &elements,
+                &full_damage,
+            ) {
+                tracing::warn!(error = %error, "failed to draw final winit composite texture");
+                return Ok(());
+            }
+            if let Err(error) = frame.finish().and_then(|sync| renderer.wait(&sync)) {
+                tracing::warn!(error = %error, "failed to finish final winit composite frame");
+                return Ok(());
+            }
+
+            Some(full_damage)
         };
 
         let Some(damage) = damage else {
@@ -627,6 +516,7 @@ fn current_refresh_interval(outputs: &[OutputSnapshot]) -> Option<Duration> {
         })
 }
 
+#[allow(dead_code)]
 fn output_damage_regions_physical(
     output_damage_regions: &OutputDamageRegions,
     output_id: nekoland_ecs::components::OutputId,
@@ -641,6 +531,7 @@ fn output_damage_regions_physical(
         .collect()
 }
 
+#[allow(dead_code)]
 fn render_rect_to_physical(rect: &RenderRect, scale: u32) -> Option<Rectangle<i32, Physical>> {
     if rect.width == 0 || rect.height == 0 {
         return None;
@@ -656,6 +547,7 @@ fn render_rect_to_physical(rect: &RenderRect, scale: u32) -> Option<Rectangle<i3
     Some(Rectangle::new((x, y).into(), (width.max(1), height.max(1)).into()))
 }
 
+#[allow(dead_code)]
 fn render_color_to_color32f(color: nekoland_ecs::resources::RenderColor, opacity: f32) -> Color32F {
     let alpha = (f32::from(color.a) / 255.0) * opacity.clamp(0.0, 1.0);
     Color32F::new(
@@ -666,6 +558,7 @@ fn render_color_to_color32f(color: nekoland_ecs::resources::RenderColor, opacity
     )
 }
 
+#[allow(dead_code)]
 fn damage_rect_to_physical(rect: &DamageRect, scale: u32) -> Option<Rectangle<i32, Physical>> {
     if rect.width == 0 || rect.height == 0 {
         return None;
@@ -682,6 +575,7 @@ fn damage_rect_to_physical(rect: &DamageRect, scale: u32) -> Option<Rectangle<i3
     Some(Rectangle::new((x, y).into(), (width, height).into()))
 }
 
+#[allow(dead_code)]
 fn merge_submit_damage(
     smithay_damage: Option<Vec<Rectangle<i32, Physical>>>,
     ecs_damage: Vec<Rectangle<i32, Physical>>,

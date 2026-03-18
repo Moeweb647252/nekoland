@@ -256,7 +256,7 @@ fn execute_output_render_graph(
 fn execute_material_records(
     materials: &RenderMaterialFrameState,
     material_id: nekoland_ecs::resources::RenderMaterialId,
-    params_id: Option<nekoland_ecs::resources::MaterialParamsId>,
+    _params_id: Option<nekoland_ecs::resources::MaterialParamsId>,
     source_records: &[OutputRenderRecord],
 ) -> Vec<OutputRenderRecord> {
     let Some(descriptor) = materials.descriptor(material_id) else {
@@ -264,48 +264,13 @@ fn execute_material_records(
     };
 
     match descriptor.pipeline_key.0.as_str() {
-        "backdrop_blur" => execute_backdrop_blur_records(materials, params_id, source_records),
+        "backdrop_blur" => execute_backdrop_blur_records(source_records),
         _ => source_records.to_vec(),
     }
 }
 
-fn execute_backdrop_blur_records(
-    materials: &RenderMaterialFrameState,
-    params_id: Option<nekoland_ecs::resources::MaterialParamsId>,
-    source_records: &[OutputRenderRecord],
-) -> Vec<OutputRenderRecord> {
-    let radius = params_id
-        .and_then(|params_id| materials.params(params_id))
-        .and_then(|params| params.float("radius"))
-        .unwrap_or(12.0);
-    let overlay_alpha = backdrop_overlay_alpha(radius);
-    let mut produced = source_records.to_vec();
-
-    for record in source_records {
-        let OutputRenderRecord::Backdrop(record) = record else {
-            continue;
-        };
-        let Some(visible_rect) = record.instance.visible_rect() else {
-            continue;
-        };
-        produced.push(OutputRenderRecord::SolidRect(OutputSolidRectRenderRecord {
-            color: RenderColor { r: 255, g: 255, b: 255, a: overlay_alpha },
-            instance: RenderItemInstance {
-                rect: visible_rect,
-                opacity: record.instance.opacity.clamp(0.0, 1.0),
-                clip_rect: None,
-                z_index: record.instance.z_index.saturating_add(1),
-                scene_role: RenderSceneRole::Compositor,
-            },
-        }));
-    }
-
-    produced
-}
-
-fn backdrop_overlay_alpha(radius: f32) -> u8 {
-    let normalized = (radius.max(0.0) / 24.0).clamp(0.0, 1.0);
-    (48.0 + normalized * 96.0).round().clamp(0.0, 255.0) as u8
+fn execute_backdrop_blur_records(source_records: &[OutputRenderRecord]) -> Vec<OutputRenderRecord> {
+    source_records.to_vec()
 }
 
 fn output_swapchain_target(
@@ -743,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn backdrop_blur_material_adds_compositor_overlay_records() {
+    fn backdrop_blur_material_keeps_structural_records_stable_for_audit() {
         let render_plan = RenderPlan {
             outputs: std::collections::BTreeMap::from([(
                 OutputId(4),
@@ -827,12 +792,7 @@ mod tests {
 
         let records =
             render_graph_output_records(&render_graph, &render_plan, &materials, OutputId(4));
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.len(), 1);
         assert!(matches!(records[0], super::OutputRenderRecord::Backdrop(_)));
-        let super::OutputRenderRecord::SolidRect(overlay) = &records[1] else {
-            panic!("expected compositor solid rect overlay");
-        };
-        assert_eq!(overlay.instance.scene_role, RenderSceneRole::Compositor);
-        assert_eq!(overlay.instance.rect, RenderRect { x: 5, y: 6, width: 70, height: 80 });
     }
 }

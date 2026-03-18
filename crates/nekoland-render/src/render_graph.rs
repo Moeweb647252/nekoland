@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::{Res, ResMut};
 use nekoland_ecs::resources::{
-    OutputExecutionPlan, RenderPassGraph, RenderPassId, RenderPassNode, RenderPlan,
-    RenderSceneRole, RenderTargetId, RenderTargetKind,
+    OutputExecutionPlan, PendingScreenshotRequests, RenderPassGraph, RenderPassId, RenderPassNode,
+    RenderPlan, RenderSceneRole, RenderTargetId, RenderTargetKind,
 };
 
 use crate::material::RenderMaterialRequestQueue;
@@ -22,6 +22,7 @@ const ROLE_ORDER: [RenderSceneRole; 4] = [
 pub fn build_render_graph_system(
     render_plan: Res<'_, RenderPlan>,
     material_requests: Res<'_, RenderMaterialRequestQueue>,
+    screenshot_requests: Option<Res<'_, PendingScreenshotRequests>>,
     mut render_graph: ResMut<'_, RenderPassGraph>,
 ) {
     let mut next_target_id = 1_u64;
@@ -32,7 +33,11 @@ pub fn build_render_graph_system(
         let swapchain_target = RenderTargetId(next_target_id);
         next_target_id = next_target_id.saturating_add(1);
         let output_requests = material_requests.outputs.get(output_id).cloned().unwrap_or_default();
-        let scene_target = if output_requests.is_empty() {
+        let output_readbacks = screenshot_requests
+            .as_deref()
+            .map(|requests| requests.requests_for_output(*output_id))
+            .unwrap_or_default();
+        let scene_target = if output_requests.is_empty() && output_readbacks.is_empty() {
             swapchain_target
         } else {
             let target = RenderTargetId(next_target_id);
@@ -110,7 +115,7 @@ pub fn build_render_graph_system(
                 current_target = next_target;
             }
 
-            if current_target != swapchain_target {
+            let present_dependency = if current_target != swapchain_target {
                 let composite_pass = RenderPassId(next_pass_id);
                 next_pass_id = next_pass_id.saturating_add(1);
                 execution.passes.insert(
@@ -123,9 +128,26 @@ pub fn build_render_graph_system(
                     ),
                 );
                 execution.ordered_passes.push(composite_pass);
-                execution.terminal_passes.push(composite_pass);
+                composite_pass
             } else {
-                execution.terminal_passes.push(dependency_pass);
+                dependency_pass
+            };
+            execution.terminal_passes.push(present_dependency);
+
+            if !output_readbacks.is_empty() {
+                let readback_pass = RenderPassId(next_pass_id);
+                next_pass_id = next_pass_id.saturating_add(1);
+                execution.passes.insert(
+                    readback_pass,
+                    RenderPassNode::readback(
+                        RenderSceneRole::Compositor,
+                        current_target,
+                        current_target,
+                        vec![present_dependency],
+                    ),
+                );
+                execution.ordered_passes.push(readback_pass);
+                execution.terminal_passes.push(readback_pass);
             }
         }
 
@@ -148,9 +170,10 @@ mod tests {
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::components::OutputId;
     use nekoland_ecs::resources::{
-        MaterialParamsId, OutputRenderPlan, RenderItemId, RenderItemIdentity, RenderItemInstance,
-        RenderMaterialId, RenderPassGraph, RenderPassKind, RenderPlan, RenderPlanItem, RenderRect,
-        RenderSceneRole, RenderSourceId, SolidRectRenderItem, SurfaceRenderItem,
+        MaterialParamsId, OutputRenderPlan, PendingScreenshotRequests, RenderItemId,
+        RenderItemIdentity, RenderItemInstance, RenderMaterialId, RenderPassGraph, RenderPassKind,
+        RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId,
+        SolidRectRenderItem, SurfaceRenderItem,
     };
 
     use crate::material::{RenderMaterialRequest, RenderMaterialRequestQueue};
@@ -167,6 +190,7 @@ mod tests {
         app.init_resource::<RenderPlan>()
             .init_resource::<RenderPassGraph>()
             .init_resource::<RenderMaterialRequestQueue>()
+            .init_resource::<PendingScreenshotRequests>()
             .add_systems(RenderSchedule, build_render_graph_system);
 
         app.world_mut().resource_mut::<RenderPlan>().outputs = std::collections::BTreeMap::from([
@@ -247,6 +271,7 @@ mod tests {
         });
         world.init_resource::<RenderPassGraph>();
         world.init_resource::<RenderMaterialRequestQueue>();
+        world.init_resource::<PendingScreenshotRequests>();
 
         let mut system = bevy_ecs::system::IntoSystem::into_system(build_render_graph_system);
         system.initialize(&mut world);
@@ -290,6 +315,7 @@ mod tests {
             )]),
         });
         world.init_resource::<RenderPassGraph>();
+        world.init_resource::<PendingScreenshotRequests>();
 
         let mut system = bevy_ecs::system::IntoSystem::into_system(build_render_graph_system);
         system.initialize(&mut world);
@@ -320,5 +346,43 @@ mod tests {
         world.resource_mut::<RenderMaterialRequestQueue>().outputs.clear();
 
         assert!(world.resource::<RenderMaterialRequestQueue>().outputs.is_empty());
+    }
+
+    #[test]
+    fn render_graph_builder_appends_readback_pass_for_pending_screenshot_requests() {
+        let mut world = World::default();
+        world.insert_resource(RenderPlan {
+            outputs: std::collections::BTreeMap::from([(
+                OutputId(1),
+                OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
+                    identity: identity(11),
+                    surface_id: 11,
+                    instance: RenderItemInstance {
+                        rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
+                        opacity: 1.0,
+                        clip_rect: None,
+                        z_index: 0,
+                        scene_role: RenderSceneRole::Desktop,
+                    },
+                })]),
+            )]),
+        });
+        world.init_resource::<RenderMaterialRequestQueue>();
+        world.init_resource::<RenderPassGraph>();
+        let mut screenshot_requests = PendingScreenshotRequests::default();
+        let _ = screenshot_requests.request_output(OutputId(1));
+        world.insert_resource(screenshot_requests);
+
+        let mut system = bevy_ecs::system::IntoSystem::into_system(build_render_graph_system);
+        system.initialize(&mut world);
+        let _ = system.run((), &mut world);
+
+        let graph = world.resource::<RenderPassGraph>();
+        let output = &graph.outputs[&OutputId(1)];
+        assert_eq!(output.ordered_passes.len(), 3);
+        assert_eq!(output.passes[&output.ordered_passes[0]].kind, RenderPassKind::Scene);
+        assert_eq!(output.passes[&output.ordered_passes[1]].kind, RenderPassKind::Composite);
+        assert_eq!(output.passes[&output.ordered_passes[2]].kind, RenderPassKind::Readback);
+        assert_eq!(output.terminal_passes.len(), 2);
     }
 }
