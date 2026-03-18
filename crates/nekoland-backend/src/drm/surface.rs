@@ -26,7 +26,9 @@ use smithay::render_elements;
 use smithay::utils::{Physical, Rectangle, Size, Transform};
 
 use crate::common::cursor::{SoftwareCursorCache, cursor_position_on_output, cursor_render_source};
-use crate::common::render_order::render_graph_output_surfaces_in_presentation_order;
+use crate::common::render_order::{
+    OutputRenderRecord, render_graph_output_records_in_presentation_order,
+};
 use crate::traits::OutputSnapshot;
 
 use super::device::{ConnectorInfo, SharedDrmState};
@@ -201,34 +203,66 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
             }
         }
         let mut elements = cursor_elements;
-        for render_element in render_graph_output_surfaces_in_presentation_order(
+        for render_record in render_graph_output_records_in_presentation_order(
             render_graph,
             render_plan,
             output.output_id,
         ) {
-            let Some(clip_rect) = render_element.instance.visible_rect() else {
-                continue;
-            };
-            let Some(clip_rect) = render_rect_to_physical(&clip_rect, output.properties.scale)
-            else {
-                continue;
-            };
-            let Some(wl_surface) = surface_registry.surface(render_element.surface_id) else {
-                continue;
-            };
-            elements.extend(
-                render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
-                    renderer,
-                    wl_surface,
-                    (render_element.instance.rect.x, render_element.instance.rect.y),
-                    scale,
-                    render_element.instance.opacity,
-                    Kind::Unspecified,
-                )
-                .into_iter()
-                .filter_map(|element| CropRenderElement::from_element(element, scale, clip_rect))
-                .map(BackendDrmRenderElement::from),
-            );
+            match render_record {
+                OutputRenderRecord::Surface(render_element) => {
+                    let Some(clip_rect) = render_element.instance.visible_rect() else {
+                        continue;
+                    };
+                    let Some(clip_rect) =
+                        render_rect_to_physical(&clip_rect, output.properties.scale)
+                    else {
+                        continue;
+                    };
+                    let Some(wl_surface) = surface_registry.surface(render_element.surface_id)
+                    else {
+                        continue;
+                    };
+                    elements.extend(
+                        render_elements_from_surface_tree::<
+                            _,
+                            WaylandSurfaceRenderElement<GlesRenderer>,
+                        >(
+                            renderer,
+                            wl_surface,
+                            (render_element.instance.rect.x, render_element.instance.rect.y),
+                            scale,
+                            render_element.instance.opacity,
+                            Kind::Unspecified,
+                        )
+                        .into_iter()
+                        .filter_map(|element| {
+                            CropRenderElement::from_element(element, scale, clip_rect)
+                        })
+                        .map(BackendDrmRenderElement::from),
+                    );
+                }
+                OutputRenderRecord::SolidRect(render_element) => {
+                    let Some(visible_rect) = render_element.instance.visible_rect() else {
+                        continue;
+                    };
+                    let Some(geometry) =
+                        render_rect_to_physical(&visible_rect, output.properties.scale)
+                    else {
+                        continue;
+                    };
+                    elements.push(BackendDrmRenderElement::from(SolidColorRenderElement::new(
+                        Id::new(),
+                        geometry,
+                        CommitCounter::default(),
+                        render_color_to_color32f(
+                            render_element.color,
+                            render_element.instance.opacity,
+                        ),
+                        Kind::Unspecified,
+                    )));
+                }
+                OutputRenderRecord::Backdrop(_) => {}
+            }
         }
         elements.extend(
             ecs_damage_render_elements(
@@ -329,6 +363,16 @@ fn render_rect_to_physical(rect: &RenderRect, scale: u32) -> Option<Rectangle<i3
         .min(u64::from(i32::MAX as u32)) as i32;
 
     Some(Rectangle::new((x, y).into(), (width, height).into()))
+}
+
+fn render_color_to_color32f(color: nekoland_ecs::resources::RenderColor, opacity: f32) -> Color32F {
+    let alpha = (f32::from(color.a) / 255.0) * opacity.clamp(0.0, 1.0);
+    Color32F::new(
+        f32::from(color.r) / 255.0,
+        f32::from(color.g) / 255.0,
+        f32::from(color.b) / 255.0,
+        alpha,
+    )
 }
 
 fn init_gles_renderer(

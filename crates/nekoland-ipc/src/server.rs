@@ -930,6 +930,9 @@ fn present_audit_element_snapshot(
             PresentAuditElementKind::Window => "window",
             PresentAuditElementKind::Popup => "popup",
             PresentAuditElementKind::Layer => "layer",
+            PresentAuditElementKind::SolidRect => "solid_rect",
+            PresentAuditElementKind::Backdrop => "backdrop",
+            PresentAuditElementKind::Compositor => "compositor",
             PresentAuditElementKind::Cursor => "cursor",
             PresentAuditElementKind::Unknown => "unknown",
         }

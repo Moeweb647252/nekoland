@@ -8,9 +8,9 @@ use nekoland_ecs::presentation_logic::{
     is_background_band_layer, is_foreground_band_layer, managed_window_visible, popup_visible,
 };
 use nekoland_ecs::resources::{
-    OutputRenderPlan, RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
-    SurfacePresentationRole, SurfacePresentationSnapshot, SurfaceRenderItem, SurfaceVisualSnapshot,
-    UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
+    OutputRenderPlan, RenderItemInstance, RenderPlan, RenderPlanInjectionState, RenderPlanItem,
+    RenderRect, RenderSceneRole, SurfacePresentationRole, SurfacePresentationSnapshot,
+    SurfaceRenderItem, SurfaceVisualSnapshot, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
 };
 use nekoland_ecs::views::{
     LayerRenderRuntime, OutputRuntime, PopupRenderRuntime, WindowRenderRuntime, WorkspaceRuntime,
@@ -30,6 +30,7 @@ pub struct FrameCompositionInputs<'w, 's> {
     workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
     surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
     surface_visual: Option<Res<'w, SurfaceVisualSnapshot>>,
+    injections: Option<Res<'w, RenderPlanInjectionState>>,
     render_plan: ResMut<'w, RenderPlan>,
 }
 
@@ -48,10 +49,12 @@ pub fn compose_frame_system(composition: FrameCompositionInputs<'_, '_>) {
         workspaces,
         surface_presentation,
         surface_visual,
+        injections,
         mut render_plan,
     } = composition;
     let surface_presentation = surface_presentation.as_deref();
     let surface_visual = surface_visual.as_deref();
+    let injections = injections.as_deref();
     let live_outputs =
         outputs.iter().map(|output| (output.id(), output.name().to_owned())).collect::<Vec<_>>();
     let mut plans = live_outputs
@@ -234,6 +237,13 @@ pub fn compose_frame_system(composition: FrameCompositionInputs<'_, '_>) {
     for output_plan in plans.values_mut() {
         output_plan.sort_by_z_index();
     }
+    if let Some(injections) = injections {
+        for (output_id, items) in &injections.outputs {
+            let output_plan = plans.entry(*output_id).or_default();
+            output_plan.items.extend(items.iter().cloned());
+            output_plan.sort_by_z_index();
+        }
+    }
     render_plan.outputs = plans;
 
     tracing::trace!(
@@ -264,9 +274,10 @@ mod tests {
         WindowAnimation, WindowRole, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{
-        RenderPlan, RenderPlanItem, SurfacePresentationRole, SurfacePresentationSnapshot,
-        SurfacePresentationState, SurfaceVisualSnapshot, SurfaceVisualState,
-        UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
+        RenderColor, RenderItemInstance, RenderPlan, RenderPlanInjectionState, RenderPlanItem,
+        RenderRect, RenderSceneRole, SolidRectRenderItem, SurfacePresentationRole,
+        SurfacePresentationSnapshot, SurfacePresentationState, SurfaceVisualSnapshot,
+        SurfaceVisualState, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
     };
 
     use super::compose_frame_system;
@@ -589,5 +600,41 @@ mod tests {
 
         let render_order = single_output_surface_order(&app);
         assert_eq!(render_order, vec![22]);
+    }
+
+    #[test]
+    fn render_plan_injections_append_non_surface_items() {
+        let mut app = NekolandApp::new("render-plan-injection-test");
+        app.inner_mut()
+            .init_resource::<RenderPlan>()
+            .init_resource::<RenderPlanInjectionState>()
+            .insert_resource(WindowStackingState::default())
+            .add_systems(RenderSchedule, compose_frame_system);
+        let output_id = spawn_default_output(&mut app);
+        app.inner_mut().world_mut().resource_mut::<RenderPlanInjectionState>().outputs =
+            std::collections::BTreeMap::from([(
+                output_id,
+                vec![RenderPlanItem::SolidRect(SolidRectRenderItem {
+                    color: RenderColor { r: 10, g: 20, b: 30, a: 200 },
+                    instance: RenderItemInstance {
+                        rect: RenderRect { x: 5, y: 6, width: 40, height: 50 },
+                        opacity: 0.75,
+                        clip_rect: None,
+                        z_index: 3,
+                        scene_role: RenderSceneRole::Overlay,
+                    },
+                })],
+            )]);
+
+        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+
+        let output_plan = app
+            .inner()
+            .world()
+            .resource::<RenderPlan>()
+            .outputs
+            .get(&output_id)
+            .unwrap_or_else(|| panic!("output plan should exist for injected scene items"));
+        assert!(matches!(output_plan.items.as_slice(), [RenderPlanItem::SolidRect(_)]));
     }
 }

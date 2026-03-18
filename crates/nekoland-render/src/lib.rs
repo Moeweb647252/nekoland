@@ -5,6 +5,7 @@ pub mod cursor;
 pub mod damage_tracker;
 pub mod effects;
 pub mod frame_callback;
+pub mod material;
 pub mod plugin;
 pub mod presentation_feedback;
 pub mod render_graph;

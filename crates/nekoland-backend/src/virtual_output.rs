@@ -247,6 +247,15 @@ fn virtual_output_element_from_audit(
             nekoland_ecs::resources::PresentAuditElementKind::Layer => {
                 VirtualOutputElementKind::Layer
             }
+            nekoland_ecs::resources::PresentAuditElementKind::SolidRect => {
+                VirtualOutputElementKind::SolidRect
+            }
+            nekoland_ecs::resources::PresentAuditElementKind::Backdrop => {
+                VirtualOutputElementKind::Backdrop
+            }
+            nekoland_ecs::resources::PresentAuditElementKind::Compositor => {
+                VirtualOutputElementKind::Compositor
+            }
             nekoland_ecs::resources::PresentAuditElementKind::Cursor => {
                 VirtualOutputElementKind::Cursor
             }

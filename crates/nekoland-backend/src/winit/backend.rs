@@ -17,12 +17,15 @@ use nekoland_ecs::resources::{
 use nekoland_protocol::ProtocolDmabufSupport;
 use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::element::Id;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
 use smithay::backend::renderer::element::utils::CropRenderElement;
+use smithay::backend::renderer::utils::CommitCounter;
 use smithay::reexports::winit::dpi::PhysicalSize;
 use smithay::reexports::winit::window::{CursorGrabMode, Window as HostWindow};
 use smithay::render_elements;
@@ -34,7 +37,9 @@ use crate::common::outputs::{
     BackendOutputPropertyUpdate, parse_output_mode,
 };
 use crate::common::presentation::{OutputPresentationRuntime, emit_present_completion_events_at};
-use crate::common::render_order::render_graph_output_surfaces_in_presentation_order;
+use crate::common::render_order::{
+    OutputRenderRecord, render_graph_output_records_in_presentation_order,
+};
 use crate::traits::{
     Backend, BackendApplyCtx, BackendCapabilities, BackendDescriptor, BackendExtractCtx, BackendId,
     BackendKind, BackendPresentCtx, BackendRole, OutputSnapshot,
@@ -48,6 +53,7 @@ render_elements! {
     WinitRenderElement<=smithay::backend::renderer::gles::GlesRenderer>;
     Surface=WaylandSurfaceRenderElement<smithay::backend::renderer::gles::GlesRenderer>,
     ClippedSurface=CropRenderElement<WaylandSurfaceRenderElement<smithay::backend::renderer::gles::GlesRenderer>>,
+    Solid=SolidColorRenderElement,
     Memory=MemoryRenderBufferRenderElement<smithay::backend::renderer::gles::GlesRenderer>,
 }
 
@@ -477,35 +483,68 @@ impl Backend for WinitRuntime {
             // Smithay consumes elements in front-to-back presentation order, so the cursor must
             // stay ahead of scene surfaces to remain visually on top.
             let mut elements = cursor_elements;
-            for render_element in render_graph_output_surfaces_in_presentation_order(
+            for render_record in render_graph_output_records_in_presentation_order(
                 cx.render_graph,
                 cx.render_plan,
                 output.output_id,
             ) {
-                let Some(clip_rect) = render_element.instance.visible_rect() else {
-                    continue;
-                };
-                let Some(clip_rect) = render_rect_to_physical(&clip_rect, mode.scale) else {
-                    continue;
-                };
-                let Some(surface) = surface_registry.surface(render_element.surface_id) else {
-                    continue;
-                };
-                elements.extend(
-                    render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
-                        renderer,
-                        surface,
-                        (render_element.instance.rect.x, render_element.instance.rect.y),
-                        mode.scale as f64,
-                        render_element.instance.opacity,
-                        Kind::Unspecified,
-                    )
-                    .into_iter()
-                    .filter_map(|element| {
-                        CropRenderElement::from_element(element, mode.scale as f64, clip_rect)
-                    })
-                    .map(WinitRenderElement::from),
-                );
+                match render_record {
+                    OutputRenderRecord::Surface(render_element) => {
+                        let Some(clip_rect) = render_element.instance.visible_rect() else {
+                            continue;
+                        };
+                        let Some(clip_rect) = render_rect_to_physical(&clip_rect, mode.scale)
+                        else {
+                            continue;
+                        };
+                        let Some(surface) = surface_registry.surface(render_element.surface_id)
+                        else {
+                            continue;
+                        };
+                        elements.extend(
+                            render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
+                                renderer,
+                                surface,
+                                (render_element.instance.rect.x, render_element.instance.rect.y),
+                                mode.scale as f64,
+                                render_element.instance.opacity,
+                                Kind::Unspecified,
+                            )
+                            .into_iter()
+                            .filter_map(|element| {
+                                CropRenderElement::from_element(
+                                    element,
+                                    mode.scale as f64,
+                                    clip_rect,
+                                )
+                            })
+                            .map(WinitRenderElement::from),
+                        );
+                    }
+                    OutputRenderRecord::SolidRect(render_element) => {
+                        let Some(visible_rect) = render_element.instance.visible_rect() else {
+                            continue;
+                        };
+                        let Some(geometry) = render_rect_to_physical(&visible_rect, mode.scale)
+                        else {
+                            continue;
+                        };
+                        elements.push(
+                            SolidColorRenderElement::new(
+                                Id::new(),
+                                geometry,
+                                CommitCounter::default(),
+                                render_color_to_color32f(
+                                    render_element.color,
+                                    render_element.instance.opacity,
+                                ),
+                                Kind::Unspecified,
+                            )
+                            .into(),
+                        );
+                    }
+                    OutputRenderRecord::Backdrop(_) => {}
+                }
             }
 
             let smithay_damage = match damage_tracker.render_output(
@@ -601,6 +640,16 @@ fn render_rect_to_physical(rect: &RenderRect, scale: u32) -> Option<Rectangle<i3
     let height = (u64::from(rect.height) * u64::try_from(scale).ok()?)
         .min(u64::from(i32::MAX as u32)) as i32;
     Some(Rectangle::new((x, y).into(), (width.max(1), height.max(1)).into()))
+}
+
+fn render_color_to_color32f(color: nekoland_ecs::resources::RenderColor, opacity: f32) -> Color32F {
+    let alpha = (f32::from(color.a) / 255.0) * opacity.clamp(0.0, 1.0);
+    Color32F::new(
+        f32::from(color.r) / 255.0,
+        f32::from(color.g) / 255.0,
+        f32::from(color.b) / 255.0,
+        alpha,
+    )
 }
 
 fn damage_rect_to_physical(rect: &DamageRect, scale: u32) -> Option<Rectangle<i32, Physical>> {

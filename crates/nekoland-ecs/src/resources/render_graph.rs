@@ -21,11 +21,13 @@ pub struct RenderTargetId(pub u64);
 pub struct RenderPassId(pub u64);
 
 /// One execution target referenced by render passes.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RenderTargetKind {
+    #[default]
+    OffscreenColor,
     OutputSwapchain(OutputId),
-    Offscreen,
+    OffscreenIntermediate,
 }
 
 /// Broad execution categories used by the backend execution graph.
@@ -35,18 +37,69 @@ pub enum RenderPassKind {
     #[default]
     Scene,
     Composite,
+    PostProcess,
     Readback,
 }
 
-/// One render pass node in the output-local execution graph.
+/// Stable material-like identifier for one post-process implementation.
+#[derive(
+    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(transparent)]
+pub struct RenderMaterialId(pub u64);
+
+/// Stable frame-local handle for one material parameter payload.
+#[derive(
+    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(transparent)]
+pub struct MaterialParamsId(pub u64);
+
+/// Scene-pass payload referencing render-plan item indices.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScenePassConfig {
+    pub item_indices: Vec<usize>,
+}
+
+/// Composite-pass payload copying one source target into the destination target.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompositePassConfig {
+    pub source_target: RenderTargetId,
+}
+
+/// Post-process-pass payload transforming one source target into another target.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PostProcessPassConfig {
+    pub source_target: RenderTargetId,
+    pub material_id: RenderMaterialId,
+    pub params_id: Option<MaterialParamsId>,
+}
+
+/// Readback-pass payload exposing one source target for future capture/readback paths.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReadbackPassConfig {
+    pub source_target: RenderTargetId,
+}
+
+/// Concrete payload carried by one execution-graph pass node.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum RenderPassPayload {
+    Scene(ScenePassConfig),
+    Composite(CompositePassConfig),
+    PostProcess(PostProcessPassConfig),
+    Readback(ReadbackPassConfig),
+}
+
+/// One render pass node in the output-local execution graph.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct RenderPassNode {
     pub kind: RenderPassKind,
     pub scene_role: RenderSceneRole,
     pub input_targets: Vec<RenderTargetId>,
     pub output_target: RenderTargetId,
     pub dependencies: Vec<RenderPassId>,
-    pub item_indices: Vec<usize>,
+    pub payload: RenderPassPayload,
 }
 
 impl RenderPassNode {
@@ -62,13 +115,76 @@ impl RenderPassNode {
             input_targets: Vec::new(),
             output_target,
             dependencies,
-            item_indices,
+            payload: RenderPassPayload::Scene(ScenePassConfig { item_indices }),
+        }
+    }
+
+    pub fn composite(
+        scene_role: RenderSceneRole,
+        source_target: RenderTargetId,
+        output_target: RenderTargetId,
+        dependencies: Vec<RenderPassId>,
+    ) -> Self {
+        Self {
+            kind: RenderPassKind::Composite,
+            scene_role,
+            input_targets: vec![source_target],
+            output_target,
+            dependencies,
+            payload: RenderPassPayload::Composite(CompositePassConfig { source_target }),
+        }
+    }
+
+    pub fn post_process(
+        scene_role: RenderSceneRole,
+        source_target: RenderTargetId,
+        output_target: RenderTargetId,
+        dependencies: Vec<RenderPassId>,
+        material_id: RenderMaterialId,
+        params_id: Option<MaterialParamsId>,
+    ) -> Self {
+        Self {
+            kind: RenderPassKind::PostProcess,
+            scene_role,
+            input_targets: vec![source_target],
+            output_target,
+            dependencies,
+            payload: RenderPassPayload::PostProcess(PostProcessPassConfig {
+                source_target,
+                material_id,
+                params_id,
+            }),
+        }
+    }
+
+    pub fn readback(
+        scene_role: RenderSceneRole,
+        source_target: RenderTargetId,
+        output_target: RenderTargetId,
+        dependencies: Vec<RenderPassId>,
+    ) -> Self {
+        Self {
+            kind: RenderPassKind::Readback,
+            scene_role,
+            input_targets: vec![source_target],
+            output_target,
+            dependencies,
+            payload: RenderPassPayload::Readback(ReadbackPassConfig { source_target }),
+        }
+    }
+
+    pub fn item_indices(&self) -> &[usize] {
+        match &self.payload {
+            RenderPassPayload::Scene(config) => &config.item_indices,
+            RenderPassPayload::Composite(_)
+            | RenderPassPayload::PostProcess(_)
+            | RenderPassPayload::Readback(_) => &[],
         }
     }
 }
 
 /// One output-local execution graph plus deterministic traversal order.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct OutputExecutionPlan {
     pub targets: BTreeMap<RenderTargetId, RenderTargetKind>,
     pub passes: BTreeMap<RenderPassId, RenderPassNode>,
@@ -155,7 +271,7 @@ impl OutputExecutionPlan {
 }
 
 /// Output-scoped backend execution graph derived from the current render plan.
-#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct RenderPassGraph {
     pub outputs: BTreeMap<OutputId, OutputExecutionPlan>,
 }
@@ -172,8 +288,9 @@ mod tests {
 
     use crate::components::OutputId;
     use crate::resources::{
-        OutputExecutionPlan, RenderPassGraph, RenderPassId, RenderPassKind, RenderPassNode,
-        RenderSceneRole, RenderTargetId, RenderTargetKind,
+        MaterialParamsId, OutputExecutionPlan, RenderMaterialId, RenderPassGraph, RenderPassId,
+        RenderPassKind, RenderPassNode, RenderPassPayload, RenderSceneRole, RenderTargetId,
+        RenderTargetKind,
     };
 
     #[test]
@@ -192,7 +309,9 @@ mod tests {
                         input_targets: Vec::new(),
                         output_target: RenderTargetId(1),
                         dependencies: vec![RenderPassId(2)],
-                        item_indices: vec![0],
+                        payload: RenderPassPayload::Scene(super::ScenePassConfig {
+                            item_indices: vec![0],
+                        }),
                     },
                 ),
                 (
@@ -203,7 +322,9 @@ mod tests {
                         input_targets: vec![RenderTargetId(1)],
                         output_target: RenderTargetId(1),
                         dependencies: vec![RenderPassId(1)],
-                        item_indices: Vec::new(),
+                        payload: RenderPassPayload::Composite(super::CompositePassConfig {
+                            source_target: RenderTargetId(1),
+                        }),
                     },
                 ),
             ]),
@@ -284,5 +405,27 @@ mod tests {
         };
 
         assert!(graph.validate_acyclic());
+    }
+
+    #[test]
+    fn post_process_node_carries_material_and_params() {
+        let node = RenderPassNode::post_process(
+            RenderSceneRole::Desktop,
+            RenderTargetId(1),
+            RenderTargetId(2),
+            vec![RenderPassId(3)],
+            RenderMaterialId(7),
+            Some(MaterialParamsId(9)),
+        );
+
+        assert_eq!(node.kind, RenderPassKind::PostProcess);
+        assert_eq!(node.input_targets, vec![RenderTargetId(1)]);
+        match node.payload {
+            RenderPassPayload::PostProcess(config) => {
+                assert_eq!(config.material_id, RenderMaterialId(7));
+                assert_eq!(config.params_id, Some(MaterialParamsId(9)));
+            }
+            _ => panic!("expected post-process payload"),
+        }
     }
 }

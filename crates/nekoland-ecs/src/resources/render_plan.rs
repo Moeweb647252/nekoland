@@ -158,6 +158,12 @@ pub struct RenderPlan {
     pub outputs: BTreeMap<OutputId, OutputRenderPlan>,
 }
 
+/// Test/debug-only scene item injections merged into the current render plan before graph build.
+#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct RenderPlanInjectionState {
+    pub outputs: BTreeMap<OutputId, Vec<RenderPlanItem>>,
+}
+
 #[cfg(test)]
 mod tests {
     use crate::components::OutputId;

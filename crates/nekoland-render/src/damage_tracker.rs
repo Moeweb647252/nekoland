@@ -6,7 +6,7 @@ use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{OutputId, SurfaceContentVersion, WlSurfaceHandle};
 use nekoland_ecs::resources::{
     DamageRect, DamageState, OutputDamageRegions, RenderPassGraph, RenderPassKind, RenderPlan,
-    RenderPlanItem, RenderRect, RenderTargetKind, SurfacePresentationSnapshot,
+    RenderPlanItem, RenderRect, SurfacePresentationSnapshot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -92,15 +92,8 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
             if pass.kind != RenderPassKind::Scene {
                 continue;
             }
-            if execution
-                .targets
-                .get(&pass.output_target)
-                .is_some_and(|target| matches!(target, RenderTargetKind::Offscreen))
-            {
-                continue;
-            }
 
-            for item_index in &pass.item_indices {
+            for item_index in pass.item_indices() {
                 let Some(item) = output_plan.items.get(*item_index) else {
                     continue;
                 };
@@ -325,11 +318,17 @@ mod tests {
         WlSurfaceHandle, XdgPopup, XdgWindow,
     };
     use nekoland_ecs::resources::{
-        DamageState, OutputDamageRegions, RenderPassGraph, RenderPlan, SurfacePresentationRole,
-        SurfacePresentationSnapshot, SurfacePresentationState, WindowStackingState,
+        DamageState, OutputDamageRegions, RenderColor, RenderItemInstance, RenderPassGraph,
+        RenderPlan, RenderPlanInjectionState, RenderPlanItem, RenderRect, RenderSceneRole,
+        SolidRectRenderItem, SurfacePresentationRole, SurfacePresentationSnapshot,
+        SurfacePresentationState, WindowStackingState,
     };
 
-    use crate::{compositor_render::compose_frame_system, render_graph::build_render_graph_system};
+    use crate::{
+        compositor_render::compose_frame_system,
+        material::{RenderMaterialParamsStore, RenderMaterialRegistry, RenderMaterialRequestQueue},
+        render_graph::build_render_graph_system,
+    };
 
     use super::damage_tracking_system;
 
@@ -345,7 +344,11 @@ mod tests {
     fn install_damage_pipeline(app: &mut NekolandApp) {
         app.inner_mut()
             .init_resource::<RenderPlan>()
+            .init_resource::<RenderPlanInjectionState>()
             .init_resource::<RenderPassGraph>()
+            .init_resource::<RenderMaterialRegistry>()
+            .init_resource::<RenderMaterialParamsStore>()
+            .init_resource::<RenderMaterialRequestQueue>()
             .init_resource::<WindowStackingState>()
             .init_resource::<DamageState>()
             .init_resource::<OutputDamageRegions>()
@@ -717,6 +720,85 @@ mod tests {
         assert_eq!(
             damage.regions[&virtual_id],
             vec![nekoland_ecs::resources::DamageRect { x: 10, y: 20, width: 100, height: 80 }],
+        );
+    }
+
+    #[test]
+    fn solid_rect_injections_participate_in_damage_diff() {
+        let mut app = NekolandApp::new("damage-tracker-solid-rect-test");
+        install_damage_pipeline(&mut app);
+
+        app.inner_mut().world_mut().spawn(OutputBundle {
+            output: OutputDevice {
+                name: "Virtual-1".to_owned(),
+                kind: OutputKind::Virtual,
+                make: "Virtual".to_owned(),
+                model: "one".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+            ..Default::default()
+        });
+        let virtual_id = output_id_by_name(app.inner_mut().world_mut(), "Virtual-1");
+        app.inner_mut().world_mut().resource_mut::<RenderPlanInjectionState>().outputs =
+            std::collections::BTreeMap::from([(
+                virtual_id,
+                vec![RenderPlanItem::SolidRect(SolidRectRenderItem {
+                    color: RenderColor { r: 1, g: 2, b: 3, a: 200 },
+                    instance: RenderItemInstance {
+                        rect: RenderRect { x: 10, y: 20, width: 40, height: 30 },
+                        opacity: 0.8,
+                        clip_rect: None,
+                        z_index: 1,
+                        scene_role: RenderSceneRole::Overlay,
+                    },
+                })],
+            )]);
+
+        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+        {
+            let world = app.inner().world();
+            let damage = world.resource::<OutputDamageRegions>();
+            let state = world.resource::<DamageState>();
+            assert!(state.full_redraw);
+            assert_eq!(
+                damage.regions[&virtual_id],
+                vec![nekoland_ecs::resources::DamageRect { x: 10, y: 20, width: 40, height: 30 }],
+            );
+        }
+
+        app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();
+        app.inner_mut().world_mut().resource_mut::<DamageState>().full_redraw = false;
+        app.inner_mut().world_mut().resource_mut::<RenderPlanInjectionState>().outputs =
+            std::collections::BTreeMap::from([(
+                virtual_id,
+                vec![RenderPlanItem::SolidRect(SolidRectRenderItem {
+                    color: RenderColor { r: 1, g: 2, b: 3, a: 200 },
+                    instance: RenderItemInstance {
+                        rect: RenderRect { x: 20, y: 20, width: 40, height: 30 },
+                        opacity: 0.8,
+                        clip_rect: None,
+                        z_index: 1,
+                        scene_role: RenderSceneRole::Overlay,
+                    },
+                })],
+            )]);
+        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+
+        let world = app.inner().world();
+        let damage = world.resource::<OutputDamageRegions>();
+        let state = world.resource::<DamageState>();
+        assert!(state.full_redraw);
+        assert_eq!(
+            damage.regions[&virtual_id],
+            vec![
+                nekoland_ecs::resources::DamageRect { x: 10, y: 20, width: 10, height: 30 },
+                nekoland_ecs::resources::DamageRect { x: 50, y: 20, width: 10, height: 30 },
+            ],
         );
     }
 }
