@@ -349,6 +349,7 @@ mod tests {
         WindowAnimation, WindowRole, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{
+        CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, OutputCompositorScene,
         RenderColor, RenderItemIdentity, RenderItemInstance, RenderPlan, RenderPlanItem,
         RenderRect, RenderSceneRole, RenderSourceId, SurfacePresentationRole,
         SurfacePresentationSnapshot, SurfacePresentationState, SurfaceVisualSnapshot,
@@ -359,25 +360,22 @@ mod tests {
         AnimationBindingKey, AnimationEasing, AnimationProperty, AnimationTimelineStore,
         AnimationTrack, AnimationValue,
     };
-    use crate::scene_source::{
-        ExternalSceneContributionState, RenderInstanceKey, RenderSceneContribution,
-        RenderSceneContributionPayload, RenderSceneContributionQueue, RenderSourceKey,
-    };
+    use crate::scene_source::{RenderInstanceKey, RenderSceneContributionQueue, RenderSourceKey};
 
     use super::{assemble_render_plan_system, emit_desktop_scene_contributions_system};
 
     fn add_render_plan_systems(app: &mut NekolandApp) {
         app.inner_mut()
             .init_resource::<crate::animation::AnimationTimelineStore>()
+            .init_resource::<CompositorSceneState>()
             .init_resource::<RenderSceneContributionQueue>()
-            .init_resource::<ExternalSceneContributionState>()
             .init_resource::<crate::scene_source::RenderSceneIdentityRegistry>()
             .add_systems(
                 RenderSchedule,
                 (
                     crate::scene_source::clear_scene_contributions_system,
                     emit_desktop_scene_contributions_system,
-                    crate::scene_source::emit_external_scene_contributions_system,
+                    crate::scene_source::emit_compositor_scene_contributions_system,
                     assemble_render_plan_system,
                 )
                     .chain(),
@@ -791,26 +789,22 @@ mod tests {
             .insert_resource(WindowStackingState::default());
         add_render_plan_systems(&mut app);
         let output_id = spawn_default_output(&mut app);
-        app.inner_mut().world_mut().resource_mut::<ExternalSceneContributionState>().outputs =
+        app.inner_mut().world_mut().resource_mut::<CompositorSceneState>().outputs =
             std::collections::BTreeMap::from([(
                 output_id,
-                vec![RenderSceneContribution {
-                    key: RenderInstanceKey::new(
-                        RenderSourceKey::new("test", "solid_rect"),
-                        output_id,
-                        0,
+                OutputCompositorScene::from_entries([(
+                    CompositorSceneEntryId(1),
+                    CompositorSceneEntry::solid_rect(
+                        RenderColor { r: 10, g: 20, b: 30, a: 200 },
+                        RenderItemInstance {
+                            rect: RenderRect { x: 5, y: 6, width: 40, height: 50 },
+                            opacity: 0.75,
+                            clip_rect: None,
+                            z_index: 3,
+                            scene_role: RenderSceneRole::Overlay,
+                        },
                     ),
-                    payload: RenderSceneContributionPayload::SolidRect {
-                        color: RenderColor { r: 10, g: 20, b: 30, a: 200 },
-                    },
-                    instance: RenderItemInstance {
-                        rect: RenderRect { x: 5, y: 6, width: 40, height: 50 },
-                        opacity: 0.75,
-                        clip_rect: None,
-                        z_index: 3,
-                        scene_role: RenderSceneRole::Overlay,
-                    },
-                }],
+                )]),
             )]);
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);

@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use bevy_ecs::prelude::{ResMut, Resource};
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
-    BackdropRenderItem, CursorRenderItem, CursorRenderSource, RenderColor, RenderItemId,
-    RenderItemIdentity, RenderItemInstance, RenderPlanItem, RenderSourceId, SolidRectRenderItem,
-    SurfaceRenderItem,
+    BackdropRenderItem, CompositorSceneItem, CompositorSceneState, CursorRenderItem,
+    CursorRenderSource, RenderColor, RenderItemId, RenderItemIdentity, RenderItemInstance,
+    RenderPlanItem, RenderSourceId, SolidRectRenderItem, SurfaceRenderItem,
 };
 
 /// Stable render-local source key resolved into ECS-facing `RenderSourceId`.
@@ -22,6 +22,10 @@ impl RenderSourceKey {
 
     pub fn surface(surface_id: u64) -> Self {
         Self::new("surface", surface_id.to_string())
+    }
+
+    pub fn compositor(entry_id: nekoland_ecs::resources::CompositorSceneEntryId) -> Self {
+        Self::new("compositor", entry_id.0.to_string())
     }
 }
 
@@ -105,15 +109,6 @@ pub struct RenderSceneContributionQueue {
     pub outputs: BTreeMap<OutputId, Vec<RenderSceneContribution>>,
 }
 
-/// Persistent external scene contributions merged into the frame-local queue each render tick.
-///
-/// This provides a stable provider boundary for tests and future compositor-owned producers
-/// without letting them bypass scene assembly and stable-id resolution.
-#[derive(Resource, Debug, Default, Clone, PartialEq)]
-pub struct ExternalSceneContributionState {
-    pub outputs: BTreeMap<OutputId, Vec<RenderSceneContribution>>,
-}
-
 /// Persistent render-local registry that resolves stable provider keys into ECS-facing ids.
 #[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
 pub struct RenderSceneIdentityRegistry {
@@ -159,17 +154,38 @@ pub fn clear_scene_contributions_system(mut queue: ResMut<'_, RenderSceneContrib
     queue.outputs.clear();
 }
 
-/// Emits persistent external contributions into the frame-local queue after providers are reset.
-pub fn emit_external_scene_contributions_system(
-    external: Option<bevy_ecs::prelude::Res<'_, ExternalSceneContributionState>>,
+/// Emits compositor-owned ECS scene state into the frame-local queue after desktop providers run.
+pub fn emit_compositor_scene_contributions_system(
+    compositor_scene: Option<bevy_ecs::prelude::Res<'_, CompositorSceneState>>,
     mut queue: ResMut<'_, RenderSceneContributionQueue>,
 ) {
-    let Some(external) = external else {
+    let Some(compositor_scene) = compositor_scene else {
         return;
     };
 
-    for (output_id, contributions) in &external.outputs {
-        queue.outputs.entry(*output_id).or_default().extend(contributions.iter().cloned());
+    for (output_id, output_scene) in &compositor_scene.outputs {
+        let output_contributions = queue.outputs.entry(*output_id).or_default();
+        for (entry_id, entry) in output_scene.iter_ordered() {
+            debug_assert!(
+                matches!(
+                    entry.instance.scene_role,
+                    nekoland_ecs::resources::RenderSceneRole::Compositor
+                        | nekoland_ecs::resources::RenderSceneRole::Overlay
+                ),
+                "compositor scene entries may only use compositor or overlay roles"
+            );
+
+            let key = RenderInstanceKey::new(RenderSourceKey::compositor(entry_id), *output_id, 0);
+            let contribution = match &entry.item {
+                CompositorSceneItem::SolidRect { color } => {
+                    RenderSceneContribution::solid_rect(key, *color, entry.instance)
+                }
+                CompositorSceneItem::Backdrop => {
+                    RenderSceneContribution::backdrop(key, entry.instance)
+                }
+            };
+            output_contributions.push(contribution);
+        }
     }
 }
 
@@ -220,6 +236,7 @@ mod tests {
         RenderInstanceKey, RenderSceneContribution, RenderSceneContributionPayload,
         RenderSceneContributionQueue, RenderSceneIdentityRegistry, RenderSourceKey,
         clear_scene_contributions_system, contribution_to_plan_item,
+        emit_compositor_scene_contributions_system,
     };
 
     #[test]
@@ -304,5 +321,45 @@ mod tests {
         let _ = system.run((), &mut world);
 
         assert!(world.resource::<RenderSceneContributionQueue>().outputs.is_empty());
+    }
+
+    #[test]
+    fn compositor_scene_entries_emit_into_frame_local_contribution_queue() {
+        let mut world = World::default();
+        world.insert_resource(nekoland_ecs::resources::CompositorSceneState {
+            outputs: BTreeMap::from([(
+                OutputId(5),
+                nekoland_ecs::resources::OutputCompositorScene::from_entries([(
+                    nekoland_ecs::resources::CompositorSceneEntryId(9),
+                    nekoland_ecs::resources::CompositorSceneEntry::solid_rect(
+                        RenderColor { r: 1, g: 2, b: 3, a: 4 },
+                        RenderItemInstance {
+                            rect: RenderRect { x: 6, y: 7, width: 8, height: 9 },
+                            opacity: 0.75,
+                            clip_rect: None,
+                            z_index: 2,
+                            scene_role: RenderSceneRole::Compositor,
+                        },
+                    ),
+                )]),
+            )]),
+        });
+        world.init_resource::<RenderSceneContributionQueue>();
+
+        let mut system = IntoSystem::into_system(emit_compositor_scene_contributions_system);
+        system.initialize(&mut world);
+        let _ = system.run((), &mut world);
+
+        let queue = world.resource::<RenderSceneContributionQueue>();
+        let contributions = queue.outputs.get(&OutputId(5)).expect("output contributions");
+        assert_eq!(contributions.len(), 1);
+        assert_eq!(
+            contributions[0].key.source_key,
+            RenderSourceKey::compositor(nekoland_ecs::resources::CompositorSceneEntryId(9))
+        );
+        assert!(matches!(
+            contributions[0].payload,
+            RenderSceneContributionPayload::SolidRect { .. }
+        ));
     }
 }

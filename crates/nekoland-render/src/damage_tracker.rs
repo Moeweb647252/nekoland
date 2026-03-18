@@ -380,20 +380,21 @@ mod tests {
         WlSurfaceHandle, XdgPopup, XdgWindow,
     };
     use nekoland_ecs::resources::{
-        DamageState, OutputDamageRegions, RenderColor, RenderItemInstance,
-        RenderMaterialFrameState, RenderPassGraph, RenderPlan, RenderRect, RenderSceneRole,
-        SurfacePresentationRole, SurfacePresentationSnapshot, SurfacePresentationState,
-        WindowStackingState,
+        CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, CursorImageSnapshot,
+        CursorSceneSnapshot, DamageState, OutputCompositorScene, OutputDamageRegions, RenderColor,
+        RenderItemInstance, RenderMaterialFrameState, RenderPassGraph, RenderPlan, RenderRect,
+        RenderSceneRole, SurfacePresentationRole, SurfacePresentationSnapshot,
+        SurfacePresentationState, WindowStackingState,
     };
 
     use crate::{
         compositor_render::{assemble_render_plan_system, emit_desktop_scene_contributions_system},
+        cursor::{CursorThemeGeometryCache, emit_cursor_scene_contributions_system},
         material::{RenderMaterialParamsStore, RenderMaterialRegistry, RenderMaterialRequestQueue},
         render_graph::build_render_graph_system,
         scene_source::{
-            ExternalSceneContributionState, RenderInstanceKey, RenderSceneContribution,
-            RenderSceneContributionPayload, RenderSceneContributionQueue,
-            RenderSceneIdentityRegistry, RenderSourceKey, clear_scene_contributions_system,
+            RenderSceneContributionQueue, RenderSceneIdentityRegistry,
+            clear_scene_contributions_system, emit_compositor_scene_contributions_system,
         },
     };
 
@@ -417,8 +418,11 @@ mod tests {
             .init_resource::<RenderMaterialParamsStore>()
             .init_resource::<RenderMaterialRequestQueue>()
             .init_resource::<crate::animation::AnimationTimelineStore>()
+            .init_resource::<CompositorSceneState>()
             .init_resource::<RenderSceneContributionQueue>()
-            .init_resource::<ExternalSceneContributionState>()
+            .init_resource::<CursorSceneSnapshot>()
+            .init_resource::<CursorImageSnapshot>()
+            .init_resource::<CursorThemeGeometryCache>()
             .init_resource::<RenderSceneIdentityRegistry>()
             .init_resource::<WindowStackingState>()
             .init_resource::<DamageState>()
@@ -428,7 +432,8 @@ mod tests {
                 (
                     clear_scene_contributions_system,
                     emit_desktop_scene_contributions_system,
-                    crate::scene_source::emit_external_scene_contributions_system,
+                    emit_compositor_scene_contributions_system,
+                    emit_cursor_scene_contributions_system,
                     assemble_render_plan_system,
                     build_render_graph_system,
                     damage_tracking_system,
@@ -823,26 +828,22 @@ mod tests {
             ..Default::default()
         });
         let virtual_id = output_id_by_name(app.inner_mut().world_mut(), "Virtual-1");
-        app.inner_mut().world_mut().resource_mut::<ExternalSceneContributionState>().outputs =
+        app.inner_mut().world_mut().resource_mut::<CompositorSceneState>().outputs =
             std::collections::BTreeMap::from([(
                 virtual_id,
-                vec![RenderSceneContribution {
-                    key: RenderInstanceKey::new(
-                        RenderSourceKey::new("test", "solid_rect"),
-                        virtual_id,
-                        0,
+                OutputCompositorScene::from_entries([(
+                    CompositorSceneEntryId(1),
+                    CompositorSceneEntry::solid_rect(
+                        RenderColor { r: 1, g: 2, b: 3, a: 200 },
+                        RenderItemInstance {
+                            rect: RenderRect { x: 10, y: 20, width: 40, height: 30 },
+                            opacity: 0.8,
+                            clip_rect: None,
+                            z_index: 1,
+                            scene_role: RenderSceneRole::Overlay,
+                        },
                     ),
-                    payload: RenderSceneContributionPayload::SolidRect {
-                        color: RenderColor { r: 1, g: 2, b: 3, a: 200 },
-                    },
-                    instance: RenderItemInstance {
-                        rect: RenderRect { x: 10, y: 20, width: 40, height: 30 },
-                        opacity: 0.8,
-                        clip_rect: None,
-                        z_index: 1,
-                        scene_role: RenderSceneRole::Overlay,
-                    },
-                }],
+                )]),
             )]);
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
@@ -859,26 +860,22 @@ mod tests {
 
         app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();
         app.inner_mut().world_mut().resource_mut::<DamageState>().full_redraw = false;
-        app.inner_mut().world_mut().resource_mut::<ExternalSceneContributionState>().outputs =
+        app.inner_mut().world_mut().resource_mut::<CompositorSceneState>().outputs =
             std::collections::BTreeMap::from([(
                 virtual_id,
-                vec![RenderSceneContribution {
-                    key: RenderInstanceKey::new(
-                        RenderSourceKey::new("test", "solid_rect"),
-                        virtual_id,
-                        0,
+                OutputCompositorScene::from_entries([(
+                    CompositorSceneEntryId(1),
+                    CompositorSceneEntry::solid_rect(
+                        RenderColor { r: 1, g: 2, b: 3, a: 200 },
+                        RenderItemInstance {
+                            rect: RenderRect { x: 20, y: 20, width: 40, height: 30 },
+                            opacity: 0.8,
+                            clip_rect: None,
+                            z_index: 1,
+                            scene_role: RenderSceneRole::Overlay,
+                        },
                     ),
-                    payload: RenderSceneContributionPayload::SolidRect {
-                        color: RenderColor { r: 1, g: 2, b: 3, a: 200 },
-                    },
-                    instance: RenderItemInstance {
-                        rect: RenderRect { x: 20, y: 20, width: 40, height: 30 },
-                        opacity: 0.8,
-                        clip_rect: None,
-                        z_index: 1,
-                        scene_role: RenderSceneRole::Overlay,
-                    },
-                }],
+                )]),
             )]);
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 
@@ -916,23 +913,16 @@ mod tests {
             ..Default::default()
         });
         let virtual_id = output_id_by_name(app.inner_mut().world_mut(), "Virtual-1");
-        app.inner_mut().world_mut().resource_mut::<ExternalSceneContributionState>().outputs =
-            std::collections::BTreeMap::from([(
-                virtual_id,
-                vec![RenderSceneContribution::cursor(
-                    virtual_id,
-                    nekoland_ecs::resources::CursorRenderSource::Named {
-                        icon_name: "default".to_owned(),
-                    },
-                    RenderItemInstance {
-                        rect: RenderRect { x: 10, y: 20, width: 16, height: 24 },
-                        opacity: 1.0,
-                        clip_rect: None,
-                        z_index: i32::MAX,
-                        scene_role: RenderSceneRole::Cursor,
-                    },
-                )],
-            )]);
+        *app.inner_mut().world_mut().resource_mut::<CursorSceneSnapshot>() =
+            CursorSceneSnapshot { visible: true, output_id: Some(virtual_id), x: 10.0, y: 20.0 };
+        *app.inner_mut().world_mut().resource_mut::<CursorImageSnapshot>() =
+            CursorImageSnapshot::Surface {
+                surface_id: 999,
+                hotspot_x: 0,
+                hotspot_y: 0,
+                width: 16,
+                height: 24,
+            };
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
         {
@@ -946,23 +936,8 @@ mod tests {
 
         app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();
         app.inner_mut().world_mut().resource_mut::<DamageState>().full_redraw = false;
-        app.inner_mut().world_mut().resource_mut::<ExternalSceneContributionState>().outputs =
-            std::collections::BTreeMap::from([(
-                virtual_id,
-                vec![RenderSceneContribution::cursor(
-                    virtual_id,
-                    nekoland_ecs::resources::CursorRenderSource::Named {
-                        icon_name: "default".to_owned(),
-                    },
-                    RenderItemInstance {
-                        rect: RenderRect { x: 20, y: 20, width: 16, height: 24 },
-                        opacity: 1.0,
-                        clip_rect: None,
-                        z_index: i32::MAX,
-                        scene_role: RenderSceneRole::Cursor,
-                    },
-                )],
-            )]);
+        *app.inner_mut().world_mut().resource_mut::<CursorSceneSnapshot>() =
+            CursorSceneSnapshot { visible: true, output_id: Some(virtual_id), x: 20.0, y: 20.0 };
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 
         let world = app.inner().world();
