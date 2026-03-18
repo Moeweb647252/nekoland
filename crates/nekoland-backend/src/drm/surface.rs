@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use drm_fourcc::DrmFourcc;
 use nekoland_ecs::resources::{
-    CompositorConfig, DamageRect, OutputDamageRegions, RenderPassGraph, RenderPlan, RenderRect,
+    CompositorConfig, DamageRect, OutputDamageRegions, RenderMaterialFrameState, RenderPassGraph,
+    RenderPlan, RenderRect,
 };
 use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags};
@@ -54,6 +55,7 @@ pub(crate) struct DrmPresentCtx<'a> {
     pub outputs: &'a [OutputSnapshot],
     pub config: Option<&'a CompositorConfig>,
     pub output_damage_regions: &'a OutputDamageRegions,
+    pub materials: &'a RenderMaterialFrameState,
     pub render_graph: &'a RenderPassGraph,
     pub render_plan: &'a RenderPlan,
     pub surface_registry: Option<&'a ProtocolSurfaceRegistry>,
@@ -76,6 +78,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         outputs,
         config,
         output_damage_regions,
+        materials,
         render_graph,
         render_plan,
         surface_registry,
@@ -159,6 +162,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         for render_record in render_graph_output_records_in_presentation_order(
             render_graph,
             render_plan,
+            materials,
             output.output_id,
         ) {
             match render_record {

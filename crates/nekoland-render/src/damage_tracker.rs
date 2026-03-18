@@ -5,8 +5,9 @@ use bevy_ecs::prelude::{Local, Query, Res, ResMut};
 use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{OutputId, SurfaceContentVersion, WlSurfaceHandle};
 use nekoland_ecs::resources::{
-    DamageRect, DamageState, OutputDamageRegions, RenderItemId, RenderPassGraph, RenderPassKind,
-    RenderPlan, RenderPlanItem, RenderRect, SurfacePresentationSnapshot,
+    DamageRect, DamageState, OutputDamageRegions, RenderItemId, RenderMaterialFrameState,
+    RenderPassGraph, RenderPassKind, RenderPassPayload, RenderPlan, RenderPlanItem, RenderRect,
+    SurfacePresentationSnapshot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -35,6 +36,7 @@ pub(crate) struct DamageTrackingParams<'w, 's> {
     outputs: DamageOutputs<'w, 's>,
     render_plan: Res<'w, RenderPlan>,
     render_graph: Res<'w, RenderPassGraph>,
+    materials: Res<'w, RenderMaterialFrameState>,
     surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
     damage_state: ResMut<'w, DamageState>,
     output_damage_regions: ResMut<'w, OutputDamageRegions>,
@@ -52,6 +54,7 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
         outputs,
         render_plan,
         render_graph,
+        materials,
         surface_presentation,
         mut damage_state,
         mut output_damage_regions,
@@ -77,6 +80,7 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
         let Some(execution) = render_graph.outputs.get(output_id) else {
             continue;
         };
+        let material_signature = output_material_signature(execution, &materials);
 
         for pass_id in execution.reachable_passes_in_order() {
             let Some(pass) = execution.passes.get(&pass_id) else {
@@ -102,7 +106,11 @@ pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
                     *item_id,
                     TrackedSceneDamage {
                         rect,
-                        render_signature: render_signature_for_item(item, &surface_versions),
+                        render_signature: render_signature_for_item(
+                            item,
+                            &surface_versions,
+                            material_signature,
+                        ),
                     },
                 );
             }
@@ -151,7 +159,11 @@ fn damage_rect_from_render_rect(rect: RenderRect) -> DamageRect {
     DamageRect { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
 }
 
-fn render_signature_for_item(item: &RenderPlanItem, surface_versions: &HashMap<u64, u64>) -> u64 {
+fn render_signature_for_item(
+    item: &RenderPlanItem,
+    surface_versions: &HashMap<u64, u64>,
+    material_signature: u64,
+) -> u64 {
     let mut hasher = DefaultHasher::new();
 
     match item {
@@ -185,6 +197,64 @@ fn render_signature_for_item(item: &RenderPlanItem, surface_versions: &HashMap<u
                 }
             }
             item.instance.opacity.to_bits().hash(&mut hasher);
+        }
+    }
+
+    material_signature.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn output_material_signature(
+    execution: &nekoland_ecs::resources::OutputExecutionPlan,
+    materials: &RenderMaterialFrameState,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+
+    for pass_id in execution.reachable_passes_in_order() {
+        let Some(pass) = execution.passes.get(&pass_id) else {
+            continue;
+        };
+        let RenderPassPayload::PostProcess(config) = &pass.payload else {
+            continue;
+        };
+        config.material_id.hash(&mut hasher);
+        if let Some(descriptor) = materials.descriptor(config.material_id) {
+            descriptor.debug_name.hash(&mut hasher);
+            descriptor.pipeline_key.hash(&mut hasher);
+        }
+        if let Some(params_id) = config.params_id {
+            params_id.hash(&mut hasher);
+            if let Some(params) = materials.params(params_id) {
+                for (key, value) in &params.values {
+                    key.hash(&mut hasher);
+                    match value {
+                        nekoland_ecs::resources::RenderMaterialParamValue::Float(value) => {
+                            value.to_bits().hash(&mut hasher);
+                        }
+                        nekoland_ecs::resources::RenderMaterialParamValue::Vec2(value) => {
+                            value[0].to_bits().hash(&mut hasher);
+                            value[1].to_bits().hash(&mut hasher);
+                        }
+                        nekoland_ecs::resources::RenderMaterialParamValue::Vec4(value) => {
+                            for item in value {
+                                item.to_bits().hash(&mut hasher);
+                            }
+                        }
+                        nekoland_ecs::resources::RenderMaterialParamValue::Rect(value) => {
+                            value.x.hash(&mut hasher);
+                            value.y.hash(&mut hasher);
+                            value.width.hash(&mut hasher);
+                            value.height.hash(&mut hasher);
+                        }
+                        nekoland_ecs::resources::RenderMaterialParamValue::Bool(value) => {
+                            value.hash(&mut hasher);
+                        }
+                        nekoland_ecs::resources::RenderMaterialParamValue::Uint(value) => {
+                            value.hash(&mut hasher);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -310,9 +380,10 @@ mod tests {
         WlSurfaceHandle, XdgPopup, XdgWindow,
     };
     use nekoland_ecs::resources::{
-        DamageState, OutputDamageRegions, RenderColor, RenderItemInstance, RenderPassGraph,
-        RenderPlan, RenderRect, RenderSceneRole, SurfacePresentationRole,
-        SurfacePresentationSnapshot, SurfacePresentationState, WindowStackingState,
+        DamageState, OutputDamageRegions, RenderColor, RenderItemInstance,
+        RenderMaterialFrameState, RenderPassGraph, RenderPlan, RenderRect, RenderSceneRole,
+        SurfacePresentationRole, SurfacePresentationSnapshot, SurfacePresentationState,
+        WindowStackingState,
     };
 
     use crate::{
@@ -341,9 +412,11 @@ mod tests {
         app.inner_mut()
             .init_resource::<RenderPlan>()
             .init_resource::<RenderPassGraph>()
+            .init_resource::<RenderMaterialFrameState>()
             .init_resource::<RenderMaterialRegistry>()
             .init_resource::<RenderMaterialParamsStore>()
             .init_resource::<RenderMaterialRequestQueue>()
+            .init_resource::<crate::animation::AnimationTimelineStore>()
             .init_resource::<RenderSceneContributionQueue>()
             .init_resource::<ExternalSceneContributionState>()
             .init_resource::<RenderSceneIdentityRegistry>()

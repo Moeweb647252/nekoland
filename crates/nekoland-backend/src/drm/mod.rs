@@ -151,6 +151,7 @@ impl Backend for DrmRuntime {
             outputs: &owned_outputs,
             config: cx.config,
             output_damage_regions: cx.output_damage_regions,
+            materials: cx.materials,
             render_graph: cx.render_graph,
             render_plan: cx.render_plan,
             surface_registry: cx.surface_registry,

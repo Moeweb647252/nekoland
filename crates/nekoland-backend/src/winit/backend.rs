@@ -438,6 +438,7 @@ impl Backend for WinitRuntime {
             for render_record in render_graph_output_records_in_presentation_order(
                 cx.render_graph,
                 cx.render_plan,
+                cx.materials,
                 output.output_id,
             ) {
                 match render_record {

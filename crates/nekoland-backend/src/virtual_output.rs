@@ -156,6 +156,7 @@ impl Backend for VirtualRuntime {
         let elements = render_graph_output_present_audit_elements(
             cx.render_graph,
             cx.render_plan,
+            cx.materials,
             cx.surfaces,
             output.output_id,
         )

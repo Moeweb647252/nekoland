@@ -1,5 +1,6 @@
 //! Render-list composition, visual-state projection, damage tracking, and compositor effects.
 
+pub mod animation;
 pub mod compositor_render;
 pub mod cursor;
 pub mod damage_tracker;

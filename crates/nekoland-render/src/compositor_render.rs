@@ -21,6 +21,10 @@ use crate::scene_source::{
     RenderSceneContribution, RenderSceneContributionQueue, RenderSceneIdentityRegistry,
     contribution_to_plan_item,
 };
+use crate::{
+    animation::{AnimationBindingKey, AnimationProperty, AnimationTimelineStore, AnimationValue},
+    scene_source::{RenderInstanceKey, RenderSourceKey},
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrameComposer;
@@ -35,6 +39,7 @@ pub struct FrameCompositionInputs<'w, 's> {
     workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
     surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
     surface_visual: Option<Res<'w, SurfaceVisualSnapshot>>,
+    animation_timelines: Res<'w, AnimationTimelineStore>,
     scene_contributions: ResMut<'w, RenderSceneContributionQueue>,
 }
 
@@ -61,6 +66,7 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
         workspaces,
         surface_presentation,
         surface_visual,
+        animation_timelines,
         mut scene_contributions,
     } = composition;
     let surface_presentation = surface_presentation.as_deref();
@@ -231,18 +237,26 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
         };
 
         for output_id in target_outputs {
-            contributions.entry(output_id).or_default().push(RenderSceneContribution::surface(
-                output_id,
-                surface_id,
-                0,
-                RenderItemInstance {
-                    rect: RenderRect::from(&state.geometry),
-                    opacity,
-                    clip_rect: None,
-                    z_index: z_index as i32,
-                    scene_role: RenderSceneRole::Desktop,
-                },
-            ));
+            let visual_state = surface_visual_state(surface_id, surface_visual);
+            let mut instance = RenderItemInstance {
+                rect: visual_state
+                    .as_ref()
+                    .and_then(|state| state.rect_override)
+                    .unwrap_or_else(|| RenderRect::from(&state.geometry)),
+                opacity,
+                clip_rect: visual_state.as_ref().and_then(|state| state.clip_rect_override),
+                z_index: z_index as i32,
+                scene_role: RenderSceneRole::Desktop,
+            };
+            apply_instance_animation_overrides(
+                &mut instance,
+                &animation_timelines,
+                &RenderInstanceKey::new(RenderSourceKey::surface(surface_id), output_id, 0),
+            );
+            contributions
+                .entry(output_id)
+                .or_default()
+                .push(RenderSceneContribution::surface(output_id, surface_id, 0, instance));
         }
     }
 
@@ -290,15 +304,43 @@ fn popup_parent_visible(child_of: &ChildOf, active_window_entities: &BTreeSet<En
 }
 
 fn surface_opacity(surface_id: u64, visual_snapshot: Option<&SurfaceVisualSnapshot>) -> f32 {
-    visual_snapshot
-        .and_then(|snapshot| snapshot.surfaces.get(&surface_id))
-        .map(|state| state.opacity)
-        .unwrap_or(1.0)
+    surface_visual_state(surface_id, visual_snapshot).map(|state| state.opacity).unwrap_or(1.0)
+}
+
+fn surface_visual_state(
+    surface_id: u64,
+    visual_snapshot: Option<&SurfaceVisualSnapshot>,
+) -> Option<nekoland_ecs::resources::SurfaceVisualState> {
+    visual_snapshot.and_then(|snapshot| snapshot.surfaces.get(&surface_id).cloned())
+}
+
+fn apply_instance_animation_overrides(
+    instance: &mut RenderItemInstance,
+    timelines: &AnimationTimelineStore,
+    binding: &RenderInstanceKey,
+) {
+    let binding = AnimationBindingKey::Instance(binding.clone());
+    if let Some(AnimationValue::Float(opacity)) =
+        timelines.sampled_value(&binding, AnimationProperty::Opacity)
+    {
+        instance.opacity = (*opacity).clamp(0.0, 1.0);
+    }
+    if let Some(AnimationValue::Rect(rect)) =
+        timelines.sampled_value(&binding, AnimationProperty::Rect)
+    {
+        instance.rect = *rect;
+    }
+    if let Some(AnimationValue::Rect(rect)) =
+        timelines.sampled_value(&binding, AnimationProperty::ClipRect)
+    {
+        instance.clip_rect = Some(*rect);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
+    use bevy_ecs::system::{IntoSystem, System};
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::bundles::{LayerSurfaceBundle, OutputBundle, WindowBundle};
@@ -313,6 +355,10 @@ mod tests {
         SurfaceVisualState, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
     };
 
+    use crate::animation::{
+        AnimationBindingKey, AnimationEasing, AnimationProperty, AnimationTimelineStore,
+        AnimationTrack, AnimationValue,
+    };
     use crate::scene_source::{
         ExternalSceneContributionState, RenderInstanceKey, RenderSceneContribution,
         RenderSceneContributionPayload, RenderSceneContributionQueue, RenderSourceKey,
@@ -322,6 +368,7 @@ mod tests {
 
     fn add_render_plan_systems(app: &mut NekolandApp) {
         app.inner_mut()
+            .init_resource::<crate::animation::AnimationTimelineStore>()
             .init_resource::<RenderSceneContributionQueue>()
             .init_resource::<ExternalSceneContributionState>()
             .init_resource::<crate::scene_source::RenderSceneIdentityRegistry>()
@@ -598,7 +645,7 @@ mod tests {
             .world_mut()
             .resource_mut::<SurfaceVisualSnapshot>()
             .surfaces
-            .insert(11, SurfaceVisualState { opacity: 0.25 });
+            .insert(11, SurfaceVisualState { opacity: 0.25, ..Default::default() });
         spawn_default_output(&mut app);
         set_surface_states(&mut app, [(11, SurfacePresentationRole::Window)]);
 
@@ -613,6 +660,81 @@ mod tests {
             panic!("expected surface render item");
         };
         assert_eq!(item.instance.opacity, 0.25);
+    }
+
+    #[test]
+    fn instance_bound_rect_animation_overrides_scene_rect_without_mutating_presentation_geometry() {
+        let mut app = NekolandApp::new("render-instance-bound-rect-override-test");
+        app.inner_mut().init_resource::<RenderPlan>().insert_resource(WindowStackingState {
+            workspaces: std::collections::BTreeMap::from([(
+                UNASSIGNED_WORKSPACE_STACK_ID,
+                vec![11],
+            )]),
+        });
+        add_render_plan_systems(&mut app);
+        let output_id = spawn_default_output(&mut app);
+
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 11 },
+            window: XdgWindow {
+                app_id: "org.nekoland.test".to_owned(),
+                title: "window".to_owned(),
+                last_acked_configure: None,
+            },
+            ..Default::default()
+        });
+        set_surface_states(&mut app, [(11, SurfacePresentationRole::Window)]);
+        app.inner_mut().world_mut().resource_mut::<AnimationTimelineStore>().upsert_track(
+            AnimationBindingKey::Instance(RenderInstanceKey::new(
+                RenderSourceKey::surface(11),
+                output_id,
+                0,
+            )),
+            AnimationTrack {
+                property: AnimationProperty::Rect,
+                from: AnimationValue::Rect(RenderRect { x: 0, y: 0, width: 100, height: 80 }),
+                to: AnimationValue::Rect(RenderRect { x: 30, y: 40, width: 120, height: 90 }),
+                start_uptime_millis: 0,
+                duration_millis: 1,
+                easing: AnimationEasing::Linear,
+            },
+        );
+        {
+            let timelines = app.inner_mut().world_mut().resource_mut::<AnimationTimelineStore>();
+            let binding = AnimationBindingKey::Instance(RenderInstanceKey::new(
+                RenderSourceKey::surface(11),
+                output_id,
+                0,
+            ));
+            assert_eq!(
+                timelines.sampled_value(&binding, AnimationProperty::Rect),
+                None,
+                "instance-bound override should be consumed from sampled values, not written directly"
+            );
+        }
+        app.inner_mut().world_mut().insert_resource(nekoland_ecs::resources::CompositorClock {
+            frame: 1,
+            uptime_millis: 1,
+        });
+        let mut system =
+            IntoSystem::into_system(crate::animation::advance_animation_timelines_system);
+        system.initialize(app.inner_mut().world_mut());
+        let _ = system.run((), app.inner_mut().world_mut());
+        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+
+        let render_plan = app.inner().world().resource::<RenderPlan>();
+        let output_plan = render_plan.outputs.get(&output_id).expect("single output render plan");
+        let RenderPlanItem::Surface(item) =
+            output_plan.iter_ordered().next().expect("expected one surface item")
+        else {
+            panic!("expected surface render item");
+        };
+        assert_eq!(item.instance.rect, RenderRect { x: 30, y: 40, width: 120, height: 90 });
+        let presentation = app.inner().world().resource::<SurfacePresentationSnapshot>();
+        assert_eq!(
+            presentation.surfaces.get(&11).map(|state| &state.geometry),
+            Some(&nekoland_ecs::components::SurfaceGeometry::default())
+        );
     }
 
     #[test]

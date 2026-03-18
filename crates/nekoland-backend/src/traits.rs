@@ -7,7 +7,7 @@ use nekoland_ecs::components::{OutputDevice, OutputId, OutputProperties, Surface
 use nekoland_ecs::resources::{
     CompositorClock, CompositorConfig, GlobalPointerPosition, OutputDamageRegions,
     PendingBackendInputEvents, PendingOutputPresentationEvents, PendingProtocolInputEvents,
-    RenderPassGraph, RenderPlan, VirtualOutputCaptureState,
+    RenderMaterialFrameState, RenderPassGraph, RenderPlan, VirtualOutputCaptureState,
 };
 use nekoland_protocol::{ProtocolDmabufSupport, ProtocolSurfaceRegistry};
 
@@ -150,6 +150,7 @@ pub struct BackendPresentCtx<'a> {
     pub pointer: Option<&'a GlobalPointerPosition>,
     pub output_damage_regions: &'a OutputDamageRegions,
     pub outputs: &'a [OutputSnapshot],
+    pub materials: &'a RenderMaterialFrameState,
     pub render_graph: &'a RenderPassGraph,
     pub render_plan: &'a RenderPlan,
     pub surfaces: &'a std::collections::HashMap<u64, RenderSurfaceSnapshot>,

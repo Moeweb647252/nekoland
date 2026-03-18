@@ -4,11 +4,11 @@ use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{PreRenderSchedule, RenderSchedule};
 use nekoland_ecs::resources::{
     CursorImageSnapshot, CursorSceneSnapshot, DamageState, FramePacingState, OutputDamageRegions,
-    RenderPassGraph, RenderPlan, SurfaceVisualSnapshot,
+    RenderMaterialFrameState, RenderPassGraph, RenderPlan, SurfaceVisualSnapshot,
 };
 
 use crate::{
-    compositor_render, cursor, damage_tracker, effects, frame_callback, material,
+    animation, compositor_render, cursor, damage_tracker, effects, frame_callback, material,
     presentation_feedback, render_graph, scene_source, screenshot, surface_visual,
 };
 
@@ -24,9 +24,11 @@ impl NekolandPlugin for RenderPlugin {
             .init_resource::<material::RenderMaterialRegistry>()
             .init_resource::<material::RenderMaterialParamsStore>()
             .init_resource::<material::RenderMaterialRequestQueue>()
+            .init_resource::<RenderMaterialFrameState>()
             .init_resource::<scene_source::RenderSceneContributionQueue>()
             .init_resource::<scene_source::ExternalSceneContributionState>()
             .init_resource::<scene_source::RenderSceneIdentityRegistry>()
+            .init_resource::<animation::AnimationTimelineStore>()
             .init_resource::<CursorSceneSnapshot>()
             .init_resource::<CursorImageSnapshot>()
             .init_resource::<cursor::CursorThemeGeometryCache>()
@@ -41,6 +43,7 @@ impl NekolandPlugin for RenderPlugin {
                 PreRenderSchedule,
                 (
                     effects::fade::fade_effect_system,
+                    animation::advance_animation_timelines_system,
                     surface_visual::surface_visual_snapshot_system,
                     material::clear_material_requests_system,
                     effects::blur::blur_effect_system,
@@ -60,6 +63,8 @@ impl NekolandPlugin for RenderPlugin {
                     cursor::cursor_scene_snapshot_system,
                     cursor::emit_cursor_scene_contributions_system,
                     compositor_render::assemble_render_plan_system,
+                    material::emit_backdrop_material_requests_system,
+                    material::project_material_frame_state_system,
                     render_graph::build_render_graph_system,
                     damage_tracker::damage_tracking_system,
                     frame_callback::frame_callback_system,

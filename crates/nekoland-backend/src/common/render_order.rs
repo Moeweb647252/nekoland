@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, HashMap};
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
     CursorRenderSource, OutputExecutionPlan, OutputPresentAudit, PresentAuditElement,
-    PresentAuditElementKind, RenderColor, RenderItemInstance, RenderPassGraph, RenderPassKind,
-    RenderPlan, RenderPlanItem, RenderSceneRole, RenderTargetId, RenderTargetKind,
+    PresentAuditElementKind, RenderColor, RenderItemInstance, RenderMaterialFrameState,
+    RenderPassGraph, RenderPassKind, RenderPassPayload, RenderPlan, RenderPlanItem,
+    RenderSceneRole, RenderTargetId, RenderTargetKind,
 };
 
 use crate::traits::{OutputSnapshot, RenderSurfaceRole, RenderSurfaceSnapshot};
@@ -49,9 +50,10 @@ struct ExecutedOutputTargets {
 pub(crate) fn render_graph_output_records(
     render_graph: &RenderPassGraph,
     render_plan: &RenderPlan,
+    materials: &RenderMaterialFrameState,
     output_id: OutputId,
 ) -> Vec<OutputRenderRecord> {
-    let executed = execute_output_render_graph(render_graph, render_plan, output_id);
+    let executed = execute_output_render_graph(render_graph, render_plan, materials, output_id);
     executed
         .swapchain_target
         .and_then(|target_id| executed.targets.get(&target_id).cloned())
@@ -61,9 +63,10 @@ pub(crate) fn render_graph_output_records(
 pub(crate) fn render_graph_output_records_in_presentation_order(
     render_graph: &RenderPassGraph,
     render_plan: &RenderPlan,
+    materials: &RenderMaterialFrameState,
     output_id: OutputId,
 ) -> Vec<OutputRenderRecord> {
-    let mut records = render_graph_output_records(render_graph, render_plan, output_id);
+    let mut records = render_graph_output_records(render_graph, render_plan, materials, output_id);
     records.reverse();
     records
 }
@@ -74,26 +77,33 @@ pub(crate) fn render_graph_output_records_in_presentation_order(
 pub(crate) fn render_graph_output_surfaces_in_presentation_order(
     render_graph: &RenderPassGraph,
     render_plan: &RenderPlan,
+    materials: &RenderMaterialFrameState,
     output_id: OutputId,
 ) -> Vec<OutputSurfaceRenderRecord> {
-    render_graph_output_records_in_presentation_order(render_graph, render_plan, output_id)
-        .into_iter()
-        .filter_map(|record| match record {
-            OutputRenderRecord::Surface(record) => Some(record),
-            OutputRenderRecord::SolidRect(_)
-            | OutputRenderRecord::Backdrop(_)
-            | OutputRenderRecord::Cursor(_) => None,
-        })
-        .collect::<Vec<_>>()
+    render_graph_output_records_in_presentation_order(
+        render_graph,
+        render_plan,
+        materials,
+        output_id,
+    )
+    .into_iter()
+    .filter_map(|record| match record {
+        OutputRenderRecord::Surface(record) => Some(record),
+        OutputRenderRecord::SolidRect(_)
+        | OutputRenderRecord::Backdrop(_)
+        | OutputRenderRecord::Cursor(_) => None,
+    })
+    .collect::<Vec<_>>()
 }
 
 pub(crate) fn render_graph_output_present_audit_elements(
     render_graph: &RenderPassGraph,
     render_plan: &RenderPlan,
+    materials: &RenderMaterialFrameState,
     surfaces: &HashMap<u64, RenderSurfaceSnapshot>,
     output_id: OutputId,
 ) -> Vec<PresentAuditElement> {
-    render_graph_output_records(render_graph, render_plan, output_id)
+    render_graph_output_records(render_graph, render_plan, materials, output_id)
         .into_iter()
         .filter_map(|record| {
             let (surface_id, instance, kind) = match &record {
@@ -144,6 +154,7 @@ pub(crate) fn snapshot_present_audit_outputs(
     outputs: &[OutputSnapshot],
     render_graph: &RenderPassGraph,
     render_plan: &RenderPlan,
+    materials: &RenderMaterialFrameState,
     surfaces: &HashMap<u64, RenderSurfaceSnapshot>,
 ) -> BTreeMap<OutputId, OutputPresentAudit> {
     outputs
@@ -152,6 +163,7 @@ pub(crate) fn snapshot_present_audit_outputs(
             let elements = render_graph_output_present_audit_elements(
                 render_graph,
                 render_plan,
+                materials,
                 surfaces,
                 output.output_id,
             );
@@ -171,6 +183,7 @@ pub(crate) fn snapshot_present_audit_outputs(
 fn execute_output_render_graph(
     render_graph: &RenderPassGraph,
     render_plan: &RenderPlan,
+    materials: &RenderMaterialFrameState,
     output_id: OutputId,
 ) -> ExecutedOutputTargets {
     let Some(execution) = render_graph.outputs.get(&output_id) else {
@@ -202,13 +215,33 @@ fn execute_output_render_graph(
                     .collect::<Vec<_>>();
                 targets.entry(pass.output_target).or_default().extend(produced);
             }
-            RenderPassKind::Composite | RenderPassKind::PostProcess | RenderPassKind::Readback => {
+            RenderPassKind::Composite | RenderPassKind::Readback => {
                 let produced = pass
                     .input_targets
                     .iter()
                     .filter_map(|target_id| targets.get(target_id))
                     .flat_map(|records| records.iter().cloned())
                     .collect::<Vec<_>>();
+                targets.insert(pass.output_target, produced);
+            }
+            RenderPassKind::PostProcess => {
+                let source_records = pass
+                    .input_targets
+                    .iter()
+                    .filter_map(|target_id| targets.get(target_id))
+                    .flat_map(|records| records.iter().cloned())
+                    .collect::<Vec<_>>();
+                let produced = match &pass.payload {
+                    RenderPassPayload::PostProcess(config) => execute_material_records(
+                        materials,
+                        config.material_id,
+                        config.params_id,
+                        &source_records,
+                    ),
+                    RenderPassPayload::Scene(_)
+                    | RenderPassPayload::Composite(_)
+                    | RenderPassPayload::Readback(_) => source_records,
+                };
                 targets.insert(pass.output_target, produced);
             }
         }
@@ -218,6 +251,61 @@ fn execute_output_render_graph(
         swapchain_target: output_swapchain_target(execution, output_id),
         targets,
     }
+}
+
+fn execute_material_records(
+    materials: &RenderMaterialFrameState,
+    material_id: nekoland_ecs::resources::RenderMaterialId,
+    params_id: Option<nekoland_ecs::resources::MaterialParamsId>,
+    source_records: &[OutputRenderRecord],
+) -> Vec<OutputRenderRecord> {
+    let Some(descriptor) = materials.descriptor(material_id) else {
+        return source_records.to_vec();
+    };
+
+    match descriptor.pipeline_key.0.as_str() {
+        "backdrop_blur" => execute_backdrop_blur_records(materials, params_id, source_records),
+        _ => source_records.to_vec(),
+    }
+}
+
+fn execute_backdrop_blur_records(
+    materials: &RenderMaterialFrameState,
+    params_id: Option<nekoland_ecs::resources::MaterialParamsId>,
+    source_records: &[OutputRenderRecord],
+) -> Vec<OutputRenderRecord> {
+    let radius = params_id
+        .and_then(|params_id| materials.params(params_id))
+        .and_then(|params| params.float("radius"))
+        .unwrap_or(12.0);
+    let overlay_alpha = backdrop_overlay_alpha(radius);
+    let mut produced = source_records.to_vec();
+
+    for record in source_records {
+        let OutputRenderRecord::Backdrop(record) = record else {
+            continue;
+        };
+        let Some(visible_rect) = record.instance.visible_rect() else {
+            continue;
+        };
+        produced.push(OutputRenderRecord::SolidRect(OutputSolidRectRenderRecord {
+            color: RenderColor { r: 255, g: 255, b: 255, a: overlay_alpha },
+            instance: RenderItemInstance {
+                rect: visible_rect,
+                opacity: record.instance.opacity.clamp(0.0, 1.0),
+                clip_rect: None,
+                z_index: record.instance.z_index.saturating_add(1),
+                scene_role: RenderSceneRole::Compositor,
+            },
+        }));
+    }
+
+    produced
+}
+
+fn backdrop_overlay_alpha(radius: f32) -> u8 {
+    let normalized = (radius.max(0.0) / 24.0).clamp(0.0, 1.0);
+    (48.0 + normalized * 96.0).round().clamp(0.0, 255.0) as u8
 }
 
 fn output_swapchain_target(
@@ -281,6 +369,8 @@ mod tests {
     use nekoland_ecs::resources::{
         CursorRenderItem, CursorRenderSource, OutputExecutionPlan, OutputRenderPlan,
         PresentAuditElementKind, RenderColor, RenderItemId, RenderItemIdentity, RenderItemInstance,
+        RenderMaterialDescriptor, RenderMaterialFrameState, RenderMaterialId,
+        RenderMaterialParamBlock, RenderMaterialParamValue, RenderMaterialPipelineKey,
         RenderPassGraph, RenderPassId, RenderPassNode, RenderPlan, RenderPlanItem, RenderRect,
         RenderSceneRole, RenderSourceId, RenderTargetId, RenderTargetKind, SolidRectRenderItem,
         SurfaceRenderItem,
@@ -296,6 +386,10 @@ mod tests {
 
     fn identity(id: u64) -> RenderItemIdentity {
         RenderItemIdentity::new(RenderSourceId(id), RenderItemId(id))
+    }
+
+    fn no_materials() -> RenderMaterialFrameState {
+        RenderMaterialFrameState::default()
     }
 
     #[test]
@@ -397,7 +491,7 @@ mod tests {
         };
 
         assert_eq!(
-            render_graph_output_records(&render_graph, &render_plan, OutputId(7))
+            render_graph_output_records(&render_graph, &render_plan, &no_materials(), OutputId(7))
                 .into_iter()
                 .filter_map(|record| match record {
                     super::OutputRenderRecord::Surface(record) => Some(record.surface_id),
@@ -412,6 +506,7 @@ mod tests {
             render_graph_output_records_in_presentation_order(
                 &render_graph,
                 &render_plan,
+                &no_materials(),
                 OutputId(7),
             )
             .into_iter()
@@ -428,6 +523,7 @@ mod tests {
         let elements = render_graph_output_present_audit_elements(
             &render_graph,
             &render_plan,
+            &no_materials(),
             &surfaces,
             OutputId(7),
         );
@@ -437,6 +533,7 @@ mod tests {
             render_graph_output_surfaces_in_presentation_order(
                 &render_graph,
                 &render_plan,
+                &no_materials(),
                 OutputId(7),
             )
             .into_iter()
@@ -451,6 +548,7 @@ mod tests {
             &[output.clone()],
             &render_graph,
             &render_plan,
+            &no_materials(),
             &surfaces,
         );
         let audit = &audit_outputs[&OutputId(7)];
@@ -504,6 +602,7 @@ mod tests {
         let elements = render_graph_output_present_audit_elements(
             &render_graph,
             &render_plan,
+            &no_materials(),
             &HashMap::default(),
             OutputId(1),
         );
@@ -582,6 +681,7 @@ mod tests {
         let records = render_graph_output_records_in_presentation_order(
             &render_graph,
             &render_plan,
+            &no_materials(),
             OutputId(2),
         );
         assert!(matches!(records[0], super::OutputRenderRecord::SolidRect(_)));
@@ -632,6 +732,7 @@ mod tests {
         let elements = render_graph_output_present_audit_elements(
             &render_graph,
             &render_plan,
+            &no_materials(),
             &HashMap::default(),
             OutputId(3),
         );
@@ -639,5 +740,99 @@ mod tests {
         assert_eq!(elements[0].kind, PresentAuditElementKind::Cursor);
         assert_eq!(elements[0].surface_id, 0);
         assert_eq!((elements[0].x, elements[0].y), (12, 14));
+    }
+
+    #[test]
+    fn backdrop_blur_material_adds_compositor_overlay_records() {
+        let render_plan = RenderPlan {
+            outputs: std::collections::BTreeMap::from([(
+                OutputId(4),
+                OutputRenderPlan::from_items([RenderPlanItem::Backdrop(
+                    nekoland_ecs::resources::BackdropRenderItem {
+                        identity: identity(40),
+                        instance: RenderItemInstance {
+                            rect: RenderRect { x: 5, y: 6, width: 70, height: 80 },
+                            opacity: 0.8,
+                            clip_rect: None,
+                            z_index: 3,
+                            scene_role: RenderSceneRole::Overlay,
+                        },
+                    },
+                )]),
+            )]),
+        };
+        let render_graph = RenderPassGraph {
+            outputs: std::collections::BTreeMap::from([(
+                OutputId(4),
+                OutputExecutionPlan {
+                    targets: std::collections::BTreeMap::from([
+                        (RenderTargetId(1), RenderTargetKind::OutputSwapchain(OutputId(4))),
+                        (RenderTargetId(2), RenderTargetKind::OffscreenColor),
+                        (RenderTargetId(3), RenderTargetKind::OffscreenIntermediate),
+                    ]),
+                    passes: std::collections::BTreeMap::from([
+                        (
+                            RenderPassId(1),
+                            RenderPassNode::scene(
+                                RenderSceneRole::Overlay,
+                                RenderTargetId(2),
+                                Vec::new(),
+                                vec![RenderItemId(40)],
+                            ),
+                        ),
+                        (
+                            RenderPassId(2),
+                            RenderPassNode::post_process(
+                                RenderSceneRole::Compositor,
+                                RenderTargetId(2),
+                                RenderTargetId(3),
+                                vec![RenderPassId(1)],
+                                RenderMaterialId(7),
+                                Some(nekoland_ecs::resources::MaterialParamsId(9)),
+                            ),
+                        ),
+                        (
+                            RenderPassId(3),
+                            RenderPassNode::composite(
+                                RenderSceneRole::Compositor,
+                                RenderTargetId(3),
+                                RenderTargetId(1),
+                                vec![RenderPassId(2)],
+                            ),
+                        ),
+                    ]),
+                    ordered_passes: vec![RenderPassId(1), RenderPassId(2), RenderPassId(3)],
+                    terminal_passes: vec![RenderPassId(3)],
+                },
+            )]),
+        };
+        let materials = RenderMaterialFrameState {
+            descriptors: std::collections::BTreeMap::from([(
+                RenderMaterialId(7),
+                RenderMaterialDescriptor {
+                    debug_name: "backdrop_blur".to_owned(),
+                    pipeline_key: RenderMaterialPipelineKey("backdrop_blur".to_owned()),
+                },
+            )]),
+            params: std::collections::BTreeMap::from([(
+                nekoland_ecs::resources::MaterialParamsId(9),
+                RenderMaterialParamBlock {
+                    values: std::collections::BTreeMap::from([(
+                        "radius".to_owned(),
+                        RenderMaterialParamValue::Float(16.0),
+                    )]),
+                },
+            )]),
+        };
+
+        let records =
+            render_graph_output_records(&render_graph, &render_plan, &materials, OutputId(4));
+        assert_eq!(records.len(), 2);
+        assert!(matches!(records[0], super::OutputRenderRecord::Backdrop(_)));
+        let super::OutputRenderRecord::SolidRect(overlay) = &records[1] else {
+            panic!("expected compositor solid rect overlay");
+        };
+        assert_eq!(overlay.instance.scene_role, RenderSceneRole::Compositor);
+        assert_eq!(overlay.instance.rect, RenderRect { x: 5, y: 6, width: 70, height: 80 });
     }
 }
