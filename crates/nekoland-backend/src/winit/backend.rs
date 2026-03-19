@@ -99,6 +99,8 @@ struct WinitPresentCompletionShared {
     closed: bool,
     driver: WinitPresentDriver,
     desired_window_spec: WinitWindowSpec,
+    window_ready_for_present: bool,
+    waiting_for_window_ready_logged: bool,
 }
 
 impl Default for WinitPresentCompletionShared {
@@ -118,6 +120,8 @@ impl Default for WinitPresentCompletionShared {
                 width: 1280,
                 height: 720,
             },
+            window_ready_for_present: false,
+            waiting_for_window_ready_logged: false,
         }
     }
 }
@@ -220,6 +224,32 @@ impl WinitRuntime {
             .map(|output| output.name.clone())
             .unwrap_or_else(|| "Winit-1".to_owned())
     }
+
+    fn seed_output_blueprint(
+        &self,
+        output_name: &str,
+        pending_window_state: Option<&PendingWinitWindowState>,
+    ) -> BackendOutputBlueprint {
+        let (width, height, scale) = pending_window_state
+            .map(|window_state| {
+                let width = u32::try_from(window_state.size.w.max(1)).unwrap_or(1);
+                let height = u32::try_from(window_state.size.h.max(1)).unwrap_or(1);
+                let scale = window_state.scale_factor.round().clamp(1.0, u32::MAX as f64) as u32;
+                (width, height, scale)
+            })
+            .unwrap_or((1280, 720, 1));
+
+        BackendOutputBlueprint {
+            local_id: WINIT_PRIMARY_OUTPUT_LOCAL_ID.to_owned(),
+            device: OutputDevice {
+                name: output_name.to_owned(),
+                kind: OutputKind::Nested,
+                make: "Winit".to_owned(),
+                model: self.descriptor.description.clone(),
+            },
+            properties: OutputProperties { width, height, refresh_millihz: 60_000, scale },
+        }
+    }
 }
 
 impl Backend for WinitRuntime {
@@ -240,30 +270,18 @@ impl Backend for WinitRuntime {
     }
 
     fn seed_output(&self, output_name: &str) -> Option<BackendOutputBlueprint> {
-        Some(BackendOutputBlueprint {
-            local_id: WINIT_PRIMARY_OUTPUT_LOCAL_ID.to_owned(),
-            device: OutputDevice {
-                name: output_name.to_owned(),
-                kind: OutputKind::Nested,
-                make: "Winit".to_owned(),
-                model: self.descriptor.description.clone(),
-            },
-            properties: OutputProperties {
-                width: 1280,
-                height: 720,
-                refresh_millihz: 60_000,
-                scale: 1,
-            },
-        })
+        Some(self.seed_output_blueprint(output_name, None))
     }
 
     fn extract(&mut self, cx: &mut BackendExtractCtx<'_>) -> Result<(), NekolandError> {
         let desired_output_name = self.desired_output_name(cx.config);
         let owned_outputs = self.owned_outputs(cx.outputs).cloned().collect::<Vec<_>>();
+        let mut shared = self.shared.borrow_mut();
         if owned_outputs.is_empty()
             && self.seeded_output_name.as_deref() != Some(desired_output_name.as_str())
-            && let Some(blueprint) = self.seed_output(&desired_output_name)
         {
+            let blueprint = self
+                .seed_output_blueprint(&desired_output_name, shared.pending_window_state.as_ref());
             cx.output_events.push(BackendOutputEventRecord {
                 backend_id: self.id(),
                 output_name: desired_output_name.clone(),
@@ -273,8 +291,9 @@ impl Backend for WinitRuntime {
             self.seeded_output_name = Some(desired_output_name);
         }
 
-        let mut shared = self.shared.borrow_mut();
-        if let Some(window_state) = shared.pending_window_state.take() {
+        if !owned_outputs.is_empty()
+            && let Some(window_state) = shared.pending_window_state.take()
+        {
             let width = u32::try_from(window_state.size.w.max(1)).unwrap_or(1);
             let height = u32::try_from(window_state.size.h.max(1)).unwrap_or(1);
             let scale = window_state.scale_factor.round().clamp(1.0, u32::MAX as f64) as u32;
@@ -391,6 +410,25 @@ impl Backend for WinitRuntime {
 
         let mut shared = self.shared.borrow_mut();
         if shared.closed {
+            return Ok(());
+        }
+        if !shared.window_ready_for_present {
+            let Some((window_size, scale_factor)) = shared.backend.as_ref().map(|backend| {
+                let window_size = backend.window_size();
+                let scale_factor = backend.scale_factor();
+                backend.window().request_redraw();
+                (window_size, scale_factor)
+            }) else {
+                return Ok(());
+            };
+            if !shared.waiting_for_window_ready_logged {
+                tracing::info!(
+                    window_size = ?window_size,
+                    scale_factor,
+                    "waiting for nested winit host window readiness before first present"
+                );
+                shared.waiting_for_window_ready_logged = true;
+            }
             return Ok(());
         }
         let Some(backend) = shared.backend.as_mut() else {
@@ -602,6 +640,21 @@ fn desired_window_spec(
     outputs: &[OutputSnapshot],
 ) -> WinitWindowSpec {
     let app_name = app_metadata.map(|metadata| metadata.name.as_str()).unwrap_or("nekoland");
+    let configured_output = config
+        .and_then(|config| config.outputs.iter().find(|output| output.enabled))
+        .and_then(|output| {
+            parse_output_mode(&output.mode).map(|mode| {
+                (output.name.as_str(), mode.width.max(1), mode.height.max(1), output.scale.max(1))
+            })
+        });
+    if let Some((output_name, width, height, scale)) = configured_output {
+        return WinitWindowSpec {
+            title: format!("{app_name} [winit] - {output_name} {width}x{height}@{scale}x"),
+            width,
+            height,
+        };
+    }
+
     if let Some((output, properties)) = outputs
         .iter()
         .min_by(|left, right| left.device.name.cmp(&right.device.name))
@@ -617,15 +670,7 @@ fn desired_window_spec(
         };
     }
 
-    let configured_output = config
-        .and_then(|config| config.outputs.iter().find(|output| output.enabled))
-        .and_then(|output| {
-            parse_output_mode(&output.mode).map(|mode| {
-                (output.name.as_str(), mode.width.max(1), mode.height.max(1), output.scale.max(1))
-            })
-        });
-
-    let (output_name, width, height, scale) = configured_output.unwrap_or(("winit", 1280, 720, 1));
+    let (output_name, width, height, scale) = ("winit", 1280, 720, 1);
     let title_suffix = if config.is_some() { output_name } else { "bootstrap" };
 
     WinitWindowSpec {
@@ -763,6 +808,8 @@ fn install_host_winit_source(
         });
         shared.backend = Some(backend);
         shared.capture_mode = capture_mode;
+        shared.window_ready_for_present = false;
+        shared.waiting_for_window_ready_logged = false;
     }
     {
         let mut shared = shared.borrow_mut();
@@ -781,6 +828,9 @@ fn install_host_winit_source(
             HostWinitEvent::Redraw => {
                 let mut shared = shared.borrow_mut();
                 if !shared.closed {
+                    if !shared.window_ready_for_present {
+                        shared.window_ready_for_present = true;
+                    }
                     if shared.active {
                         shared.pending_timestamps_nanos.push(monotonic_now_nanos(&monotonic_clock));
                     }
