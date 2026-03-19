@@ -155,6 +155,7 @@ impl Backend for DrmRuntime {
             materials: cx.materials,
             render_graph: cx.render_graph,
             render_plan: cx.render_plan,
+            process_plan: cx.process_plan,
             pending_screenshot_requests: cx.pending_screenshot_requests,
             completed_screenshots: cx.completed_screenshots,
             surface_registry: cx.surface_registry,

@@ -229,6 +229,7 @@ impl WinitRuntime {
         &self,
         output_name: &str,
         pending_window_state: Option<&PendingWinitWindowState>,
+        config: Option<&CompositorConfig>,
     ) -> BackendOutputBlueprint {
         let (width, height, scale) = pending_window_state
             .map(|window_state| {
@@ -236,6 +237,20 @@ impl WinitRuntime {
                 let height = u32::try_from(window_state.size.h.max(1)).unwrap_or(1);
                 let scale = window_state.scale_factor.round().clamp(1.0, u32::MAX as f64) as u32;
                 (width, height, scale)
+            })
+            .or_else(|| {
+                config
+                    .and_then(|config| {
+                        config
+                            .outputs
+                            .iter()
+                            .find(|configured| configured.enabled && configured.name == output_name)
+                    })
+                    .and_then(|configured| {
+                        parse_output_mode(&configured.mode).map(|mode| {
+                            (mode.width.max(1), mode.height.max(1), configured.scale.max(1))
+                        })
+                    })
             })
             .unwrap_or((1280, 720, 1));
 
@@ -270,7 +285,7 @@ impl Backend for WinitRuntime {
     }
 
     fn seed_output(&self, output_name: &str) -> Option<BackendOutputBlueprint> {
-        Some(self.seed_output_blueprint(output_name, None))
+        Some(self.seed_output_blueprint(output_name, None, None))
     }
 
     fn extract(&mut self, cx: &mut BackendExtractCtx<'_>) -> Result<(), NekolandError> {
@@ -281,7 +296,11 @@ impl Backend for WinitRuntime {
             && self.seeded_output_name.as_deref() != Some(desired_output_name.as_str())
         {
             let blueprint = self
-                .seed_output_blueprint(&desired_output_name, shared.pending_window_state.as_ref());
+                .seed_output_blueprint(
+                    &desired_output_name,
+                    shared.pending_window_state.as_ref(),
+                    cx.config,
+                );
             cx.output_events.push(BackendOutputEventRecord {
                 backend_id: self.id(),
                 output_name: desired_output_name.clone(),
@@ -455,6 +474,7 @@ impl Backend for WinitRuntime {
                 &output,
                 execution,
                 cx.render_plan,
+                cx.process_plan,
                 cx.materials,
                 surface_registry,
                 cursor_cache,

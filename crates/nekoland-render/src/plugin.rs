@@ -6,12 +6,13 @@ use nekoland_ecs::resources::{
     CompletedScreenshotFrames, CompositorSceneState, CursorImageSnapshot, CursorSceneSnapshot,
     DamageState, FramePacingState, OutputDamageRegions, OutputOverlayState,
     PendingScreenshotRequests, RenderMaterialFrameState, RenderPassGraph, RenderPlan,
-    SurfaceVisualSnapshot,
+    RenderProcessPlan,
 };
 
 use crate::{
     animation, compositor_render, cursor, damage_tracker, effects, frame_callback, material,
-    output_overlay, presentation_feedback, render_graph, scene_source, screenshot, surface_visual,
+    output_overlay, presentation_feedback, process_plan, render_graph, scene_process,
+    scene_source, screenshot,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -23,6 +24,7 @@ impl NekolandPlugin for RenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RenderPlan>()
             .init_resource::<RenderPassGraph>()
+            .init_resource::<RenderProcessPlan>()
             .init_resource::<material::RenderMaterialRegistry>()
             .init_resource::<material::RenderMaterialParamsStore>()
             .init_resource::<material::RenderMaterialRequestQueue>()
@@ -41,7 +43,8 @@ impl NekolandPlugin for RenderPlugin {
             .init_resource::<DamageState>()
             .init_resource::<FramePacingState>()
             .init_resource::<OutputDamageRegions>()
-            .init_resource::<SurfaceVisualSnapshot>()
+            .init_resource::<scene_process::AppearanceSnapshot>()
+            .init_resource::<scene_process::ProjectionSnapshot>()
             .init_resource::<effects::blur::BlurEffectConfig>()
             .init_resource::<effects::shadow::ShadowEffectConfig>()
             .init_resource::<effects::rounded_corners::RoundedCornerEffectConfig>()
@@ -50,7 +53,10 @@ impl NekolandPlugin for RenderPlugin {
                 (
                     effects::fade::fade_effect_system,
                     animation::advance_animation_timelines_system,
-                    surface_visual::surface_visual_snapshot_system,
+                    scene_process::prune_stale_compositor_animation_tracks_system,
+                    scene_process::clear_scene_process_snapshots_system,
+                    scene_process::surface_scene_process_snapshot_system,
+                    scene_process::compositor_scene_process_snapshot_system,
                     material::clear_material_requests_system,
                     effects::blur::blur_effect_system,
                     effects::shadow::shadow_effect_system,
@@ -73,6 +79,7 @@ impl NekolandPlugin for RenderPlugin {
                     material::emit_backdrop_material_requests_system,
                     material::project_material_frame_state_system,
                     render_graph::build_render_graph_system,
+                    process_plan::build_render_process_plan_system,
                     damage_tracker::damage_tracking_system,
                     frame_callback::frame_callback_system,
                     presentation_feedback::presentation_feedback_system,

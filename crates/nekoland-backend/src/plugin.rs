@@ -16,8 +16,8 @@ use nekoland_ecs::resources::{
     OutputPresentationState, PendingBackendInputEvents, PendingOutputControls,
     PendingOutputOverlayControls, PendingOutputPresentationEvents, PendingOutputServerRequests,
     PendingProtocolInputEvents, PendingScreenshotRequests, PresentAuditState, PrimaryOutputState,
-    RenderMaterialFrameState, RenderPassGraph, RenderPlan, SurfacePresentationRole,
-    SurfacePresentationSnapshot, VirtualOutputCaptureState,
+    RenderMaterialFrameState, RenderPassGraph, RenderPlan, RenderProcessPlan,
+    SurfacePresentationRole, SurfacePresentationSnapshot, VirtualOutputCaptureState,
 };
 use nekoland_ecs::views::{BackendPresentSurfaceRuntime, OutputRuntime};
 use nekoland_protocol::{
@@ -74,6 +74,7 @@ struct BackendPresentState<'w, 's> {
     materials: Res<'w, RenderMaterialFrameState>,
     render_graph: Res<'w, RenderPassGraph>,
     render_plan: Res<'w, RenderPlan>,
+    process_plan: Res<'w, RenderProcessPlan>,
     pending_screenshot_requests: ResMut<'w, PendingScreenshotRequests>,
     completed_screenshots: ResMut<'w, CompletedScreenshotFrames>,
     present_audit: ResMut<'w, PresentAuditState>,
@@ -224,6 +225,7 @@ fn backend_present_system(
         materials,
         render_graph,
         render_plan,
+        process_plan,
         mut pending_screenshot_requests,
         mut completed_screenshots,
         mut present_audit,
@@ -342,6 +344,7 @@ fn backend_present_system(
         materials: &materials,
         render_graph: &render_graph,
         render_plan: &render_plan,
+        process_plan: &process_plan,
         pending_screenshot_requests: &mut pending_screenshot_requests,
         completed_screenshots: &mut completed_screenshots,
         surfaces: &surface_snapshots,
@@ -394,11 +397,12 @@ mod tests {
     };
     use nekoland_ecs::resources::{
         CompletedScreenshotFrames, CompositorClock, OutputDamageRegions, OutputExecutionPlan,
-        OutputRenderPlan, PendingScreenshotRequests, PresentAuditState, RenderItemId,
-        RenderItemIdentity, RenderItemInstance, RenderMaterialFrameState, RenderPassGraph,
-        RenderPassId, RenderPassNode, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
-        RenderSourceId, RenderTargetId, RenderTargetKind, SurfacePresentationSnapshot,
-        SurfacePresentationState, SurfaceRenderItem, VirtualOutputCaptureState,
+        OutputProcessPlan, OutputRenderPlan, PendingScreenshotRequests, PresentAuditState,
+        RenderItemId, RenderItemIdentity, RenderItemInstance, RenderMaterialFrameState,
+        RenderPassGraph, RenderPassId, RenderPassNode, RenderPlan, RenderPlanItem,
+        RenderProcessPlan, RenderRect, RenderSceneRole, RenderSourceId, RenderTargetId,
+        RenderTargetKind, SurfacePresentationSnapshot, SurfacePresentationState,
+        SurfaceRenderItem, VirtualOutputCaptureState,
     };
     use nekoland_protocol::ProtocolSeatDispatchSystems;
 
@@ -648,6 +652,12 @@ mod tests {
                         terminal_passes: vec![RenderPassId(2)],
                     },
                 ),
+            ]),
+        });
+        app.world_mut().insert_resource(RenderProcessPlan {
+            outputs: std::collections::BTreeMap::from([
+                (hdmi_id, OutputProcessPlan::default()),
+                (dp_id, OutputProcessPlan::default()),
             ]),
         });
 

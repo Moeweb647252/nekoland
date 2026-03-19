@@ -8,7 +8,7 @@ use nekoland_ecs::resources::{
     CompletedScreenshotFrames, CompositorClock, CompositorConfig, GlobalPointerPosition,
     OutputDamageRegions, PendingBackendInputEvents, PendingOutputPresentationEvents,
     PendingProtocolInputEvents, PendingScreenshotRequests, RenderMaterialFrameState,
-    RenderPassGraph, RenderPlan, VirtualOutputCaptureState,
+    RenderPassGraph, RenderPlan, RenderProcessPlan, VirtualOutputCaptureState,
 };
 use nekoland_protocol::{ProtocolDmabufSupport, ProtocolSurfaceRegistry};
 
@@ -154,6 +154,7 @@ pub struct BackendPresentCtx<'a> {
     pub materials: &'a RenderMaterialFrameState,
     pub render_graph: &'a RenderPassGraph,
     pub render_plan: &'a RenderPlan,
+    pub process_plan: &'a RenderProcessPlan,
     pub pending_screenshot_requests: &'a mut PendingScreenshotRequests,
     pub completed_screenshots: &'a mut CompletedScreenshotFrames,
     pub surfaces: &'a std::collections::HashMap<u64, RenderSurfaceSnapshot>,

@@ -9,7 +9,7 @@ use nekoland_ecs::presentation_logic::{
 };
 use nekoland_ecs::resources::{
     OutputRenderPlan, RenderItemInstance, RenderPlan, RenderRect, RenderSceneRole,
-    SurfacePresentationRole, SurfacePresentationSnapshot, SurfaceVisualSnapshot,
+    SurfacePresentationRole, SurfacePresentationSnapshot,
     UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
 };
 use nekoland_ecs::views::{
@@ -19,11 +19,10 @@ use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 use crate::scene_source::{
     RenderSceneContribution, RenderSceneContributionQueue, RenderSceneIdentityRegistry,
-    contribution_to_plan_item,
+    contribution_to_plan_item, RenderInstanceKey, RenderSourceKey,
 };
-use crate::{
-    animation::{AnimationBindingKey, AnimationProperty, AnimationTimelineStore, AnimationValue},
-    scene_source::{RenderInstanceKey, RenderSourceKey},
+use crate::scene_process::{
+    AppearanceSnapshot, ProjectionSnapshot, apply_appearance_snapshot, apply_projection_snapshot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -38,8 +37,8 @@ pub struct FrameCompositionInputs<'w, 's> {
     stacking: Res<'w, WindowStackingState>,
     workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
     surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
-    surface_visual: Option<Res<'w, SurfaceVisualSnapshot>>,
-    animation_timelines: Res<'w, AnimationTimelineStore>,
+    appearance: Option<Res<'w, AppearanceSnapshot>>,
+    projection: Option<Res<'w, ProjectionSnapshot>>,
     scene_contributions: ResMut<'w, RenderSceneContributionQueue>,
 }
 
@@ -65,12 +64,13 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
         stacking,
         workspaces,
         surface_presentation,
-        surface_visual,
-        animation_timelines,
+        appearance,
+        projection,
         mut scene_contributions,
     } = composition;
     let surface_presentation = surface_presentation.as_deref();
-    let surface_visual = surface_visual.as_deref();
+    let appearance = appearance.as_deref();
+    let projection = projection.as_deref();
     let live_outputs = outputs.iter().map(|output| output.id()).collect::<Vec<_>>();
     let mut contributions = live_outputs
         .iter()
@@ -98,16 +98,13 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
             let output_id = state
                 .and_then(|state| state.target_output)
                 .or_else(|| window.background.as_ref().map(|background| background.output))?;
-            Some((
-                output_id,
-                (window.surface_id(), surface_opacity(window.surface_id(), surface_visual)),
-            ))
+            Some((output_id, window.surface_id()))
         })
         .fold(BTreeMap::new(), |mut backgrounds, (output_id, candidate)| {
             backgrounds
                 .entry(output_id)
-                .and_modify(|current: &mut (u64, f32)| {
-                    if candidate.0 > current.0 {
+                .and_modify(|current: &mut u64| {
+                    if candidate > *current {
                         *current = candidate;
                     }
                 })
@@ -136,18 +133,13 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
                 window.surface_id(),
                 window_workspace_runtime_id(window.child_of, &workspaces)
                     .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID),
-                surface_opacity(window.surface_id(), surface_visual),
             ))
         })
         .collect::<Vec<_>>();
     let active_window_entities =
         visible_windows.iter().map(|(entity, ..)| *entity).collect::<BTreeSet<_>>();
-    let active_window_opacity = visible_windows
-        .iter()
-        .map(|(_, surface_id, _, opacity)| (*surface_id, *opacity))
-        .collect::<BTreeMap<_, _>>();
     let ordered_window_surfaces = stacking.ordered_surfaces(
-        visible_windows.iter().map(|(_, surface_id, workspace_id, _)| (*workspace_id, *surface_id)),
+        visible_windows.iter().map(|(_, surface_id, workspace_id)| (*workspace_id, *surface_id)),
     );
     let elements = background_windows
         .into_iter()
@@ -169,13 +161,9 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
                             },
                         )
                 })
-                .map(|layer| {
-                    (layer.surface_id(), surface_opacity(layer.surface_id(), surface_visual))
-                }),
+                .map(|layer| layer.surface_id()),
         )
-        .chain(ordered_window_surfaces.into_iter().filter_map(|surface_id| {
-            active_window_opacity.get(&surface_id).copied().map(|opacity| (surface_id, opacity))
-        }))
+        .chain(ordered_window_surfaces)
         .chain(
             popups
                 .iter()
@@ -192,9 +180,7 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
                             |state| state.visible && state.role == SurfacePresentationRole::Popup,
                         )
                 })
-                .map(|popup| {
-                    (popup.surface_id(), surface_opacity(popup.surface_id(), surface_visual))
-                }),
+                .map(|popup| popup.surface_id()),
         )
         .chain(
             layers
@@ -214,13 +200,11 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
                             },
                         )
                 })
-                .map(|layer| {
-                    (layer.surface_id(), surface_opacity(layer.surface_id(), surface_visual))
-                }),
+                .map(|layer| layer.surface_id()),
         )
         .collect::<Vec<_>>();
 
-    for (z_index, (surface_id, opacity)) in elements.into_iter().enumerate() {
+    for (z_index, surface_id) in elements.into_iter().enumerate() {
         let Some(state) =
             surface_presentation.and_then(|snapshot| snapshot.surfaces.get(&surface_id))
         else {
@@ -237,21 +221,27 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
         };
 
         for output_id in target_outputs {
-            let visual_state = surface_visual_state(surface_id, surface_visual);
+            let source_key = RenderSourceKey::surface(surface_id);
+            let instance_key = RenderInstanceKey::new(source_key.clone(), output_id, 0);
             let mut instance = RenderItemInstance {
-                rect: visual_state
-                    .as_ref()
-                    .and_then(|state| state.rect_override)
-                    .unwrap_or_else(|| RenderRect::from(&state.geometry)),
-                opacity,
-                clip_rect: visual_state.as_ref().and_then(|state| state.clip_rect_override),
+                rect: RenderRect::from(&state.geometry),
+                opacity: 1.0,
+                clip_rect: None,
                 z_index: z_index as i32,
                 scene_role: RenderSceneRole::Desktop,
             };
-            apply_instance_animation_overrides(
-                &mut instance,
-                &animation_timelines,
-                &RenderInstanceKey::new(RenderSourceKey::surface(surface_id), output_id, 0),
+            apply_appearance_snapshot(
+                &mut instance.opacity,
+                &source_key,
+                &instance_key,
+                appearance,
+            );
+            apply_projection_snapshot(
+                &mut instance.rect,
+                &mut instance.clip_rect,
+                &source_key,
+                &instance_key,
+                projection,
             );
             contributions
                 .entry(output_id)
@@ -303,46 +293,12 @@ fn popup_parent_visible(child_of: &ChildOf, active_window_entities: &BTreeSet<En
     active_window_entities.contains(&child_of.parent())
 }
 
-fn surface_opacity(surface_id: u64, visual_snapshot: Option<&SurfaceVisualSnapshot>) -> f32 {
-    surface_visual_state(surface_id, visual_snapshot).map(|state| state.opacity).unwrap_or(1.0)
-}
-
-fn surface_visual_state(
-    surface_id: u64,
-    visual_snapshot: Option<&SurfaceVisualSnapshot>,
-) -> Option<nekoland_ecs::resources::SurfaceVisualState> {
-    visual_snapshot.and_then(|snapshot| snapshot.surfaces.get(&surface_id).cloned())
-}
-
-fn apply_instance_animation_overrides(
-    instance: &mut RenderItemInstance,
-    timelines: &AnimationTimelineStore,
-    binding: &RenderInstanceKey,
-) {
-    let binding = AnimationBindingKey::Instance(binding.clone());
-    if let Some(AnimationValue::Float(opacity)) =
-        timelines.sampled_value(&binding, AnimationProperty::Opacity)
-    {
-        instance.opacity = (*opacity).clamp(0.0, 1.0);
-    }
-    if let Some(AnimationValue::Rect(rect)) =
-        timelines.sampled_value(&binding, AnimationProperty::Rect)
-    {
-        instance.rect = *rect;
-    }
-    if let Some(AnimationValue::Rect(rect)) =
-        timelines.sampled_value(&binding, AnimationProperty::ClipRect)
-    {
-        instance.clip_rect = Some(*rect);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
     use bevy_ecs::system::{IntoSystem, System};
     use nekoland_core::prelude::NekolandApp;
-    use nekoland_core::schedules::RenderSchedule;
+    use nekoland_core::schedules::{PreRenderSchedule, RenderSchedule};
     use nekoland_ecs::bundles::{LayerSurfaceBundle, OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
         LayerLevel, OutputBackgroundWindow, OutputDevice, OutputKind, OutputProperties,
@@ -353,14 +309,14 @@ mod tests {
         OutputOverlayId, OutputOverlaySpec, OutputOverlayState, RenderColor, RenderItemIdentity,
         RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
         RenderSourceId, SurfacePresentationRole, SurfacePresentationSnapshot,
-        SurfacePresentationState, SurfaceVisualSnapshot, SurfaceVisualState,
-        UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
+        SurfacePresentationState, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
     };
 
     use crate::animation::{
         AnimationBindingKey, AnimationEasing, AnimationProperty, AnimationTimelineStore,
         AnimationTrack, AnimationValue,
     };
+    use crate::scene_process::{AppearanceSnapshot, AppearanceState, ProjectionSnapshot};
     use crate::scene_source::{RenderInstanceKey, RenderSceneContributionQueue, RenderSourceKey};
 
     use super::{assemble_render_plan_system, emit_desktop_scene_contributions_system};
@@ -368,11 +324,22 @@ mod tests {
     fn add_render_plan_systems(app: &mut NekolandApp) {
         app.inner_mut()
             .init_resource::<crate::animation::AnimationTimelineStore>()
+            .init_resource::<AppearanceSnapshot>()
+            .init_resource::<ProjectionSnapshot>()
             .init_resource::<CompositorSceneState>()
             .init_resource::<OutputOverlayState>()
             .init_resource::<crate::output_overlay::OutputOverlaySceneSyncState>()
             .init_resource::<RenderSceneContributionQueue>()
             .init_resource::<crate::scene_source::RenderSceneIdentityRegistry>()
+            .add_systems(
+                PreRenderSchedule,
+                (
+                    crate::scene_process::clear_scene_process_snapshots_system,
+                    crate::scene_process::surface_scene_process_snapshot_system,
+                    crate::scene_process::compositor_scene_process_snapshot_system,
+                )
+                    .chain(),
+            )
             .add_systems(
                 RenderSchedule,
                 (
@@ -620,11 +587,11 @@ mod tests {
     }
 
     #[test]
-    fn render_uses_surface_visual_snapshot_instead_of_animation_component() {
-        let mut app = NekolandApp::new("render-surface-visual-boundary-test");
+    fn render_uses_appearance_snapshot_instead_of_animation_component() {
+        let mut app = NekolandApp::new("render-appearance-boundary-test");
         app.inner_mut()
             .init_resource::<RenderPlan>()
-            .init_resource::<SurfaceVisualSnapshot>()
+            .init_resource::<AppearanceSnapshot>()
             .insert_resource(WindowStackingState {
                 workspaces: std::collections::BTreeMap::from([(
                     UNASSIGNED_WORKSPACE_STACK_ID,
@@ -645,9 +612,9 @@ mod tests {
         });
         app.inner_mut()
             .world_mut()
-            .resource_mut::<SurfaceVisualSnapshot>()
-            .surfaces
-            .insert(11, SurfaceVisualState { opacity: 0.25, ..Default::default() });
+            .resource_mut::<AppearanceSnapshot>()
+            .sources
+            .insert(RenderSourceKey::surface(11), AppearanceState { opacity: 0.25 });
         spawn_default_output(&mut app);
         set_surface_states(&mut app, [(11, SurfacePresentationRole::Window)]);
 
@@ -722,6 +689,7 @@ mod tests {
             IntoSystem::into_system(crate::animation::advance_animation_timelines_system);
         system.initialize(app.inner_mut().world_mut());
         let _ = system.run((), app.inner_mut().world_mut());
+        app.inner_mut().world_mut().run_schedule(PreRenderSchedule);
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 
         let render_plan = app.inner().world().resource::<RenderPlan>();

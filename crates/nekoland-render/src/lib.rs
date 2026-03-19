@@ -10,9 +10,10 @@ pub mod material;
 pub mod output_overlay;
 pub mod plugin;
 pub mod presentation_feedback;
+pub mod process_plan;
 pub mod render_graph;
+pub mod scene_process;
 pub mod scene_source;
 pub mod screenshot;
-pub mod surface_visual;
 
 pub use plugin::RenderPlugin;

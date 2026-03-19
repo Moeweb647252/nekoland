@@ -84,6 +84,29 @@ impl AnimationTimelineStore {
         self.sampled_values.get(binding).and_then(|values| values.get(&property))
     }
 
+    pub fn retain_tracks<F>(&mut self, mut retain: F)
+    where
+        F: FnMut(&AnimationBindingKey, AnimationProperty, &AnimationTrack) -> bool,
+    {
+        let mut removed = Vec::new();
+        self.tracks.retain(|key, track| {
+            let keep = retain(&key.binding, key.property, track);
+            if !keep {
+                removed.push((key.binding.clone(), key.property));
+            }
+            keep
+        });
+
+        for (binding, property) in removed {
+            if let Some(values) = self.sampled_values.get_mut(&binding) {
+                values.remove(&property);
+                if values.is_empty() {
+                    self.sampled_values.remove(&binding);
+                }
+            }
+        }
+    }
+
     pub fn delta_millis(&self, current_uptime_millis: u128) -> u32 {
         self.last_tick_uptime_millis
             .map(|previous| {

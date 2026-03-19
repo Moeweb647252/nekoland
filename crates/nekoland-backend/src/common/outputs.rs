@@ -7,7 +7,7 @@ use bevy_ecs::system::SystemParam;
 use nekoland_core::error::NekolandError;
 use nekoland_ecs::bundles::OutputBundle;
 use nekoland_ecs::components::{
-    OutputDevice, OutputId, OutputKind, OutputPlacement, OutputProperties, OutputViewport,
+    OutputDevice, OutputId, OutputPlacement, OutputProperties, OutputViewport,
     OutputWorkArea, WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
@@ -645,7 +645,7 @@ pub(crate) fn apply_output_server_requests_system(ctx: OutputServerRequestCtx<'_
                     continue;
                 };
 
-                let Some((_, _, device, _, mut properties)) =
+                let Some((_, _, _, _, mut properties)) =
                     outputs.iter_mut().find(|(_, _, existing, _, _)| existing.name == output)
                 else {
                     deferred.push(OutputServerRequest {
@@ -653,10 +653,6 @@ pub(crate) fn apply_output_server_requests_system(ctx: OutputServerRequestCtx<'_
                     });
                     continue;
                 };
-
-                if device.kind == OutputKind::Nested {
-                    continue;
-                }
 
                 properties.width = configured_mode.width;
                 properties.height = configured_mode.height;

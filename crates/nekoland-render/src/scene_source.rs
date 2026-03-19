@@ -1,11 +1,15 @@
 use std::collections::BTreeMap;
 
-use bevy_ecs::prelude::{ResMut, Resource};
+use bevy_ecs::prelude::{Res, ResMut, Resource};
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
     BackdropRenderItem, CompositorSceneItem, CompositorSceneState, CursorRenderItem,
     CursorRenderSource, RenderColor, RenderItemId, RenderItemIdentity, RenderItemInstance,
     RenderPlanItem, RenderSourceId, SolidRectRenderItem, SurfaceRenderItem,
+};
+
+use crate::scene_process::{
+    AppearanceSnapshot, ProjectionSnapshot, apply_appearance_snapshot, apply_projection_snapshot,
 };
 
 /// Stable render-local source key resolved into ECS-facing `RenderSourceId`.
@@ -40,6 +44,13 @@ pub struct RenderInstanceKey {
 impl RenderInstanceKey {
     pub fn new(source_key: RenderSourceKey, output_id: OutputId, instance_slot: u32) -> Self {
         Self { source_key, output_id, instance_slot }
+    }
+
+    pub fn compositor(
+        entry_id: nekoland_ecs::resources::CompositorSceneEntryId,
+        output_id: OutputId,
+    ) -> Self {
+        Self::new(RenderSourceKey::compositor(entry_id), output_id, 0)
     }
 }
 
@@ -157,11 +168,15 @@ pub fn clear_scene_contributions_system(mut queue: ResMut<'_, RenderSceneContrib
 /// Emits compositor-owned ECS scene state into the frame-local queue after desktop providers run.
 pub fn emit_compositor_scene_contributions_system(
     compositor_scene: Option<bevy_ecs::prelude::Res<'_, CompositorSceneState>>,
+    appearance: Option<Res<'_, AppearanceSnapshot>>,
+    projection: Option<Res<'_, ProjectionSnapshot>>,
     mut queue: ResMut<'_, RenderSceneContributionQueue>,
 ) {
     let Some(compositor_scene) = compositor_scene else {
         return;
     };
+    let appearance = appearance.as_deref();
+    let projection = projection.as_deref();
 
     for (output_id, output_scene) in &compositor_scene.outputs {
         let output_contributions = queue.outputs.entry(*output_id).or_default();
@@ -175,13 +190,28 @@ pub fn emit_compositor_scene_contributions_system(
                 "compositor scene entries may only use compositor or overlay roles"
             );
 
-            let key = RenderInstanceKey::new(RenderSourceKey::compositor(entry_id), *output_id, 0);
+            let key = RenderInstanceKey::compositor(entry_id, *output_id);
+            let mut instance = entry.instance;
+            apply_appearance_snapshot(
+                &mut instance.opacity,
+                &key.source_key,
+                &key,
+                appearance,
+            );
+            apply_projection_snapshot(
+                &mut instance.rect,
+                &mut instance.clip_rect,
+                &key.source_key,
+                &key,
+                projection,
+            );
+
             let contribution = match &entry.item {
                 CompositorSceneItem::SolidRect { color } => {
-                    RenderSceneContribution::solid_rect(key, *color, entry.instance)
+                    RenderSceneContribution::solid_rect(key, *color, instance)
                 }
                 CompositorSceneItem::Backdrop => {
-                    RenderSceneContribution::backdrop(key, entry.instance)
+                    RenderSceneContribution::backdrop(key, instance)
                 }
             };
             output_contributions.push(contribution);

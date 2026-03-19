@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use drm_fourcc::DrmFourcc;
 use nekoland_ecs::resources::{
     CompletedScreenshotFrames, CompositorClock, CompositorConfig, DamageRect, OutputDamageRegions,
-    PendingScreenshotRequests, RenderMaterialFrameState, RenderPassGraph, RenderPlan, RenderRect,
+    PendingScreenshotRequests, RenderMaterialFrameState, RenderPassGraph, RenderPlan,
+    RenderProcessPlan, RenderRect,
 };
 use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags};
@@ -54,6 +55,7 @@ pub(crate) struct DrmPresentCtx<'a> {
     pub materials: &'a RenderMaterialFrameState,
     pub render_graph: &'a RenderPassGraph,
     pub render_plan: &'a RenderPlan,
+    pub process_plan: &'a RenderProcessPlan,
     pub pending_screenshot_requests: &'a mut PendingScreenshotRequests,
     pub completed_screenshots: &'a mut CompletedScreenshotFrames,
     pub surface_registry: Option<&'a ProtocolSurfaceRegistry>,
@@ -72,6 +74,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         materials,
         render_graph,
         render_plan,
+        process_plan,
         pending_screenshot_requests,
         completed_screenshots,
         surface_registry,
@@ -159,6 +162,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
             output,
             execution,
             render_plan,
+            process_plan,
             materials,
             surface_registry,
             cursor_cache,

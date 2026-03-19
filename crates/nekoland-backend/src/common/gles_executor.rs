@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, HashMap};
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
     CompletedScreenshotFrames, CompositorClock, CompositorConfig, CursorRenderSource,
-    MaterialParamsId, OutputExecutionPlan, PendingScreenshotRequests, RenderColor,
+    OutputExecutionPlan, OutputProcessPlan, PendingScreenshotRequests, ProcessRect,
+    ProcessShaderKey, ProcessUniformBlock, ProcessUniformValue, RenderColor,
     RenderMaterialFrameState, RenderPassKind, RenderPassPayload, RenderPlan, RenderPlanItem,
-    RenderRect, RenderTargetId, ScreenshotFrame,
+    RenderProcessPlan, RenderRect, RenderTargetId, ScreenshotFrame,
 };
 use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::Fourcc;
@@ -82,14 +83,14 @@ struct OutputExecutionCache {
 }
 
 #[derive(Debug, Default)]
-struct MaterialPipelineCache {
-    backdrop_blur: Option<GlesTexProgram>,
+struct ProcessShaderCache {
+    programs: BTreeMap<ProcessShaderKey, GlesTexProgram>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct GlesExecutionState {
     outputs: HashMap<OutputId, OutputExecutionCache>,
-    material_pipelines: MaterialPipelineCache,
+    process_shaders: ProcessShaderCache,
 }
 
 #[derive(Debug, Clone)]
@@ -103,7 +104,8 @@ pub(crate) fn execute_output_graph(
     output: &OutputSnapshot,
     execution: &OutputExecutionPlan,
     render_plan: &RenderPlan,
-    materials: &RenderMaterialFrameState,
+    process_plan: &RenderProcessPlan,
+    _materials: &RenderMaterialFrameState,
     surface_registry: &ProtocolSurfaceRegistry,
     cursor_cache: &mut SoftwareCursorCache,
     config: Option<&CompositorConfig>,
@@ -114,6 +116,7 @@ pub(crate) fn execute_output_graph(
     let Some(output_plan) = render_plan.outputs.get(&output.output_id) else {
         return Ok(None);
     };
+    let output_process = process_plan.outputs.get(&output.output_id);
 
     let output_size = Size::from((
         i32::try_from(output.properties.width.max(1)).unwrap_or(i32::MAX),
@@ -164,52 +167,27 @@ pub(crate) fn execute_output_graph(
                 renderer.wait(&sync).map_err(|_| GlesError::SyncInterrupted)?;
             }
             RenderPassKind::Composite => {
-                let RenderPassPayload::Composite(config_payload) = &pass.payload else {
-                    continue;
-                };
-                let source_texture = output_cache
-                    .targets
-                    .get(&config_payload.source_target)
-                    .map(|target| (target.texture.clone(), target.backdrop_regions.clone()));
-                let Some((source_texture, source_backdrops)) = source_texture else {
-                    continue;
-                };
-                let target =
-                    ensure_target(renderer, output_cache, pass.output_target, output_size)?;
-                target.backdrop_regions = source_backdrops;
-                composite_texture_to_target(
+                execute_process_units_for_pass(
                     renderer,
-                    &source_texture,
-                    &mut target.texture,
+                    &mut state.process_shaders,
+                    output_cache,
+                    output_process,
+                    pass_id,
                     output_size,
                     output_rect,
+                    output.properties.scale.max(1),
                 )?;
             }
             RenderPassKind::PostProcess => {
-                let RenderPassPayload::PostProcess(config_payload) = &pass.payload else {
-                    continue;
-                };
-                let source_texture = output_cache
-                    .targets
-                    .get(&config_payload.source_target)
-                    .map(|target| (target.texture.clone(), target.backdrop_regions.clone()));
-                let Some((source_texture, source_backdrops)) = source_texture else {
-                    continue;
-                };
-                let target =
-                    ensure_target(renderer, output_cache, pass.output_target, output_size)?;
-                target.backdrop_regions = source_backdrops.clone();
-                execute_material_pass(
+                execute_process_units_for_pass(
                     renderer,
-                    &mut state.material_pipelines,
-                    materials,
-                    config_payload.material_id,
-                    config_payload.params_id,
-                    &source_texture,
-                    &mut target.texture,
-                    &source_backdrops,
+                    &mut state.process_shaders,
+                    output_cache,
+                    output_process,
+                    pass_id,
                     output_size,
                     output_rect,
+                    output.properties.scale.max(1),
                 )?;
             }
             RenderPassKind::Readback => {
@@ -509,6 +487,7 @@ fn composite_texture_to_target(
     source_texture: &GlesTexture,
     dest_texture: &mut GlesTexture,
     output_size: Size<i32, Physical>,
+    sample_rect: Rectangle<i32, Physical>,
     output_rect: Rectangle<i32, Physical>,
 ) -> Result<(), GlesError> {
     let mut framebuffer = renderer.bind(dest_texture)?;
@@ -516,7 +495,7 @@ fn composite_texture_to_target(
     frame.clear(Color32F::new(0.0, 0.0, 0.0, 0.0), &[output_rect])?;
     frame.render_texture_from_to(
         source_texture,
-        Rectangle::<f64, Buffer>::from_size(source_texture.size().to_f64()),
+        physical_rect_to_buffer_rect(sample_rect),
         output_rect,
         &[output_rect],
         &[],
@@ -530,40 +509,90 @@ fn composite_texture_to_target(
     Ok(())
 }
 
-fn execute_material_pass(
+fn execute_process_units_for_pass(
     renderer: &mut GlesRenderer,
-    pipelines: &mut MaterialPipelineCache,
-    materials: &RenderMaterialFrameState,
-    material_id: nekoland_ecs::resources::RenderMaterialId,
-    params_id: Option<MaterialParamsId>,
-    source_texture: &GlesTexture,
-    dest_texture: &mut GlesTexture,
-    backdrop_regions: &[Rectangle<i32, Physical>],
+    shaders: &mut ProcessShaderCache,
+    output_cache: &mut OutputExecutionCache,
+    output_process: Option<&OutputProcessPlan>,
+    pass_id: nekoland_ecs::resources::RenderPassId,
     output_size: Size<i32, Physical>,
     output_rect: Rectangle<i32, Physical>,
+    output_scale: u32,
 ) -> Result<(), GlesError> {
-    let pipeline_key = materials
-        .descriptor(material_id)
-        .map(|descriptor| descriptor.pipeline_key.0.as_str())
-        .unwrap_or("passthrough");
+    let Some(output_process) = output_process else {
+        return Ok(());
+    };
 
-    match pipeline_key {
-        "backdrop_blur" => execute_backdrop_blur_pass(
+    for unit in output_process.units_for_pass(pass_id) {
+        let source_texture = output_cache
+            .targets
+            .get(&unit.input.target_id)
+            .map(|target| target.texture.clone());
+        let Some(source_texture) = source_texture else {
+            continue;
+        };
+        let target = ensure_target(renderer, output_cache, unit.output.target_id, output_size)?;
+        execute_process_unit(
             renderer,
-            pipelines,
-            materials,
-            params_id,
-            source_texture,
-            dest_texture,
-            backdrop_regions,
+            shaders,
+            unit,
+            &source_texture,
+            &mut target.texture,
             output_size,
             output_rect,
-        ),
+            output_scale,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn execute_process_unit(
+    renderer: &mut GlesRenderer,
+    shaders: &mut ProcessShaderCache,
+    unit: &nekoland_ecs::resources::ProcessUnit,
+    source_texture: &GlesTexture,
+    dest_texture: &mut GlesTexture,
+    output_size: Size<i32, Physical>,
+    default_output_rect: Rectangle<i32, Physical>,
+    output_scale: u32,
+) -> Result<(), GlesError> {
+    let sample_rect = unit
+        .input
+        .sample_rect
+        .and_then(|rect| process_rect_to_physical(&rect, output_scale))
+        .unwrap_or(default_output_rect);
+    let output_rect = unit
+        .output
+        .output_rect
+        .and_then(|rect| process_rect_to_physical(&rect, output_scale))
+        .unwrap_or(default_output_rect);
+
+    match unit.shader_key.0.as_str() {
+        "backdrop_blur" => {
+            let backdrop_regions = unit
+                .process_regions
+                .iter()
+                .filter_map(|rect| process_rect_to_physical(rect, output_scale))
+                .collect::<Vec<_>>();
+            execute_backdrop_blur_pass(
+                renderer,
+                shaders,
+                &unit.uniforms,
+                source_texture,
+                dest_texture,
+                &backdrop_regions,
+                output_size,
+                sample_rect,
+                output_rect,
+            )
+        }
         _ => composite_texture_to_target(
             renderer,
             source_texture,
             dest_texture,
             output_size,
+            sample_rect,
             output_rect,
         ),
     }
@@ -571,27 +600,38 @@ fn execute_material_pass(
 
 fn execute_backdrop_blur_pass(
     renderer: &mut GlesRenderer,
-    pipelines: &mut MaterialPipelineCache,
-    materials: &RenderMaterialFrameState,
-    params_id: Option<MaterialParamsId>,
+    shaders: &mut ProcessShaderCache,
+    uniforms: &ProcessUniformBlock,
     source_texture: &GlesTexture,
     dest_texture: &mut GlesTexture,
     backdrop_regions: &[Rectangle<i32, Physical>],
     output_size: Size<i32, Physical>,
+    sample_rect: Rectangle<i32, Physical>,
     output_rect: Rectangle<i32, Physical>,
 ) -> Result<(), GlesError> {
-    composite_texture_to_target(renderer, source_texture, dest_texture, output_size, output_rect)?;
+    composite_texture_to_target(
+        renderer,
+        source_texture,
+        dest_texture,
+        output_size,
+        sample_rect,
+        output_rect,
+    )?;
 
     if backdrop_regions.is_empty() {
         return Ok(());
     }
 
-    let radius = params_id
-        .and_then(|params_id| materials.params(params_id))
-        .and_then(|params| params.float("radius"))
+    let radius = uniforms
+        .values
+        .get("radius")
+        .and_then(|value| match value {
+            ProcessUniformValue::Float(value) => Some(*value),
+            _ => None,
+        })
         .unwrap_or(12.0);
-    let program = backdrop_blur_program(renderer, pipelines)?.clone();
-    let uniforms = vec![
+    let program = process_shader_program(renderer, shaders, &ProcessShaderKey("backdrop_blur".to_owned()))?.clone();
+    let shader_uniforms = vec![
         Uniform::new("tex_size", UniformValue::_2f(output_size.w as f32, output_size.h as f32)),
         Uniform::new("radius", UniformValue::_1f(radius)),
     ];
@@ -607,28 +647,33 @@ fn execute_backdrop_blur_pass(
         Transform::Normal,
         1.0,
         Some(&program),
-        &uniforms,
+        &shader_uniforms,
     )?;
     let sync = frame.finish()?;
     renderer.wait(&sync).map_err(|_| GlesError::SyncInterrupted)?;
     Ok(())
 }
 
-fn backdrop_blur_program<'a>(
+fn process_shader_program<'a>(
     renderer: &mut GlesRenderer,
-    pipelines: &'a mut MaterialPipelineCache,
+    shaders: &'a mut ProcessShaderCache,
+    shader_key: &ProcessShaderKey,
 ) -> Result<&'a GlesTexProgram, GlesError> {
-    if pipelines.backdrop_blur.is_none() {
-        pipelines.backdrop_blur = Some(renderer.compile_custom_texture_shader(
-            BACKDROP_BLUR_SHADER,
-            &[
-                UniformName::new("tex_size", UniformType::_2f),
-                UniformName::new("radius", UniformType::_1f),
-            ],
-        )?);
+    if !shaders.programs.contains_key(shader_key) {
+        let program = match shader_key.0.as_str() {
+            "backdrop_blur" => renderer.compile_custom_texture_shader(
+                BACKDROP_BLUR_SHADER,
+                &[
+                    UniformName::new("tex_size", UniformType::_2f),
+                    UniformName::new("radius", UniformType::_1f),
+                ],
+            )?,
+            _ => return Err(GlesError::ShaderCompileError),
+        };
+        shaders.programs.insert(shader_key.clone(), program);
     }
 
-    Ok(pipelines.backdrop_blur.as_ref().expect("initialized above"))
+    Ok(shaders.programs.get(shader_key).expect("initialized above"))
 }
 
 fn readback_texture_rgba(
@@ -655,6 +700,22 @@ fn output_swapchain_target(
         }
         _ => None,
     })
+}
+
+fn physical_rect_to_buffer_rect(rect: Rectangle<i32, Physical>) -> Rectangle<f64, Buffer> {
+    Rectangle::new(
+        (f64::from(rect.loc.x), f64::from(rect.loc.y)).into(),
+        (f64::from(rect.size.w), f64::from(rect.size.h)).into(),
+    )
+}
+
+fn process_rect_to_physical(rect: &ProcessRect, scale: u32) -> Option<Rectangle<i32, Physical>> {
+    let scale = i32::try_from(scale.max(1)).ok()?;
+    let width = i32::try_from(rect.width).ok()?.checked_mul(scale)?;
+    let height = i32::try_from(rect.height).ok()?.checked_mul(scale)?;
+    let x = rect.x.checked_mul(scale)?;
+    let y = rect.y.checked_mul(scale)?;
+    Some(Rectangle::new((x, y).into(), (width, height).into()))
 }
 
 #[cfg(test)]
