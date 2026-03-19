@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 120">
-  <text x="30" y="70" font-family="monospace" font-size="18">Extract</text>
-  <text x="170" y="70" font-family="monospace" font-size="18">Protocol</text>
-  <text x="330" y="70" font-family="monospace" font-size="18">Input</text>
-  <text x="460" y="70" font-family="monospace" font-size="18">Layout</text>
-  <text x="610" y="70" font-family="monospace" font-size="18">Render</text>
-  <path d="M90 60h50M250 60h50M380 60h50M530 60h50" stroke="#343a40" stroke-width="4" fill="none"/>
-</svg>
-
