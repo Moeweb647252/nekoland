@@ -363,7 +363,7 @@ fn build_scene_pass_elements(
     let mut elements = Vec::new();
     let mut backdrop_regions = Vec::new();
 
-    for item_id in item_ids {
+    for item_id in scene_pass_item_ids_in_presentation_order(item_ids) {
         let Some(item) = output_plan.item(*item_id) else {
             continue;
         };
@@ -474,6 +474,12 @@ fn build_scene_pass_elements(
     }
 
     ScenePassBuilt { elements, backdrop_regions }
+}
+
+fn scene_pass_item_ids_in_presentation_order(
+    item_ids: &[nekoland_ecs::resources::RenderItemId],
+) -> impl Iterator<Item = &nekoland_ecs::resources::RenderItemId> {
+    item_ids.iter().rev()
 }
 
 fn ensure_target<'a>(
@@ -649,4 +655,20 @@ fn output_swapchain_target(
         }
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use nekoland_ecs::resources::RenderItemId;
+
+    use super::scene_pass_item_ids_in_presentation_order;
+
+    #[test]
+    fn scene_pass_draw_order_is_front_to_back() {
+        let item_ids = [RenderItemId(11), RenderItemId(22), RenderItemId(33)];
+        assert_eq!(
+            scene_pass_item_ids_in_presentation_order(&item_ids).copied().collect::<Vec<_>>(),
+            vec![RenderItemId(33), RenderItemId(22), RenderItemId(11)]
+        );
+    }
 }
