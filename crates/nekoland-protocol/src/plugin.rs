@@ -692,7 +692,7 @@ fn process_selection_persistence_system(mut server: NonSendMut<SmithayProtocolSe
 }
 
 fn sync_protocol_surface_registry_system(
-    server: NonSendMut<SmithayProtocolServer>,
+    mut server: NonSendMut<SmithayProtocolServer>,
     mut registry: NonSendMut<ProtocolSurfaceRegistry>,
 ) {
     server.sync_surface_registry(&mut registry);
@@ -1064,9 +1064,9 @@ impl SmithayProtocolServer {
         self.runtime.as_ref().map(|runtime| runtime.borrow_mut().drain_events()).unwrap_or_default()
     }
 
-    fn sync_surface_registry(&self, registry: &mut ProtocolSurfaceRegistry) {
+    fn sync_surface_registry(&mut self, registry: &mut ProtocolSurfaceRegistry) {
         if let Some(runtime) = self.runtime.as_ref() {
-            runtime.borrow().state.sync_surface_registry(registry);
+            runtime.borrow_mut().state.sync_surface_registry(registry);
         } else {
             registry.surfaces.clear();
         }
@@ -2848,7 +2848,7 @@ impl ProtocolRuntimeState {
         }
     }
 
-    fn sync_surface_registry(&self, registry: &mut ProtocolSurfaceRegistry) {
+    fn sync_surface_registry(&mut self, registry: &mut ProtocolSurfaceRegistry) {
         registry.surfaces.clear();
         registry.surfaces.extend(self.toplevels.iter().map(|(surface_id, surface)| {
             (
@@ -2889,6 +2889,14 @@ impl ProtocolRuntimeState {
                 })
             },
         ));
+        if let ProtocolCursorImage::Surface { surface, .. } = &self.cursor_state.image {
+            let surface = surface.clone();
+            let surface_id = self.surface_id(&surface);
+            registry.surfaces.insert(
+                surface_id,
+                ProtocolSurfaceEntry { kind: ProtocolSurfaceKind::Cursor, surface },
+            );
+        }
     }
 }
 

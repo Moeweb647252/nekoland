@@ -751,6 +751,7 @@ pub enum ProtocolSurfaceKind {
     Toplevel,
     Popup,
     Layer,
+    Cursor,
 }
 
 /// Lookup table from compositor surface id to live Smithay surface handle.

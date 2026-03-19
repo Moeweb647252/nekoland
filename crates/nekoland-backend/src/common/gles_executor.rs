@@ -151,7 +151,9 @@ pub(crate) fn execute_output_graph(
                 let mut framebuffer = renderer.bind(&mut target.texture)?;
                 let mut frame =
                     renderer.render(&mut framebuffer, output_size, Transform::Normal)?;
-                frame.clear(clear_color(config), &[output_rect])?;
+                if pass.dependencies.is_empty() {
+                    frame.clear(clear_color(config), &[output_rect])?;
+                }
                 let _ = draw_render_elements::<GlesRenderer, _, CommonGlesRenderElement>(
                     &mut frame,
                     Scale::from(output_scale as f64),
