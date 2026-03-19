@@ -344,6 +344,8 @@ mod tests {
                     delta_y: 7,
                 }),
                 center_viewport_on: None,
+                clear_overlays: false,
+                overlay_updates: Vec::new(),
             }]
         );
         assert_eq!((pointer.x, pointer.y), (20.0, 10.0));
@@ -394,6 +396,8 @@ mod tests {
                     delta_y: 7,
                 }),
                 center_viewport_on: None,
+                clear_overlays: false,
+                overlay_updates: Vec::new(),
             }]
         );
         assert!(viewport_pan.active, "configured modifiers should activate viewport pan");

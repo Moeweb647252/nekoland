@@ -350,10 +350,11 @@ mod tests {
     };
     use nekoland_ecs::resources::{
         CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, OutputCompositorScene,
-        RenderColor, RenderItemIdentity, RenderItemInstance, RenderPlan, RenderPlanItem,
-        RenderRect, RenderSceneRole, RenderSourceId, SurfacePresentationRole,
-        SurfacePresentationSnapshot, SurfacePresentationState, SurfaceVisualSnapshot,
-        SurfaceVisualState, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
+        OutputOverlayId, OutputOverlaySpec, OutputOverlayState, RenderColor, RenderItemIdentity,
+        RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
+        RenderSourceId, SurfacePresentationRole, SurfacePresentationSnapshot,
+        SurfacePresentationState, SurfaceVisualSnapshot, SurfaceVisualState,
+        UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
     };
 
     use crate::animation::{
@@ -368,6 +369,8 @@ mod tests {
         app.inner_mut()
             .init_resource::<crate::animation::AnimationTimelineStore>()
             .init_resource::<CompositorSceneState>()
+            .init_resource::<OutputOverlayState>()
+            .init_resource::<crate::output_overlay::OutputOverlaySceneSyncState>()
             .init_resource::<RenderSceneContributionQueue>()
             .init_resource::<crate::scene_source::RenderSceneIdentityRegistry>()
             .add_systems(
@@ -375,6 +378,7 @@ mod tests {
                 (
                     crate::scene_source::clear_scene_contributions_system,
                     emit_desktop_scene_contributions_system,
+                    crate::output_overlay::sync_output_overlay_scene_state_system,
                     crate::scene_source::emit_compositor_scene_contributions_system,
                     assemble_render_plan_system,
                 )
@@ -823,5 +827,44 @@ mod tests {
             panic!("expected solid rect");
         };
         assert_eq!(item.identity, identity(1));
+    }
+
+    #[test]
+    fn output_overlay_state_syncs_into_render_plan() {
+        let mut app = NekolandApp::new("render-plan-output-overlay-test");
+        app.inner_mut()
+            .init_resource::<RenderPlan>()
+            .insert_resource(WindowStackingState::default());
+        add_render_plan_systems(&mut app);
+        let output_id = spawn_default_output(&mut app);
+        app.inner_mut().world_mut().resource_mut::<OutputOverlayState>().upsert(
+            output_id,
+            OutputOverlaySpec {
+                overlay_id: OutputOverlayId::from("debug"),
+                rect: RenderRect { x: 9, y: 8, width: 70, height: 60 },
+                clip_rect: Some(RenderRect { x: 10, y: 11, width: 20, height: 21 }),
+                color: RenderColor { r: 1, g: 2, b: 3, a: 200 },
+                opacity: 0.5,
+                z_index: 7,
+            },
+        );
+
+        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+
+        let output_plan = app
+            .inner()
+            .world()
+            .resource::<RenderPlan>()
+            .outputs
+            .get(&output_id)
+            .unwrap_or_else(|| panic!("output plan should exist for overlay state"));
+        let RenderPlanItem::SolidRect(item) =
+            output_plan.iter_ordered().next().expect("expected one overlay rect item")
+        else {
+            panic!("expected solid rect");
+        };
+        assert_eq!(item.instance.rect.x, 9);
+        assert_eq!(item.instance.clip_rect.map(|rect| rect.width), Some(20));
+        assert_eq!(item.instance.opacity, 0.5);
     }
 }

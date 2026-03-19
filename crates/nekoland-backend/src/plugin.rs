@@ -12,11 +12,12 @@ use nekoland_core::schedules::{ExtractSchedule, PresentSchedule};
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::resources::{
     BackendOutputRegistry, CompletedScreenshotFrames, CompositorClock, CompositorConfig,
-    FocusedOutputState, GlobalPointerPosition, OutputDamageRegions, OutputPresentationState,
-    PendingBackendInputEvents, PendingOutputControls, PendingOutputPresentationEvents,
-    PendingOutputServerRequests, PendingProtocolInputEvents, PendingScreenshotRequests,
-    PresentAuditState, PrimaryOutputState, RenderMaterialFrameState, RenderPassGraph, RenderPlan,
-    SurfacePresentationRole, SurfacePresentationSnapshot, VirtualOutputCaptureState,
+    FocusedOutputState, GlobalPointerPosition, OutputDamageRegions, OutputOverlayState,
+    OutputPresentationState, PendingBackendInputEvents, PendingOutputControls,
+    PendingOutputOverlayControls, PendingOutputPresentationEvents, PendingOutputServerRequests,
+    PendingProtocolInputEvents, PendingScreenshotRequests, PresentAuditState, PrimaryOutputState,
+    RenderMaterialFrameState, RenderPassGraph, RenderPlan, SurfacePresentationRole,
+    SurfacePresentationSnapshot, VirtualOutputCaptureState,
 };
 use nekoland_ecs::views::{BackendPresentSurfaceRuntime, OutputRuntime};
 use nekoland_protocol::{
@@ -26,8 +27,8 @@ use nekoland_protocol::{
 use crate::common::outputs::{
     PendingBackendOutputEvents, PendingBackendOutputUpdates, RememberedOutputViewportState,
     apply_backend_output_updates_system, apply_output_control_requests_system,
-    apply_output_server_requests_system, collect_output_snapshots,
-    remember_output_viewports_system, sync_configured_outputs_system,
+    apply_output_overlay_controls_system, apply_output_server_requests_system,
+    collect_output_snapshots, remember_output_viewports_system, sync_configured_outputs_system,
     sync_output_layout_state_system, sync_primary_output_state_system,
     synchronize_backend_outputs_system,
 };
@@ -95,7 +96,9 @@ impl NekolandPlugin for BackendPlugin {
             .init_resource::<PendingBackendInputEvents>()
             .init_resource::<PendingProtocolInputEvents>()
             .init_resource::<PendingOutputControls>()
+            .init_resource::<PendingOutputOverlayControls>()
             .init_resource::<PendingOutputServerRequests>()
+            .init_resource::<OutputOverlayState>()
             .init_resource::<PendingOutputPresentationEvents>()
             .init_resource::<OutputPresentationState>()
             .init_resource::<PrimaryOutputState>()
@@ -114,6 +117,7 @@ impl NekolandPlugin for BackendPlugin {
                     synchronize_backend_outputs_system,
                     apply_backend_output_updates_system,
                     apply_output_control_requests_system,
+                    apply_output_overlay_controls_system,
                     apply_output_server_requests_system,
                     sync_output_layout_state_system,
                     remember_output_viewports_system,

@@ -778,6 +778,8 @@ mod tests {
                     delta_y: 25,
                 }),
                 center_viewport_on: None,
+                clear_overlays: false,
+                overlay_updates: Vec::new(),
             }]
         );
     }

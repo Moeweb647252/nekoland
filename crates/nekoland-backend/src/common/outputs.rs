@@ -14,8 +14,9 @@ use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::kinds::{BackendEvent, FrameQueue};
 use nekoland_ecs::resources::{
     BackendOutputRegistry, CompositorConfig, ConfiguredOutput, EntityIndex, FocusedOutputState,
-    OutputServerAction, OutputServerRequest, PendingOutputControl, PendingOutputControls,
-    PendingOutputServerRequests, PrimaryOutputState,
+    OutputOverlayState, OutputServerAction, OutputServerRequest, PendingOutputControl,
+    PendingOutputControls, PendingOutputOverlayControls, PendingOutputServerRequests,
+    PrimaryOutputState,
 };
 use nekoland_ecs::selectors::OutputSelector;
 use nekoland_ecs::views::OutputRuntime;
@@ -137,6 +138,7 @@ type ManagedOutputQuery<'w, 's> = Query<
 #[derive(SystemParam)]
 pub(crate) struct OutputControlRequestCtx<'w, 's> {
     pending_output_controls: ResMut<'w, PendingOutputControls>,
+    pending_output_overlay_controls: ResMut<'w, PendingOutputOverlayControls>,
     pending_output_requests: ResMut<'w, PendingOutputServerRequests>,
     primary_output: Res<'w, PrimaryOutputState>,
     focused_output: Res<'w, FocusedOutputState>,
@@ -217,6 +219,7 @@ pub fn sync_configured_outputs_system(
 pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<'_, '_>) {
     let OutputControlRequestCtx {
         mut pending_output_controls,
+        mut pending_output_overlay_controls,
         mut pending_output_requests,
         primary_output,
         focused_output,
@@ -300,6 +303,8 @@ pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<
             viewport_origin: control.viewport_origin,
             viewport_pan: control.viewport_pan,
             center_viewport_on: control.center_viewport_on,
+            clear_overlays: control.clear_overlays,
+            overlay_updates: control.overlay_updates,
         };
 
         let Some((output_id, _, output_properties, mut viewport)) =
@@ -308,6 +313,8 @@ pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<
             if deferred_control.viewport_origin.is_some()
                 || deferred_control.viewport_pan.is_some()
                 || deferred_control.center_viewport_on.is_some()
+                || deferred_control.clear_overlays
+                || !deferred_control.overlay_updates.is_empty()
             {
                 deferred.push(deferred_control);
             }
@@ -331,17 +338,57 @@ pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<
                 deferred_control.center_viewport_on = Some(surface_id);
             }
         }
+        if deferred_control.clear_overlays {
+            pending_output_overlay_controls.output(*output_id).clear_overlays();
+            deferred_control.clear_overlays = false;
+        }
+        for overlay_update in std::mem::take(&mut deferred_control.overlay_updates) {
+            let overlay_control = &mut pending_output_overlay_controls.output(*output_id);
+            match overlay_update {
+                nekoland_ecs::resources::OutputOverlayUpdate::Set(spec) => {
+                    overlay_control.set_overlay(spec);
+                }
+                nekoland_ecs::resources::OutputOverlayUpdate::Remove(overlay_id) => {
+                    overlay_control.remove_overlay(overlay_id);
+                }
+            }
+        }
         remembered_viewports.remember(*output_id, output.clone(), viewport.clone());
 
         if deferred_control.viewport_origin.is_some()
             || deferred_control.viewport_pan.is_some()
             || deferred_control.center_viewport_on.is_some()
+            || deferred_control.clear_overlays
+            || !deferred_control.overlay_updates.is_empty()
         {
             deferred.push(deferred_control);
         }
     }
 
     pending_output_controls.replace(deferred);
+}
+
+/// Applies output-local overlay control updates after selectors have been resolved into `OutputId`.
+pub(crate) fn apply_output_overlay_controls_system(
+    mut pending_output_overlay_controls: ResMut<'_, PendingOutputOverlayControls>,
+    mut output_overlays: ResMut<'_, OutputOverlayState>,
+) {
+    for control in pending_output_overlay_controls.take() {
+        if control.clear_overlays {
+            output_overlays.clear_output(control.output_id);
+        }
+
+        for update in control.overlay_updates {
+            match update {
+                nekoland_ecs::resources::OutputOverlayUpdate::Set(spec) => {
+                    output_overlays.upsert(control.output_id, spec);
+                }
+                nekoland_ecs::resources::OutputOverlayUpdate::Remove(overlay_id) => {
+                    output_overlays.remove(control.output_id, &overlay_id);
+                }
+            }
+        }
+    }
 }
 
 pub fn enqueue_configured_output_requests(
@@ -784,8 +831,9 @@ mod tests {
     };
     use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
     use nekoland_ecs::resources::{
-        EntityIndex, FocusedOutputState, PendingOutputControls, PendingOutputServerRequests,
-        PrimaryOutputState,
+        EntityIndex, FocusedOutputState, OutputOverlayId, OutputOverlayState,
+        PendingOutputControls, PendingOutputOverlayControls, PendingOutputServerRequests,
+        PrimaryOutputState, RenderColor, RenderRect,
     };
     use nekoland_ecs::selectors::{OutputName, OutputSelector, SurfaceId};
 
@@ -795,8 +843,8 @@ mod tests {
     use super::{
         BackendOutputBlueprint, BackendOutputChange, BackendOutputEventRecord,
         BackendOutputRegistry, PendingBackendOutputEvents, RememberedOutputViewportState,
-        apply_output_control_requests_system, remember_output_viewports_system,
-        synchronize_backend_outputs_system,
+        apply_output_control_requests_system, apply_output_overlay_controls_system,
+        remember_output_viewports_system, synchronize_backend_outputs_system,
     };
 
     #[test]
@@ -804,14 +852,21 @@ mod tests {
         let mut app = NekolandApp::new("output-viewport-control-test");
         app.inner_mut()
             .init_resource::<PendingOutputControls>()
+            .init_resource::<PendingOutputOverlayControls>()
             .init_resource::<PendingOutputServerRequests>()
+            .init_resource::<OutputOverlayState>()
             .insert_resource(RememberedOutputViewportState::default())
             .insert_resource(PrimaryOutputState::default())
             .insert_resource(FocusedOutputState::default())
             .insert_resource(EntityIndex::default())
             .add_systems(
                 ExtractSchedule,
-                (apply_output_control_requests_system, remember_output_viewports_system).chain(),
+                (
+                    apply_output_control_requests_system,
+                    apply_output_overlay_controls_system,
+                    remember_output_viewports_system,
+                )
+                    .chain(),
             );
 
         let output = app
@@ -863,14 +918,21 @@ mod tests {
         let mut app = NekolandApp::new("output-viewport-center-test");
         app.inner_mut()
             .init_resource::<PendingOutputControls>()
+            .init_resource::<PendingOutputOverlayControls>()
             .init_resource::<PendingOutputServerRequests>()
+            .init_resource::<OutputOverlayState>()
             .insert_resource(RememberedOutputViewportState::default())
             .insert_resource(PrimaryOutputState::default())
             .insert_resource(FocusedOutputState::default())
             .insert_resource(EntityIndex::default())
             .add_systems(
                 ExtractSchedule,
-                (apply_output_control_requests_system, remember_output_viewports_system).chain(),
+                (
+                    apply_output_control_requests_system,
+                    apply_output_overlay_controls_system,
+                    remember_output_viewports_system,
+                )
+                    .chain(),
             );
 
         let output = app
@@ -917,6 +979,75 @@ mod tests {
             panic!("output viewport");
         };
         assert_eq!((viewport.origin_x, viewport.origin_y), (1150, 700));
+    }
+
+    #[test]
+    fn overlay_controls_update_output_overlay_state() {
+        let mut app = NekolandApp::new("output-overlay-control-test");
+        app.inner_mut()
+            .init_resource::<PendingOutputControls>()
+            .init_resource::<PendingOutputOverlayControls>()
+            .init_resource::<PendingOutputServerRequests>()
+            .init_resource::<OutputOverlayState>()
+            .insert_resource(RememberedOutputViewportState::default())
+            .insert_resource(PrimaryOutputState::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(EntityIndex::default())
+            .add_systems(
+                ExtractSchedule,
+                (
+                    apply_output_control_requests_system,
+                    apply_output_overlay_controls_system,
+                    remember_output_viewports_system,
+                )
+                    .chain(),
+            );
+
+        let output = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "Virtual".to_owned(),
+                    model: "test".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1280,
+                    height: 720,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                ..Default::default()
+            })
+            .id();
+        let output_id =
+            *app.inner().world().get::<OutputId>(output).expect("output id should exist");
+
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<PendingOutputControls>()
+            .named(OutputName::from("Virtual-1"))
+            .set_overlay_rect(
+                "debug",
+                RenderRect { x: 10, y: 20, width: 300, height: 200 },
+                RenderColor { r: 1, g: 2, b: 3, a: 255 },
+                Some(0.5),
+                Some(9),
+                Some(RenderRect { x: 30, y: 40, width: 50, height: 60 }),
+            );
+
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+
+        let overlays = app.inner().world().resource::<OutputOverlayState>();
+        let output = overlays.outputs.get(&output_id).expect("overlay state should exist");
+        let overlay =
+            output.overlays.get(&OutputOverlayId::from("debug")).expect("overlay should exist");
+        assert_eq!(overlay.rect.width, 300);
+        assert_eq!(overlay.clip_rect.map(|rect| rect.x), Some(30));
+        assert_eq!(overlay.opacity, 0.5);
+        assert_eq!(overlay.z_index, 9);
     }
 
     #[test]

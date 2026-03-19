@@ -8,7 +8,7 @@ fn main() -> ExitCode {
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,nekoland=debug"));
 
-    tracing_subscriber::fmt().with_env_filter(filter).compact().init();
+    tracing_subscriber::fmt().with_line_number(true).with_env_filter(filter).compact().init();
 
     // Build the protocol registry before constructing the app so startup logging can surface the
     // effective protocol set early.

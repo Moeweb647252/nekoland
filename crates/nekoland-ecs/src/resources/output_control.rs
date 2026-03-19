@@ -2,16 +2,19 @@ use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
 use crate::components::WorkspaceCoord;
+use crate::resources::{
+    OutputOverlayId, OutputOverlaySpec, OutputOverlayUpdate, RenderColor, RenderRect,
+};
 use crate::selectors::{OutputName, OutputSelector, SurfaceId};
 
 /// High-level output control updates staged by IPC, keybindings, or tests.
-#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct PendingOutputControls {
     controls: Vec<PendingOutputControl>,
 }
 
 /// One staged control update for a single output.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PendingOutputControl {
     pub selector: OutputSelector,
     pub enabled: Option<bool>,
@@ -19,6 +22,8 @@ pub struct PendingOutputControl {
     pub viewport_origin: Option<OutputViewportOrigin>,
     pub viewport_pan: Option<OutputViewportPan>,
     pub center_viewport_on: Option<SurfaceId>,
+    pub clear_overlays: bool,
+    pub overlay_updates: Vec<OutputOverlayUpdate>,
 }
 
 /// Desired output configuration staged for backend reconciliation.
@@ -56,6 +61,8 @@ impl Default for PendingOutputControl {
             viewport_origin: None,
             viewport_pan: None,
             center_viewport_on: None,
+            clear_overlays: false,
+            overlay_updates: Vec::new(),
         }
     }
 }
@@ -140,10 +147,47 @@ impl OutputControlHandle<'_> {
         self.control.center_viewport_on = Some(surface_id);
         self
     }
+
+    pub fn set_overlay_rect(
+        &mut self,
+        overlay_id: impl Into<OutputOverlayId>,
+        rect: RenderRect,
+        color: RenderColor,
+        opacity: Option<f32>,
+        z_index: Option<i32>,
+        clip_rect: Option<RenderRect>,
+    ) -> &mut Self {
+        let spec = OutputOverlaySpec {
+            overlay_id: overlay_id.into(),
+            rect,
+            clip_rect,
+            color,
+            opacity: opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+            z_index: z_index.unwrap_or_default(),
+        };
+        let overlay_id = spec.overlay_id.clone();
+        self.control.overlay_updates.retain(|update| update.overlay_id() != &overlay_id);
+        self.control.overlay_updates.push(OutputOverlayUpdate::Set(spec));
+        self
+    }
+
+    pub fn remove_overlay(&mut self, overlay_id: impl Into<OutputOverlayId>) -> &mut Self {
+        let overlay_id = overlay_id.into();
+        self.control.overlay_updates.retain(|update| update.overlay_id() != &overlay_id);
+        self.control.overlay_updates.push(OutputOverlayUpdate::Remove(overlay_id));
+        self
+    }
+
+    pub fn clear_overlays(&mut self) -> &mut Self {
+        self.control.clear_overlays = true;
+        self.control.overlay_updates.clear();
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::resources::{OutputOverlayId, OutputOverlayUpdate, RenderColor, RenderRect};
     use crate::selectors::{OutputName, OutputSelector, SurfaceId};
 
     use super::{
@@ -174,7 +218,64 @@ mod tests {
                 viewport_origin: Some(OutputViewportOrigin { x: 120, y: 240 }),
                 viewport_pan: Some(OutputViewportPan { delta_x: -20, delta_y: 15 }),
                 center_viewport_on: Some(SurfaceId(7)),
+                clear_overlays: false,
+                overlay_updates: Vec::new(),
             }]
         );
+    }
+
+    #[test]
+    fn overlay_controls_keep_last_update_per_overlay_id() {
+        let mut controls = PendingOutputControls::default();
+        controls
+            .named(OutputName::from("Virtual-1"))
+            .set_overlay_rect(
+                "debug",
+                RenderRect { x: 1, y: 2, width: 100, height: 50 },
+                RenderColor { r: 10, g: 20, b: 30, a: 255 },
+                Some(0.25),
+                Some(3),
+                None,
+            )
+            .set_overlay_rect(
+                "debug",
+                RenderRect { x: 5, y: 6, width: 20, height: 30 },
+                RenderColor { r: 40, g: 50, b: 60, a: 200 },
+                Some(0.75),
+                Some(9),
+                Some(RenderRect { x: 6, y: 7, width: 10, height: 11 }),
+            );
+
+        assert_eq!(controls.as_slice().len(), 1);
+        assert_eq!(
+            controls.as_slice()[0].overlay_updates,
+            vec![OutputOverlayUpdate::Set(crate::resources::OutputOverlaySpec {
+                overlay_id: OutputOverlayId::from("debug"),
+                rect: RenderRect { x: 5, y: 6, width: 20, height: 30 },
+                clip_rect: Some(RenderRect { x: 6, y: 7, width: 10, height: 11 }),
+                color: RenderColor { r: 40, g: 50, b: 60, a: 200 },
+                opacity: 0.75,
+                z_index: 9,
+            })]
+        );
+    }
+
+    #[test]
+    fn clear_overlays_discards_pending_overlay_updates() {
+        let mut controls = PendingOutputControls::default();
+        controls
+            .named(OutputName::from("Virtual-1"))
+            .set_overlay_rect(
+                "debug",
+                RenderRect { x: 1, y: 2, width: 100, height: 50 },
+                RenderColor { r: 10, g: 20, b: 30, a: 255 },
+                Some(0.25),
+                Some(3),
+                None,
+            )
+            .clear_overlays();
+
+        assert!(controls.as_slice()[0].clear_overlays);
+        assert!(controls.as_slice()[0].overlay_updates.is_empty());
     }
 }

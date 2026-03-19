@@ -8,7 +8,7 @@ pub mod window;
 pub mod workspace;
 
 pub use action::ActionCommand;
-pub use output::OutputCommand;
+pub use output::{OutputCommand, OutputOverlayColorCommand, OutputOverlayRectCommand};
 pub use popup::PopupCommand;
 pub use query::{
     ClipboardSnapshot, CommandSnapshot, CommandStatusSnapshot, ConfigOutputSnapshot,

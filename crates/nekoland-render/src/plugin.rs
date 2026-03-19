@@ -4,13 +4,14 @@ use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{PreRenderSchedule, RenderSchedule};
 use nekoland_ecs::resources::{
     CompletedScreenshotFrames, CompositorSceneState, CursorImageSnapshot, CursorSceneSnapshot,
-    DamageState, FramePacingState, OutputDamageRegions, PendingScreenshotRequests,
-    RenderMaterialFrameState, RenderPassGraph, RenderPlan, SurfaceVisualSnapshot,
+    DamageState, FramePacingState, OutputDamageRegions, OutputOverlayState,
+    PendingScreenshotRequests, RenderMaterialFrameState, RenderPassGraph, RenderPlan,
+    SurfaceVisualSnapshot,
 };
 
 use crate::{
     animation, compositor_render, cursor, damage_tracker, effects, frame_callback, material,
-    presentation_feedback, render_graph, scene_source, screenshot, surface_visual,
+    output_overlay, presentation_feedback, render_graph, scene_source, screenshot, surface_visual,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -29,6 +30,8 @@ impl NekolandPlugin for RenderPlugin {
             .init_resource::<PendingScreenshotRequests>()
             .init_resource::<CompletedScreenshotFrames>()
             .init_resource::<CompositorSceneState>()
+            .init_resource::<OutputOverlayState>()
+            .init_resource::<output_overlay::OutputOverlaySceneSyncState>()
             .init_resource::<scene_source::RenderSceneContributionQueue>()
             .init_resource::<scene_source::RenderSceneIdentityRegistry>()
             .init_resource::<animation::AnimationTimelineStore>()
@@ -62,6 +65,7 @@ impl NekolandPlugin for RenderPlugin {
                 (
                     scene_source::clear_scene_contributions_system,
                     compositor_render::emit_desktop_scene_contributions_system,
+                    output_overlay::sync_output_overlay_scene_state_system,
                     scene_source::emit_compositor_scene_contributions_system,
                     cursor::cursor_scene_snapshot_system,
                     cursor::emit_cursor_scene_contributions_system,

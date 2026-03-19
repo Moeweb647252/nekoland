@@ -7,7 +7,7 @@ use crate::commands::{
 use crate::subscribe::IpcSubscription;
 
 /// Top-level IPC command envelope exchanged between clients and the compositor.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum IpcCommand {
     Action(ActionCommand),
     Window(WindowCommand),
