@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
+use std::error::Error;
+use std::fmt::{Display, Formatter};
 
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
@@ -98,6 +100,50 @@ pub(crate) struct ExecutedOutputTexture {
     pub texture: GlesTexture,
 }
 
+#[derive(Debug)]
+pub(crate) enum GlesExecutionError {
+    Renderer(GlesError),
+    MissingExecutionTarget { target_id: RenderTargetId },
+    MissingProcessShaderProgram { shader_key: ProcessShaderKey },
+}
+
+impl Display for GlesExecutionError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Renderer(error) => write!(f, "{error}"),
+            Self::MissingExecutionTarget { target_id } => {
+                write!(
+                    f,
+                    "render target {target_id:?} missing from execution cache after allocation"
+                )
+            }
+            Self::MissingProcessShaderProgram { shader_key } => {
+                write!(
+                    f,
+                    "process shader {shader_key:?} missing from cache after initialization"
+                )
+            }
+        }
+    }
+}
+
+impl Error for GlesExecutionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Renderer(error) => Some(error),
+            Self::MissingExecutionTarget { .. } | Self::MissingProcessShaderProgram { .. } => {
+                None
+            }
+        }
+    }
+}
+
+impl From<GlesError> for GlesExecutionError {
+    fn from(value: GlesError) -> Self {
+        Self::Renderer(value)
+    }
+}
+
 pub(crate) fn execute_output_graph(
     renderer: &mut GlesRenderer,
     state: &mut GlesExecutionState,
@@ -112,7 +158,7 @@ pub(crate) fn execute_output_graph(
     pending_screenshot_requests: &mut PendingScreenshotRequests,
     completed_screenshots: &mut CompletedScreenshotFrames,
     clock: Option<&CompositorClock>,
-) -> Result<Option<ExecutedOutputTexture>, GlesError> {
+) -> Result<Option<ExecutedOutputTexture>, GlesExecutionError> {
     let Some(output_plan) = render_plan.outputs.get(&output.output_id) else {
         return Ok(None);
     };
@@ -465,7 +511,7 @@ fn ensure_target<'a>(
     cache: &'a mut OutputExecutionCache,
     target_id: RenderTargetId,
     output_size: Size<i32, Physical>,
-) -> Result<&'a mut CachedExecutionTarget, GlesError> {
+) -> Result<&'a mut CachedExecutionTarget, GlesExecutionError> {
     let recreate = cache.targets.get(&target_id).is_none_or(|target| target.size != output_size);
     if recreate {
         let texture = Offscreen::<GlesTexture>::create_buffer(
@@ -479,7 +525,10 @@ fn ensure_target<'a>(
         );
     }
 
-    Ok(cache.targets.get_mut(&target_id).expect("target inserted above"))
+    cache
+        .targets
+        .get_mut(&target_id)
+        .ok_or(GlesExecutionError::MissingExecutionTarget { target_id })
 }
 
 fn composite_texture_to_target(
@@ -518,7 +567,7 @@ fn execute_process_units_for_pass(
     output_size: Size<i32, Physical>,
     output_rect: Rectangle<i32, Physical>,
     output_scale: u32,
-) -> Result<(), GlesError> {
+) -> Result<(), GlesExecutionError> {
     let Some(output_process) = output_process else {
         return Ok(());
     };
@@ -556,7 +605,7 @@ fn execute_process_unit(
     output_size: Size<i32, Physical>,
     default_output_rect: Rectangle<i32, Physical>,
     output_scale: u32,
-) -> Result<(), GlesError> {
+) -> Result<(), GlesExecutionError> {
     let sample_rect = unit
         .input
         .sample_rect
@@ -587,14 +636,17 @@ fn execute_process_unit(
                 output_rect,
             )
         }
-        _ => composite_texture_to_target(
-            renderer,
-            source_texture,
-            dest_texture,
-            output_size,
-            sample_rect,
-            output_rect,
-        ),
+        _ => {
+            composite_texture_to_target(
+                renderer,
+                source_texture,
+                dest_texture,
+                output_size,
+                sample_rect,
+                output_rect,
+            )?;
+            Ok(())
+        }
     }
 }
 
@@ -608,7 +660,7 @@ fn execute_backdrop_blur_pass(
     output_size: Size<i32, Physical>,
     sample_rect: Rectangle<i32, Physical>,
     output_rect: Rectangle<i32, Physical>,
-) -> Result<(), GlesError> {
+) -> Result<(), GlesExecutionError> {
     composite_texture_to_target(
         renderer,
         source_texture,
@@ -658,7 +710,7 @@ fn process_shader_program<'a>(
     renderer: &mut GlesRenderer,
     shaders: &'a mut ProcessShaderCache,
     shader_key: &ProcessShaderKey,
-) -> Result<&'a GlesTexProgram, GlesError> {
+) -> Result<&'a GlesTexProgram, GlesExecutionError> {
     if !shaders.programs.contains_key(shader_key) {
         let program = match shader_key.0.as_str() {
             "backdrop_blur" => renderer.compile_custom_texture_shader(
@@ -668,12 +720,17 @@ fn process_shader_program<'a>(
                     UniformName::new("radius", UniformType::_1f),
                 ],
             )?,
-            _ => return Err(GlesError::ShaderCompileError),
+            _ => return Err(GlesExecutionError::Renderer(GlesError::ShaderCompileError)),
         };
         shaders.programs.insert(shader_key.clone(), program);
     }
 
-    Ok(shaders.programs.get(shader_key).expect("initialized above"))
+    shaders
+        .programs
+        .get(shader_key)
+        .ok_or_else(|| GlesExecutionError::MissingProcessShaderProgram {
+            shader_key: shader_key.clone(),
+        })
 }
 
 fn readback_texture_rgba(
