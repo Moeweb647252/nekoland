@@ -468,7 +468,8 @@ impl Backend for WinitRuntime {
                 tracing::warn!(error = %error, "failed to draw final winit composite texture");
                 return Ok(());
             }
-            if let Err(error) = frame.finish().and_then(|sync| renderer.wait(&sync)) {
+            // Smithay's nested-winit path submits after `finish()` without an extra renderer wait.
+            if let Err(error) = frame.finish().map(|_| ()) {
                 tracing::warn!(error = %error, "failed to finish final winit composite frame");
                 return Ok(());
             }
