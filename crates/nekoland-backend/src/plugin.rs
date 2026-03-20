@@ -6,15 +6,15 @@ use bevy_ecs::error::Result as BevyResult;
 use bevy_ecs::prelude::{Entity, NonSend, NonSendMut, Query, Res, ResMut};
 use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
 use bevy_ecs::system::SystemParam;
+use nekoland_config::resources::CompositorConfig;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::prelude::AppMetadata;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule};
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::resources::{
-    BackendOutputRegistry, CompletedScreenshotFrames, CompositorClock, CompositorConfig,
-    FocusedOutputState, GlobalPointerPosition, OutputDamageRegions, OutputOverlayState,
-    OutputPresentationState, PendingBackendInputEvents, PendingOutputControls,
-    PendingOutputOverlayControls, PendingOutputPresentationEvents, PendingOutputServerRequests,
+    BackendOutputRegistry, CompletedScreenshotFrames, CompositorClock, FocusedOutputState,
+    GlobalPointerPosition, OutputDamageRegions, OutputOverlayState, PendingBackendInputEvents,
+    PendingOutputControls, PendingOutputOverlayControls, PendingOutputServerRequests,
     PendingProtocolInputEvents, PendingScreenshotRequests, PresentAuditState, PrimaryOutputState,
     RenderMaterialFrameState, RenderPassGraph, RenderPlan, RenderProcessPlan,
     SurfacePresentationRole, SurfacePresentationSnapshot, VirtualOutputCaptureState,
@@ -22,6 +22,7 @@ use nekoland_ecs::resources::{
 use nekoland_ecs::views::{BackendPresentSurfaceRuntime, OutputRuntime};
 use nekoland_protocol::{
     ProtocolDmabufSupport, ProtocolSeatDispatchSystems, ProtocolSurfaceRegistry,
+    resources::{OutputPresentationState, PendingOutputPresentationEvents},
 };
 
 use crate::common::outputs::{
@@ -401,8 +402,8 @@ mod tests {
         RenderItemId, RenderItemIdentity, RenderItemInstance, RenderMaterialFrameState,
         RenderPassGraph, RenderPassId, RenderPassNode, RenderPlan, RenderPlanItem,
         RenderProcessPlan, RenderRect, RenderSceneRole, RenderSourceId, RenderTargetId,
-        RenderTargetKind, SurfacePresentationSnapshot, SurfacePresentationState,
-        SurfaceRenderItem, VirtualOutputCaptureState,
+        RenderTargetKind, SurfacePresentationSnapshot, SurfacePresentationState, SurfaceRenderItem,
+        VirtualOutputCaptureState,
     };
     use nekoland_protocol::ProtocolSeatDispatchSystems;
 

@@ -6,11 +6,12 @@ use nekoland_ecs::components::{
 };
 use nekoland_ecs::events::{PointerButton, WindowMoved};
 use nekoland_ecs::resources::{
-    EntityIndex, GlobalPointerPosition, KeyboardFocusState, PrimaryOutputState, ResizeEdges,
+    EntityIndex, GlobalPointerPosition, KeyboardFocusState, PrimaryOutputState,
     UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
 };
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
+use nekoland_protocol::resources::ResizeEdges;
 
 use crate::viewport::{project_scene_geometry, resolve_output_state_for_workspace};
 
@@ -226,7 +227,8 @@ fn resize_geometry(
 #[cfg(test)]
 mod tests {
     use nekoland_ecs::components::WindowSceneGeometry;
-    use nekoland_ecs::resources::{GlobalPointerPosition, ResizeEdges};
+    use nekoland_ecs::resources::GlobalPointerPosition;
+    use nekoland_protocol::resources::ResizeEdges;
 
     use super::{WindowGrabMode, WindowGrabState, geometry_for_pointer};
 

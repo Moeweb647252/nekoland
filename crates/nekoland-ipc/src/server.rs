@@ -13,12 +13,25 @@ use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, NonSendMut, Query, Res, ResMut, Resource, With};
 use bevy_ecs::query::Allow;
 use bevy_ecs::system::SystemParam;
-use nekoland_config::ConfigReloadRequest;
-use nekoland_config::LoadedConfigSource;
+use nekoland_config::{
+    ConfigReloadRequest, LoadedConfigSource,
+    resources::{CompositorConfig, ConfiguredKeyboardLayout, KeyboardLayoutState},
+};
 use nekoland_core::lifecycle::AppLifecycleState;
 use nekoland_ecs::control::{OutputControlApi, WindowControlApi, WorkspaceControlApi};
+use nekoland_ecs::resources::{
+    BackendOutputRegistry, CommandExecutionStatus, CommandHistoryState, CompositorClock,
+    EntityIndex, ExternalCommandRequest, KeyboardFocusState, OutputOverlayId,
+    PendingExternalCommandRequests, PendingOutputControls, PendingWindowControls,
+    PendingWorkspaceControls, PresentAuditElementKind, PresentAuditState, RenderColor, RenderPlan,
+    RenderPlanItem, RenderRect,
+};
 use nekoland_ecs::selectors::{
     OutputName, SurfaceId, WorkspaceLookup, WorkspaceName, WorkspaceSelector,
+};
+use nekoland_protocol::resources::{
+    ClipboardSelectionState, PendingPopupServerRequests, PopupServerAction, PopupServerRequest,
+    PrimarySelectionState, SelectionOwner,
 };
 use serde::{Deserialize, Serialize};
 
@@ -39,14 +52,6 @@ use crate::subscribe::{
 use crate::{IpcCommand, IpcReply, IpcRequest};
 use nekoland_ecs::components::{
     WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgPopup,
-};
-use nekoland_ecs::resources::{
-    BackendOutputRegistry, ClipboardSelectionState, CommandExecutionStatus, CommandHistoryState,
-    CompositorClock, CompositorConfig, EntityIndex, ExternalCommandRequest, KeyboardFocusState,
-    KeyboardLayoutState, OutputOverlayId, PendingExternalCommandRequests, PendingOutputControls,
-    PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls, PopupServerAction,
-    PopupServerRequest, PresentAuditElementKind, PresentAuditState, PrimarySelectionState,
-    RenderColor, RenderPlan, RenderPlanItem, RenderRect, SelectionOwner,
 };
 use nekoland_ecs::views::{
     OutputRuntime, PopupSnapshotRuntime, WindowSnapshotRuntime, WorkspaceRuntime,
@@ -972,7 +977,7 @@ fn flattened_render_plan_surface_order(
 }
 
 fn keyboard_layout_entry_snapshot(
-    layout: &nekoland_ecs::resources::ConfiguredKeyboardLayout,
+    layout: &ConfiguredKeyboardLayout,
 ) -> KeyboardLayoutEntrySnapshot {
     KeyboardLayoutEntrySnapshot {
         name: layout.name.clone(),
@@ -1541,7 +1546,10 @@ fn remember_server_error(slot: &mut Option<String>, error: impl std::fmt::Displa
 mod tests {
     use bevy_ecs::hierarchy::ChildOf;
     use bevy_ecs::schedule::Schedule;
-    use nekoland_config::ConfigReloadRequest;
+    use nekoland_config::{
+        ConfigReloadRequest,
+        resources::{CompositorConfig, ConfiguredKeyboardLayout, KeyboardLayoutState},
+    };
     use nekoland_core::lifecycle::AppLifecycleState;
     use nekoland_ecs::bundles::WindowBundle;
     use nekoland_ecs::components::{
@@ -1550,11 +1558,12 @@ mod tests {
     };
     use nekoland_ecs::resources::SplitAxis;
     use nekoland_ecs::resources::{
-        ClipboardSelectionState, CompositorClock, CompositorConfig, EntityIndex,
-        KeyboardFocusState, KeyboardLayoutState, PendingExternalCommandRequests,
-        PendingOutputControls, PendingPopupServerRequests, PendingWindowControls,
-        PendingWorkspaceControls, PresentAuditElement, PresentAuditElementKind, PresentAuditState,
-        PrimarySelectionState, RenderPlan,
+        CompositorClock, EntityIndex, KeyboardFocusState, PendingExternalCommandRequests,
+        PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
+        PresentAuditElement, PresentAuditElementKind, PresentAuditState, RenderPlan,
+    };
+    use nekoland_protocol::resources::{
+        ClipboardSelectionState, PendingPopupServerRequests, PrimarySelectionState,
     };
 
     use super::{
@@ -1973,11 +1982,11 @@ mod tests {
         let mut config_reload = ConfigReloadRequest::default();
         let mut keyboard_layout_state = KeyboardLayoutState::from_config(
             &[
-                nekoland_ecs::resources::ConfiguredKeyboardLayout::default(),
-                nekoland_ecs::resources::ConfiguredKeyboardLayout {
+                ConfiguredKeyboardLayout::default(),
+                ConfiguredKeyboardLayout {
                     name: "de".to_owned(),
                     layout: "de".to_owned(),
-                    ..nekoland_ecs::resources::ConfiguredKeyboardLayout::default()
+                    ..ConfiguredKeyboardLayout::default()
                 },
             ],
             "us",

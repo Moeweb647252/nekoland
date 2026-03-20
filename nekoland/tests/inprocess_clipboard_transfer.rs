@@ -16,10 +16,13 @@ use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::components::{WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::resources::{
-    BackendInputAction, BackendInputEvent, ClipboardSelectionState, CompositorClock,
-    KeyboardFocusState, PendingProtocolInputEvents, SelectionOwner,
+    BackendInputAction, BackendInputEvent, CompositorClock, KeyboardFocusState,
+    PendingProtocolInputEvents,
 };
-use nekoland_protocol::ProtocolServerState;
+use nekoland_protocol::{
+    ProtocolServerState,
+    resources::{ClipboardSelectionState, SelectionOwner},
+};
 use nekoland_shell::decorations;
 use wayland_client::protocol::{
     wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,

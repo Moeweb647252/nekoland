@@ -12,8 +12,9 @@ use nekoland_ecs::components::{
     WindowMode, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::{
-    OutputPresentationState, PresentAuditState, VirtualOutputCaptureState, VirtualOutputElementKind,
+    PresentAuditState, VirtualOutputCaptureState, VirtualOutputElementKind,
 };
+use nekoland_protocol::resources::OutputPresentationState;
 
 mod common;
 

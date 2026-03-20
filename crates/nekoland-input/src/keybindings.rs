@@ -1,12 +1,11 @@
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::{Res, ResMut, Resource};
+use nekoland_config::resources::{CompositorConfig, ConfiguredAction, describe_action_sequence};
 use nekoland_ecs::control::{OutputOps, WindowOps, WorkspaceOps};
-use nekoland_ecs::resources::{
-    CompositorConfig, ConfiguredAction, KeyShortcut, PendingExternalCommandRequests,
-    PendingInputEvents, PressedKeys,
-};
+use nekoland_ecs::resources::{KeyShortcut, PendingExternalCommandRequests, PressedKeys};
 use nekoland_ecs::selectors::{OutputName, WorkspaceLookup};
+use nekoland_protocol::resources::{InputEventRecord, PendingInputEvents};
 
 /// Feature-local compiled keybindings derived from the latest compositor config.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
@@ -97,9 +96,9 @@ pub fn reload_keybindings_system(
                 compiled.command_bindings.extend(binding_set.command_bindings);
             }
             Err(error) => {
-                let action = nekoland_ecs::resources::describe_action_sequence(actions);
+                let action = describe_action_sequence(actions);
                 tracing::warn!(binding, action, error, "ignoring invalid keybinding");
-                pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                pending_input_events.push(InputEventRecord {
                     source: "keybinding".to_owned(),
                     detail: format!("{binding} -> {action} ignored: {error}"),
                 });
@@ -524,7 +523,7 @@ fn log_keybinding_applied(
     binding: &str,
     description: &str,
 ) {
-    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+    pending_input_events.push(InputEventRecord {
         source: "keybinding".to_owned(),
         detail: format!("{binding} -> {description}"),
     });
@@ -536,7 +535,7 @@ fn log_keybinding_ignored(
     description: &str,
     reason: &str,
 ) {
-    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+    pending_input_events.push(InputEventRecord {
         source: "keybinding".to_owned(),
         detail: format!("{binding} -> {description} ignored: {reason}"),
     });
@@ -669,14 +668,16 @@ mod tests {
 
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::InputSchedule;
+    use nekoland_config::resources::{CompositorConfig, ConfiguredAction};
     use nekoland_ecs::components::WorkspaceId;
     use nekoland_ecs::resources::SplitAxis;
     use nekoland_ecs::resources::{
-        BackendInputAction, BackendInputEvent, CompositorClock, CompositorConfig, ConfiguredAction,
-        KeyboardFocusState, PendingBackendInputEvents, PendingExternalCommandRequests,
-        PendingOutputControls, PendingWindowControls, PendingWorkspaceControls, WorkspaceControl,
+        BackendInputAction, BackendInputEvent, CompositorClock, KeyboardFocusState,
+        PendingBackendInputEvents, PendingExternalCommandRequests, PendingOutputControls,
+        PendingWindowControls, PendingWorkspaceControls, WorkspaceControl,
     };
     use nekoland_ecs::selectors::{OutputName, SurfaceId, WorkspaceLookup};
+    use nekoland_protocol::resources::PendingInputEvents;
 
     use crate::InputPlugin;
 
@@ -908,7 +909,7 @@ mod tests {
         CompositorConfig {
             keybindings: bindings
                 .into_iter()
-                .map(|(binding, action)| (binding.to_owned(), vec![action]))
+                .map(|(binding, action): (&str, ConfiguredAction)| (binding.to_owned(), vec![action]))
                 .collect::<BTreeMap<_, _>>(),
             ..CompositorConfig::default()
         }

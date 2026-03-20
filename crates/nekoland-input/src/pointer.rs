@@ -1,14 +1,16 @@
 use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::{Local, Query, Res, ResMut};
 use bevy_ecs::system::SystemParam;
+use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::events::{PointerButton, PointerMotion};
 use nekoland_ecs::resources::{
-    BackendInputAction, CompositorConfig, FocusedOutputState, GlobalPointerPosition, KeyShortcut,
-    PendingBackendInputEvents, PendingInputEvents, PendingOutputControls, PhysicalPointerPosition,
-    PointerDelta, PressedKeys, ViewportPointerPanState,
+    BackendInputAction, FocusedOutputState, GlobalPointerPosition, KeyShortcut,
+    PendingBackendInputEvents, PendingOutputControls, PhysicalPointerPosition, PointerDelta,
+    PressedKeys, ViewportPointerPanState,
 };
 use nekoland_ecs::selectors::OutputSelector;
 use nekoland_ecs::views::OutputRuntime;
+use nekoland_protocol::resources::{InputEventRecord, PendingInputEvents};
 
 #[derive(Debug, Default)]
 pub(crate) struct ViewportPointerPanGestureState {
@@ -55,7 +57,7 @@ pub fn pointer_input_system(
                     physical_pointer.initialized = true;
                     physical_pointer.needs_resync = false;
 
-                    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                    pending_input_events.push(InputEventRecord {
                         source: format!("pointer:{}", event.device),
                         detail: format!("resynced to ({x:.1}, {y:.1})"),
                     });
@@ -74,7 +76,7 @@ pub fn pointer_input_system(
                 physical_pointer.initialized = true;
                 physical_pointer.needs_resync = false;
 
-                pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                pending_input_events.push(InputEventRecord {
                     source: format!("pointer:{}", event.device),
                     detail: format!("moved to ({x:.1}, {y:.1})"),
                 });
@@ -85,14 +87,14 @@ pub fn pointer_input_system(
                 physical_pointer.initialized = false;
                 physical_pointer.needs_resync = true;
 
-                pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                pending_input_events.push(InputEventRecord {
                     source: format!("pointer:{}", event.device),
                     detail: format!("delta ({dx:.1}, {dy:.1})"),
                 });
             }
             BackendInputAction::PointerButton { button_code, pressed } => {
                 button_events.write(PointerButton { button_code, pressed });
-                pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                pending_input_events.push(InputEventRecord {
                     source: format!("pointer:{}", event.device),
                     detail: format!(
                         "button {button_code} {}",
@@ -101,7 +103,7 @@ pub fn pointer_input_system(
                 });
             }
             BackendInputAction::PointerAxis { horizontal, vertical } => {
-                pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                pending_input_events.push(InputEventRecord {
                     source: format!("pointer:{}", event.device),
                     detail: format!("axis ({horizontal:.1}, {vertical:.1})"),
                 });
@@ -276,7 +278,7 @@ pub(crate) fn viewport_pointer_pan_system(
 
     gesture.engaged = true;
     pending_output_controls.select(output_selector).pan_viewport_by(pan_x, pan_y);
-    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+    pending_input_events.push(InputEventRecord {
         source: "pointer:viewport".to_owned(),
         detail: format!("panned viewport by ({pan_x}, {pan_y})"),
     });
@@ -288,17 +290,18 @@ mod tests {
     use bevy_ecs::message::Messages;
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::RunSystemOnce;
+    use nekoland_config::resources::CompositorConfig;
     use nekoland_ecs::bundles::OutputBundle;
     use nekoland_ecs::components::OutputId;
     use nekoland_ecs::components::{OutputDevice, OutputKind, OutputPlacement, OutputProperties};
     use nekoland_ecs::events::{PointerButton, PointerMotion};
     use nekoland_ecs::resources::{
-        BackendInputAction, BackendInputEvent, CompositorConfig, FocusedOutputState,
-        GlobalPointerPosition, ModifierMask, PendingBackendInputEvents, PendingInputEvents,
-        PendingOutputControls, PhysicalPointerPosition, PointerDelta, PressedKeys,
-        ViewportPointerPanState,
+        BackendInputAction, BackendInputEvent, FocusedOutputState, GlobalPointerPosition,
+        ModifierMask, PendingBackendInputEvents, PendingOutputControls, PhysicalPointerPosition,
+        PointerDelta, PressedKeys, ViewportPointerPanState,
     };
     use nekoland_ecs::selectors::OutputSelector;
+    use nekoland_protocol::resources::PendingInputEvents;
 
     use super::{cursor_motion_system, pointer_input_system, viewport_pointer_pan_system};
 

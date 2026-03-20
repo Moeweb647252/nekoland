@@ -1,16 +1,19 @@
 use bevy_ecs::entity::Entity;
+use nekoland_config::resources::CompositorConfig;
 use serde::{Deserialize, Serialize};
 
 use nekoland_core::error::NekolandError;
 use nekoland_core::prelude::AppMetadata;
 use nekoland_ecs::components::{OutputDevice, OutputId, OutputProperties, SurfaceGeometry};
 use nekoland_ecs::resources::{
-    CompletedScreenshotFrames, CompositorClock, CompositorConfig, GlobalPointerPosition,
-    OutputDamageRegions, PendingBackendInputEvents, PendingOutputPresentationEvents,
-    PendingProtocolInputEvents, PendingScreenshotRequests, RenderMaterialFrameState,
-    RenderPassGraph, RenderPlan, RenderProcessPlan, VirtualOutputCaptureState,
+    CompletedScreenshotFrames, CompositorClock, GlobalPointerPosition, OutputDamageRegions,
+    PendingBackendInputEvents, PendingProtocolInputEvents, PendingScreenshotRequests,
+    RenderMaterialFrameState, RenderPassGraph, RenderPlan, RenderProcessPlan,
+    VirtualOutputCaptureState,
 };
-use nekoland_protocol::{ProtocolDmabufSupport, ProtocolSurfaceRegistry};
+use nekoland_protocol::{
+    ProtocolDmabufSupport, ProtocolSurfaceRegistry, resources::PendingOutputPresentationEvents,
+};
 
 use crate::common::outputs::{
     BackendOutputBlueprint, PendingBackendOutputEvents, PendingBackendOutputUpdates,

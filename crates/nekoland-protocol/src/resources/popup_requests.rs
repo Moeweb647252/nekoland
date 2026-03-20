@@ -1,4 +1,4 @@
-use crate::kinds::CompositorRequestQueue;
+use nekoland_ecs::kinds::CompositorRequestQueue;
 use serde::{Deserialize, Serialize};
 
 /// Popup-management actions emitted by shell systems.

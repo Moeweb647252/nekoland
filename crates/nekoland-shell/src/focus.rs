@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::{Entity, Local, Query, Res, ResMut, With};
 use bevy_ecs::system::SystemParam;
+use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::components::{OutputId, SurfaceGeometry, WindowLayout, WindowMode, XdgWindow};
 use nekoland_ecs::events::PointerButton;
 use nekoland_ecs::resources::{
-    CompositorConfig, GlobalPointerPosition, KeyboardFocusState, UNASSIGNED_WORKSPACE_STACK_ID,
+    GlobalPointerPosition, KeyboardFocusState, UNASSIGNED_WORKSPACE_STACK_ID,
     ViewportPointerPanState, WindowStackingState,
 };
 use nekoland_ecs::views::{OutputRuntime, WindowFocusRuntime, WorkspaceRuntime};
@@ -217,11 +218,12 @@ fn pointer_in_geometry(pointer_x: f64, pointer_y: f64, geometry: &SurfaceGeometr
 mod tests {
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
+    use nekoland_config::resources::CompositorConfig;
     use nekoland_ecs::bundles::WindowBundle;
     use nekoland_ecs::components::{SurfaceGeometry, WindowLayout, WlSurfaceHandle};
     use nekoland_ecs::events::PointerButton;
     use nekoland_ecs::resources::{
-        CompositorConfig, GlobalPointerPosition, KeyboardFocusState, UNASSIGNED_WORKSPACE_STACK_ID,
+        GlobalPointerPosition, KeyboardFocusState, UNASSIGNED_WORKSPACE_STACK_ID,
         ViewportPointerPanState, WindowStackingState,
     };
 

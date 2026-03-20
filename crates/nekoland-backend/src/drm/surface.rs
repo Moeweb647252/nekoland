@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use drm_fourcc::DrmFourcc;
+use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::resources::{
-    CompletedScreenshotFrames, CompositorClock, CompositorConfig, DamageRect, OutputDamageRegions,
+    CompletedScreenshotFrames, CompositorClock, DamageRect, OutputDamageRegions,
     PendingScreenshotRequests, RenderMaterialFrameState, RenderPassGraph, RenderPlan,
     RenderProcessPlan, RenderRect,
 };

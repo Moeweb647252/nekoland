@@ -3,16 +3,19 @@ use std::process::Command;
 use bevy_ecs::message::{MessageReader, MessageWriter};
 use bevy_ecs::prelude::{Res, ResMut, Resource};
 use bevy_ecs::system::SystemParam;
+use nekoland_config::resources::{CompositorConfig, ConfiguredAction};
 use nekoland_ecs::control::{
     OutputControlApi, OutputOps, WindowControlApi, WindowOps, WorkspaceControlApi, WorkspaceOps,
 };
 use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
 use nekoland_ecs::resources::{
     CommandExecutionRecord, CommandExecutionStatus, CommandHistoryState, CompositorClock,
-    CompositorConfig, ConfiguredAction, ExternalCommandRequest, PendingExternalCommandRequests,
-    PendingInputEvents,
+    ExternalCommandRequest, PendingExternalCommandRequests,
 };
-use nekoland_protocol::{ProtocolServerState, XWaylandServerState};
+use nekoland_protocol::{
+    ProtocolServerState, XWaylandServerState,
+    resources::{InputEventRecord, PendingInputEvents},
+};
 
 /// Tracks whether startup actions have already been applied for this session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
@@ -69,7 +72,7 @@ impl<'a, 'ops> ActionDispatchContext<'a, 'ops> {
             return Some(window);
         }
 
-        self.pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+        self.pending_input_events.push(InputEventRecord {
             source: self.source.to_owned(),
             detail: format!("{} -> {} ignored: no focused surface", self.origin, action.describe()),
         });
@@ -115,7 +118,7 @@ pub fn external_command_launch_system(
                         command: candidate.clone(),
                         pid: child.id(),
                     });
-                    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                    pending_input_events.push(InputEventRecord {
                         source: "commands".to_owned(),
                         detail: format!(
                             "{} -> launched `{}` (pid {})",
@@ -142,7 +145,7 @@ pub fn external_command_launch_system(
                 candidates: request.candidates.clone(),
                 error: error.clone(),
             });
-            pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+            pending_input_events.push(InputEventRecord {
                 source: "commands".to_owned(),
                 detail: format!("{} -> {error}", request.origin),
             });
@@ -218,7 +221,7 @@ pub fn startup_action_queue_system(startup: StartupActionDispatch<'_, '_>) {
         applied_actions,
         "applied startup actions for nested Wayland session"
     );
-    pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+    pending_input_events.push(InputEventRecord {
         source: "startup".to_owned(),
         detail: format!("applied {applied_actions} startup action(s) for {socket_name}"),
     });
@@ -366,7 +369,7 @@ fn dispatch_configured_action(
         }
         ConfiguredAction::CenterViewportOnFocusedWindow => {
             let Some(surface_id) = dispatch.windows.focused_surface_id() else {
-                dispatch.pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                dispatch.pending_input_events.push(InputEventRecord {
                     source: dispatch.source.to_owned(),
                     detail: format!(
                         "{} -> {} ignored: no focused surface",
@@ -450,15 +453,18 @@ mod tests {
     use std::collections::BTreeMap;
 
     use bevy_ecs::schedule::IntoScheduleConfigs;
+    use nekoland_config::resources::{CompositorConfig, ConfiguredAction};
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
     use nekoland_ecs::resources::{
-        CommandHistoryState, CompositorClock, CompositorConfig, ConfiguredAction,
-        KeyboardFocusState, PendingExternalCommandRequests, PendingInputEvents,
+        CommandHistoryState, CompositorClock, KeyboardFocusState, PendingExternalCommandRequests,
         PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
     };
-    use nekoland_protocol::{ProtocolServerState, XWaylandServerState};
+    use nekoland_protocol::{
+        ProtocolServerState, XWaylandServerState,
+        resources::PendingInputEvents,
+    };
 
     use super::{StartupActionState, startup_action_queue_system};
 

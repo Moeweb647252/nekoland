@@ -11,13 +11,13 @@ use calloop::generic::Generic;
 use calloop::{Interest, Mode, PostAction};
 use nekoland_core::calloop::CalloopSourceRegistry;
 use nekoland_core::error::NekolandError;
-use nekoland_ecs::resources::{CompositorConfig, KeyboardLayoutState};
 use nix::errno::Errno;
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
 
 use crate::{
     loader,
     plugin::{ConfigReloadRequest, LoadedConfigSource},
+    resources::{CompositorConfig, KeyboardLayoutState},
 };
 
 /// Bridges file-system notifications into ECS so config reload stays a normal scheduled system
@@ -292,12 +292,12 @@ mod tests {
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    use crate::resources::{CompositorConfig, ConfiguredAction, KeyboardLayoutState};
     use bevy_ecs::error::{BevyError, DefaultErrorHandler, ErrorContext};
     use calloop::EventLoop;
     use nekoland_core::calloop::CalloopSourceRegistry;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::ExtractSchedule;
-    use nekoland_ecs::resources::{CompositorConfig, ConfiguredAction, KeyboardLayoutState};
 
     use crate::{ConfigPlugin, LoadedConfigSource};
 

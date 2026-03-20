@@ -7,8 +7,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use nekoland::build_app;
+use nekoland_config::resources::ConfiguredAction;
 use nekoland_core::app::RunLoopSettings;
-use nekoland_ecs::resources::ConfiguredAction;
 use nekoland_ipc::commands::ConfigSnapshot;
 use nekoland_ipc::{
     IpcServerState, IpcSubscription, IpcSubscriptionEvent, SubscriptionTopic, subscribe_to_path,

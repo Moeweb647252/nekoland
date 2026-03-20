@@ -1,11 +1,13 @@
 use bevy_app::App;
 use bevy_ecs::schedule::IntoScheduleConfigs;
+use nekoland_config::resources::KeyboardLayoutState;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, RenderSchedule};
 use nekoland_ecs::resources::{
-    KeyboardLayoutState, PendingExternalCommandRequests, PendingOutputControls,
-    PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls,
+    PendingExternalCommandRequests, PendingOutputControls, PendingWindowControls,
+    PendingWorkspaceControls,
 };
+use nekoland_protocol::resources::PendingPopupServerRequests;
 
 use crate::{server, subscribe};
 

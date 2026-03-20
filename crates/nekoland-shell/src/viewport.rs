@@ -156,8 +156,10 @@ pub fn window_viewport_projection_system(
             let Some((_, output)) =
                 outputs.iter().find(|(_, output)| output.id() == background.output)
             else {
-                *window.viewport_visibility =
-                    nekoland_ecs::components::WindowViewportVisibility::default();
+                *window.viewport_visibility = nekoland_ecs::components::WindowViewportVisibility {
+                    visible: false,
+                    output: None,
+                };
                 continue;
             };
             window.viewport_visibility.visible = *window.mode != WindowMode::Hidden;
@@ -221,9 +223,10 @@ mod tests {
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
-        OutputCurrentWorkspace, OutputDevice, OutputKind, OutputProperties, SurfaceGeometry,
-        WindowLayout, WindowMode, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle,
-        Workspace, WorkspaceId, XdgWindow,
+        OutputBackgroundWindow, OutputCurrentWorkspace, OutputDevice, OutputId, OutputKind,
+        OutputProperties, SurfaceGeometry, WindowLayout, WindowMode, WindowRole,
+        WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle, Workspace, WorkspaceId,
+        XdgWindow,
     };
 
     use super::{OutputViewport, window_viewport_projection_system};
@@ -346,5 +349,74 @@ mod tests {
         };
         assert!(!visibility.visible);
         assert!(visibility.output.is_none());
+    }
+
+    #[test]
+    fn background_windows_hide_when_their_output_disappears() {
+        let mut app = NekolandApp::new("viewport-projection-missing-background-output-test");
+        app.inner_mut().add_systems(LayoutSchedule, window_viewport_projection_system);
+
+        let output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputId(7),
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "Virtual-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "Virtual".to_owned(),
+                        model: "test".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 800,
+                        height: 600,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    ..Default::default()
+                },
+            ))
+            .id();
+
+        let window = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                WindowBundle {
+                    surface: WlSurfaceHandle { id: 21 },
+                    geometry: SurfaceGeometry { x: 0, y: 0, width: 320, height: 240 },
+                    window: XdgWindow::default(),
+                    layout: WindowLayout::Floating,
+                    mode: WindowMode::Fullscreen,
+                    ..Default::default()
+                },
+                WindowRole::OutputBackground,
+                OutputBackgroundWindow {
+                    output: OutputId(7),
+                    restore: nekoland_ecs::components::WindowRestoreState {
+                        geometry: WindowSceneGeometry { x: 10, y: 20, width: 320, height: 240 },
+                        layout: WindowLayout::Floating,
+                        mode: WindowMode::Normal,
+                        fullscreen_output: None,
+                        previous: None,
+                    },
+                },
+            ))
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+        assert_eq!(
+            app.inner().world().get::<WindowViewportVisibility>(window),
+            Some(&WindowViewportVisibility { visible: true, output: Some(OutputId(7)) })
+        );
+
+        app.inner_mut().world_mut().entity_mut(output).despawn();
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        assert_eq!(
+            app.inner().world().get::<WindowViewportVisibility>(window),
+            Some(&WindowViewportVisibility { visible: false, output: None })
+        );
     }
 }

@@ -1,6 +1,7 @@
-use crate::resources::DEFAULT_COMMAND_HISTORY_LIMIT;
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
+
+const DEFAULT_COMMAND_HISTORY_LIMIT: usize = 64;
 
 /// Final observed status for one external command request.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -16,11 +16,11 @@ use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::components::{SurfaceGeometry, WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::resources::{
-    BackendInputAction, BackendInputEvent, CompositorClock, DragAndDropState,
-    GlobalPointerPosition, KeyboardFocusState, PendingProtocolInputEvents, PendingWindowControls,
+    BackendInputAction, BackendInputEvent, CompositorClock, GlobalPointerPosition,
+    KeyboardFocusState, PendingProtocolInputEvents, PendingWindowControls,
 };
 use nekoland_ecs::selectors::SurfaceId;
-use nekoland_protocol::ProtocolServerState;
+use nekoland_protocol::{ProtocolServerState, resources::DragAndDropState};
 use nekoland_shell::decorations;
 use tempfile::tempfile;
 use wayland_client::protocol::{

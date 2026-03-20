@@ -1,6 +1,6 @@
 use bevy_ecs::prelude::{Query, Res};
+use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::components::{BorderTheme, WindowLayout};
-use nekoland_ecs::resources::CompositorConfig;
 
 /// Sync server-side border styling from compositor config into ECS decoration components.
 pub fn server_decoration_system(

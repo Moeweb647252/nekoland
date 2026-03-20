@@ -17,11 +17,7 @@ use crate::events::{
     ExternalCommandFailed, ExternalCommandLaunched, GestureSwipe, KeyPress, OutputConnected,
     OutputDisconnected, PointerButton, PointerMotion, WindowClosed, WindowCreated, WindowMoved,
 };
-use crate::resources::{
-    BackendInputEvent, ExternalCommandRequest, LayerLifecycleRequest, OutputEventRecord,
-    OutputPresentationEventRecord, OutputServerRequest, PopupServerRequest, WindowLifecycleRequest,
-    WindowServerRequest, X11LifecycleRequest,
-};
+use crate::resources::{BackendInputEvent, ExternalCommandRequest, OutputServerRequest};
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
@@ -138,16 +134,7 @@ pub type CompositorRequestQueue<T> = FrameQueue<T, CompositorRequestQueueTag>;
 /// Queue used for events exported to IPC subscription streams.
 pub type SubscriptionEventQueue<T> = FrameQueue<T, SubscriptionEventQueueTag>;
 
-impl ProtocolEvent for WindowLifecycleRequest {}
-impl ProtocolEvent for LayerLifecycleRequest {}
-impl ProtocolEvent for X11LifecycleRequest {}
-
 impl BackendEvent for BackendInputEvent {}
-impl BackendEvent for OutputEventRecord {}
-impl BackendEvent for OutputPresentationEventRecord {}
-
-impl CompositorRequest for WindowServerRequest {}
-impl CompositorRequest for PopupServerRequest {}
 impl CompositorRequest for OutputServerRequest {}
 impl CompositorRequest for ExternalCommandRequest {}
 
@@ -173,23 +160,12 @@ mod tests {
     fn assert_compositor_event<T: CompositorEvent>() {}
 
     #[test]
-    fn local_protocol_types_have_expected_classification() {
-        assert_protocol_event::<WindowLifecycleRequest>();
-        assert_protocol_event::<LayerLifecycleRequest>();
-        assert_protocol_event::<X11LifecycleRequest>();
-    }
-
-    #[test]
     fn local_backend_types_have_expected_classification() {
         assert_backend_event::<BackendInputEvent>();
-        assert_backend_event::<OutputEventRecord>();
-        assert_backend_event::<OutputPresentationEventRecord>();
     }
 
     #[test]
     fn local_request_types_have_expected_classification() {
-        assert_compositor_request::<WindowServerRequest>();
-        assert_compositor_request::<PopupServerRequest>();
         assert_compositor_request::<OutputServerRequest>();
         assert_compositor_request::<ExternalCommandRequest>();
     }
@@ -211,15 +187,17 @@ mod tests {
 
     #[test]
     fn generic_queue_api_operates_without_payload_default() {
-        let mut queue = CompositorRequestQueue::<WindowServerRequest>::default();
+        let mut queue = CompositorRequestQueue::<OutputServerRequest>::default();
         assert!(queue.is_empty());
 
-        queue.push(WindowServerRequest {
-            surface_id: 42,
-            action: crate::resources::WindowServerAction::Close,
+        queue.push(OutputServerRequest {
+            action: crate::resources::OutputServerAction::Enable { output: "Virtual-1".to_owned() },
         });
         assert_eq!(queue.len(), 1);
-        assert_eq!(queue.as_slice()[0].surface_id, 42);
+        assert_eq!(
+            queue.as_slice()[0].action,
+            crate::resources::OutputServerAction::Enable { output: "Virtual-1".to_owned() }
+        );
 
         let drained = queue.drain().collect::<Vec<_>>();
         assert_eq!(drained.len(), 1);

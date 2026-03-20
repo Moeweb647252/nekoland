@@ -9,20 +9,20 @@ use nekoland_ecs::presentation_logic::{
 };
 use nekoland_ecs::resources::{
     OutputRenderPlan, RenderItemInstance, RenderPlan, RenderRect, RenderSceneRole,
-    SurfacePresentationRole, SurfacePresentationSnapshot,
-    UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
+    SurfacePresentationRole, SurfacePresentationSnapshot, UNASSIGNED_WORKSPACE_STACK_ID,
+    WindowStackingState,
 };
 use nekoland_ecs::views::{
     LayerRenderRuntime, OutputRuntime, PopupRenderRuntime, WindowRenderRuntime, WorkspaceRuntime,
 };
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
-use crate::scene_source::{
-    RenderSceneContribution, RenderSceneContributionQueue, RenderSceneIdentityRegistry,
-    contribution_to_plan_item, RenderInstanceKey, RenderSourceKey,
-};
 use crate::scene_process::{
     AppearanceSnapshot, ProjectionSnapshot, apply_appearance_snapshot, apply_projection_snapshot,
+};
+use crate::scene_source::{
+    RenderInstanceKey, RenderSceneContribution, RenderSceneContributionQueue,
+    RenderSceneIdentityRegistry, RenderSourceKey, contribution_to_plan_item,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -510,6 +510,7 @@ mod tests {
                     layout: nekoland_ecs::components::WindowLayout::Floating,
                     mode: nekoland_ecs::components::WindowMode::Normal,
                     fullscreen_output: None,
+                    previous: None,
                 },
             },
         ));
@@ -563,6 +564,7 @@ mod tests {
                     layout: nekoland_ecs::components::WindowLayout::Floating,
                     mode: nekoland_ecs::components::WindowMode::Normal,
                     fullscreen_output: None,
+                    previous: None,
                 },
             },
         ));
@@ -735,6 +737,7 @@ mod tests {
                         layout: nekoland_ecs::components::WindowLayout::Floating,
                         mode: nekoland_ecs::components::WindowMode::Normal,
                         fullscreen_output: None,
+                        previous: None,
                     },
                 },
             ));

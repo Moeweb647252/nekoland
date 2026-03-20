@@ -14,6 +14,7 @@ pub mod output_management;
 pub mod plugin;
 pub mod presentation_time;
 pub mod primary_selection;
+pub mod resources;
 pub mod screencopy;
 pub mod session_lock;
 pub mod viewporter;
@@ -25,20 +26,21 @@ use bevy_ecs::prelude::Resource;
 use nekoland_core::bridge::{EventBridge, WaylandBridge};
 use nekoland_ecs::components::{LayerAnchor, LayerLevel, LayerMargins, X11WindowType};
 use nekoland_ecs::kinds::ProtocolEvent as ProtocolEventKind;
-use nekoland_ecs::resources::pending_events::{
-    OutputEventRecord, PendingOutputEvents, PendingXdgRequests, PopupPlacement, ResizeEdges,
-    SurfaceExtent, WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
-};
-use nekoland_ecs::resources::{
-    ClipboardSelection, ClipboardSelectionState, DragAndDropDrop, DragAndDropSession,
-    DragAndDropState, LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec,
-    PendingLayerRequests, PendingWindowControls, PendingX11Requests, PrimarySelection,
-    PrimarySelectionState, SelectionOwner, X11LifecycleAction, X11LifecycleRequest,
-    X11WindowGeometry,
-};
+use nekoland_ecs::resources::PendingWindowControls;
 use nekoland_ecs::selectors::SurfaceId;
 use serde::{Deserialize, Serialize};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+
+use crate::resources::pending_events::{
+    OutputEventRecord, PendingOutputEvents, PendingXdgRequests, PopupPlacement, ResizeEdges,
+    SurfaceExtent, WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
+};
+use crate::resources::{
+    ClipboardSelection, ClipboardSelectionState, DragAndDropDrop, DragAndDropSession,
+    DragAndDropState, LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec,
+    PendingLayerRequests, PendingX11Requests, PrimarySelection, PrimarySelectionState,
+    SelectionOwner, X11LifecycleAction, X11LifecycleRequest, X11WindowGeometry,
+};
 
 pub use plugin::{
     ProtocolCursorImage, ProtocolCursorState, ProtocolDmabufSupport, ProtocolPlugin,
@@ -257,9 +259,11 @@ mod kind_tests {
 #[cfg(test)]
 mod tests {
     use nekoland_core::bridge::WaylandBridge;
-    use nekoland_ecs::resources::{
+    use nekoland_ecs::resources::PendingWindowControls;
+
+    use crate::resources::{
         ClipboardSelectionState, DragAndDropState, PendingLayerRequests, PendingOutputEvents,
-        PendingWindowControls, PendingX11Requests, PendingXdgRequests, PrimarySelectionState,
+        PendingX11Requests, PendingXdgRequests, PrimarySelectionState,
     };
 
     use super::{ProtocolEvent, ProtocolFlushTargets, ProtocolState, supported_protocols};

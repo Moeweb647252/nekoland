@@ -1,12 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::{
+    hot_reload, loader,
+    resources::{CompositorConfig, KeyboardLayoutState},
+    schema::NekolandConfigFile,
+};
 use bevy_app::App;
 use bevy_ecs::prelude::Resource;
 use nekoland_core::plugin::NekolandPlugin;
-use nekoland_ecs::resources::{CompositorConfig, KeyboardLayoutState};
-
-use crate::{hot_reload, loader, schema::NekolandConfigFile};
 
 /// Tracks where the active config came from and what happened during hot reload attempts.
 #[derive(Debug, Clone, Resource)]

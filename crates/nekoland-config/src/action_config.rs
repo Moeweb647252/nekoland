@@ -1,4 +1,4 @@
-use nekoland_ecs::resources::ConfiguredAction;
+use crate::resources::ConfiguredAction;
 use nekoland_ecs::selectors::{OutputName, WorkspaceLookup, WorkspaceSelector};
 use serde::{Deserialize, Serialize};
 
@@ -178,7 +178,7 @@ fn require_flag(name: &str, value: bool) -> Result<(), String> {
 mod tests {
     use serde::Deserialize;
 
-    use nekoland_ecs::resources::ConfiguredAction;
+    use crate::resources::ConfiguredAction;
     use nekoland_ecs::selectors::WorkspaceSelector;
 
     use super::{ActionListConfig, ConfiguredActionConfig, KeybindEntryConfig};

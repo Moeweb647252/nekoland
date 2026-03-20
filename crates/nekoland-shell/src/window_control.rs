@@ -6,12 +6,15 @@ use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{WindowLayout, WindowMode, WindowPosition, WindowSize, XdgWindow};
 use nekoland_ecs::events::WindowMoved;
 use nekoland_ecs::resources::{
-    EntityIndex, KeyboardFocusState, PendingWindowControls, PendingWindowServerRequests,
-    PrimaryOutputState, UNASSIGNED_WORKSPACE_STACK_ID, UNASSIGNED_WORKSPACE_TILING_ID,
-    WindowServerAction, WindowServerRequest, WindowStackingState, WorkspaceTilingState,
+    EntityIndex, KeyboardFocusState, PendingWindowControls, PrimaryOutputState,
+    UNASSIGNED_WORKSPACE_STACK_ID, UNASSIGNED_WORKSPACE_TILING_ID, WindowStackingState,
+    WorkspaceTilingState,
 };
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
+use nekoland_protocol::resources::{
+    PendingWindowServerRequests, WindowServerAction, WindowServerRequest,
+};
 
 use crate::viewport::{project_scene_geometry, resolve_output_state_for_workspace};
 use crate::window_policy::{
@@ -251,10 +254,11 @@ mod tests {
     };
     use nekoland_ecs::events::WindowMoved;
     use nekoland_ecs::resources::{
-        EntityIndex, KeyboardFocusState, PendingWindowControls, PendingWindowServerRequests,
-        WindowStackingState, WorkArea, WorkspaceTilingState, rebuild_entity_index_system,
+        EntityIndex, KeyboardFocusState, PendingWindowControls, WindowStackingState, WorkArea,
+        WorkspaceTilingState, rebuild_entity_index_system,
     };
     use nekoland_ecs::selectors::SurfaceId;
+    use nekoland_protocol::resources::{PendingWindowServerRequests, WindowServerAction};
 
     use crate::layout::{floating::floating_layout_system, tiling::tiling_layout_system};
 
@@ -476,7 +480,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert!(matches!(
             requests.as_slice()[0].action,
-            nekoland_ecs::resources::WindowServerAction::Close
+            WindowServerAction::Close
         ));
     }
 

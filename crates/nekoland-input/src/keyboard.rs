@@ -2,9 +2,10 @@ use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::ResMut;
 use nekoland_ecs::events::KeyPress;
 use nekoland_ecs::resources::{
-    BackendInputAction, ModifierState, PendingBackendInputEvents, PendingInputEvents, PressedKeys,
+    BackendInputAction, ModifierState, PendingBackendInputEvents, PressedKeys,
     update_modifier_state,
 };
+use nekoland_protocol::resources::{InputEventRecord, PendingInputEvents};
 
 /// Consumes only keyboard-related backend input records, updates coarse modifier state, and
 /// forwards key presses into both ECS messages and the human-readable input event log.
@@ -27,7 +28,7 @@ pub fn keyboard_input_system(
                 pressed_keys.record_key(keycode, pressed);
                 update_modifier_state(&mut modifiers, keycode, pressed);
                 key_events.write(KeyPress { keycode, pressed });
-                pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                pending_input_events.push(InputEventRecord {
                     source: format!("keyboard:{}", event.device),
                     detail: format!(
                         "keycode {keycode} {}",
@@ -40,7 +41,7 @@ pub fn keyboard_input_system(
                     pressed_keys.reset_all();
                     *modifiers = ModifierState::default();
                 }
-                pending_input_events.push(nekoland_ecs::resources::InputEventRecord {
+                pending_input_events.push(InputEventRecord {
                     source: format!("keyboard:{}", event.device),
                     detail: if focused {
                         "focus gained".to_owned()

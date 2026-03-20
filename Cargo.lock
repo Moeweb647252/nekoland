@@ -1452,6 +1452,7 @@ dependencies = [
  "calloop 0.14.4",
  "drm-fourcc",
  "libc",
+ "nekoland-config",
  "nekoland-core",
  "nekoland-ecs",
  "nekoland-protocol",
@@ -1503,6 +1504,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
+ "nekoland-config",
  "nekoland-core",
  "nekoland-ecs",
  "nekoland-protocol",
@@ -1519,6 +1521,7 @@ dependencies = [
  "nekoland-config",
  "nekoland-core",
  "nekoland-ecs",
+ "nekoland-protocol",
  "serde",
  "serde_json",
  "tracing",
@@ -1543,6 +1546,7 @@ dependencies = [
  "bevy_app",
  "bevy_ecs",
  "calloop 0.14.4",
+ "nekoland-config",
  "nekoland-core",
  "nekoland-ecs",
  "serde",
@@ -1559,6 +1563,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
+ "nekoland-config",
  "nekoland-core",
  "nekoland-ecs",
  "tracing",
@@ -1571,6 +1576,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
+ "nekoland-config",
  "nekoland-core",
  "nekoland-ecs",
  "nekoland-protocol",

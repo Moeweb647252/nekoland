@@ -1,7 +1,6 @@
+use nekoland_ecs::components::{LayerAnchor, LayerLevel, LayerMargins};
+use nekoland_ecs::kinds::ProtocolEventQueue;
 use serde::{Deserialize, Serialize};
-
-use crate::components::{LayerAnchor, LayerLevel, LayerMargins};
-use crate::kinds::ProtocolEventQueue;
 
 use super::pending_events::SurfaceExtent;
 

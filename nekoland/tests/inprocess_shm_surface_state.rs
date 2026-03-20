@@ -7,9 +7,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use nekoland::build_app;
+use nekoland_config::resources::{CompositorConfig, DefaultLayout};
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ecs::components::{SurfaceGeometry, WlSurfaceHandle, XdgWindow};
-use nekoland_ecs::resources::CompositorConfig;
 use nekoland_protocol::{ProtocolServerState, ProtocolSurfaceRegistry};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::utils::{Logical, Size};
@@ -72,7 +72,7 @@ fn shm_buffer_commit_populates_renderer_surface_state() {
         else {
             panic!("runtime config should be initialized before tests mutate it");
         };
-        config.default_layout = nekoland_ecs::resources::DefaultLayout::Floating;
+        config.default_layout = DefaultLayout::Floating;
     }
 
     let socket_path = {

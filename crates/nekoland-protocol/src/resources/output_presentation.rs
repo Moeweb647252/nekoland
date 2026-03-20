@@ -1,8 +1,7 @@
 use bevy_ecs::prelude::Resource;
+use nekoland_ecs::components::OutputId;
+use nekoland_ecs::kinds::BackendEventQueue;
 use serde::{Deserialize, Serialize};
-
-use crate::components::OutputId;
-use crate::kinds::BackendEventQueue;
 
 /// Latest presentation timeline values known for one output.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

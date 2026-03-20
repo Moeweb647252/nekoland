@@ -1,6 +1,6 @@
 use super::pending_events::SurfaceExtent;
 use super::x11_requests::X11WindowGeometry;
-use crate::kinds::CompositorRequestQueue;
+use nekoland_ecs::kinds::CompositorRequestQueue;
 use serde::{Deserialize, Serialize};
 
 /// Internal protocol bridge requests for windows.

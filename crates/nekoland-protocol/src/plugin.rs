@@ -27,45 +27,39 @@ use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
 use bevy_ecs::system::SystemParam;
 use calloop::generic::{FdWrapper, Generic};
 use calloop::{Interest, Mode, PostAction};
+use nekoland_config::resources::{CompositorConfig, KeyboardLayoutState};
 use nekoland_core::bridge::WaylandBridge;
-use nekoland_ecs::presentation_logic::{managed_window_visible, popup_visible};
 use nekoland_core::calloop::CalloopSourceRegistry;
 use nekoland_core::error::NekolandError;
 use nekoland_core::plugin::NekolandPlugin;
-use nekoland_core::schedules::{ExtractSchedule, PresentSchedule, ProtocolSchedule, RenderSchedule};
-use nekoland_ecs::components::{
-    OutputDevice, OutputPlacement, X11WindowType, XdgPopup, XdgWindow,
+use nekoland_core::schedules::{
+    ExtractSchedule, PresentSchedule, ProtocolSchedule, RenderSchedule,
 };
 #[cfg(test)]
 use nekoland_ecs::components::{
     DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow, WindowRole,
     WindowViewportVisibility,
 };
+use nekoland_ecs::components::{OutputDevice, OutputPlacement, X11WindowType, XdgPopup, XdgWindow};
+use nekoland_ecs::presentation_logic::{managed_window_visible, popup_visible};
 use nekoland_ecs::resources::{
-    BackendInputAction, ClipboardSelectionState, CompositorClock, CompositorConfig,
-    CursorImageSnapshot, DragAndDropState, FramePacingState, GlobalPointerPosition,
-    KeyboardFocusState, KeyboardLayoutState, OutputPresentationState, PendingLayerRequests,
-    PendingOutputEvents, PendingPopupServerRequests, PendingProtocolInputEvents,
-    PendingWindowControls, PendingWindowServerRequests, PendingX11Requests,
-    PendingXdgRequests, PopupPlacement, PopupServerAction, ResizeEdges, PrimarySelectionState,
-    RenderPlan, SurfaceExtent, SurfacePresentationRole, SurfacePresentationSnapshot,
-    WindowServerAction, X11WindowGeometry, XdgSurfaceRole,
-};
-use nekoland_ecs::views::{
-    OutputRuntime, PopupRuntime, WindowVisibilityRuntime, WorkspaceRuntime,
+    BackendInputAction, CompositorClock, CursorImageSnapshot, FramePacingState,
+    GlobalPointerPosition, KeyboardFocusState, PendingProtocolInputEvents, PendingWindowControls,
+    RenderPlan, SurfacePresentationRole, SurfacePresentationSnapshot,
 };
 #[cfg(test)]
 use nekoland_ecs::views::SurfaceRuntime;
-use smithay::backend::input::{Axis as InputAxis, AxisSource, ButtonState, KeyState};
+use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowVisibilityRuntime, WorkspaceRuntime};
 use smithay::backend::allocator::{Buffer, Format as DmabufFormat, dmabuf::Dmabuf};
+use smithay::backend::input::{Axis as InputAxis, AxisSource, ButtonState, KeyState};
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
 use smithay::delegate_data_device;
 use smithay::delegate_dmabuf;
-use smithay::delegate_fractional_scale;
 use smithay::delegate_foreign_toplevel_list;
+use smithay::delegate_fractional_scale;
 use smithay::delegate_output;
-use smithay::delegate_primary_selection;
 use smithay::delegate_presentation;
+use smithay::delegate_primary_selection;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
 use smithay::delegate_viewporter;
@@ -78,6 +72,14 @@ use smithay::desktop::{
     PopupPointerGrab, WindowSurfaceType, find_popup_root_surface,
 };
 use smithay::input::keyboard::FilterResult;
+
+use crate::resources::{
+    ClipboardSelectionState, DragAndDropState, OutputPresentationState, PendingLayerRequests,
+    PendingOutputEvents, PendingPopupServerRequests, PendingWindowServerRequests,
+    PendingX11Requests, PendingXdgRequests, PopupPlacement, PopupServerAction,
+    PrimarySelectionState, ResizeEdges, SurfaceExtent, WindowServerAction, X11WindowGeometry,
+    XdgSurfaceRole,
+};
 use smithay::input::keyboard::XkbConfig;
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, CursorImageSurfaceData, Focus,
@@ -1007,7 +1009,7 @@ fn dispatch_seat_input_system(
 impl SmithayProtocolServer {
     fn new(
         repeat_rate: u16,
-        initial_keyboard_layout: nekoland_ecs::resources::ConfiguredKeyboardLayout,
+        initial_keyboard_layout: nekoland_config::resources::ConfiguredKeyboardLayout,
         xwayland_enabled: bool,
     ) -> (Self, ProtocolServerState) {
         let mut server_state = ProtocolServerState::default();
@@ -1356,7 +1358,7 @@ fn sync_keyboard_repeat_config_system(
 fn sync_keyboard_layout_config_system(
     server: NonSendMut<SmithayProtocolServer>,
     keyboard_layout_state: Res<KeyboardLayoutState>,
-    mut last_layout: Local<Option<nekoland_ecs::resources::ConfiguredKeyboardLayout>>,
+    mut last_layout: Local<Option<nekoland_config::resources::ConfiguredKeyboardLayout>>,
 ) {
     let active_layout = keyboard_layout_state.active_layout().clone();
     if last_layout.as_ref() == Some(&active_layout) {
@@ -2061,7 +2063,7 @@ impl SmithayProtocolRuntime {
 
     fn sync_keyboard_layout(
         &mut self,
-        keyboard_layout: &nekoland_ecs::resources::ConfiguredKeyboardLayout,
+        keyboard_layout: &nekoland_config::resources::ConfiguredKeyboardLayout,
     ) -> bool {
         let seat = self.state.seat.clone();
         let Some(keyboard) = seat.get_keyboard() else {
@@ -2337,7 +2339,7 @@ impl SmithayProtocolRuntime {
 }
 
 fn xkb_config_for_layout(
-    keyboard_layout: &nekoland_ecs::resources::ConfiguredKeyboardLayout,
+    keyboard_layout: &nekoland_config::resources::ConfiguredKeyboardLayout,
 ) -> XkbConfig<'_> {
     XkbConfig {
         rules: keyboard_layout.rules.as_str(),
@@ -2352,7 +2354,7 @@ impl ProtocolRuntimeState {
     fn new(
         display_handle: &smithay::reexports::wayland_server::DisplayHandle,
         repeat_rate: u16,
-        initial_keyboard_layout: &nekoland_ecs::resources::ConfiguredKeyboardLayout,
+        initial_keyboard_layout: &nekoland_config::resources::ConfiguredKeyboardLayout,
     ) -> Self {
         let compositor_state = SmithayCompositorState::new::<Self>(display_handle);
         let xdg_shell_state = SmithayXdgShellState::new_with_capabilities::<Self>(
@@ -4676,7 +4678,7 @@ mod tests {
         let state = ProtocolRuntimeState::new(
             &display_handle,
             DEFAULT_KEYBOARD_REPEAT_RATE,
-            &nekoland_ecs::resources::ConfiguredKeyboardLayout::default(),
+            &nekoland_config::resources::ConfiguredKeyboardLayout::default(),
         );
         let Ok(client) = display_handle
             .insert_client(server_stream, std::sync::Arc::new(ProtocolClientState::default()))

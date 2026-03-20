@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
-use nekoland_ecs::resources::{
+use crate::resources::{
     CompositorConfig, ConfiguredAction, ConfiguredKeyboardLayout, ConfiguredOutput,
-    ConfiguredWindowRule, DEFAULT_COMMAND_HISTORY_LIMIT, DefaultLayout, ModifierMask,
-    XWaylandConfig,
+    ConfiguredWindowRule, DEFAULT_COMMAND_HISTORY_LIMIT, DefaultLayout, XWaylandConfig,
 };
+use nekoland_ecs::resources::ModifierMask;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -362,7 +362,7 @@ enabled = true
             panic!("config should parse");
         };
 
-        let Ok(runtime) = nekoland_ecs::resources::CompositorConfig::try_from(config) else {
+        let Ok(runtime) = crate::resources::CompositorConfig::try_from(config) else {
             panic!("config should normalize");
         };
         assert_eq!(runtime.window_rules.len(), 3);
@@ -409,7 +409,7 @@ enabled = true
             panic!("config should parse");
         };
 
-        let Ok(runtime) = nekoland_ecs::resources::CompositorConfig::try_from(config) else {
+        let Ok(runtime) = crate::resources::CompositorConfig::try_from(config) else {
             panic!("config should normalize");
         };
         assert_eq!(runtime.viewport_pan_modifiers, ModifierMask::new(true, false, true, false));
@@ -443,7 +443,7 @@ enabled = true
         };
 
         assert_eq!(
-            nekoland_ecs::resources::CompositorConfig::try_from(config),
+            crate::resources::CompositorConfig::try_from(config),
             Err("invalid viewport pan mode binding `Super+H`: unsupported modifier `H`".to_owned())
         );
     }
@@ -486,7 +486,7 @@ enabled = true
             panic!("config should parse");
         };
 
-        let Ok(runtime) = nekoland_ecs::resources::CompositorConfig::try_from(config) else {
+        let Ok(runtime) = crate::resources::CompositorConfig::try_from(config) else {
             panic!("config should normalize");
         };
 

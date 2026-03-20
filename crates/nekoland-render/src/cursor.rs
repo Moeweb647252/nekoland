@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 
 use bevy_ecs::prelude::{Query, Res, ResMut, Resource};
+use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::resources::{
-    CompositorConfig, CursorImageSnapshot, CursorSceneSnapshot, GlobalPointerPosition,
-    RenderItemInstance, RenderRect, RenderSceneRole,
+    CursorImageSnapshot, CursorSceneSnapshot, GlobalPointerPosition, RenderItemInstance,
+    RenderRect, RenderSceneRole,
 };
 use nekoland_ecs::views::OutputRuntime;
 

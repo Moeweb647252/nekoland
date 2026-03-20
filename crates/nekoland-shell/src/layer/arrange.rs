@@ -8,10 +8,9 @@ use nekoland_ecs::components::{
     BufferState, DesiredOutputName, LayerAnchor, LayerOnOutput, LayerShellSurface, OutputDevice,
     SurfaceContentVersion, SurfaceGeometry, WlSurfaceHandle,
 };
-use nekoland_ecs::resources::{
-    EntityIndex, LayerLifecycleAction, PendingLayerRequests, PrimaryOutputState, WorkArea,
-};
+use nekoland_ecs::resources::{EntityIndex, PrimaryOutputState, WorkArea};
 use nekoland_ecs::views::{LayerOutputBindingRuntime, OutputRuntime};
+use nekoland_protocol::resources::{LayerLifecycleAction, PendingLayerRequests};
 
 type LayerLifecycleSurfaces<'w, 's> = Query<
     'w,
@@ -477,9 +476,9 @@ mod tests {
         LayerShellSurface, OutputDevice, OutputKind, OutputProperties, SurfaceGeometry,
         WlSurfaceHandle,
     };
-    use nekoland_ecs::resources::{
-        LayerLifecycleAction, LayerSurfaceCreateSpec, PendingLayerRequests, PrimaryOutputState,
-        WorkArea, register_entity_index_hooks,
+    use nekoland_ecs::resources::{PrimaryOutputState, WorkArea, register_entity_index_hooks};
+    use nekoland_protocol::resources::{
+        LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec, PendingLayerRequests,
     };
 
     use super::{
@@ -524,7 +523,7 @@ mod tests {
             .id();
 
         app.inner_mut().world_mut().resource_mut::<PendingLayerRequests>().push(
-            nekoland_ecs::resources::LayerLifecycleRequest {
+            LayerLifecycleRequest {
                 surface_id: 91,
                 action: LayerLifecycleAction::Created {
                     spec: LayerSurfaceCreateSpec {

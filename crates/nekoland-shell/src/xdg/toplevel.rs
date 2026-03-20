@@ -6,6 +6,7 @@ use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With, Without};
 use bevy_ecs::query::Allow;
 use bevy_ecs::system::SystemParam;
+use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, ServerDecoration, SurfaceContentVersion, SurfaceGeometry,
@@ -13,14 +14,14 @@ use nekoland_ecs::components::{
     WindowRole, WindowSceneGeometry, WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
-use nekoland_ecs::resources::{
-    CompositorConfig, EntityIndex, FocusedOutputState, PendingPopupServerRequests,
-    PendingXdgRequests, PopupServerAction, PopupServerRequest, PrimaryOutputState,
-    WindowLifecycleAction, WindowLifecycleRequest, WorkArea, XdgSurfaceRole,
-};
+use nekoland_ecs::resources::{EntityIndex, FocusedOutputState, PrimaryOutputState, WorkArea};
 use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::{
     focused_or_primary_workspace_runtime_target, window_workspace_runtime_id,
+};
+use nekoland_protocol::resources::{
+    PendingPopupServerRequests, PendingXdgRequests, PopupServerAction, PopupServerRequest,
+    SurfaceExtent, WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
 };
 
 use crate::layout::floating::{
@@ -100,8 +101,7 @@ pub fn toplevel_lifecycle_system(
                     &entity_index,
                     1,
                 );
-                let geometry = size
-                    .unwrap_or(nekoland_ecs::resources::SurfaceExtent { width: 960, height: 720 });
+                let geometry = size.unwrap_or(SurfaceExtent { width: 960, height: 720 });
                 let title = format!("Window {}", request.surface_id);
                 let policy = config.resolve_window_policy("org.nekoland.demo", &title, false);
                 let background =
@@ -493,9 +493,12 @@ mod tests {
     };
     use nekoland_ecs::events::{WindowClosed, WindowCreated};
     use nekoland_ecs::resources::{
-        CompositorConfig, ConfiguredWindowRule, EntityIndex, PendingPopupServerRequests,
-        PendingXdgRequests, PopupServerAction, PrimaryOutputState, WindowLifecycleAction,
-        WindowLifecycleRequest, WorkArea, XdgSurfaceRole, rebuild_entity_index_system,
+        EntityIndex, PrimaryOutputState, WorkArea, rebuild_entity_index_system,
+    };
+    use nekoland_config::resources::{CompositorConfig, ConfiguredWindowRule};
+    use nekoland_protocol::resources::{
+        PendingPopupServerRequests, PendingXdgRequests, PopupServerAction, SurfaceExtent,
+        WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
     };
 
     use super::toplevel_lifecycle_system;
@@ -523,7 +526,7 @@ mod tests {
                 surface_id: 21,
                 action: WindowLifecycleAction::Committed {
                     role: XdgSurfaceRole::Toplevel,
-                    size: Some(nekoland_ecs::resources::SurfaceExtent { width: 800, height: 600 }),
+                    size: Some(SurfaceExtent { width: 800, height: 600 }),
                 },
             },
         );
@@ -710,6 +713,7 @@ mod tests {
                         layout: WindowLayout::Floating,
                         mode: WindowMode::Normal,
                         fullscreen_output: None,
+                        previous: None,
                     }),
                 },
                 ChildOf(workspace_2),
@@ -721,7 +725,7 @@ mod tests {
                 surface_id: 51,
                 action: WindowLifecycleAction::Committed {
                     role: XdgSurfaceRole::Toplevel,
-                    size: Some(nekoland_ecs::resources::SurfaceExtent { width: 200, height: 100 }),
+                    size: Some(SurfaceExtent { width: 200, height: 100 }),
                 },
             },
         );
@@ -774,7 +778,7 @@ mod tests {
                 surface_id: 21,
                 action: WindowLifecycleAction::Committed {
                     role: XdgSurfaceRole::Toplevel,
-                    size: Some(nekoland_ecs::resources::SurfaceExtent { width: 800, height: 600 }),
+                    size: Some(SurfaceExtent { width: 800, height: 600 }),
                 },
             },
         );

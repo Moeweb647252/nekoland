@@ -197,8 +197,7 @@ pub fn prune_stale_compositor_animation_tracks_system(
                 let source_key = RenderSourceKey::compositor(entry_id);
                 live_bindings.insert(AnimationBindingKey::Source(source_key.clone()));
                 live_bindings.insert(AnimationBindingKey::Instance(RenderInstanceKey::compositor(
-                    entry_id,
-                    *output_id,
+                    entry_id, *output_id,
                 )));
             }
         }
@@ -274,7 +273,10 @@ fn projection_state_from_samples(
     ProjectionState { rect_override: samples.rect, clip_rect_override: samples.clip_rect }
 }
 
-fn binding_samples(timelines: &AnimationTimelineStore, binding: &AnimationBindingKey) -> BindingSamples {
+fn binding_samples(
+    timelines: &AnimationTimelineStore,
+    binding: &AnimationBindingKey,
+) -> BindingSamples {
     BindingSamples {
         rect: match timelines.sampled_value(binding, AnimationProperty::Rect) {
             Some(AnimationValue::Rect(rect)) => Some(*rect),
@@ -316,7 +318,11 @@ mod tests {
     use nekoland_ecs::components::{
         OutputDevice, OutputId, OutputKind, OutputProperties, WlSurfaceHandle, XdgWindow,
     };
-    use nekoland_ecs::resources::{CompositorClock, CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, OutputCompositorScene, RenderItemInstance, RenderRect, RenderSceneRole, SurfacePresentationRole, SurfacePresentationSnapshot, SurfacePresentationState};
+    use nekoland_ecs::resources::{
+        CompositorClock, CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState,
+        OutputCompositorScene, RenderItemInstance, RenderRect, RenderSceneRole,
+        SurfacePresentationRole, SurfacePresentationSnapshot, SurfacePresentationState,
+    };
 
     use crate::animation::{
         AnimationBindingKey, AnimationEasing, AnimationProperty, AnimationTimelineStore,
@@ -349,27 +355,26 @@ mod tests {
                     .chain(),
             );
 
-        let output = app.inner_mut().world_mut().spawn(OutputBundle {
-            output: OutputDevice {
-                name: "Virtual-1".to_owned(),
-                kind: OutputKind::Virtual,
-                make: "Virtual".to_owned(),
-                model: "test".to_owned(),
-            },
-            properties: OutputProperties {
-                width: 1280,
-                height: 720,
-                refresh_millihz: 60_000,
-                scale: 1,
-            },
-            ..Default::default()
-        }).id();
-        let output_id = app
-            .inner()
-            .world()
-            .get::<OutputId>(output)
-            .copied()
-            .expect("output id");
+        let output = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "Virtual".to_owned(),
+                    model: "test".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1280,
+                    height: 720,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                ..Default::default()
+            })
+            .id();
+        let output_id = app.inner().world().get::<OutputId>(output).copied().expect("output id");
         app.inner_mut().world_mut().spawn(WindowBundle {
             surface: WlSurfaceHandle { id: 13 },
             window: XdgWindow::default(),
@@ -406,8 +411,11 @@ mod tests {
                     easing: AnimationEasing::Linear,
                 },
             );
-            let instance_binding =
-                AnimationBindingKey::Instance(RenderInstanceKey::new(RenderSourceKey::surface(13), output_id, 0));
+            let instance_binding = AnimationBindingKey::Instance(RenderInstanceKey::new(
+                RenderSourceKey::surface(13),
+                output_id,
+                0,
+            ));
             timelines.upsert_track(
                 instance_binding,
                 AnimationTrack {
@@ -448,20 +456,17 @@ mod tests {
 
         let source_binding =
             AnimationBindingKey::Source(RenderSourceKey::compositor(CompositorSceneEntryId(7)));
-        app.inner_mut()
-            .world_mut()
-            .resource_mut::<AnimationTimelineStore>()
-            .upsert_track(
-                source_binding.clone(),
-                AnimationTrack {
-                    property: AnimationProperty::Opacity,
-                    from: AnimationValue::Float(0.0),
-                    to: AnimationValue::Float(1.0),
-                    start_uptime_millis: 0,
-                    duration_millis: 100,
-                    easing: AnimationEasing::Linear,
-                },
-            );
+        app.inner_mut().world_mut().resource_mut::<AnimationTimelineStore>().upsert_track(
+            source_binding.clone(),
+            AnimationTrack {
+                property: AnimationProperty::Opacity,
+                from: AnimationValue::Float(0.0),
+                to: AnimationValue::Float(1.0),
+                start_uptime_millis: 0,
+                duration_millis: 100,
+                easing: AnimationEasing::Linear,
+            },
+        );
 
         app.inner_mut().world_mut().run_schedule(PreRenderSchedule);
         assert!(
@@ -505,23 +510,20 @@ mod tests {
                 )
                     .chain(),
             );
-        app.inner_mut()
-            .world_mut()
-            .resource_mut::<AnimationTimelineStore>()
-            .upsert_track(
-                AnimationBindingKey::Instance(RenderInstanceKey::compositor(
-                    CompositorSceneEntryId(9),
-                    OutputId(3),
-                )),
-                AnimationTrack {
-                    property: AnimationProperty::ClipRect,
-                    from: AnimationValue::Rect(RenderRect { x: 0, y: 0, width: 10, height: 10 }),
-                    to: AnimationValue::Rect(RenderRect { x: 1, y: 2, width: 5, height: 6 }),
-                    start_uptime_millis: 0,
-                    duration_millis: 100,
-                    easing: AnimationEasing::Linear,
-                },
-            );
+        app.inner_mut().world_mut().resource_mut::<AnimationTimelineStore>().upsert_track(
+            AnimationBindingKey::Instance(RenderInstanceKey::compositor(
+                CompositorSceneEntryId(9),
+                OutputId(3),
+            )),
+            AnimationTrack {
+                property: AnimationProperty::ClipRect,
+                from: AnimationValue::Rect(RenderRect { x: 0, y: 0, width: 10, height: 10 }),
+                to: AnimationValue::Rect(RenderRect { x: 1, y: 2, width: 5, height: 6 }),
+                start_uptime_millis: 0,
+                duration_millis: 100,
+                easing: AnimationEasing::Linear,
+            },
+        );
 
         app.inner_mut().world_mut().run_schedule(PreRenderSchedule);
 

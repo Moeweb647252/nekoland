@@ -9,6 +9,7 @@ rust-version.workspace = true
 bevy_app.workspace = true
 bevy_ecs.workspace = true
 calloop.workspace = true
+nekoland-config = { path = "../nekoland-config" }
 nekoland-core = { path = "../nekoland-core" }
 nekoland-ecs = { path = "../nekoland-ecs" }
 serde.workspace = true

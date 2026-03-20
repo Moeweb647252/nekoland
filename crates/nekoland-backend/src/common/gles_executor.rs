@@ -2,13 +2,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
-    CompletedScreenshotFrames, CompositorClock, CompositorConfig, CursorRenderSource,
-    OutputExecutionPlan, OutputProcessPlan, PendingScreenshotRequests, ProcessRect,
-    ProcessShaderKey, ProcessUniformBlock, ProcessUniformValue, RenderColor,
-    RenderMaterialFrameState, RenderPassKind, RenderPassPayload, RenderPlan, RenderPlanItem,
-    RenderProcessPlan, RenderRect, RenderTargetId, ScreenshotFrame,
+    CompletedScreenshotFrames, CompositorClock, CursorRenderSource, OutputExecutionPlan,
+    OutputProcessPlan, PendingScreenshotRequests, ProcessRect, ProcessShaderKey,
+    ProcessUniformBlock, ProcessUniformValue, RenderColor, RenderMaterialFrameState,
+    RenderPassKind, RenderPassPayload, RenderPlan, RenderPlanItem, RenderProcessPlan, RenderRect,
+    RenderTargetId, ScreenshotFrame,
 };
 use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::Fourcc;
@@ -118,10 +119,7 @@ impl Display for GlesExecutionError {
                 )
             }
             Self::MissingProcessShaderProgram { shader_key } => {
-                write!(
-                    f,
-                    "process shader {shader_key:?} missing from cache after initialization"
-                )
+                write!(f, "process shader {shader_key:?} missing from cache after initialization")
             }
         }
     }
@@ -131,9 +129,7 @@ impl Error for GlesExecutionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Renderer(error) => Some(error),
-            Self::MissingExecutionTarget { .. } | Self::MissingProcessShaderProgram { .. } => {
-                None
-            }
+            Self::MissingExecutionTarget { .. } | Self::MissingProcessShaderProgram { .. } => None,
         }
     }
 }
@@ -573,10 +569,8 @@ fn execute_process_units_for_pass(
     };
 
     for unit in output_process.units_for_pass(pass_id) {
-        let source_texture = output_cache
-            .targets
-            .get(&unit.input.target_id)
-            .map(|target| target.texture.clone());
+        let source_texture =
+            output_cache.targets.get(&unit.input.target_id).map(|target| target.texture.clone());
         let Some(source_texture) = source_texture else {
             continue;
         };
@@ -682,7 +676,9 @@ fn execute_backdrop_blur_pass(
             _ => None,
         })
         .unwrap_or(12.0);
-    let program = process_shader_program(renderer, shaders, &ProcessShaderKey("backdrop_blur".to_owned()))?.clone();
+    let program =
+        process_shader_program(renderer, shaders, &ProcessShaderKey("backdrop_blur".to_owned()))?
+            .clone();
     let shader_uniforms = vec![
         Uniform::new("tex_size", UniformValue::_2f(output_size.w as f32, output_size.h as f32)),
         Uniform::new("radius", UniformValue::_1f(radius)),
@@ -725,12 +721,9 @@ fn process_shader_program<'a>(
         shaders.programs.insert(shader_key.clone(), program);
     }
 
-    shaders
-        .programs
-        .get(shader_key)
-        .ok_or_else(|| GlesExecutionError::MissingProcessShaderProgram {
-            shader_key: shader_key.clone(),
-        })
+    shaders.programs.get(shader_key).ok_or_else(|| {
+        GlesExecutionError::MissingProcessShaderProgram { shader_key: shader_key.clone() }
+    })
 }
 
 fn readback_texture_rgba(

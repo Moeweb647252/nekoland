@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use bevy_ecs::prelude::{Query, ResMut};
 use nekoland_ecs::components::{OutputDevice, OutputId, OutputProperties};
-use nekoland_ecs::resources::{
+use nekoland_protocol::resources::{
     OutputPresentationEventRecord, OutputPresentationState, OutputPresentationTimeline,
     PendingOutputPresentationEvents,
 };

@@ -2,12 +2,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use bevy_app::App;
+use nekoland_config::resources::CompositorConfig;
 use nekoland_core::calloop::CalloopSourceRegistry;
 use nekoland_core::error::NekolandError;
 use nekoland_ecs::components::OutputProperties;
 use nekoland_ecs::resources::{
-    BackendInputAction, BackendInputEvent, CompositorConfig, PendingBackendInputEvents,
-    PendingProtocolInputEvents,
+    BackendInputAction, BackendInputEvent, PendingBackendInputEvents, PendingProtocolInputEvents,
 };
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, ButtonState, Event as InputEventDevice, InputEvent, KeyState,
@@ -256,8 +256,8 @@ fn libinput_device_id(device: &LibinputDevice) -> String {
 
 #[cfg(test)]
 mod tests {
+    use nekoland_config::resources::{CompositorConfig, ConfiguredOutput};
     use nekoland_ecs::components::OutputProperties;
-    use nekoland_ecs::resources::CompositorConfig;
 
     use super::{DrmInputState, configured_output_bounds, live_output_bounds};
 
@@ -265,13 +265,13 @@ mod tests {
     fn configured_output_bounds_follow_enabled_output_mode() {
         let config = CompositorConfig {
             outputs: vec![
-                nekoland_ecs::resources::ConfiguredOutput {
+                ConfiguredOutput {
                     name: "DP-1".to_owned(),
                     mode: "1920x1080@60".to_owned(),
                     scale: 1,
                     enabled: true,
                 },
-                nekoland_ecs::resources::ConfiguredOutput {
+                ConfiguredOutput {
                     name: "HDMI-A-1".to_owned(),
                     mode: "1280x720@60".to_owned(),
                     scale: 1,

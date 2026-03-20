@@ -22,9 +22,7 @@ use nekoland_ecs::components::{
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, FramePacingState, GlobalPointerPosition,
-    KeyboardFocusState, PendingPopupServerRequests, PendingProtocolInputEvents,
-    PendingWindowServerRequests, PopupServerAction, PopupServerRequest, RenderPlan, RenderPlanItem,
-    WindowServerAction, WindowServerRequest, WorkArea,
+    KeyboardFocusState, PendingProtocolInputEvents, RenderPlan, RenderPlanItem, WorkArea,
 };
 use nekoland_ipc::commands::{
     PopupCommand, QueryCommand, TreeSnapshot, WindowCommand, WorkspaceCommand,
@@ -34,6 +32,10 @@ use nekoland_ipc::{
     SubscriptionTopic, send_request_to_path, subscribe_to_path,
 };
 use nekoland_protocol::ProtocolServerState;
+use nekoland_protocol::resources::{
+    PendingPopupServerRequests, PendingWindowServerRequests, PopupServerAction, PopupServerRequest,
+    WindowServerAction, WindowServerRequest,
+};
 use nekoland_shell::decorations;
 use tempfile::tempfile;
 use wayland_client::protocol::{

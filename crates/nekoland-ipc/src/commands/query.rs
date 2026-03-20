@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
+use nekoland_config::resources::ConfiguredAction;
 use nekoland_ecs::components::OutputKind;
-use nekoland_ecs::resources::ConfiguredAction;
 use serde::{Deserialize, Serialize};
 
 /// Read-only IPC queries exposed by `nekoland-msg query ...`.

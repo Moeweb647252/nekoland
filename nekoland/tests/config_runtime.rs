@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nekoland_backend::BackendPlugin;
-use nekoland_config::ConfigPlugin;
+use nekoland_config::{ConfigPlugin, resources::CompositorConfig};
 use nekoland_core::prelude::NekolandApp;
 use nekoland_core::schedules::{ExtractSchedule, InputSchedule, LayoutSchedule};
 use nekoland_ecs::bundles::WindowBundle;
@@ -16,11 +16,13 @@ use nekoland_ecs::components::{
     WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::{
-    CommandHistoryState, CompositorClock, CompositorConfig, GlobalPointerPosition,
-    KeyboardFocusState, ModifierMask, PendingXdgRequests, WindowLifecycleAction,
-    WindowLifecycleRequest, XdgSurfaceRole,
+    CommandHistoryState, CompositorClock, GlobalPointerPosition, KeyboardFocusState, ModifierMask,
 };
 use nekoland_input::InputPlugin;
+use nekoland_protocol::resources::{
+    PendingXdgRequests, SurfaceExtent, WindowLifecycleAction, WindowLifecycleRequest,
+    XdgSurfaceRole,
+};
 use nekoland_shell::ShellPlugin;
 
 /// Baseline config loaded before the runtime rewrite.
@@ -284,14 +286,14 @@ fn tiling_default_layout_splits_new_windows_across_work_area() {
         surface_id: 401,
         action: WindowLifecycleAction::Committed {
             role: XdgSurfaceRole::Toplevel,
-            size: Some(nekoland_ecs::resources::SurfaceExtent { width: 800, height: 600 }),
+            size: Some(SurfaceExtent { width: 800, height: 600 }),
         },
     });
     pending.push(WindowLifecycleRequest {
         surface_id: 402,
         action: WindowLifecycleAction::Committed {
             role: XdgSurfaceRole::Toplevel,
-            size: Some(nekoland_ecs::resources::SurfaceExtent { width: 800, height: 600 }),
+            size: Some(SurfaceExtent { width: 800, height: 600 }),
         },
     });
     app.inner_mut().world_mut().run_schedule(LayoutSchedule);

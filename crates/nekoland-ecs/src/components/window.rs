@@ -183,6 +183,8 @@ pub struct WindowRestoreState {
     pub mode: WindowMode,
     #[serde(default)]
     pub fullscreen_output: Option<OutputName>,
+    #[serde(default)]
+    pub previous: Option<Box<WindowRestoreState>>,
 }
 
 /// Per-window restore snapshot storage.

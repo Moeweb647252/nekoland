@@ -21,9 +21,7 @@ pub fn build_render_process_plan_system(
 
     for (output_id, execution) in &render_graph.outputs {
         let output_plan = render_plan.outputs.get(output_id);
-        let backdrop_regions = output_plan
-            .map(collect_backdrop_regions)
-            .unwrap_or_default();
+        let backdrop_regions = output_plan.map(collect_backdrop_regions).unwrap_or_default();
 
         let mut output_process = OutputProcessPlan::default();
 
@@ -242,10 +240,7 @@ mod tests {
         assert_eq!(output_plan.ordered_units.len(), 2);
         let post = output_plan.units_for_pass(RenderPassId(1)).next().expect("post unit");
         assert_eq!(post.shader_key, ProcessShaderKey("backdrop_blur".to_owned()));
-        assert_eq!(
-            post.process_regions,
-            vec![ProcessRect { x: 10, y: 20, width: 30, height: 40 }]
-        );
+        assert_eq!(post.process_regions, vec![ProcessRect { x: 10, y: 20, width: 30, height: 40 }]);
         let composite = output_plan.units_for_pass(RenderPassId(2)).next().expect("composite");
         assert_eq!(composite.shader_key, ProcessShaderKey("builtin.composite".to_owned()));
     }

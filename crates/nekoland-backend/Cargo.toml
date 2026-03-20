@@ -11,6 +11,7 @@ bevy_ecs.workspace = true
 calloop.workspace = true
 drm-fourcc = "2"
 libc = "0.2"
+nekoland-config = { path = "../nekoland-config" }
 nekoland-core = { path = "../nekoland-core" }
 nekoland-ecs = { path = "../nekoland-ecs" }
 nekoland-protocol = { path = "../nekoland-protocol" }

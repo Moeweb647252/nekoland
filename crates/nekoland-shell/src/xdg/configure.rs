@@ -2,16 +2,14 @@ use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
 use bevy_ecs::query::Allow;
 use bevy_ecs::system::SystemParam;
-use nekoland_ecs::components::{WindowLayout, WindowMode, WindowRestoreState, XdgPopup, XdgWindow};
-use nekoland_ecs::resources::{
-    EntityIndex, GlobalPointerPosition, KeyboardFocusState, PendingXdgRequests,
-    WindowLifecycleAction, XdgSurfaceRole,
-};
+use nekoland_ecs::components::{WindowLayout, WindowMode, XdgPopup, XdgWindow};
+use nekoland_ecs::resources::{EntityIndex, GlobalPointerPosition, KeyboardFocusState};
 use nekoland_ecs::selectors::OutputName;
 use nekoland_ecs::views::{PopupConfigureRuntime, WindowRuntime};
+use nekoland_protocol::resources::{PendingXdgRequests, WindowLifecycleAction, XdgSurfaceRole};
 
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
-use crate::window_policy::{lock_window_policy, restore_window_policy};
+use crate::window_policy::{enter_temporary_window_mode, lock_window_policy, restore_window_state};
 
 /// Sequences XDG configure-related requests after the toplevel entity exists.
 ///
@@ -169,14 +167,15 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                     continue;
                 };
 
-                window.restore.snapshot = Some(WindowRestoreState {
-                    geometry: window.scene_geometry.clone(),
-                    layout: *window.layout,
-                    mode: *window.mode,
-                    fullscreen_output: window.fullscreen_target.output.clone(),
-                });
-                *window.mode = WindowMode::Maximized;
-                window.fullscreen_target.output = None;
+                enter_temporary_window_mode(
+                    &window.scene_geometry,
+                    &mut window.fullscreen_target,
+                    &mut window.restore,
+                    *window.layout,
+                    &mut window.mode,
+                    WindowMode::Maximized,
+                    None,
+                );
                 configure.keyboard_focus.focused_surface = Some(window.surface_id());
             }
             WindowLifecycleAction::UnMaximize => {
@@ -193,19 +192,14 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                     continue;
                 };
 
-                if let Some(restored) = window.restore.snapshot.take() {
-                    *window.scene_geometry = restored.geometry;
-                    window.fullscreen_target.output = restored.fullscreen_output;
-                    *window.layout = restored.layout;
-                    *window.mode = restored.mode;
-                } else {
-                    restore_window_policy(
-                        &window.policy_state,
-                        &mut window.layout,
-                        &mut window.mode,
-                    );
-                    window.fullscreen_target.output = None;
-                }
+                restore_window_state(
+                    &window.policy_state,
+                    &mut window.scene_geometry,
+                    &mut window.fullscreen_target,
+                    &mut window.restore,
+                    &mut window.layout,
+                    &mut window.mode,
+                );
             }
             WindowLifecycleAction::Fullscreen { output_name } => {
                 let Some(entity) = resolve_xdg_window_entity(
@@ -221,15 +215,15 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                     continue;
                 };
 
-                window.restore.snapshot = Some(WindowRestoreState {
-                    geometry: window.scene_geometry.clone(),
-                    layout: *window.layout,
-                    mode: *window.mode,
-                    fullscreen_output: window.fullscreen_target.output.clone(),
-                });
-                *window.mode = WindowMode::Fullscreen;
-                window.fullscreen_target.output =
-                    output_name.as_ref().map(|output_name| OutputName::from(output_name.as_str()));
+                enter_temporary_window_mode(
+                    &window.scene_geometry,
+                    &mut window.fullscreen_target,
+                    &mut window.restore,
+                    *window.layout,
+                    &mut window.mode,
+                    WindowMode::Fullscreen,
+                    output_name.as_ref().map(|output_name| OutputName::from(output_name.as_str())),
+                );
                 configure.keyboard_focus.focused_surface = Some(window.surface_id());
                 tracing::trace!(
                     surface_id = window.surface_id(),
@@ -251,19 +245,14 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
                     continue;
                 };
 
-                if let Some(restored) = window.restore.snapshot.take() {
-                    *window.scene_geometry = restored.geometry;
-                    window.fullscreen_target.output = restored.fullscreen_output;
-                    *window.layout = restored.layout;
-                    *window.mode = restored.mode;
-                } else {
-                    restore_window_policy(
-                        &window.policy_state,
-                        &mut window.layout,
-                        &mut window.mode,
-                    );
-                    window.fullscreen_target.output = None;
-                }
+                restore_window_state(
+                    &window.policy_state,
+                    &mut window.scene_geometry,
+                    &mut window.fullscreen_target,
+                    &mut window.restore,
+                    &mut window.layout,
+                    &mut window.mode,
+                );
             }
             WindowLifecycleAction::Minimize => {
                 let Some(entity) = resolve_xdg_window_entity(
@@ -316,4 +305,149 @@ fn resolve_xdg_popup_entity(
             .find(|(_, popup)| popup.surface_id() == surface_id)
             .map(|(entity, _)| entity)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use nekoland_core::prelude::NekolandApp;
+    use nekoland_core::schedules::LayoutSchedule;
+    use nekoland_ecs::bundles::WindowBundle;
+    use nekoland_ecs::components::{
+        BufferState, SurfaceGeometry, WindowAnimation, WindowFullscreenTarget, WindowLayout,
+        WindowMode, WindowRestoreSnapshot, WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
+    };
+    use nekoland_ecs::resources::{EntityIndex, GlobalPointerPosition, KeyboardFocusState};
+    use nekoland_protocol::resources::{
+        PendingXdgRequests, WindowLifecycleAction, WindowLifecycleRequest,
+    };
+
+    use crate::interaction::ActiveWindowGrab;
+
+    use super::configure_sequence_system;
+
+    fn setup_app_with_window() -> (NekolandApp, bevy_ecs::entity::Entity) {
+        let mut app = NekolandApp::new("xdg-configure-test");
+        app.insert_resource(EntityIndex::default())
+            .insert_resource(PendingXdgRequests::default())
+            .insert_resource(GlobalPointerPosition::default())
+            .insert_resource(ActiveWindowGrab::default())
+            .insert_resource(KeyboardFocusState::default());
+        app.inner_mut().add_systems(LayoutSchedule, configure_sequence_system);
+
+        let entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn(WindowBundle {
+                surface: WlSurfaceHandle { id: 42 },
+                geometry: SurfaceGeometry { x: 12, y: 24, width: 640, height: 480 },
+                scene_geometry: WindowSceneGeometry { x: 12, y: 24, width: 640, height: 480 },
+                viewport_visibility: Default::default(),
+                buffer: BufferState { attached: true, scale: 1 },
+                content_version: Default::default(),
+                window: XdgWindow::default(),
+                layout: WindowLayout::Floating,
+                mode: WindowMode::Normal,
+                decoration: Default::default(),
+                border_theme: Default::default(),
+                animation: WindowAnimation::default(),
+            })
+            .id();
+
+        (app, entity)
+    }
+
+    #[test]
+    fn repeated_maximize_restores_original_state() {
+        let (mut app, entity) = setup_app_with_window();
+        let mut requests = app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>();
+        requests.push(WindowLifecycleRequest {
+            surface_id: 42,
+            action: WindowLifecycleAction::Maximize,
+        });
+        requests.push(WindowLifecycleRequest {
+            surface_id: 42,
+            action: WindowLifecycleAction::Maximize,
+        });
+        requests.push(WindowLifecycleRequest {
+            surface_id: 42,
+            action: WindowLifecycleAction::UnMaximize,
+        });
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        assert_eq!(
+            world.get::<WindowSceneGeometry>(entity),
+            Some(&WindowSceneGeometry { x: 12, y: 24, width: 640, height: 480 })
+        );
+        assert_eq!(world.get::<WindowLayout>(entity), Some(&WindowLayout::Floating));
+        assert_eq!(world.get::<WindowMode>(entity), Some(&WindowMode::Normal));
+        assert_eq!(
+            world.get::<WindowFullscreenTarget>(entity),
+            Some(&WindowFullscreenTarget::default())
+        );
+        assert_eq!(
+            world.get::<WindowRestoreSnapshot>(entity),
+            Some(&WindowRestoreSnapshot::default())
+        );
+    }
+
+    #[test]
+    fn fullscreen_restore_returns_to_previous_temporary_state() {
+        let (mut app, entity) = setup_app_with_window();
+        {
+            let mut requests = app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>();
+            requests.push(WindowLifecycleRequest {
+                surface_id: 42,
+                action: WindowLifecycleAction::Maximize,
+            });
+            requests.push(WindowLifecycleRequest {
+                surface_id: 42,
+                action: WindowLifecycleAction::Fullscreen {
+                    output_name: Some("HDMI-A-1".to_owned()),
+                },
+            });
+            requests.push(WindowLifecycleRequest {
+                surface_id: 42,
+                action: WindowLifecycleAction::UnFullscreen,
+            });
+        }
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        assert_eq!(world.get::<WindowMode>(entity), Some(&WindowMode::Maximized));
+        assert_eq!(
+            world
+                .get::<WindowRestoreSnapshot>(entity)
+                .and_then(|restore| restore.snapshot.as_ref()),
+            Some(&nekoland_ecs::components::WindowRestoreState {
+                geometry: WindowSceneGeometry { x: 12, y: 24, width: 640, height: 480 },
+                layout: WindowLayout::Floating,
+                mode: WindowMode::Normal,
+                fullscreen_output: None,
+                previous: None,
+            })
+        );
+        assert_eq!(
+            world.get::<WindowFullscreenTarget>(entity),
+            Some(&WindowFullscreenTarget::default())
+        );
+
+        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+            WindowLifecycleRequest { surface_id: 42, action: WindowLifecycleAction::UnMaximize },
+        );
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        assert_eq!(world.get::<WindowMode>(entity), Some(&WindowMode::Normal));
+        assert_eq!(
+            world.get::<WindowSceneGeometry>(entity),
+            Some(&WindowSceneGeometry { x: 12, y: 24, width: 640, height: 480 })
+        );
+        assert_eq!(
+            world.get::<WindowRestoreSnapshot>(entity),
+            Some(&WindowRestoreSnapshot::default())
+        );
+    }
 }

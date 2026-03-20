@@ -4,19 +4,19 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::{Commands, NonSend, Query, Res, ResMut, Resource, With};
 use bevy_ecs::system::SystemParam;
+use nekoland_config::resources::{CompositorConfig, ConfiguredOutput};
 use nekoland_core::error::NekolandError;
 use nekoland_ecs::bundles::OutputBundle;
 use nekoland_ecs::components::{
-    OutputDevice, OutputId, OutputPlacement, OutputProperties, OutputViewport,
-    OutputWorkArea, WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
+    OutputDevice, OutputId, OutputPlacement, OutputProperties, OutputViewport, OutputWorkArea,
+    WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::kinds::{BackendEvent, FrameQueue};
 use nekoland_ecs::resources::{
-    BackendOutputRegistry, CompositorConfig, ConfiguredOutput, EntityIndex, FocusedOutputState,
-    OutputOverlayState, OutputServerAction, OutputServerRequest, PendingOutputControl,
-    PendingOutputControls, PendingOutputOverlayControls, PendingOutputServerRequests,
-    PrimaryOutputState,
+    BackendOutputRegistry, EntityIndex, FocusedOutputState, OutputOverlayState, OutputServerAction,
+    OutputServerRequest, PendingOutputControl, PendingOutputControls, PendingOutputOverlayControls,
+    PendingOutputServerRequests, PrimaryOutputState,
 };
 use nekoland_ecs::selectors::OutputSelector;
 use nekoland_ecs::views::OutputRuntime;
@@ -30,6 +30,7 @@ use crate::traits::{BackendId, BackendOutputId, OutputSnapshot};
 #[derive(Debug, Clone, Default, Resource, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RememberedOutputViewportState {
     pub by_id: BTreeMap<OutputId, OutputViewport>,
+    pub by_name: BTreeMap<String, OutputViewport>,
     pub ids_by_name: BTreeMap<String, OutputId>,
 }
 
@@ -39,16 +40,21 @@ impl RememberedOutputViewportState {
     }
 
     pub fn viewport_for_output_name(&self, output_name: &str) -> Option<&OutputViewport> {
-        self.ids_by_name.get(output_name).and_then(|output_id| self.by_id.get(output_id))
+        self.by_name.get(output_name).or_else(|| {
+            self.ids_by_name.get(output_name).and_then(|output_id| self.by_id.get(output_id))
+        })
     }
 
     pub fn remember(&mut self, output_id: OutputId, output_name: String, viewport: OutputViewport) {
-        self.ids_by_name.insert(output_name, output_id);
+        self.ids_by_name.insert(output_name.clone(), output_id);
+        self.by_name.insert(output_name, viewport.clone());
         self.by_id.insert(output_id, viewport);
     }
 
     pub fn forget_name(&mut self, output_name: &str) {
-        self.ids_by_name.remove(output_name);
+        if let Some(output_id) = self.ids_by_name.remove(output_name) {
+            self.by_id.remove(&output_id);
+        }
     }
 }
 
@@ -1055,18 +1061,54 @@ mod tests {
         let mut app = NekolandApp::new("backend-output-reconnect-viewport-test");
         app.inner_mut()
             .insert_resource(BackendOutputRegistry::default())
-            .insert_resource({
-                let mut remembered = RememberedOutputViewportState::default();
-                remembered.ids_by_name.insert("Virtual-1".to_owned(), OutputId(1));
-                remembered
-                    .by_id
-                    .insert(OutputId(1), OutputViewport { origin_x: 640, origin_y: -320 });
-                remembered
-            })
+            .insert_resource(RememberedOutputViewportState::default())
             .init_resource::<PendingBackendOutputEvents>()
             .init_resource::<Messages<OutputConnected>>()
             .init_resource::<Messages<OutputDisconnected>>()
-            .add_systems(ExtractSchedule, synchronize_backend_outputs_system);
+            .add_systems(
+                ExtractSchedule,
+                (remember_output_viewports_system, synchronize_backend_outputs_system).chain(),
+            );
+
+        app.inner_mut().world_mut().spawn((
+            OutputId(1),
+            OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "Virtual".to_owned(),
+                    model: "test".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1920,
+                    height: 1080,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                viewport: OutputViewport { origin_x: 640, origin_y: -320 },
+                ..Default::default()
+            },
+            OutputBackend {
+                backend_id: BackendId(7),
+                output_id: crate::traits::BackendOutputId {
+                    backend_id: BackendId(7),
+                    local_id: "virtual-primary".to_owned(),
+                },
+            },
+        ));
+
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+
+        app.inner_mut().world_mut().resource_mut::<PendingBackendOutputEvents>().push(
+            BackendOutputEventRecord {
+                backend_id: BackendId(7),
+                output_name: "Virtual-1".to_owned(),
+                local_id: "virtual-primary".to_owned(),
+                change: BackendOutputChange::Disconnected,
+            },
+        );
+
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
         app.inner_mut().world_mut().resource_mut::<PendingBackendOutputEvents>().push(
             BackendOutputEventRecord {
@@ -1105,5 +1147,9 @@ mod tests {
         assert_eq!(viewport.origin_x, 640);
         assert_eq!(viewport.origin_y, -320);
         assert_eq!(owner.backend_id, BackendId(7));
+        assert_eq!(
+            world.resource::<RememberedOutputViewportState>().viewport_for_output_name("Virtual-1"),
+            Some(&OutputViewport { origin_x: 640, origin_y: -320 })
+        );
     }
 }

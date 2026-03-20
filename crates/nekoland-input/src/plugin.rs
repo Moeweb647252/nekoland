@@ -5,10 +5,11 @@ use nekoland_core::schedules::InputSchedule;
 use nekoland_ecs::events::{GestureSwipe, KeyPress, PointerButton, PointerMotion};
 use nekoland_ecs::resources::{
     FocusedOutputState, GlobalPointerPosition, KeyboardFocusState, ModifierState,
-    PendingBackendInputEvents, PendingExternalCommandRequests, PendingInputEvents,
-    PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
-    PhysicalPointerPosition, PointerDelta, PressedKeys, ViewportPointerPanState,
+    PendingBackendInputEvents, PendingExternalCommandRequests, PendingOutputControls,
+    PendingWindowControls, PendingWorkspaceControls, PhysicalPointerPosition, PointerDelta,
+    PressedKeys, ViewportPointerPanState,
 };
+use nekoland_protocol::resources::PendingInputEvents;
 
 use crate::{gestures, keybindings, keyboard, pointer, seat_manager, touch};
 
@@ -69,12 +70,13 @@ mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::InputSchedule;
+    use nekoland_config::resources::CompositorConfig;
     use nekoland_ecs::events::{KeyPress, PointerMotion};
     use nekoland_ecs::resources::{
-        BackendInputAction, BackendInputEvent, CompositorClock, CompositorConfig,
-        GlobalPointerPosition, ModifierState, PendingBackendInputEvents, PendingInputEvents,
-        PressedKeys,
+        BackendInputAction, BackendInputEvent, CompositorClock, GlobalPointerPosition,
+        ModifierState, PendingBackendInputEvents, PressedKeys,
     };
+    use nekoland_protocol::resources::PendingInputEvents;
 
     use super::InputPlugin;
     use crate::seat_manager;

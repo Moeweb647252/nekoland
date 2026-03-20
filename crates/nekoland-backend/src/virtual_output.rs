@@ -1,4 +1,5 @@
 use bevy_app::App;
+use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
 use nekoland_ecs::resources::{VirtualOutputElement, VirtualOutputElementKind, VirtualOutputFrame};
 use smithay::utils::{Clock, Monotonic};
@@ -19,8 +20,6 @@ const VIRTUAL_PRIMARY_OUTPUT_LOCAL_ID: &str = "primary";
 pub(crate) struct VirtualRuntime {
     /// Public descriptor surfaced through backend status snapshots.
     descriptor: BackendDescriptor,
-    /// Name of the output last seeded into ECS for this backend.
-    seeded_output_name: Option<String>,
     /// Per-output sequence/timestamp state for synthetic presentation feedback.
     presentation_runtime: OutputPresentationRuntime,
     /// Monotonic clock used to timestamp synthetic presentation completions.
@@ -38,7 +37,6 @@ impl VirtualRuntime {
                 label: format!("virtual-{}", id.0),
                 description: "offscreen virtual output backend".to_owned(),
             },
-            seeded_output_name: None,
             presentation_runtime: OutputPresentationRuntime::default(),
             monotonic_clock: None,
         }
@@ -47,12 +45,26 @@ impl VirtualRuntime {
     /// Pick the configured virtual-output name, falling back to `Virtual-1`.
     fn desired_output_name(
         &self,
-        config: Option<&nekoland_ecs::resources::CompositorConfig>,
+        config: Option<&CompositorConfig>,
+        outputs: &[crate::traits::OutputSnapshot],
+        pending_output_events: &[BackendOutputEventRecord],
     ) -> String {
-        config
+        let configured_output_name = config
             .and_then(|config| config.outputs.iter().find(|output| output.enabled))
-            .map(|output| output.name.clone())
-            .unwrap_or_else(|| "Virtual-1".to_owned())
+            .map(|output| output.name.clone());
+        let Some(configured_output_name) = configured_output_name else {
+            return "Virtual-1".to_owned();
+        };
+
+        if self.output_name_owned_by_other_backend(
+            &configured_output_name,
+            outputs,
+            pending_output_events,
+        ) {
+            "Virtual-1".to_owned()
+        } else {
+            configured_output_name
+        }
     }
 
     /// Iterate output snapshots currently owned by this backend runtime.
@@ -61,6 +73,30 @@ impl VirtualRuntime {
         outputs: &'a [crate::traits::OutputSnapshot],
     ) -> impl Iterator<Item = &'a crate::traits::OutputSnapshot> {
         outputs.iter().filter(|output| output.backend_id == Some(self.id()))
+    }
+
+    fn output_name_owned_by_other_backend(
+        &self,
+        output_name: &str,
+        outputs: &[crate::traits::OutputSnapshot],
+        pending_output_events: &[BackendOutputEventRecord],
+    ) -> bool {
+        let mut occupied = outputs.iter().any(|output| {
+            output.device.name == output_name && output.backend_id != Some(self.id())
+        });
+
+        for record in pending_output_events {
+            if record.output_name != output_name || record.backend_id == self.id() {
+                continue;
+            }
+
+            match &record.change {
+                BackendOutputChange::Connected(_) => occupied = true,
+                BackendOutputChange::Disconnected => occupied = false,
+            }
+        }
+
+        occupied
     }
 }
 
@@ -105,20 +141,22 @@ impl Backend for VirtualRuntime {
     ) -> Result<(), nekoland_core::error::NekolandError> {
         // Keep one virtual output materialized so the rest of the compositor can
         // treat the backend like any other output-producing runtime.
-        let desired_output_name = self.desired_output_name(cx.config);
-        let has_output =
-            self.owned_outputs(cx.outputs).any(|output| output.device.name == desired_output_name);
-        if !has_output
-            && self.seeded_output_name.as_deref() != Some(desired_output_name.as_str())
-            && let Some(blueprint) = self.seed_output(&desired_output_name)
-        {
-            cx.output_events.push(BackendOutputEventRecord {
-                backend_id: self.id(),
-                output_name: desired_output_name.clone(),
-                local_id: blueprint.local_id.clone(),
-                change: BackendOutputChange::Connected(blueprint),
-            });
-            self.seeded_output_name = Some(desired_output_name);
+        let has_owned_output = self.owned_outputs(cx.outputs).next().is_some();
+        let has_pending_owned_connect = cx.output_events.as_slice().iter().any(|record| {
+            record.backend_id == self.id()
+                && matches!(&record.change, BackendOutputChange::Connected(_))
+        });
+        if !has_owned_output && !has_pending_owned_connect {
+            let desired_output_name =
+                self.desired_output_name(cx.config, cx.outputs, cx.output_events.as_slice());
+            if let Some(blueprint) = self.seed_output(&desired_output_name) {
+                cx.output_events.push(BackendOutputEventRecord {
+                    backend_id: self.id(),
+                    output_name: desired_output_name,
+                    local_id: blueprint.local_id.clone(),
+                    change: BackendOutputChange::Connected(blueprint),
+                });
+            }
         }
 
         let owned_outputs = self.owned_outputs(cx.outputs).cloned().collect::<Vec<_>>();
@@ -181,6 +219,137 @@ impl Backend for VirtualRuntime {
         });
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_app::App;
+    use nekoland_config::resources::{CompositorConfig, ConfiguredOutput};
+    use nekoland_ecs::components::{OutputDevice, OutputId, OutputKind, OutputProperties};
+    use nekoland_ecs::resources::{PendingBackendInputEvents, PendingProtocolInputEvents};
+    use nekoland_protocol::resources::PendingOutputPresentationEvents;
+
+    use crate::common::outputs::{PendingBackendOutputEvents, PendingBackendOutputUpdates};
+    use crate::traits::{BackendOutputId, OutputSnapshot};
+
+    use super::{
+        Backend, BackendExtractCtx, BackendId, BackendOutputChange, BackendOutputEventRecord,
+        VirtualRuntime,
+    };
+
+    fn output_snapshot(name: &str, backend_id: BackendId, local_id: &str) -> OutputSnapshot {
+        OutputSnapshot {
+            entity: bevy_ecs::entity::Entity::PLACEHOLDER,
+            output_id: OutputId(1),
+            backend_id: Some(backend_id),
+            backend_output_id: Some(BackendOutputId { backend_id, local_id: local_id.to_owned() }),
+            device: OutputDevice {
+                name: name.to_owned(),
+                kind: OutputKind::Virtual,
+                make: "test".to_owned(),
+                model: "test".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 1920,
+                height: 1080,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+        }
+    }
+
+    fn configured_output(name: &str) -> CompositorConfig {
+        CompositorConfig {
+            outputs: vec![ConfiguredOutput {
+                name: name.to_owned(),
+                mode: "1920x1080@60".to_owned(),
+                scale: 1,
+                enabled: true,
+            }],
+            ..CompositorConfig::default()
+        }
+    }
+
+    #[test]
+    fn extract_falls_back_when_configured_name_is_already_live() {
+        let mut runtime = VirtualRuntime::install(&mut App::new(), BackendId(9));
+        let config = configured_output("eDP-1");
+        let outputs = vec![output_snapshot("eDP-1", BackendId(2), "drm-primary")];
+        let mut backend_input_events = PendingBackendInputEvents::default();
+        let mut protocol_input_events = PendingProtocolInputEvents::default();
+        let mut output_events = PendingBackendOutputEvents::default();
+        let mut output_updates = PendingBackendOutputUpdates::default();
+        let mut presentation_events = PendingOutputPresentationEvents::default();
+        let mut cx = BackendExtractCtx {
+            app_metadata: None,
+            config: Some(&config),
+            outputs: &outputs,
+            backend_input_events: &mut backend_input_events,
+            protocol_input_events: &mut protocol_input_events,
+            output_events: &mut output_events,
+            output_updates: &mut output_updates,
+            presentation_events: &mut presentation_events,
+            winit_window_state: None,
+        };
+
+        runtime.extract(&mut cx).expect("virtual extract should succeed");
+
+        let Some(record) = output_events.as_slice().last() else {
+            panic!("virtual backend should seed an output");
+        };
+        assert_eq!(record.output_name, "Virtual-1");
+    }
+
+    #[test]
+    fn extract_respects_pending_other_backend_connects() {
+        let mut runtime = VirtualRuntime::install(&mut App::new(), BackendId(9));
+        let config = configured_output("eDP-1");
+        let outputs = Vec::new();
+        let mut backend_input_events = PendingBackendInputEvents::default();
+        let mut protocol_input_events = PendingProtocolInputEvents::default();
+        let mut output_events =
+            PendingBackendOutputEvents::from_items(vec![BackendOutputEventRecord {
+                backend_id: BackendId(2),
+                output_name: "eDP-1".to_owned(),
+                local_id: "drm-primary".to_owned(),
+                change: BackendOutputChange::Connected(super::BackendOutputBlueprint {
+                    local_id: "drm-primary".to_owned(),
+                    device: OutputDevice {
+                        name: "eDP-1".to_owned(),
+                        kind: OutputKind::Physical,
+                        make: "test".to_owned(),
+                        model: "panel".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 1920,
+                        height: 1080,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                }),
+            }]);
+        let mut output_updates = PendingBackendOutputUpdates::default();
+        let mut presentation_events = PendingOutputPresentationEvents::default();
+        let mut cx = BackendExtractCtx {
+            app_metadata: None,
+            config: Some(&config),
+            outputs: &outputs,
+            backend_input_events: &mut backend_input_events,
+            protocol_input_events: &mut protocol_input_events,
+            output_events: &mut output_events,
+            output_updates: &mut output_updates,
+            presentation_events: &mut presentation_events,
+            winit_window_state: None,
+        };
+
+        runtime.extract(&mut cx).expect("virtual extract should succeed");
+
+        let Some(record) = output_events.as_slice().last() else {
+            panic!("virtual backend should seed an output");
+        };
+        assert_eq!(record.backend_id, BackendId(9));
+        assert_eq!(record.output_name, "Virtual-1");
     }
 }
 

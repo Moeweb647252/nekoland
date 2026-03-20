@@ -2,13 +2,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use bevy_ecs::prelude::Resource;
+use nekoland_ecs::components::{WindowLayout, WindowMode, WindowPolicy};
+use nekoland_ecs::resources::{ModifierMask, SplitAxis};
+use nekoland_ecs::selectors::{OutputName, WorkspaceLookup, WorkspaceSelector};
 use serde::{Deserialize, Serialize};
-
-use super::SplitAxis;
-use crate::components::{WindowLayout, WindowMode, WindowPolicy};
-use crate::selectors::{OutputName, WorkspaceLookup, WorkspaceSelector};
-
-use super::ModifierMask;
 
 /// Output configuration after normalization from the on-disk config schema.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

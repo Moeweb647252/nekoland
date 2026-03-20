@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use nekoland_ecs::resources::ConfiguredAction;
+use crate::resources::ConfiguredAction;
 use serde::{Deserialize, Serialize};
 
 use crate::action_config::ActionListConfig;

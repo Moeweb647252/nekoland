@@ -7,10 +7,13 @@ use nekoland_ecs::events::{
 };
 use nekoland_ecs::resources::register_entity_index_hooks;
 use nekoland_ecs::resources::{
-    CommandHistoryState, PendingExternalCommandRequests, PendingLayerRequests,
-    PendingPopupServerRequests, PendingWindowControls, PendingWindowServerRequests,
-    PendingWorkspaceControls, PendingX11Requests, PendingXdgRequests, SurfacePresentationSnapshot,
-    WindowStackingState, WorkArea, WorkspaceTilingState,
+    CommandHistoryState, PendingExternalCommandRequests, PendingWindowControls,
+    PendingWorkspaceControls, SurfacePresentationSnapshot, WindowStackingState, WorkArea,
+    WorkspaceTilingState,
+};
+use nekoland_protocol::resources::{
+    PendingLayerRequests, PendingPopupServerRequests, PendingWindowServerRequests,
+    PendingX11Requests, PendingXdgRequests,
 };
 
 use crate::{

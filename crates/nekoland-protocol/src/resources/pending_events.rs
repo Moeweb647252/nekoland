@@ -1,8 +1,7 @@
 use std::fmt;
 
+use nekoland_ecs::kinds::{BackendEventQueue, FrameQueue, ProtocolEventQueue};
 use serde::{Deserialize, Serialize};
-
-use crate::kinds::{BackendEventQueue, FrameQueue, ProtocolEventQueue};
 
 /// Distinguishes the XDG surface role associated with a lifecycle event.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

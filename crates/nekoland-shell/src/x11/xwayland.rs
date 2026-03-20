@@ -4,26 +4,30 @@ use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With, Without};
 use bevy_ecs::query::Allow;
 use bevy_ecs::system::SystemParam;
+use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::bundles::X11WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, FloatingPosition, ServerDecoration, SurfaceGeometry, WindowAnimation,
     WindowFullscreenTarget, WindowLayout, WindowMode, WindowPlacement, WindowPolicyState,
-    WindowPosition, WindowRestoreState, WindowRole, WindowSceneGeometry, WindowSize,
-    WlSurfaceHandle, X11Window, XdgPopup, XdgWindow,
+    WindowPosition, WindowRole, WindowSceneGeometry, WindowSize, WlSurfaceHandle, X11Window,
+    XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
 use nekoland_ecs::resources::{
-    CompositorConfig, EntityIndex, FocusedOutputState, GlobalPointerPosition, KeyboardFocusState,
-    PendingPopupServerRequests, PendingX11Requests, PopupServerAction, PopupServerRequest,
-    PrimaryOutputState, X11LifecycleAction,
+    EntityIndex, FocusedOutputState, GlobalPointerPosition, KeyboardFocusState, PrimaryOutputState,
 };
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_target;
+use nekoland_protocol::resources::{
+    PendingPopupServerRequests, PendingX11Requests, PopupServerAction, PopupServerRequest,
+    X11LifecycleAction, X11WindowGeometry,
+};
 
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
 use crate::window_policy::{
-    WindowBackgroundState, apply_window_policy, lock_window_policy, refresh_window_policy,
-    resolve_background_output_id, restore_window_policy, sync_window_background_role,
+    WindowBackgroundState, apply_window_policy, enter_temporary_window_mode, lock_window_policy,
+    refresh_window_policy, resolve_background_output_id, restore_window_policy,
+    restore_window_state, sync_window_background_role,
 };
 
 /// Bridges XWayland lifecycle requests into the same ECS window model used by native XDG windows.
@@ -79,7 +83,7 @@ struct MappedX11WindowRequest {
     window_type: Option<nekoland_ecs::components::X11WindowType>,
     title: String,
     app_id: String,
-    geometry: nekoland_ecs::resources::X11WindowGeometry,
+    geometry: X11WindowGeometry,
 }
 
 struct ReconfiguredX11WindowRequest {
@@ -89,7 +93,7 @@ struct ReconfiguredX11WindowRequest {
     popup: bool,
     transient_for: Option<u32>,
     window_type: Option<nekoland_ecs::components::X11WindowType>,
-    geometry: nekoland_ecs::resources::X11WindowGeometry,
+    geometry: X11WindowGeometry,
 }
 
 pub fn xwayland_bridge_system(
@@ -597,14 +601,15 @@ fn enter_x11_window_state(
         return false;
     };
 
-    window.restore.snapshot = Some(WindowRestoreState {
-        geometry: window.scene_geometry.clone(),
-        layout: *window.layout,
-        mode: *window.mode,
-        fullscreen_output: window.fullscreen_target.output.clone(),
-    });
-    *window.mode = target_mode;
-    window.fullscreen_target.output = None;
+    enter_temporary_window_mode(
+        &window.scene_geometry,
+        &mut window.fullscreen_target,
+        &mut window.restore,
+        *window.layout,
+        &mut window.mode,
+        target_mode,
+        None,
+    );
     true
 }
 
@@ -620,15 +625,14 @@ fn restore_or_default_x11_window_state(
         return false;
     };
 
-    if let Some(restored) = window.restore.snapshot.take() {
-        *window.scene_geometry = restored.geometry;
-        window.fullscreen_target.output = restored.fullscreen_output;
-        *window.layout = restored.layout;
-        *window.mode = restored.mode;
-    } else {
-        restore_window_policy(&window.policy_state, &mut window.layout, &mut window.mode);
-        window.fullscreen_target.output = None;
-    }
+    restore_window_state(
+        &window.policy_state,
+        &mut window.scene_geometry,
+        &mut window.fullscreen_target,
+        &mut window.restore,
+        &mut window.layout,
+        &mut window.mode,
+    );
     true
 }
 
@@ -744,10 +748,13 @@ mod tests {
     };
     use nekoland_ecs::events::{PointerButton, WindowClosed, WindowCreated, WindowMoved};
     use nekoland_ecs::resources::{
-        CompositorConfig, ConfiguredWindowRule, EntityIndex, GlobalPointerPosition,
-        KeyboardFocusState, PendingX11Requests, PrimaryOutputState, ResizeEdges,
-        WindowStackingState, WorkArea, X11LifecycleAction, X11LifecycleRequest, X11WindowGeometry,
-        rebuild_entity_index_system,
+        EntityIndex, GlobalPointerPosition, KeyboardFocusState, PrimaryOutputState,
+        WindowStackingState, WorkArea, rebuild_entity_index_system,
+    };
+    use nekoland_config::resources::{CompositorConfig, ConfiguredWindowRule};
+    use nekoland_protocol::resources::{
+        PendingPopupServerRequests, PendingX11Requests, ResizeEdges, X11LifecycleAction,
+        X11LifecycleRequest, X11WindowGeometry,
     };
 
     use crate::interaction::{self, ActiveWindowGrab};
@@ -765,7 +772,7 @@ mod tests {
             .insert_resource(ActiveWindowGrab::default())
             .insert_resource(WindowStackingState::default())
             .insert_resource(PendingX11Requests::default())
-            .insert_resource(nekoland_ecs::resources::PendingPopupServerRequests::default());
+            .insert_resource(PendingPopupServerRequests::default());
         app.inner_mut()
             .add_message::<PointerButton>()
             .add_message::<WindowCreated>()
@@ -823,7 +830,7 @@ mod tests {
             .insert_resource(ActiveWindowGrab::default())
             .insert_resource(WindowStackingState::default())
             .insert_resource(PendingX11Requests::default())
-            .insert_resource(nekoland_ecs::resources::PendingPopupServerRequests::default())
+            .insert_resource(PendingPopupServerRequests::default())
             .insert_resource(PrimaryOutputState::default())
             .insert_resource(WorkArea { x: 0, y: 0, width: 800, height: 600 });
         app.inner_mut()
@@ -1025,7 +1032,7 @@ mod tests {
             .insert_resource(ActiveWindowGrab::default())
             .insert_resource(WindowStackingState::default())
             .insert_resource(PendingX11Requests::default())
-            .insert_resource(nekoland_ecs::resources::PendingPopupServerRequests::default());
+            .insert_resource(PendingPopupServerRequests::default());
         app.inner_mut()
             .add_message::<PointerButton>()
             .add_message::<WindowCreated>()
@@ -1099,7 +1106,7 @@ mod tests {
             .insert_resource(ActiveWindowGrab::default())
             .insert_resource(WindowStackingState::default())
             .insert_resource(PendingX11Requests::default())
-            .insert_resource(nekoland_ecs::resources::PendingPopupServerRequests::default());
+            .insert_resource(PendingPopupServerRequests::default());
         app.inner_mut()
             .add_message::<PointerButton>()
             .add_message::<WindowCreated>()
@@ -1210,5 +1217,37 @@ mod tests {
         assert_eq!((geometry.x, geometry.y), (0, 0));
         assert_eq!((geometry.width, geometry.height), (1600, 900));
         assert_eq!(visibility.output, Some(hdmi_output_id));
+    }
+
+    #[test]
+    fn repeated_x11_maximize_restores_original_state() {
+        let (mut app, entity) = setup_app_with_window();
+        {
+            let mut requests = app.inner_mut().world_mut().resource_mut::<PendingX11Requests>();
+            requests
+                .push(X11LifecycleRequest { surface_id: 42, action: X11LifecycleAction::Maximize });
+            requests
+                .push(X11LifecycleRequest { surface_id: 42, action: X11LifecycleAction::Maximize });
+            requests.push(X11LifecycleRequest {
+                surface_id: 42,
+                action: X11LifecycleAction::UnMaximize,
+            });
+        }
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        assert_eq!(
+            world.get::<WindowSceneGeometry>(entity),
+            Some(&WindowSceneGeometry { x: 32, y: 48, width: 640, height: 480 })
+        );
+        assert_eq!(world.get::<WindowLayout>(entity), Some(&WindowLayout::Tiled));
+        assert_eq!(world.get::<WindowMode>(entity), Some(&WindowMode::Normal));
+        assert_eq!(
+            world
+                .get::<nekoland_ecs::components::WindowRestoreSnapshot>(entity)
+                .and_then(|restore| restore.snapshot.as_ref()),
+            None
+        );
     }
 }

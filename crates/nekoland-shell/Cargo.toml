@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 bevy_app.workspace = true
 bevy_ecs.workspace = true
+nekoland-config = { path = "../nekoland-config" }
 nekoland-core = { path = "../nekoland-core" }
 nekoland-ecs = { path = "../nekoland-ecs" }
 nekoland-protocol = { path = "../nekoland-protocol" }

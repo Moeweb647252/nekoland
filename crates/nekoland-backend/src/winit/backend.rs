@@ -6,13 +6,13 @@ use std::time::Duration;
 use bevy_app::App;
 use bevy_ecs::prelude::Resource;
 use calloop::timer::{TimeoutAction, Timer};
+use nekoland_config::resources::CompositorConfig;
 use nekoland_core::calloop::CalloopSourceRegistry;
 use nekoland_core::error::NekolandError;
 use nekoland_core::prelude::AppMetadata;
 use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
 use nekoland_ecs::resources::{
-    BackendInputAction, BackendInputEvent, CompositorConfig, DamageRect, OutputDamageRegions,
-    RenderRect,
+    BackendInputAction, BackendInputEvent, DamageRect, OutputDamageRegions, RenderRect,
 };
 use nekoland_protocol::ProtocolDmabufSupport;
 use smithay::backend::renderer::Color32F;
@@ -295,12 +295,11 @@ impl Backend for WinitRuntime {
         if owned_outputs.is_empty()
             && self.seeded_output_name.as_deref() != Some(desired_output_name.as_str())
         {
-            let blueprint = self
-                .seed_output_blueprint(
-                    &desired_output_name,
-                    shared.pending_window_state.as_ref(),
-                    cx.config,
-                );
+            let blueprint = self.seed_output_blueprint(
+                &desired_output_name,
+                shared.pending_window_state.as_ref(),
+                cx.config,
+            );
             cx.output_events.push(BackendOutputEventRecord {
                 backend_id: self.id(),
                 output_name: desired_output_name.clone(),
@@ -943,11 +942,10 @@ fn should_forward_host_winit_input(
 
 #[cfg(test)]
 mod tests {
+    use nekoland_config::resources::{CompositorConfig, ConfiguredOutput};
     use nekoland_core::prelude::AppMetadata;
     use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
-    use nekoland_ecs::resources::{
-        BackendInputAction, CompositorConfig, ConfiguredOutput, DamageRect, OutputDamageRegions,
-    };
+    use nekoland_ecs::resources::{BackendInputAction, DamageRect, OutputDamageRegions};
     use smithay::reexports::winit::window::CursorGrabMode;
     use smithay::utils::Transform;
 
