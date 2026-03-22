@@ -18,7 +18,8 @@ use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::resources::{
     BackendOutputRegistry, CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock,
     GlobalPointerPosition, PendingBackendInputEvents, PendingPlatformInputEvents,
-    PendingProtocolInputEvents, PendingScreenshotRequests, PresentAuditState,
+    PendingProtocolInputEvents, PendingScreenshotRequests, PlatformImportDiagnosticsState,
+    PresentAuditState,
     PresentSurfaceSnapshotState, PrimaryOutputState, RenderSurfaceRole, RenderSurfaceSnapshot,
     ShellRenderInput, SurfacePresentationRole, SurfacePresentationSnapshot,
     VirtualOutputCaptureState, WaylandFeedback, WaylandIngress,
@@ -95,6 +96,7 @@ pub(crate) struct BackendPresentState<'w, 's> {
     compiled_frames: Res<'w, CompiledOutputFrames>,
     pending_screenshot_requests: ResMut<'w, PendingScreenshotRequests>,
     completed_screenshots: ResMut<'w, CompletedScreenshotFrames>,
+    import_diagnostics: Option<ResMut<'w, PlatformImportDiagnosticsState>>,
     present_audit: ResMut<'w, PresentAuditState>,
     surface_registry: Option<NonSend<'w, ProtocolSurfaceRegistry>>,
     virtual_output_capture: ResMut<'w, VirtualOutputCaptureState>,
@@ -133,6 +135,7 @@ impl NekolandPlugin for BackendWaylandSubAppPlugin {
         app.insert_non_send_resource(manager)
             .init_resource::<BackendStatus>()
             .init_resource::<BackendPresentInputs>()
+            .init_resource::<PlatformImportDiagnosticsState>()
             .init_resource::<ProtocolDmabufSupport>()
             .init_resource::<PendingBackendInputEvents>()
             .init_resource::<PendingProtocolInputEvents>()
@@ -291,11 +294,17 @@ pub(crate) fn backend_present_system(
         compiled_frames,
         mut pending_screenshot_requests,
         mut completed_screenshots,
+        import_diagnostics,
         mut present_audit,
         surface_registry,
         mut virtual_output_capture,
         ..
     } = state;
+
+    let mut import_diagnostics = import_diagnostics;
+    if let Some(diagnostics) = import_diagnostics.as_deref_mut() {
+        diagnostics.clear();
+    }
 
     let mut ctx = BackendPresentCtx {
         config: config.as_deref(),
@@ -308,6 +317,7 @@ pub(crate) fn backend_present_system(
         surfaces: &present_surfaces.surfaces,
         surface_registry: surface_registry.as_deref(),
         virtual_output_capture: Some(&mut virtual_output_capture),
+        import_diagnostics: import_diagnostics.as_deref_mut(),
     };
 
     let (frame, uptime_millis) = clock
@@ -329,12 +339,14 @@ fn sync_backend_wayland_feedback_system(
     pending_screenshot_requests: Res<'_, PendingScreenshotRequests>,
     completed_screenshots: Res<'_, CompletedScreenshotFrames>,
     backend_status: Res<'_, BackendStatus>,
+    import_diagnostics: Res<'_, PlatformImportDiagnosticsState>,
     output_presentation: Res<'_, OutputPresentationState>,
     present_audit: Res<'_, PresentAuditState>,
     virtual_output_capture: Res<'_, VirtualOutputCaptureState>,
     mut wayland_feedback: ResMut<'_, WaylandFeedback>,
 ) {
     wayland_feedback.platform_backends = backend_status.platform_state();
+    wayland_feedback.import_diagnostics = import_diagnostics.clone();
     wayland_feedback.pending_screenshot_requests = pending_screenshot_requests.clone();
     wayland_feedback.completed_screenshots = completed_screenshots.clone();
     wayland_feedback.output_presentation = output_presentation.clone();
@@ -697,14 +709,16 @@ mod tests {
     };
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, CompiledOutputFrames, CompletedScreenshotFrames,
-        CompositorClock, OutputDamageRegions, OutputExecutionPlan, OutputProcessPlan,
-        OutputRenderPlan, PendingBackendInputEvents, PendingPlatformInputEvents,
-        PendingProtocolInputEvents, PendingScreenshotRequests, PresentAuditState,
-        PresentSurfaceSnapshotState, RenderItemId, RenderItemIdentity, RenderItemInstance,
-        RenderMaterialFrameState, RenderPassGraph, RenderPassId, RenderPassNode, RenderPlan,
-        RenderPlanItem, RenderProcessPlan, RenderRect, RenderSceneRole, RenderSourceId,
-        RenderTargetId, RenderTargetKind, SurfacePresentationSnapshot, SurfacePresentationState,
-        SurfaceRenderItem, VirtualOutputCaptureState, WaylandIngress,
+        CompositorClock, OutputDamageRegions, OutputExecutionPlan, OutputPresentationState,
+        OutputProcessPlan, OutputRenderPlan, PendingBackendInputEvents,
+        PendingPlatformInputEvents, PendingProtocolInputEvents, PendingScreenshotRequests,
+        PlatformImportDiagnostic, PlatformImportDiagnosticsState, PlatformImportFailureStage,
+        PresentAuditState, PresentSurfaceSnapshotState, RenderItemId, RenderItemIdentity,
+        RenderItemInstance, RenderMaterialFrameState, RenderPassGraph, RenderPassId,
+        RenderPassNode, RenderPlan, RenderPlanItem, RenderProcessPlan, RenderRect,
+        RenderSceneRole, RenderSourceId, RenderTargetId, RenderTargetKind,
+        SurfacePresentationSnapshot, SurfacePresentationState, SurfaceRenderItem,
+        VirtualOutputCaptureState, WaylandFeedback, WaylandIngress,
     };
     use nekoland_protocol::ProtocolSeatDispatchSystems;
 
@@ -713,12 +727,13 @@ mod tests {
         BackendOutputMaterializationPlan, BackendOutputPropertyUpdate, PendingBackendOutputEvents,
         PendingBackendOutputUpdates,
     };
-    use crate::manager::{BackendManager, SharedBackendManager};
+    use crate::manager::{BackendManager, BackendStatus, SharedBackendManager};
 
     use super::{
         BackendPresentInputs, BackendPresentSystems, backend_present_system,
         clear_backend_frame_local_queues_system, sync_backend_present_inputs_system,
-        sync_backend_wayland_ingress_system, sync_platform_input_events_from_backend_inputs_system,
+        sync_backend_wayland_feedback_system, sync_backend_wayland_ingress_system,
+        sync_platform_input_events_from_backend_inputs_system,
     };
 
     fn identity(id: u64) -> RenderItemIdentity {
@@ -880,6 +895,42 @@ mod tests {
                 device: "seat-0".to_owned(),
                 action: BackendInputAction::PointerMoved { x: 128.0, y: 64.0 },
             }]
+        );
+    }
+
+    #[test]
+    fn backend_feedback_mirrors_import_diagnostics_into_wayland_feedback() {
+        let mut app = App::new();
+        install_core_schedules(&mut app);
+        app.init_resource::<PendingScreenshotRequests>()
+            .init_resource::<CompletedScreenshotFrames>()
+            .init_resource::<BackendStatus>()
+            .init_resource::<PlatformImportDiagnosticsState>()
+            .init_resource::<OutputPresentationState>()
+            .init_resource::<PresentAuditState>()
+            .init_resource::<VirtualOutputCaptureState>()
+            .init_resource::<WaylandFeedback>()
+            .add_systems(PresentSchedule, sync_backend_wayland_feedback_system);
+
+        app.world_mut().resource_mut::<PlatformImportDiagnosticsState>().entries.push(
+            PlatformImportDiagnostic {
+                output_name: "DP-1".to_owned(),
+                surface_id: Some(44),
+                strategy: None,
+                stage: PlatformImportFailureStage::Present,
+                message: "backend advertised dma-buf import but present failed".to_owned(),
+            },
+        );
+
+        app.world_mut().run_schedule(PresentSchedule);
+
+        assert_eq!(
+            app.world().resource::<WaylandFeedback>().import_diagnostics.entries.len(),
+            1
+        );
+        assert_eq!(
+            app.world().resource::<WaylandFeedback>().import_diagnostics.entries[0].surface_id,
+            Some(44)
         );
     }
 

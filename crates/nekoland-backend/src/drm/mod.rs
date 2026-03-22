@@ -154,6 +154,7 @@ impl Backend for DrmRuntime {
             compiled_frames: cx.compiled_frames,
             pending_screenshot_requests: cx.pending_screenshot_requests,
             completed_screenshots: cx.completed_screenshots,
+            import_diagnostics: cx.import_diagnostics.as_deref_mut(),
             surface_registry: cx.surface_registry,
             session_state: &self.session_state,
             drm_shared: &self.device_state,

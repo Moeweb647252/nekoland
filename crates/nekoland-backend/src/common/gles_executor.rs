@@ -8,7 +8,7 @@ use nekoland_ecs::resources::{
     CompletedScreenshotFrames, CompositorClock, OutputExecutionPlan, OutputFinalTargetPlan,
     OutputPreparedGpuResources, OutputPreparedSceneResources, OutputProcessPlan,
     OutputTargetAllocationPlan, PendingScreenshotRequests, PreparedSceneItem, ProcessRect,
-    ProcessShaderKey, ProcessUniformBlock, ProcessUniformValue, RenderColor,
+    PlatformSurfaceImportStrategy, ProcessShaderKey, ProcessUniformBlock, ProcessUniformValue, RenderColor,
     RenderMaterialFrameState, RenderPassKind, RenderPassPayload, RenderRect,
     RenderTargetAllocationSpec, RenderTargetId, ScreenshotFrame,
 };
@@ -113,6 +113,11 @@ pub(crate) struct ExecutedOutputTexture {
 #[derive(Debug)]
 pub(crate) enum GlesExecutionError {
     Renderer(GlesError),
+    SurfaceImport {
+        surface_id: u64,
+        strategy: PlatformSurfaceImportStrategy,
+        source: GlesError,
+    },
     MissingExecutionTarget { target_id: RenderTargetId },
     MissingProcessShaderProgram { shader_key: ProcessShaderKey },
 }
@@ -121,6 +126,12 @@ impl Display for GlesExecutionError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Renderer(error) => write!(f, "{error}"),
+            Self::SurfaceImport { surface_id, strategy, source } => {
+                write!(
+                    f,
+                    "surface import failed for surface {surface_id} using {strategy:?}: {source}"
+                )
+            }
             Self::MissingExecutionTarget { target_id } => {
                 write!(
                     f,
@@ -138,6 +149,7 @@ impl Error for GlesExecutionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Renderer(error) => Some(error),
+            Self::SurfaceImport { source, .. } => Some(source),
             Self::MissingExecutionTarget { .. } | Self::MissingProcessShaderProgram { .. } => None,
         }
     }
@@ -643,7 +655,11 @@ pub(crate) fn prepare_output_surface_imports(
         let Some(surface) = surface_registry.surface(surface_id) else {
             continue;
         };
-        import_surface_tree(renderer, surface)?;
+        import_surface_tree(renderer, surface).map_err(|source| GlesExecutionError::SurfaceImport {
+            surface_id,
+            strategy: prepared_import.descriptor.import_strategy,
+            source,
+        })?;
         state.surface_imports.insert(
             surface_id,
             CachedSurfaceImport {

@@ -7,7 +7,7 @@ use nekoland_ecs::components::{OutputDevice, OutputId, OutputProperties};
 use nekoland_ecs::resources::{
     CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock, GlobalPointerPosition,
     PendingBackendInputEvents, PendingProtocolInputEvents, PendingScreenshotRequests,
-    RenderSurfaceSnapshot, VirtualOutputCaptureState,
+    PlatformImportDiagnosticsState, RenderSurfaceSnapshot, VirtualOutputCaptureState,
 };
 use nekoland_protocol::{
     ProtocolDmabufSupport, ProtocolSurfaceRegistry, resources::PendingOutputPresentationEvents,
@@ -139,6 +139,7 @@ pub struct BackendPresentCtx<'a> {
     pub surfaces: &'a std::collections::BTreeMap<u64, RenderSurfaceSnapshot>,
     pub surface_registry: Option<&'a ProtocolSurfaceRegistry>,
     pub virtual_output_capture: Option<&'a mut VirtualOutputCaptureState>,
+    pub import_diagnostics: Option<&'a mut PlatformImportDiagnosticsState>,
 }
 
 /// Constrained shutdown context. It currently exists to make the runtime contract explicit even

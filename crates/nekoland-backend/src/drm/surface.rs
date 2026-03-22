@@ -4,7 +4,7 @@ use drm_fourcc::DrmFourcc;
 use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::resources::{
     CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock, DamageRect,
-    OutputDamageRegions, PendingScreenshotRequests, RenderRect,
+    OutputDamageRegions, PendingScreenshotRequests, PlatformImportDiagnosticsState, RenderRect,
 };
 use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags};
@@ -56,6 +56,7 @@ pub(crate) struct DrmPresentCtx<'a> {
     pub compiled_frames: &'a CompiledOutputFrames,
     pub pending_screenshot_requests: &'a mut PendingScreenshotRequests,
     pub completed_screenshots: &'a mut CompletedScreenshotFrames,
+    pub import_diagnostics: Option<&'a mut PlatformImportDiagnosticsState>,
     pub surface_registry: Option<&'a ProtocolSurfaceRegistry>,
     pub session_state: &'a SharedDrmSessionState,
     pub drm_shared: &'a SharedDrmState,
@@ -71,6 +72,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         compiled_frames,
         pending_screenshot_requests,
         completed_screenshots,
+        mut import_diagnostics,
         surface_registry,
         session_state,
         drm_shared,
@@ -189,6 +191,21 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
                 error = %error,
                 "failed to import DRM wayland surfaces"
             );
+            if let Some(diagnostics) = import_diagnostics.as_deref_mut() {
+                match &error {
+                    crate::common::gles_executor::GlesExecutionError::SurfaceImport {
+                        surface_id,
+                        strategy,
+                        ..
+                    } => diagnostics.push_surface_import_failure(
+                        connector_info.name.clone(),
+                        *surface_id,
+                        *strategy,
+                        error.to_string(),
+                    ),
+                    _ => diagnostics.push_present_failure(connector_info.name.clone(), error.to_string()),
+                }
+            }
             continue;
         }
         let Some(executed) = execute_output_graph(
@@ -211,6 +228,9 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         )
         .map_err(|error| {
             tracing::warn!(connector = %connector_info.name, error = %error, "failed to execute DRM render graph");
+            if let Some(diagnostics) = import_diagnostics.as_deref_mut() {
+                diagnostics.push_present_failure(connector_info.name.clone(), error.to_string());
+            }
             error
         })
         .ok()

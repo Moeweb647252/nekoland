@@ -494,6 +494,24 @@ impl Backend for WinitRuntime {
                     error = %error,
                     "failed to import wayland surfaces for winit output"
                 );
+                if let Some(diagnostics) = cx.import_diagnostics.as_deref_mut() {
+                    match &error {
+                        crate::common::gles_executor::GlesExecutionError::SurfaceImport {
+                            surface_id,
+                            strategy,
+                            ..
+                        } => diagnostics.push_surface_import_failure(
+                            output.device.name.clone(),
+                            *surface_id,
+                            *strategy,
+                            error.to_string(),
+                        ),
+                        _ => diagnostics.push_present_failure(
+                            output.device.name.clone(),
+                            error.to_string(),
+                        ),
+                    }
+                }
                 return Ok(());
             }
             let executed = match execute_output_graph(
@@ -521,6 +539,10 @@ impl Backend for WinitRuntime {
                         error = %error,
                         "failed to execute render graph for winit output"
                     );
+                    if let Some(diagnostics) = cx.import_diagnostics.as_deref_mut() {
+                        diagnostics
+                            .push_present_failure(output.device.name.clone(), error.to_string());
+                    }
                     return Ok(());
                 }
             };

@@ -8,8 +8,8 @@ use crate::resources::{
     PendingOutputServerRequests, PendingPlatformInputEvents, PendingPopupServerRequests,
     PendingProtocolInputEvents, PendingScreenshotRequests, PendingWindowControls,
     PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests, PlatformBackendState,
-    PlatformImportCapabilities, PlatformOutputMaterializationPlan, PlatformSurfaceSnapshotState,
-    PresentAuditState, PrimaryOutputState, PrimarySelectionState, ProtocolServerState,
+    PlatformImportCapabilities, PlatformImportDiagnosticsState, PlatformOutputMaterializationPlan,
+    PlatformSurfaceSnapshotState, PresentAuditState, PrimaryOutputState, PrimarySelectionState, ProtocolServerState,
     SurfacePresentationSnapshot, VirtualOutputCaptureState,
     XWaylandServerState,
 };
@@ -58,6 +58,7 @@ pub struct WaylandCommands {
 #[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct WaylandFeedback {
     pub platform_backends: PlatformBackendState,
+    pub import_diagnostics: PlatformImportDiagnosticsState,
     pub clipboard_selection: ClipboardSelectionState,
     pub drag_and_drop: DragAndDropState,
     pub primary_selection: PrimarySelectionState,

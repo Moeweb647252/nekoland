@@ -13,7 +13,7 @@ runtime without reopening the architectural boundary work that has already lande
 
 - [x] Add end-to-end verification for dma-buf / external-texture import on real DRM/GBM-capable
       backends instead of relying only on unit tests and nested/virtual smoke paths
-- [ ] Capture and document at least one real-hardware validation path for non-SHM imports,
+- [x] Capture and document at least one real-hardware validation path for non-SHM imports,
       including failure reporting when a backend advertises import capability but import/present
       still fails at runtime
 

@@ -434,6 +434,7 @@ fn sync_wayland_feedback_mailbox_system(
 ) {
     *wayland_feedback = WaylandFeedback {
         platform_backends: wayland_feedback.platform_backends.clone(),
+        import_diagnostics: wayland_feedback.import_diagnostics.clone(),
         clipboard_selection: clipboard_selection.clone(),
         drag_and_drop: drag_and_drop.clone(),
         primary_selection: primary_selection.clone(),
