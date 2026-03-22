@@ -34,7 +34,7 @@ runtime without reopening the architectural boundary work that has already lande
 
 ### 4. Broader Integration Coverage
 
-- [ ] Add heavier integration and soak coverage for long-running sessions, multi-output
+- [x] Add heavier integration and soak coverage for long-running sessions, multi-output
       presentation, and backend combinations beyond the current smoke/test matrix
 - [x] Add targeted regression coverage for non-SHM import paths so external-texture / dma-buf
       behavior stays exercised after future backend/render refactors

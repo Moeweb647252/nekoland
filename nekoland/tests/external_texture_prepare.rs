@@ -5,13 +5,15 @@ use std::collections::BTreeMap;
 use nekoland::build_app;
 use nekoland_core::prelude::RenderSubApp;
 use nekoland_ecs::bundles::WindowBundle;
-use nekoland_ecs::components::{OutputId, SurfaceGeometry, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow};
+use nekoland_ecs::components::{
+    OutputId, SurfaceGeometry, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
+};
 use nekoland_ecs::resources::{
     CompiledOutputFrames, OutputGeometrySnapshot, OutputSnapshotState, PlatformDmabufFormat,
     PlatformSurfaceBufferSource, PlatformSurfaceImportStrategy, PlatformSurfaceKind,
     PlatformSurfaceSnapshot, PlatformSurfaceSnapshotState, PreparedGpuResources, ShellRenderInput,
     SurfacePresentationRole, SurfacePresentationSnapshot, SurfacePresentationState,
-    WaylandIngress, WindowStackingState, UNASSIGNED_WORKSPACE_STACK_ID,
+    UNASSIGNED_WORKSPACE_STACK_ID, WaylandIngress, WindowStackingState,
 };
 use smithay::backend::allocator::{Fourcc, Modifier};
 
@@ -23,8 +25,10 @@ const TEST_OUTPUT_ID: OutputId = OutputId(7);
 #[test]
 fn render_subapp_prepares_external_texture_imports_from_mailboxes() {
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-external-texture-prepare");
-    let config_path =
-        common::write_default_config_with_xwayland_disabled(&runtime_dir.path, "external-texture.toml");
+    let config_path = common::write_default_config_with_xwayland_disabled(
+        &runtime_dir.path,
+        "external-texture.toml",
+    );
     let mut app = build_app(config_path);
 
     {
@@ -96,7 +100,8 @@ fn render_subapp_prepares_external_texture_imports_from_mailboxes() {
     }
 
     {
-        let mut render_subapp = app.inner_mut().remove_sub_app(RenderSubApp).expect("render subapp");
+        let mut render_subapp =
+            app.inner_mut().remove_sub_app(RenderSubApp).expect("render subapp");
         render_subapp.extract(app.inner_mut().world_mut());
         render_subapp.update();
         app.inner_mut().insert_sub_app(RenderSubApp, render_subapp);
