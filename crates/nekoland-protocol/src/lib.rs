@@ -28,9 +28,11 @@ use nekoland_core::bridge::{EventBridge, WaylandBridge};
 use nekoland_ecs::components::{LayerAnchor, LayerLevel, LayerMargins, X11WindowType};
 use nekoland_ecs::kinds::ProtocolEvent as ProtocolEventKind;
 use nekoland_ecs::resources::{
-    LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec, OutputEventRecord,
-    PendingLayerRequests, PendingOutputEvents, PendingWindowControls, PendingX11Requests,
-    PendingXdgRequests, PopupPlacement, ResizeEdges, SurfaceExtent, WindowLifecycleAction,
+    ClipboardSelection, ClipboardSelectionState, DragAndDropDrop, DragAndDropSession,
+    DragAndDropState, LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec,
+    OutputEventRecord, PendingLayerRequests, PendingOutputEvents, PendingWindowControls,
+    PendingX11Requests, PendingXdgRequests, PopupPlacement, PrimarySelection,
+    PrimarySelectionState, ResizeEdges, SelectionOwner, SurfaceExtent, WindowLifecycleAction,
     WindowLifecycleRequest, X11LifecycleAction, X11LifecycleRequest, X11WindowGeometry,
     XdgSurfaceRole,
 };
@@ -38,16 +40,9 @@ use nekoland_ecs::selectors::SurfaceId;
 use serde::{Deserialize, Serialize};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
-use crate::resources::{
-    ClipboardSelection, ClipboardSelectionState, DragAndDropDrop, DragAndDropSession,
-    DragAndDropState, PrimarySelection, PrimarySelectionState, SelectionOwner,
-};
-
 pub use nekoland_ecs::resources::{ProtocolServerState, XWaylandServerState};
-pub use plugin::{
-    ProtocolCursorImage, ProtocolCursorState, ProtocolDmabufSupport, ProtocolPlugin,
-    ProtocolSeatDispatchSystems,
-};
+pub use plugin::server::{ProtocolCursorImage, ProtocolCursorState, ProtocolDmabufSupport};
+pub use plugin::{ProtocolPlugin, ProtocolSeatDispatchSystems};
 pub use subapp::{
     WaylandSubAppPlugin, configure_wayland_subapp, extract_wayland_subapp_inputs,
     sync_wayland_subapp_back,
@@ -267,7 +262,7 @@ mod tests {
     use nekoland_core::bridge::WaylandBridge;
     use nekoland_ecs::resources::PendingWindowControls;
 
-    use crate::resources::{
+    use nekoland_ecs::resources::{
         ClipboardSelectionState, DragAndDropState, PendingLayerRequests, PendingOutputEvents,
         PendingX11Requests, PendingXdgRequests, PrimarySelectionState,
     };

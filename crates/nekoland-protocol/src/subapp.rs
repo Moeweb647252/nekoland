@@ -1,5 +1,10 @@
-use crate::resources::{
-    ClipboardSelectionState, DragAndDropState, PendingOutputEvents, PrimarySelectionState,
+use crate::plugin::feedback::WorkspaceVisibilitySnapshot;
+use crate::plugin::server::{
+    ForeignToplevelSnapshot, ForeignToplevelSnapshotState, ProtocolDmabufSupport,
+};
+use crate::plugin::{
+    ProtocolSeatDispatchSystems, bootstrap, feedback, queue, seat, selection, server, surface,
+    xwayland,
 };
 use bevy_app::{App, SubApp};
 use bevy_ecs::prelude::{Res, ResMut, Resource};
@@ -13,13 +18,14 @@ use nekoland_core::app::{
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule, ProtocolSchedule};
 use nekoland_ecs::resources::{
-    CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock, CursorImageSnapshot,
-    FramePacingState, GlobalPointerPosition, KeyboardFocusState, OutputPresentationState,
-    OutputSnapshotState, PendingLayerRequests, PendingOutputControls, PendingOutputOverlayControls,
+    ClipboardSelectionState, CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock,
+    CursorImageSnapshot, DragAndDropState, FramePacingState, GlobalPointerPosition,
+    KeyboardFocusState, OutputPresentationState, OutputSnapshotState, PendingLayerRequests,
+    PendingOutputControls, PendingOutputEvents, PendingOutputOverlayControls,
     PendingOutputServerRequests, PendingPlatformInputEvents, PendingPopupServerRequests,
     PendingProtocolInputEvents, PendingWindowControls, PendingWindowServerRequests,
     PendingX11Requests, PendingXdgRequests, PlatformSurfaceSnapshotState, PresentAuditState,
-    PrimaryOutputState, ProtocolServerState, RenderPlan, ShellRenderInput,
+    PrimaryOutputState, PrimarySelectionState, ProtocolServerState, RenderPlan, ShellRenderInput,
     SurfaceContentVersionSnapshot, SurfacePresentationSnapshot, VirtualOutputCaptureState,
     WaylandCommands, WaylandFeedback, WaylandIngress, XWaylandServerState,
 };
@@ -34,10 +40,10 @@ pub struct WaylandSubAppPlugin;
 
 impl NekolandPlugin for WaylandSubAppPlugin {
     fn build(&self, app: &mut App) {
-        crate::plugin::bootstrap_protocol_runtime_in_subapp(app);
+        bootstrap::bootstrap_protocol_runtime_in_subapp(app);
 
         app.init_resource::<crate::ProtocolState>()
-            .init_resource::<crate::ProtocolDmabufSupport>()
+            .init_resource::<ProtocolDmabufSupport>()
             .init_resource::<WaylandCommands>()
             .init_resource::<CompiledOutputFrames>()
             .init_resource::<ProtocolServerState>()
@@ -52,9 +58,9 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             .init_resource::<OutputSnapshotState>()
             .init_resource::<PlatformSurfaceSnapshotState>()
             .init_resource::<SurfaceContentVersionSnapshot>()
-            .init_resource::<crate::plugin::ForeignToplevelSnapshotState>()
+            .init_resource::<ForeignToplevelSnapshotState>()
             .init_resource::<RenderPlan>()
-            .init_resource::<crate::plugin::WorkspaceVisibilitySnapshot>()
+            .init_resource::<WorkspaceVisibilitySnapshot>()
             .init_resource::<PendingXdgRequests>()
             .init_resource::<PendingLayerRequests>()
             .init_resource::<PendingX11Requests>()
@@ -75,7 +81,7 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             .init_resource::<WaylandFeedback>()
             .add_systems(
                 ExtractSchedule,
-                crate::plugin::advance_compositor_clock_system
+                bootstrap::advance_compositor_clock_system
                     .in_set(WaylandExtractSystems)
                     .after(WaylandPollSystems),
             )
@@ -88,13 +94,13 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             .add_systems(
                 ProtocolSchedule,
                 (
-                    crate::plugin::sync_protocol_dmabuf_support_system,
-                    crate::plugin::sync_keyboard_repeat_config_system,
-                    crate::plugin::sync_keyboard_layout_config_system,
-                    crate::plugin::sync_protocol_server_state_system,
-                    crate::plugin::sync_xwayland_server_state_system,
-                    crate::plugin::sync_protocol_cursor_state_system,
-                    crate::plugin::sync_protocol_output_timing_system,
+                    server::sync_protocol_dmabuf_support_system,
+                    server::sync_keyboard_repeat_config_system,
+                    server::sync_keyboard_layout_config_system,
+                    server::sync_protocol_server_state_system,
+                    xwayland::sync_xwayland_server_state_system,
+                    server::sync_protocol_cursor_state_system,
+                    server::sync_protocol_output_timing_system,
                 )
                     .chain()
                     .in_set(WaylandNormalizeSystems),
@@ -102,14 +108,14 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             .add_systems(
                 ProtocolSchedule,
                 (
-                    crate::plugin::dispatch_xwayland_runtime_system,
-                    crate::plugin::dispatch_window_server_requests_system,
-                    crate::plugin::dispatch_popup_server_requests_system,
-                    crate::plugin::process_selection_persistence_system,
-                    crate::plugin::collect_smithay_callbacks_system,
-                    crate::plugin::sync_protocol_surface_registry_system,
-                    crate::plugin::sync_platform_surface_snapshot_state_system,
-                    crate::plugin::flush_protocol_queue_system,
+                    xwayland::dispatch_xwayland_runtime_system,
+                    xwayland::dispatch_window_server_requests_system,
+                    xwayland::dispatch_popup_server_requests_system,
+                    selection::process_selection_persistence_system,
+                    server::collect_smithay_callbacks_system,
+                    surface::sync_protocol_surface_registry_system,
+                    surface::sync_platform_surface_snapshot_state_system,
+                    queue::flush_protocol_queue_system,
                 )
                     .chain()
                     .in_set(WaylandApplySystems),
@@ -121,13 +127,12 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             .add_systems(
                 PresentSchedule,
                 (
-                    crate::plugin::dispatch_seat_input_system
-                        .in_set(crate::plugin::ProtocolSeatDispatchSystems)
+                    seat::dispatch_seat_input_system
+                        .in_set(ProtocolSeatDispatchSystems)
                         .in_set(WaylandPresentSystems),
-                    crate::plugin::sync_foreign_toplevel_list_system.in_set(WaylandPresentSystems),
-                    crate::plugin::sync_workspace_visibility_system.in_set(WaylandPresentSystems),
-                    crate::plugin::dispatch_surface_frame_callbacks_system
-                        .in_set(WaylandPresentSystems),
+                    server::sync_foreign_toplevel_list_system.in_set(WaylandPresentSystems),
+                    feedback::sync_workspace_visibility_system.in_set(WaylandPresentSystems),
+                    feedback::dispatch_surface_frame_callbacks_system.in_set(WaylandPresentSystems),
                     sync_wayland_feedback_mailbox_system.in_set(WaylandFeedbackSystems),
                 )
                     .chain(),
@@ -221,13 +226,13 @@ fn extract_foreign_toplevel_snapshot(main_world: &mut World, wayland_world: &mut
             window.role.is_managed()
                 && window.x11_window.is_none_or(|x11_window| !x11_window.is_helper_surface())
         })
-        .map(|window| crate::plugin::ForeignToplevelSnapshot {
+        .map(|window| ForeignToplevelSnapshot {
             surface_id: window.surface_id(),
             title: window.window.title.clone(),
             app_id: window.window.app_id.clone(),
         })
         .collect();
-    wayland_world.insert_resource(crate::plugin::ForeignToplevelSnapshotState { windows });
+    wayland_world.insert_resource(ForeignToplevelSnapshotState { windows });
 }
 
 fn extract_workspace_visibility_snapshot(main_world: &mut World, wayland_world: &mut World) {
@@ -337,7 +342,7 @@ fn extract_workspace_visibility_snapshot(main_world: &mut World, wayland_world: 
         .map(|(popup, _)| popup.surface_id())
         .collect::<std::collections::BTreeSet<_>>();
 
-    wayland_world.insert_resource(crate::plugin::WorkspaceVisibilitySnapshot {
+    wayland_world.insert_resource(WorkspaceVisibilitySnapshot {
         active_workspace,
         visible_toplevels,
         visible_popups,
@@ -360,7 +365,7 @@ fn extract_surface_content_versions_snapshot(main_world: &mut World, wayland_wor
 fn sync_wayland_ingress_mailbox_system(
     protocol_server: Res<'_, ProtocolServerState>,
     xwayland_server: Res<'_, XWaylandServerState>,
-    dmabuf_support: Option<Res<'_, crate::ProtocolDmabufSupport>>,
+    dmabuf_support: Option<Res<'_, ProtocolDmabufSupport>>,
     primary_output: Res<'_, PrimaryOutputState>,
     cursor_image: Res<'_, CursorImageSnapshot>,
     platform_input_events: Res<'_, PendingPlatformInputEvents>,
@@ -389,9 +394,7 @@ fn sync_wayland_ingress_mailbox_system(
         pending_output_events: pending_output_events.clone(),
         output_materialization,
         import_capabilities: nekoland_ecs::resources::PlatformImportCapabilities {
-            dmabuf_importable: dmabuf_support
-                .as_deref()
-                .is_some_and(|support| support.importable),
+            dmabuf_importable: dmabuf_support.as_deref().is_some_and(|support| support.importable),
         },
     };
 }
@@ -457,19 +460,18 @@ mod tests {
     };
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, ClipboardSelection, ClipboardSelectionState,
-        CompiledOutputFrames,
-        CompletedScreenshotFrames, CompositorClock, CursorImageSnapshot, DragAndDropDrop,
-        DragAndDropSession, DragAndDropState, OutputGeometrySnapshot, OutputPresentationState,
-        OutputPresentationTimeline, OutputSnapshotState, PendingLayerRequests,
-        PendingOutputControls, PendingOutputEvents, PendingOutputOverlayControls,
-        PendingOutputServerRequests, PendingPopupServerRequests, PendingProtocolInputEvents,
-        PendingScreenshotRequests, PendingWindowControls, PendingWindowServerRequests,
-        PendingX11Requests, PendingXdgRequests, PlatformSurfaceKind, PlatformSurfaceSnapshot,
-        PlatformSurfaceSnapshotState, PresentAuditElement, PresentAuditElementKind,
-        PresentAuditState, PrimaryOutputState, PrimarySelection, PrimarySelectionState,
-        ProtocolServerState, ScreenshotFrame, SelectionOwner, VirtualOutputCaptureState,
-        VirtualOutputElement, VirtualOutputElementKind, VirtualOutputFrame, WaylandCommands,
-        WaylandFeedback, WaylandIngress, XWaylandServerState,
+        CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock, CursorImageSnapshot,
+        DragAndDropDrop, DragAndDropSession, DragAndDropState, OutputGeometrySnapshot,
+        OutputPresentationState, OutputPresentationTimeline, OutputSnapshotState,
+        PendingLayerRequests, PendingOutputControls, PendingOutputEvents,
+        PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
+        PendingProtocolInputEvents, PendingScreenshotRequests, PendingWindowControls,
+        PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests, PlatformSurfaceKind,
+        PlatformSurfaceSnapshot, PlatformSurfaceSnapshotState, PresentAuditElement,
+        PresentAuditElementKind, PresentAuditState, PrimaryOutputState, PrimarySelection,
+        PrimarySelectionState, ProtocolServerState, ScreenshotFrame, SelectionOwner,
+        VirtualOutputCaptureState, VirtualOutputElement, VirtualOutputElementKind,
+        VirtualOutputFrame, WaylandCommands, WaylandFeedback, WaylandIngress, XWaylandServerState,
     };
 
     use super::{WaylandSubAppPlugin, configure_wayland_subapp, sync_wayland_subapp_back};
@@ -804,10 +806,7 @@ mod tests {
             *sub_app.world().resource::<PendingPopupServerRequests>(),
             main_world.resource::<WaylandCommands>().pending_popup_server_requests
         );
-        assert_eq!(
-            *sub_app.world().resource::<PendingOutputControls>(),
-            pending_output_controls
-        );
+        assert_eq!(*sub_app.world().resource::<PendingOutputControls>(), pending_output_controls);
         assert_eq!(
             *sub_app.world().resource::<PendingOutputOverlayControls>(),
             pending_output_overlay_controls

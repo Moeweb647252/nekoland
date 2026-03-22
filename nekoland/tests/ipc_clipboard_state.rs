@@ -12,8 +12,7 @@ use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::components::{WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::resources::{
-    BackendInputAction, BackendInputEvent, CompositorClock, KeyboardFocusState,
-    WaylandCommands,
+    BackendInputAction, BackendInputEvent, CompositorClock, KeyboardFocusState, WaylandCommands,
 };
 use nekoland_ipc::commands::{ClipboardSnapshot, QueryCommand, SelectionOwnerSnapshot};
 use nekoland_ipc::{

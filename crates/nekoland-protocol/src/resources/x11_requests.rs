@@ -2,7 +2,7 @@ use nekoland_ecs::components::X11WindowType;
 use nekoland_ecs::kinds::ProtocolEventQueue;
 use serde::{Deserialize, Serialize};
 
-use crate::resources::{ResizeEdges, SurfaceExtent};
+use nekoland_ecs::resources::{ResizeEdges, SurfaceExtent};
 /// Geometry reported for one X11 window.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct X11WindowGeometry {

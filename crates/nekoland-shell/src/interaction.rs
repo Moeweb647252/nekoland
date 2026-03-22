@@ -232,7 +232,7 @@ fn resize_geometry(
 mod tests {
     use nekoland_ecs::components::WindowSceneGeometry;
     use nekoland_ecs::resources::GlobalPointerPosition;
-    use nekoland_protocol::resources::ResizeEdges;
+    use nekoland_ecs::resources::ResizeEdges;
 
     use super::{WindowGrabMode, WindowGrabState, geometry_for_pointer};
 

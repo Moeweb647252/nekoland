@@ -82,10 +82,7 @@ impl PlatformSurfaceSnapshotState {
     }
 
     pub fn import_strategy(&self, surface_id: u64) -> PlatformSurfaceImportStrategy {
-        self.surfaces
-            .get(&surface_id)
-            .map(|snapshot| snapshot.import_strategy)
-            .unwrap_or_default()
+        self.surfaces.get(&surface_id).map(|snapshot| snapshot.import_strategy).unwrap_or_default()
     }
 
     pub fn scale(&self, surface_id: u64) -> i32 {

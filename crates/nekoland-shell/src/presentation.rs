@@ -126,7 +126,7 @@ mod tests {
         OutputBackgroundWindow, OutputId, WindowLayout, WindowRestoreState, WindowRole,
         WindowSceneGeometry, WlSurfaceHandle, X11Window,
     };
-    use nekoland_protocol::resources::{
+    use nekoland_ecs::resources::{
         PendingWindowServerRequests, SurfaceExtent, WindowServerAction, X11WindowGeometry,
     };
 

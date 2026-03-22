@@ -447,12 +447,12 @@ mod tests {
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
+    use nekoland_ecs::resources::PendingInputEvents;
     use nekoland_ecs::resources::{
         CommandHistoryState, CompositorClock, KeyboardFocusState, PendingExternalCommandRequests,
         PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
         ProtocolServerState, WaylandIngress, XWaylandServerState,
     };
-    use nekoland_protocol::resources::PendingInputEvents;
 
     use super::{StartupActionState, startup_action_queue_system};
 

@@ -53,11 +53,7 @@ fn startup_registers_protocol_globals_and_runtime_state() {
         "startup should either publish a Wayland socket or record why binding failed: {server_state:?}"
     );
     assert!(
-        wayland_ingress
-            .output_snapshots
-            .outputs
-            .iter()
-            .all(|output| !output.name.is_empty()),
+        wayland_ingress.output_snapshots.outputs.iter().all(|output| !output.name.is_empty()),
         "startup output snapshots should use non-empty names when they exist: {:?}",
         wayland_ingress.output_snapshots.outputs
     );

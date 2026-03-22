@@ -10,11 +10,11 @@ use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::components::{WlSurfaceHandle, XdgWindow};
+use nekoland_ecs::resources::PrimarySelectionState;
 use nekoland_ecs::resources::{
-    BackendInputAction, BackendInputEvent, CompositorClock, KeyboardFocusState,
-    WaylandCommands, WaylandFeedback,
+    BackendInputAction, BackendInputEvent, CompositorClock, KeyboardFocusState, WaylandCommands,
+    WaylandFeedback,
 };
-use nekoland_protocol::resources::PrimarySelectionState;
 use nekoland_shell::decorations;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};

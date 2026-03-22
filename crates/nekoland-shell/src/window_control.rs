@@ -272,8 +272,8 @@ mod tests {
         EntityIndex, KeyboardFocusState, PendingWindowControls, WaylandIngress,
         WindowStackingState, WorkArea, WorkspaceTilingState, rebuild_entity_index_system,
     };
+    use nekoland_ecs::resources::{PendingWindowServerRequests, WindowServerAction};
     use nekoland_ecs::selectors::SurfaceId;
-    use nekoland_protocol::resources::{PendingWindowServerRequests, WindowServerAction};
 
     use crate::layout::{floating::floating_layout_system, tiling::tiling_layout_system};
 

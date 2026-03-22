@@ -5,11 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::OutputId;
 use crate::resources::{
-    MaterialParamsId, PlatformDmabufFormat, PlatformSurfaceBufferSource, PlatformSurfaceImportStrategy,
-    PlatformSurfaceKind, RenderBindGroupLayoutKey, RenderColor, RenderItemId,
-    RenderMaterialDescriptor, RenderMaterialId,
+    MaterialParamsId, PlatformDmabufFormat, PlatformSurfaceBufferSource,
+    PlatformSurfaceImportStrategy, PlatformSurfaceKind, ProcessShaderKey, RenderBindGroupLayoutKey,
+    RenderColor, RenderItemId, RenderMaterialDescriptor, RenderMaterialId,
     RenderMaterialParamBlock, RenderRect, RenderTargetId, RenderTargetKind,
-    ProcessShaderKey,
 };
 
 #[derive(Resource, Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

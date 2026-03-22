@@ -506,10 +506,8 @@ impl Backend for WinitRuntime {
                             *strategy,
                             error.to_string(),
                         ),
-                        _ => diagnostics.push_present_failure(
-                            output.device.name.clone(),
-                            error.to_string(),
-                        ),
+                        _ => diagnostics
+                            .push_present_failure(output.device.name.clone(), error.to_string()),
                     }
                 }
                 return Ok(());

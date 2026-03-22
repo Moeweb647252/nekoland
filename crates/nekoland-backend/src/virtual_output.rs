@@ -227,8 +227,8 @@ mod tests {
     use bevy_app::App;
     use nekoland_config::resources::{CompositorConfig, ConfiguredOutput};
     use nekoland_ecs::components::{OutputDevice, OutputId, OutputKind, OutputProperties};
+    use nekoland_ecs::resources::PendingOutputPresentationEvents;
     use nekoland_ecs::resources::{PendingBackendInputEvents, PendingProtocolInputEvents};
-    use nekoland_protocol::resources::PendingOutputPresentationEvents;
 
     use crate::common::outputs::{PendingBackendOutputEvents, PendingBackendOutputUpdates};
     use crate::traits::{BackendOutputId, OutputSnapshot};

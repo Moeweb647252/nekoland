@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use bevy_ecs::prelude::{Res, ResMut};
 use nekoland_ecs::components::{OutputId, OutputProperties};
-use nekoland_protocol::resources::{
+use nekoland_ecs::resources::{
     OutputPresentationEventRecord, OutputPresentationState, OutputPresentationTimeline,
     PendingOutputPresentationEvents,
 };

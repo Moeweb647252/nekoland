@@ -203,7 +203,8 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
                         *strategy,
                         error.to_string(),
                     ),
-                    _ => diagnostics.push_present_failure(connector_info.name.clone(), error.to_string()),
+                    _ => diagnostics
+                        .push_present_failure(connector_info.name.clone(), error.to_string()),
                 }
             }
             continue;

@@ -17,12 +17,10 @@ use nekoland_ecs::components::{
 };
 use nekoland_ecs::resources::{
     CommandHistoryState, CompositorClock, GlobalPointerPosition, KeyboardFocusState, ModifierMask,
-};
-use nekoland_input::InputPlugin;
-use nekoland_protocol::resources::{
     PendingXdgRequests, SurfaceExtent, WindowLifecycleAction, WindowLifecycleRequest,
     XdgSurfaceRole,
 };
+use nekoland_input::InputPlugin;
 use nekoland_shell::ShellPlugin;
 
 /// Baseline config loaded before the runtime rewrite.

@@ -762,7 +762,7 @@ mod tests {
         EntityIndex, GlobalPointerPosition, KeyboardFocusState, PrimaryOutputState,
         WindowStackingState, WorkArea, rebuild_entity_index_system,
     };
-    use nekoland_protocol::resources::{
+    use nekoland_ecs::resources::{
         PendingPopupServerRequests, PendingX11Requests, ResizeEdges, X11LifecycleAction,
         X11LifecycleRequest, X11WindowGeometry,
     };

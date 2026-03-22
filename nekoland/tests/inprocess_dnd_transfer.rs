@@ -15,12 +15,12 @@ use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::components::{SurfaceGeometry, WlSurfaceHandle, XdgWindow};
+use nekoland_ecs::resources::DragAndDropState;
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, CompositorClock, GlobalPointerPosition,
     KeyboardFocusState, PendingWindowControls, WaylandCommands, WaylandFeedback,
 };
 use nekoland_ecs::selectors::SurfaceId;
-use nekoland_protocol::resources::DragAndDropState;
 use nekoland_shell::decorations;
 use tempfile::tempfile;
 use wayland_client::protocol::{

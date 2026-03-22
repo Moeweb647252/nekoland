@@ -10,7 +10,6 @@ pub mod virtual_output;
 pub mod winit;
 
 pub use manager::{BackendStatus, SharedBackendManager};
-pub use plugin::{
-    BackendPlugin, BackendWaylandSubAppPlugin, extract_backend_wayland_subapp_inputs,
-};
+pub use plugin::extract::extract_backend_wayland_subapp_inputs;
+pub use plugin::{BackendPlugin, BackendWaylandSubAppPlugin};
 pub use winit::backend::WinitWindowState;

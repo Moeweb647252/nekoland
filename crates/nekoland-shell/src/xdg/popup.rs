@@ -267,9 +267,9 @@ mod tests {
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::components::{SurfaceGeometry, WlSurfaceHandle, XdgWindow};
-    use nekoland_ecs::resources::{EntityIndex, rebuild_entity_index_system};
-    use nekoland_protocol::resources::{
-        PendingXdgRequests, PopupPlacement, WindowLifecycleAction, WindowLifecycleRequest,
+    use nekoland_ecs::resources::{
+        EntityIndex, PendingXdgRequests, PopupPlacement, WindowLifecycleAction,
+        WindowLifecycleRequest, rebuild_entity_index_system,
     };
 
     use super::{popup_management_system, popup_projection_system};

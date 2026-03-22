@@ -19,17 +19,17 @@ use nekoland_config::{
 };
 use nekoland_core::lifecycle::AppLifecycleState;
 use nekoland_ecs::control::{OutputControlApi, WindowControlApi, WorkspaceControlApi};
+use nekoland_ecs::resources::SelectionOwner;
 use nekoland_ecs::resources::{
     CommandExecutionStatus, CommandHistoryState, CompositorClock, EntityIndex,
-    ExternalCommandRequest, KeyboardFocusState, OutputOverlayId,
-    PendingExternalCommandRequests, PendingOutputControls, PendingPopupServerRequests,
-    PendingWindowControls, PendingWorkspaceControls, PopupServerAction, PopupServerRequest,
-    PresentAuditElementKind, RenderColor, RenderPlan, RenderPlanItem, RenderRect, WaylandFeedback,
+    ExternalCommandRequest, KeyboardFocusState, OutputOverlayId, PendingExternalCommandRequests,
+    PendingOutputControls, PendingPopupServerRequests, PendingWindowControls,
+    PendingWorkspaceControls, PopupServerAction, PopupServerRequest, PresentAuditElementKind,
+    RenderColor, RenderPlan, RenderPlanItem, RenderRect, WaylandFeedback,
 };
 use nekoland_ecs::selectors::{
     OutputName, SurfaceId, WorkspaceLookup, WorkspaceName, WorkspaceSelector,
 };
-use nekoland_protocol::resources::SelectionOwner;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::query::{
@@ -567,10 +567,14 @@ pub(crate) fn refresh_query_cache_system(
         entity_index,
     } = inputs;
 
-    let connected_output_names =
-        outputs.iter().map(|output| output.device.name.clone()).collect::<std::collections::BTreeSet<_>>();
-    let enabled_output_names =
-        outputs.iter().map(|output| output.device.name.clone()).collect::<std::collections::BTreeSet<_>>();
+    let connected_output_names = outputs
+        .iter()
+        .map(|output| output.device.name.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let enabled_output_names = outputs
+        .iter()
+        .map(|output| output.device.name.clone())
+        .collect::<std::collections::BTreeSet<_>>();
     let mut output_snapshots = outputs
         .iter()
         .map(|output| OutputSnapshot {
@@ -1549,13 +1553,13 @@ mod tests {
         BufferState, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode, WlSurfaceHandle,
         Workspace, WorkspaceId, XdgWindow,
     };
+    use nekoland_ecs::resources::PendingPopupServerRequests;
     use nekoland_ecs::resources::SplitAxis;
     use nekoland_ecs::resources::{
         CompositorClock, EntityIndex, KeyboardFocusState, PendingExternalCommandRequests,
         PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
         PresentAuditElement, PresentAuditElementKind, RenderPlan, WaylandFeedback,
     };
-    use nekoland_protocol::resources::PendingPopupServerRequests;
 
     use super::{
         IpcRequestDispatchCtx, RequestDisposition, refresh_query_cache_system, reply_for_request,

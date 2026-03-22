@@ -7,9 +7,9 @@ use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
     CompletedScreenshotFrames, CompositorClock, OutputExecutionPlan, OutputFinalTargetPlan,
     OutputPreparedGpuResources, OutputPreparedSceneResources, OutputProcessPlan,
-    OutputTargetAllocationPlan, PendingScreenshotRequests, PreparedSceneItem, ProcessRect,
-    PlatformSurfaceImportStrategy, ProcessShaderKey, ProcessUniformBlock, ProcessUniformValue, RenderColor,
-    RenderMaterialFrameState, RenderPassKind, RenderPassPayload, RenderRect,
+    OutputTargetAllocationPlan, PendingScreenshotRequests, PlatformSurfaceImportStrategy,
+    PreparedSceneItem, ProcessRect, ProcessShaderKey, ProcessUniformBlock, ProcessUniformValue,
+    RenderColor, RenderMaterialFrameState, RenderPassKind, RenderPassPayload, RenderRect,
     RenderTargetAllocationSpec, RenderTargetId, ScreenshotFrame,
 };
 use nekoland_protocol::ProtocolSurfaceRegistry;
@@ -113,11 +113,7 @@ pub(crate) struct ExecutedOutputTexture {
 #[derive(Debug)]
 pub(crate) enum GlesExecutionError {
     Renderer(GlesError),
-    SurfaceImport {
-        surface_id: u64,
-        strategy: PlatformSurfaceImportStrategy,
-        source: GlesError,
-    },
+    SurfaceImport { surface_id: u64, strategy: PlatformSurfaceImportStrategy, source: GlesError },
     MissingExecutionTarget { target_id: RenderTargetId },
     MissingProcessShaderProgram { shader_key: ProcessShaderKey },
 }
@@ -186,16 +182,15 @@ pub(crate) fn execute_output_graph(
     let output_rect = Rectangle::from_size(output_size);
     let output_scale = output.properties.scale.max(1);
 
-    let output_cache = state
-        .outputs
-        .get_mut(&output.output_id)
-        .ok_or(GlesExecutionError::MissingExecutionTarget {
+    let output_cache = state.outputs.get_mut(&output.output_id).ok_or(
+        GlesExecutionError::MissingExecutionTarget {
             target_id: execution
                 .ordered_passes
                 .iter()
                 .find_map(|pass_id| execution.passes.get(pass_id).map(|pass| pass.output_target))
                 .unwrap_or(RenderTargetId(0)),
-        })?;
+        },
+    )?;
 
     for pass_id in execution.reachable_passes_in_order() {
         let Some(pass) = execution.passes.get(&pass_id) else {
@@ -204,12 +199,9 @@ pub(crate) fn execute_output_graph(
 
         match pass.kind {
             RenderPassKind::Scene => {
-                let target = output_cache
-                    .targets
-                    .get_mut(&pass.output_target)
-                    .ok_or(GlesExecutionError::MissingExecutionTarget {
-                        target_id: pass.output_target,
-                    })?;
+                let target = output_cache.targets.get_mut(&pass.output_target).ok_or(
+                    GlesExecutionError::MissingExecutionTarget { target_id: pass.output_target },
+                )?;
                 let built = build_scene_pass_elements(
                     renderer,
                     prepared_scene,
@@ -312,7 +304,12 @@ pub(crate) fn prepare_output_graph_process_shaders(
     prepared_gpu: Option<&OutputPreparedGpuResources>,
     process_plan: &OutputProcessPlan,
 ) -> Result<(), GlesExecutionError> {
-    prewarm_process_shader_programs(renderer, &mut state.process_shaders, prepared_gpu, process_plan)
+    prewarm_process_shader_programs(
+        renderer,
+        &mut state.process_shaders,
+        prepared_gpu,
+        process_plan,
+    )
 }
 
 pub(crate) fn final_output_texture_element(
@@ -643,22 +640,29 @@ pub(crate) fn prepare_output_surface_imports(
     surface_registry: &ProtocolSurfaceRegistry,
 ) -> Result<(), GlesExecutionError> {
     let importable = importable_surface_imports(prepared_scene, prepared_gpu);
-    let needed_surface_ids = importable.iter().map(|prepared_import| prepared_import.surface_id).collect::<BTreeSet<_>>();
+    let needed_surface_ids = importable
+        .iter()
+        .map(|prepared_import| prepared_import.surface_id)
+        .collect::<BTreeSet<_>>();
     state.surface_imports.retain(|surface_id, _| needed_surface_ids.contains(surface_id));
 
     for prepared_import in importable {
-        if !needs_surface_reimport(state.surface_imports.get(&prepared_import.surface_id), &prepared_import)
-        {
+        if !needs_surface_reimport(
+            state.surface_imports.get(&prepared_import.surface_id),
+            &prepared_import,
+        ) {
             continue;
         }
         let surface_id = prepared_import.surface_id;
         let Some(surface) = surface_registry.surface(surface_id) else {
             continue;
         };
-        import_surface_tree(renderer, surface).map_err(|source| GlesExecutionError::SurfaceImport {
-            surface_id,
-            strategy: prepared_import.descriptor.import_strategy,
-            source,
+        import_surface_tree(renderer, surface).map_err(|source| {
+            GlesExecutionError::SurfaceImport {
+                surface_id,
+                strategy: prepared_import.descriptor.import_strategy,
+                source,
+            }
         })?;
         state.surface_imports.insert(
             surface_id,
@@ -714,12 +718,9 @@ fn execute_process_units_for_pass(
         let Some(source_texture) = source_texture else {
             continue;
         };
-        let target = output_cache
-            .targets
-            .get_mut(&unit.output.target_id)
-            .ok_or(GlesExecutionError::MissingExecutionTarget {
-                target_id: unit.output.target_id,
-            })?;
+        let target = output_cache.targets.get_mut(&unit.output.target_id).ok_or(
+            GlesExecutionError::MissingExecutionTarget { target_id: unit.output.target_id },
+        )?;
         execute_process_unit(
             renderer,
             shaders,

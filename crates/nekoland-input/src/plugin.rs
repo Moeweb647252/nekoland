@@ -70,12 +70,12 @@ mod tests {
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::InputSchedule;
     use nekoland_ecs::events::{KeyPress, PointerMotion};
+    use nekoland_ecs::resources::PendingInputEvents;
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, CompositorClock, FocusedOutputState,
         GlobalPointerPosition, ModifierState, OutputGeometrySnapshot, OutputSnapshotState,
         PressedKeys, WaylandIngress,
     };
-    use nekoland_protocol::resources::PendingInputEvents;
 
     use super::InputPlugin;
     use crate::seat_manager;

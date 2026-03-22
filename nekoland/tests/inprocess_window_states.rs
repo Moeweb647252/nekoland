@@ -24,16 +24,16 @@ use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, FramePacingState, GlobalPointerPosition,
     KeyboardFocusState, RenderPlan, RenderPlanItem, WaylandCommands, WorkArea,
 };
+use nekoland_ecs::resources::{
+    PendingPopupServerRequests, PendingWindowServerRequests, PopupServerAction, PopupServerRequest,
+    WindowServerAction, WindowServerRequest,
+};
 use nekoland_ipc::commands::{
     PopupCommand, QueryCommand, TreeSnapshot, WindowCommand, WorkspaceCommand,
 };
 use nekoland_ipc::{
     IpcCommand, IpcReply, IpcRequest, IpcServerState, IpcSubscription, IpcSubscriptionEvent,
     SubscriptionTopic, send_request_to_path, subscribe_to_path,
-};
-use nekoland_protocol::resources::{
-    PendingPopupServerRequests, PendingWindowServerRequests, PopupServerAction, PopupServerRequest,
-    WindowServerAction, WindowServerRequest,
 };
 use nekoland_shell::decorations;
 use tempfile::tempfile;

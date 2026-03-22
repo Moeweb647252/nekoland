@@ -111,8 +111,7 @@ fn real_drm_backend_imports_dmabuf_surface_end_to_end() {
         Err(error) => panic!("protocol startup failed before run: {error}"),
     };
 
-    let client_thread =
-        thread::spawn(move || run_dmabuf_client(&socket_path, &render_node_path));
+    let client_thread = thread::spawn(move || run_dmabuf_client(&socket_path, &render_node_path));
 
     if let Err(error) = app.run() {
         let message = error.to_string();
@@ -133,7 +132,9 @@ fn real_drm_backend_imports_dmabuf_surface_end_to_end() {
                 eprintln!("skipping real DRM dma-buf import test: {reason}");
                 return;
             }
-            Err(common::TestControl::Fail(reason)) => panic!("real DRM dma-buf client failed: {reason}"),
+            Err(common::TestControl::Fail(reason)) => {
+                panic!("real DRM dma-buf client failed: {reason}")
+            }
         },
         Err(_) => panic!("real DRM dma-buf client thread should exit cleanly"),
     };
@@ -143,10 +144,8 @@ fn real_drm_backend_imports_dmabuf_surface_end_to_end() {
 
     let surface_id = {
         let world = app.inner_mut().world_mut();
-        let mut windows = world.query_filtered::<
-            &WlSurfaceHandle,
-            bevy_ecs::query::With<XdgWindow>,
-        >();
+        let mut windows =
+            world.query_filtered::<&WlSurfaceHandle, bevy_ecs::query::With<XdgWindow>>();
         let Some(surface) = windows.iter(world).next() else {
             panic!("dma-buf client should produce an XdgWindow entity");
         };
@@ -158,11 +157,10 @@ fn real_drm_backend_imports_dmabuf_surface_end_to_end() {
         ingress.import_capabilities.dmabuf_importable,
         "real DRM backend should advertise dma-buf import capability"
     );
-    let surface_snapshot = ingress
-        .surface_snapshots
-        .surfaces
-        .get(&surface_id)
-        .unwrap_or_else(|| panic!("surface snapshot should exist for imported dma-buf surface {surface_id}"));
+    let surface_snapshot =
+        ingress.surface_snapshots.surfaces.get(&surface_id).unwrap_or_else(|| {
+            panic!("surface snapshot should exist for imported dma-buf surface {surface_id}")
+        });
     assert_eq!(surface_snapshot.buffer_source, PlatformSurfaceBufferSource::DmaBuf);
     assert_ne!(surface_snapshot.import_strategy, PlatformSurfaceImportStrategy::Unsupported);
     assert!(
@@ -176,13 +174,17 @@ fn real_drm_backend_imports_dmabuf_surface_end_to_end() {
         .values()
         .filter_map(|frame| frame.gpu_prep.as_ref())
         .find_map(|gpu_prep| gpu_prep.surface_imports.get(&surface_id))
-        .unwrap_or_else(|| panic!("compiled frame should carry prepared import for surface {surface_id}"));
+        .unwrap_or_else(|| {
+            panic!("compiled frame should carry prepared import for surface {surface_id}")
+        });
     assert_eq!(prepared_import.descriptor.buffer_source, PlatformSurfaceBufferSource::DmaBuf);
     assert_ne!(prepared_import.strategy, PreparedSurfaceImportStrategy::Unsupported);
 
     let present_audit = &app.inner().world().resource::<WaylandFeedback>().present_audit;
     if present_audit.outputs.is_empty() {
-        eprintln!("skipping real DRM dma-buf import test: DRM backend reported no active present outputs");
+        eprintln!(
+            "skipping real DRM dma-buf import test: DRM backend reported no active present outputs"
+        );
         return;
     }
     assert!(
@@ -221,9 +223,7 @@ fn discover_render_node() -> Result<PathBuf, common::TestControl> {
         return Ok(path);
     }
 
-    Err(common::TestControl::Skip(
-        "no DRM render node found under /dev/dri".to_owned(),
-    ))
+    Err(common::TestControl::Skip("no DRM render node found under /dev/dri".to_owned()))
 }
 
 fn run_dmabuf_client(
@@ -302,16 +302,16 @@ fn create_dmabuf_buffer_params(
     render_node_path: &Path,
     qh: &QueueHandle<DmabufClientState>,
 ) -> Result<zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1, common::TestControl> {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(render_node_path)
-        .map_err(|error| common::TestControl::Skip(format!(
-            "failed to open DRM render node {}: {error}",
-            render_node_path.display()
-        )))?;
-    let gbm = GbmDevice::new(file)
-        .map_err(|error| common::TestControl::Skip(format!("failed to create GBM device: {error}")))?;
+    let file =
+        OpenOptions::new().read(true).write(true).open(render_node_path).map_err(|error| {
+            common::TestControl::Skip(format!(
+                "failed to open DRM render node {}: {error}",
+                render_node_path.display()
+            ))
+        })?;
+    let gbm = GbmDevice::new(file).map_err(|error| {
+        common::TestControl::Skip(format!("failed to create GBM device: {error}"))
+    })?;
     let mut allocator = GbmAllocator::new(
         gbm,
         GbmBufferFlags::RENDERING | GbmBufferFlags::LINEAR | GbmBufferFlags::WRITE,
@@ -324,7 +324,9 @@ fn create_dmabuf_buffer_params(
             &[Modifier::Linear, Modifier::Invalid],
             GbmBufferFlags::RENDERING | GbmBufferFlags::LINEAR | GbmBufferFlags::WRITE,
         )
-        .map_err(|error| common::TestControl::Skip(format!("failed to allocate GBM buffer: {error}")))?;
+        .map_err(|error| {
+            common::TestControl::Skip(format!("failed to allocate GBM buffer: {error}"))
+        })?;
 
     let stride = buffer.pitch() as usize;
     let mut pixels = vec![0_u8; stride * TEST_HEIGHT as usize];
@@ -338,16 +340,18 @@ fn create_dmabuf_buffer_params(
         common::TestControl::Fail(format!("failed to write GBM dma-buf backing memory: {error}"))
     })?;
 
-    let dmabuf_handle = buffer
-        .export()
-        .map_err(|error| common::TestControl::Fail(format!("failed to export GBM buffer as dma-buf: {error}")))?;
+    let dmabuf_handle = buffer.export().map_err(|error| {
+        common::TestControl::Fail(format!("failed to export GBM buffer as dma-buf: {error}"))
+    })?;
     let offsets = dmabuf_handle.offsets().collect::<Vec<_>>();
     let strides = dmabuf_handle.strides().collect::<Vec<_>>();
     let plane_fds = dmabuf_handle
         .handles()
         .map(|fd| fd.try_clone_to_owned())
         .collect::<Result<Vec<OwnedFd>, _>>()
-        .map_err(|error| common::TestControl::Fail(format!("failed to duplicate dma-buf fd: {error}")))?;
+        .map_err(|error| {
+            common::TestControl::Fail(format!("failed to duplicate dma-buf fd: {error}"))
+        })?;
     let modifier = u64::from(dmabuf_handle.format().modifier);
     let params = dmabuf.create_params(qh, ());
     for (plane_idx, fd) in plane_fds.iter().enumerate() {
@@ -453,14 +457,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for DmabufClientState {
                     state.maybe_init_toplevel(qh);
                 }
                 "zwp_linux_dmabuf_v1" => {
-                    state.dmabuf = Some(
-                        registry.bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, _, _>(
+                    state.dmabuf =
+                        Some(registry.bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, _, _>(
                             name,
                             version.min(5),
                             qh,
                             (),
-                        ),
-                    );
+                        ));
                 }
                 _ => {}
             }

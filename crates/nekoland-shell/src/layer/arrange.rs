@@ -496,9 +496,9 @@ mod tests {
         LayerShellSurface, OutputDevice, OutputKind, OutputProperties, SurfaceGeometry,
         WlSurfaceHandle,
     };
-    use nekoland_ecs::resources::{PrimaryOutputState, WorkArea, register_entity_index_hooks};
-    use nekoland_protocol::resources::{
+    use nekoland_ecs::resources::{
         LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec, PendingLayerRequests,
+        PrimaryOutputState, WorkArea, register_entity_index_hooks,
     };
 
     use super::{

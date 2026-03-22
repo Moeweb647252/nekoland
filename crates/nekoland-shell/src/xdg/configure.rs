@@ -329,9 +329,9 @@ mod tests {
         BufferState, SurfaceGeometry, WindowAnimation, WindowFullscreenTarget, WindowLayout,
         WindowMode, WindowRestoreSnapshot, WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
     };
-    use nekoland_ecs::resources::{EntityIndex, GlobalPointerPosition, KeyboardFocusState};
-    use nekoland_protocol::resources::{
-        PendingXdgRequests, WindowLifecycleAction, WindowLifecycleRequest,
+    use nekoland_ecs::resources::{
+        EntityIndex, GlobalPointerPosition, KeyboardFocusState, PendingXdgRequests,
+        WindowLifecycleAction, WindowLifecycleRequest,
     };
 
     use crate::interaction::ActiveWindowGrab;

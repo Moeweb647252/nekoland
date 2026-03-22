@@ -9,8 +9,8 @@ use crate::resources::{
     PendingProtocolInputEvents, PendingScreenshotRequests, PendingWindowControls,
     PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests, PlatformBackendState,
     PlatformImportCapabilities, PlatformImportDiagnosticsState, PlatformOutputMaterializationPlan,
-    PlatformSurfaceSnapshotState, PresentAuditState, PrimaryOutputState, PrimarySelectionState, ProtocolServerState,
-    SurfacePresentationSnapshot, VirtualOutputCaptureState,
+    PlatformSurfaceSnapshotState, PresentAuditState, PrimaryOutputState, PrimarySelectionState,
+    ProtocolServerState, SurfacePresentationSnapshot, VirtualOutputCaptureState,
     XWaylandServerState,
 };
 

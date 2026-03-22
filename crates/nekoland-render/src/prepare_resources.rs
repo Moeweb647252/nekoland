@@ -5,14 +5,12 @@ use nekoland_ecs::components::WlSurfaceHandle;
 use nekoland_ecs::resources::{
     CursorRenderSource, OutputPreparedGpuResources, OutputPreparedSceneResources,
     OutputTargetAllocationPlan, PlatformSurfaceImportStrategy, PlatformSurfaceSnapshotState,
-    PreparedBackdropSceneItem, PreparedGpuResources,
-    PreparedMaterialBinding,
+    PreparedBackdropSceneItem, PreparedGpuResources, PreparedMaterialBinding,
     PreparedMaterialBindingKey, PreparedNamedCursorSceneItem, PreparedRenderTargetResource,
     PreparedSceneItem, PreparedSceneResources, PreparedSolidRectSceneItem,
     PreparedSurfaceCursorSceneItem, PreparedSurfaceImport, PreparedSurfaceImportStrategy,
     PreparedSurfaceSceneItem, RenderMaterialFrameState, RenderPassGraph, RenderPlan,
-    RenderProcessPlan,
-    RenderTargetAllocationPlan, RenderTargetAllocationSpec, ShellRenderInput,
+    RenderProcessPlan, RenderTargetAllocationPlan, RenderTargetAllocationSpec, ShellRenderInput,
     SurfaceBufferAttachmentSnapshot, SurfaceBufferAttachmentState, SurfaceTextureBridgePlan,
     SurfaceTextureImportDescriptor,
 };
@@ -87,7 +85,8 @@ pub fn build_surface_texture_bridge_plan_system(
             let Some(surface_id) = item.surface_id() else {
                 continue;
             };
-            let state = surface_presentation.and_then(|snapshot| snapshot.surfaces.get(&surface_id));
+            let state =
+                surface_presentation.and_then(|snapshot| snapshot.surfaces.get(&surface_id));
             let buffer = buffer_state.surfaces.get(&surface_id).copied().unwrap_or_default();
             let descriptor =
                 surfaces.entry(surface_id).or_insert_with(|| SurfaceTextureImportDescriptor {
@@ -367,17 +366,17 @@ mod tests {
     use nekoland_ecs::components::OutputId;
     use nekoland_ecs::resources::{
         CursorRenderSource, MaterialParamsId, OutputExecutionPlan, OutputProcessPlan,
-        OutputRenderPlan, PlatformSurfaceBufferSource,
-        PlatformSurfaceKind, PlatformSurfaceSnapshot, PlatformSurfaceSnapshotState,
-        PreparedGpuResources, PreparedSceneItem, ProcessInputRef, ProcessShaderKey,
-        ProcessTargetRef, ProcessUniformBlock, ProcessUnit, ProcessUnitId, RenderColor,
-        RenderItemId, RenderItemIdentity, RenderItemInstance, RenderMaterialDescriptor,
-        RenderMaterialFrameState, RenderMaterialId, RenderMaterialKind, RenderMaterialParamBlock,
-        RenderMaterialPipelineKey, RenderMaterialQueueKind, RenderMaterialShaderSource,
-        RenderPassGraph, RenderPlan, RenderPlanItem, RenderProcessPlan, RenderRect,
-        RenderSceneRole, RenderSourceId, RenderTargetId, RenderTargetKind, ShellRenderInput,
-        SolidRectRenderItem, SurfacePresentationRole,
-        SurfacePresentationSnapshot, SurfacePresentationState, SurfaceRenderItem,
+        OutputRenderPlan, PlatformSurfaceBufferSource, PlatformSurfaceKind,
+        PlatformSurfaceSnapshot, PlatformSurfaceSnapshotState, PreparedGpuResources,
+        PreparedSceneItem, ProcessInputRef, ProcessShaderKey, ProcessTargetRef,
+        ProcessUniformBlock, ProcessUnit, ProcessUnitId, RenderColor, RenderItemId,
+        RenderItemIdentity, RenderItemInstance, RenderMaterialDescriptor, RenderMaterialFrameState,
+        RenderMaterialId, RenderMaterialKind, RenderMaterialParamBlock, RenderMaterialPipelineKey,
+        RenderMaterialQueueKind, RenderMaterialShaderSource, RenderPassGraph, RenderPlan,
+        RenderPlanItem, RenderProcessPlan, RenderRect, RenderSceneRole, RenderSourceId,
+        RenderTargetId, RenderTargetKind, ShellRenderInput, SolidRectRenderItem,
+        SurfacePresentationRole, SurfacePresentationSnapshot, SurfacePresentationState,
+        SurfaceRenderItem,
     };
 
     use crate::compositor_render::{RenderViewSnapshot, RenderViewState};
@@ -487,7 +486,8 @@ mod tests {
                     kind: PlatformSurfaceKind::Toplevel,
                     buffer_source: nekoland_ecs::resources::PlatformSurfaceBufferSource::Shm,
                     dmabuf_format: None,
-                    import_strategy: nekoland_ecs::resources::PlatformSurfaceImportStrategy::ShmUpload,
+                    import_strategy:
+                        nekoland_ecs::resources::PlatformSurfaceImportStrategy::ShmUpload,
                     attached: true,
                     scale: 2,
                     content_version: 3,
@@ -553,8 +553,12 @@ mod tests {
         );
         let _ = prepared;
 
-        world.resource_mut::<SurfaceTextureBridgePlan>().surfaces.get_mut(&11).unwrap().import_strategy =
-            nekoland_ecs::resources::PlatformSurfaceImportStrategy::DmaBufImport;
+        world
+            .resource_mut::<SurfaceTextureBridgePlan>()
+            .surfaces
+            .get_mut(&11)
+            .unwrap()
+            .import_strategy = nekoland_ecs::resources::PlatformSurfaceImportStrategy::DmaBufImport;
         let _ = system.run((), &mut world);
 
         let prepared = world.resource::<PreparedGpuResources>();
@@ -563,7 +567,12 @@ mod tests {
             nekoland_ecs::resources::PreparedSurfaceImportStrategy::DmaBufImport
         );
 
-        world.resource_mut::<SurfaceTextureBridgePlan>().surfaces.get_mut(&11).unwrap().import_strategy =
+        world
+            .resource_mut::<SurfaceTextureBridgePlan>()
+            .surfaces
+            .get_mut(&11)
+            .unwrap()
+            .import_strategy =
             nekoland_ecs::resources::PlatformSurfaceImportStrategy::ExternalTextureImport;
         let _ = system.run((), &mut world);
 
@@ -631,10 +640,7 @@ mod tests {
         let descriptor = &bridge.surfaces[&11];
         assert_eq!(
             descriptor.dmabuf_format,
-            Some(nekoland_ecs::resources::PlatformDmabufFormat {
-                code: 875713112,
-                modifier: 0,
-            })
+            Some(nekoland_ecs::resources::PlatformDmabufFormat { code: 875713112, modifier: 0 })
         );
         assert_eq!(
             descriptor.import_strategy,

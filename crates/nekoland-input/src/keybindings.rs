@@ -675,8 +675,8 @@ mod tests {
     use nekoland_ecs::resources::SplitAxis;
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, CompositorClock, KeyboardFocusState,
-        PendingBackendInputEvents, PendingExternalCommandRequests, PendingOutputControls,
-        PendingWindowControls, PendingWorkspaceControls, WorkspaceControl,
+        PendingExternalCommandRequests, PendingOutputControls, PendingPlatformInputEvents,
+        PendingWindowControls, PendingWorkspaceControls, WaylandIngress, WorkspaceControl,
     };
     use nekoland_ecs::selectors::{OutputName, SurfaceId, WorkspaceLookup};
 
@@ -700,12 +700,15 @@ mod tests {
         ]));
 
         app.inner_mut().world_mut().resource_mut::<KeyboardFocusState>().focused_surface = Some(77);
-        app.inner_mut().insert_resource(PendingBackendInputEvents::from_items(vec![
-            key_event(SUPER_KEYCODE, true),
-            key_event(Q_KEYCODE, true),
-            key_event(S_KEYCODE, true),
-            key_event(TWO_KEYCODE, true),
-        ]));
+        app.inner_mut().insert_resource(WaylandIngress {
+            platform_input_events: PendingPlatformInputEvents::from_items(vec![
+                key_event(SUPER_KEYCODE, true),
+                key_event(Q_KEYCODE, true),
+                key_event(S_KEYCODE, true),
+                key_event(TWO_KEYCODE, true),
+            ]),
+            ..WaylandIngress::default()
+        });
 
         app.inner_mut().world_mut().run_schedule(InputSchedule);
 
@@ -755,10 +758,13 @@ mod tests {
     fn viewport_keybinding_queues_focused_output_controls() {
         let mut app = test_app(config_with_bindings([("Super+H", pan_viewport(-40, 25))]));
 
-        app.inner_mut().insert_resource(PendingBackendInputEvents::from_items(vec![
-            key_event(SUPER_KEYCODE, true),
-            key_event(H_KEYCODE, true),
-        ]));
+        app.inner_mut().insert_resource(WaylandIngress {
+            platform_input_events: PendingPlatformInputEvents::from_items(vec![
+                key_event(SUPER_KEYCODE, true),
+                key_event(H_KEYCODE, true),
+            ]),
+            ..WaylandIngress::default()
+        });
 
         app.inner_mut().world_mut().run_schedule(InputSchedule);
 
@@ -789,10 +795,13 @@ mod tests {
         let mut app =
             test_app(config_with_bindings([("Super+B", background_focused_window("Virtual-1"))]));
         app.inner_mut().world_mut().resource_mut::<KeyboardFocusState>().focused_surface = Some(77);
-        app.inner_mut().insert_resource(PendingBackendInputEvents::from_items(vec![
-            key_event(SUPER_KEYCODE, true),
-            key_event(B_KEYCODE, true),
-        ]));
+        app.inner_mut().insert_resource(WaylandIngress {
+            platform_input_events: PendingPlatformInputEvents::from_items(vec![
+                key_event(SUPER_KEYCODE, true),
+                key_event(B_KEYCODE, true),
+            ]),
+            ..WaylandIngress::default()
+        });
 
         app.inner_mut().world_mut().run_schedule(InputSchedule);
 
@@ -812,10 +821,13 @@ mod tests {
     fn command_keybindings_queue_external_commands() {
         let mut app =
             test_app(config_with_bindings([("Super+Return", exec(["foot", "--server"]))]));
-        app.inner_mut().insert_resource(PendingBackendInputEvents::from_items(vec![
-            key_event(SUPER_KEYCODE, true),
-            key_event(RETURN_KEYCODE, true),
-        ]));
+        app.inner_mut().insert_resource(WaylandIngress {
+            platform_input_events: PendingPlatformInputEvents::from_items(vec![
+                key_event(SUPER_KEYCODE, true),
+                key_event(RETURN_KEYCODE, true),
+            ]),
+            ..WaylandIngress::default()
+        });
 
         app.inner_mut().world_mut().run_schedule(InputSchedule);
 
@@ -836,10 +848,13 @@ mod tests {
         let mut app = test_app(config_with_bindings([("Super+Q", close_focused_window())]));
 
         app.inner_mut().world_mut().resource_mut::<KeyboardFocusState>().focused_surface = Some(42);
-        app.inner_mut().insert_resource(PendingBackendInputEvents::from_items(vec![
-            key_event(SUPER_KEYCODE, true),
-            key_event(Q_KEYCODE, true),
-        ]));
+        app.inner_mut().insert_resource(WaylandIngress {
+            platform_input_events: PendingPlatformInputEvents::from_items(vec![
+                key_event(SUPER_KEYCODE, true),
+                key_event(Q_KEYCODE, true),
+            ]),
+            ..WaylandIngress::default()
+        });
         app.inner_mut().world_mut().run_schedule(InputSchedule);
 
         {
@@ -847,11 +862,14 @@ mod tests {
             world.resource_mut::<PendingWindowControls>().clear();
             world.resource_mut::<CompositorConfig>().keybindings =
                 config_with_bindings([("Super+W", switch_workspace("3"))]).keybindings;
-            world.insert_resource(PendingBackendInputEvents::from_items(vec![
-                key_event(SUPER_KEYCODE, true),
-                key_event(Q_KEYCODE, true),
-                key_event(W_KEYCODE, true),
-            ]));
+            world.insert_resource(WaylandIngress {
+                platform_input_events: PendingPlatformInputEvents::from_items(vec![
+                    key_event(SUPER_KEYCODE, true),
+                    key_event(Q_KEYCODE, true),
+                    key_event(W_KEYCODE, true),
+                ]),
+                ..WaylandIngress::default()
+            });
         }
 
         app.inner_mut().world_mut().run_schedule(InputSchedule);

@@ -9,8 +9,7 @@ use nekoland_ecs::presentation_logic::{
 };
 use nekoland_ecs::resources::{
     OutputRenderPlan, RenderItemInstance, RenderPlan, RenderRect, RenderSceneRole,
-    ShellRenderInput, SurfacePresentationRole, UNASSIGNED_WORKSPACE_STACK_ID,
-    WindowStackingState,
+    ShellRenderInput, SurfacePresentationRole, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
 };
 use nekoland_ecs::views::{
     LayerRenderRuntime, OutputRuntime, PopupRenderRuntime, WindowRenderRuntime, WorkspaceRuntime,
@@ -118,9 +117,8 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
         projection,
         mut scene_contributions,
     } = composition;
-    let surface_presentation = shell_render_input
-        .as_deref()
-        .map(|mailbox| &mailbox.surface_presentation);
+    let surface_presentation =
+        shell_render_input.as_deref().map(|mailbox| &mailbox.surface_presentation);
     let appearance = appearance.as_deref();
     let projection = projection.as_deref();
     let live_outputs = outputs.iter().map(|output| output.id()).collect::<Vec<_>>();
@@ -375,9 +373,8 @@ pub fn snapshot_desktop_surface_order_system(inputs: DesktopSurfaceOrderInputs<'
         shell_render_input,
         mut ordered_surfaces,
     } = inputs;
-    let surface_presentation = shell_render_input
-        .as_deref()
-        .map(|mailbox| &mailbox.surface_presentation);
+    let surface_presentation =
+        shell_render_input.as_deref().map(|mailbox| &mailbox.surface_presentation);
     let live_outputs = outputs.iter().map(|output| output.id()).collect::<Vec<_>>();
     let mut ordered = live_outputs
         .iter()

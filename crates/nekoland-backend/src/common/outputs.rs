@@ -18,8 +18,8 @@ use nekoland_ecs::resources::{
     OutputOverlayState, OutputServerAction, OutputServerRequest, OutputSnapshotState,
     PendingOutputControl, PendingOutputControls, PendingOutputOverlayControls,
     PendingOutputServerRequests, PlatformOutputBlueprint, PlatformOutputLifecycleChange,
-    PlatformOutputLifecycleRecord, PlatformOutputMaterializationPlan,
-    PlatformOutputPropertyUpdate, PrimaryOutputState, WaylandIngress,
+    PlatformOutputLifecycleRecord, PlatformOutputMaterializationPlan, PlatformOutputPropertyUpdate,
+    PrimaryOutputState, WaylandIngress,
 };
 use nekoland_ecs::selectors::OutputSelector;
 use nekoland_ecs::views::OutputRuntime;
@@ -967,8 +967,8 @@ mod tests {
     };
     use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
     use nekoland_ecs::resources::{
-        EntityIndex, FocusedOutputState, OutputOverlayId, OutputOverlayState,
-        OutputServerAction, OutputServerRequest, OutputSnapshotState, PendingOutputControls,
+        EntityIndex, FocusedOutputState, OutputOverlayId, OutputOverlayState, OutputServerAction,
+        OutputServerRequest, OutputSnapshotState, PendingOutputControls,
         PendingOutputOverlayControls, PendingOutputServerRequests, PlatformOutputBlueprint,
         PlatformOutputLifecycleChange, PlatformOutputLifecycleRecord,
         PlatformOutputMaterializationPlan, PlatformOutputPropertyUpdate, PrimaryOutputState,
@@ -1458,23 +1458,21 @@ mod tests {
             ))
             .id();
 
-        app.inner_mut()
-            .world_mut()
-            .resource_mut::<WaylandIngress>()
-            .output_materialization = PlatformOutputMaterializationPlan {
-            property_updates: vec![PlatformOutputPropertyUpdate {
-                backend_id: 7,
-                output_name: "Virtual-1".to_owned(),
-                local_id: "virtual-primary".to_owned(),
-                properties: OutputProperties {
-                    width: 2560,
-                    height: 1440,
-                    refresh_millihz: 59_940,
-                    scale: 2,
-                },
-            }],
-            ..Default::default()
-        };
+        app.inner_mut().world_mut().resource_mut::<WaylandIngress>().output_materialization =
+            PlatformOutputMaterializationPlan {
+                property_updates: vec![PlatformOutputPropertyUpdate {
+                    backend_id: 7,
+                    output_name: "Virtual-1".to_owned(),
+                    local_id: "virtual-primary".to_owned(),
+                    properties: OutputProperties {
+                        width: 2560,
+                        height: 1440,
+                        refresh_millihz: 59_940,
+                        scale: 2,
+                    },
+                }],
+                ..Default::default()
+            };
 
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 

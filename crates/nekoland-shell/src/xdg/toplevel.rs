@@ -505,11 +505,9 @@ mod tests {
     };
     use nekoland_ecs::events::{WindowClosed, WindowCreated};
     use nekoland_ecs::resources::{
-        EntityIndex, PrimaryOutputState, WorkArea, rebuild_entity_index_system,
-    };
-    use nekoland_protocol::resources::{
-        PendingPopupServerRequests, PendingXdgRequests, PopupServerAction, SurfaceExtent,
-        WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
+        EntityIndex, PendingPopupServerRequests, PendingXdgRequests, PopupServerAction,
+        PrimaryOutputState, SurfaceExtent, WindowLifecycleAction, WindowLifecycleRequest, WorkArea,
+        XdgSurfaceRole, rebuild_entity_index_system,
     };
 
     use super::toplevel_lifecycle_system;

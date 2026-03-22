@@ -294,6 +294,7 @@ mod tests {
     use nekoland_config::resources::CompositorConfig;
     use nekoland_ecs::components::OutputId;
     use nekoland_ecs::events::{PointerButton, PointerMotion};
+    use nekoland_ecs::resources::PendingInputEvents;
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, FocusedOutputState, GlobalPointerPosition,
         ModifierMask, OutputGeometrySnapshot, OutputSnapshotState, PendingOutputControls,
@@ -301,7 +302,6 @@ mod tests {
         ViewportPointerPanState, WaylandIngress,
     };
     use nekoland_ecs::selectors::OutputSelector;
-    use nekoland_protocol::resources::PendingInputEvents;
 
     use super::{
         cursor_motion_system, focused_output_tracking_system, pointer_input_system,

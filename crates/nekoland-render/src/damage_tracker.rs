@@ -561,10 +561,9 @@ mod tests {
             ]),
         };
         app.inner_mut().world_mut().insert_resource(surface_presentation.clone());
-        app.inner_mut().world_mut().insert_resource(ShellRenderInput {
-            surface_presentation,
-            ..Default::default()
-        });
+        app.inner_mut()
+            .world_mut()
+            .insert_resource(ShellRenderInput { surface_presentation, ..Default::default() });
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 
@@ -718,10 +717,9 @@ mod tests {
             )]),
         };
         app.inner_mut().world_mut().insert_resource(surface_presentation.clone());
-        app.inner_mut().world_mut().insert_resource(ShellRenderInput {
-            surface_presentation,
-            ..Default::default()
-        });
+        app.inner_mut()
+            .world_mut()
+            .insert_resource(ShellRenderInput { surface_presentation, ..Default::default() });
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
         app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();
@@ -806,10 +804,9 @@ mod tests {
             )]),
         };
         app.inner_mut().world_mut().insert_resource(surface_presentation.clone());
-        app.inner_mut().world_mut().insert_resource(ShellRenderInput {
-            surface_presentation,
-            ..Default::default()
-        });
+        app.inner_mut()
+            .world_mut()
+            .insert_resource(ShellRenderInput { surface_presentation, ..Default::default() });
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
         app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();
