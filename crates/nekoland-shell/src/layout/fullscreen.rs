@@ -2,11 +2,14 @@ use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::{Query, Res, With};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{WindowMode, XdgWindow};
-use nekoland_ecs::resources::{PrimaryOutputState, WorkArea};
+use nekoland_ecs::resources::{PrimaryOutputState, WaylandIngress, WorkArea};
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
-use crate::viewport::{resolve_output_state_for_window, resolve_output_state_for_workspace};
+use crate::viewport::{
+    preferred_primary_output_state, resolve_output_state_for_window,
+    resolve_output_state_for_workspace,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FullscreenLayout;
@@ -16,9 +19,12 @@ pub fn fullscreen_layout_system(
     outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
     mut windows: Query<WindowRuntime, With<XdgWindow>>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime), Allow<Disabled>>,
+    wayland_ingress: Option<Res<WaylandIngress>>,
     primary_output: Option<Res<PrimaryOutputState>>,
     work_area: Res<WorkArea>,
 ) {
+    let primary_output =
+        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
     for mut window in &mut windows {
         if !window.role.is_managed() {
             continue;
@@ -30,7 +36,7 @@ pub fn fullscreen_layout_system(
                     &outputs,
                     workspace_id,
                     Some(window.fullscreen_target.as_ref()),
-                    primary_output.as_deref(),
+                    primary_output,
                 ) else {
                     continue;
                 };
@@ -40,11 +46,8 @@ pub fn fullscreen_layout_system(
                 window.geometry.height = output.height.max(1);
             }
             WindowMode::Maximized => {
-                let output_state = resolve_output_state_for_workspace(
-                    &outputs,
-                    workspace_id,
-                    primary_output.as_deref(),
-                );
+                let output_state =
+                    resolve_output_state_for_workspace(&outputs, workspace_id, primary_output);
                 let window_work_area =
                     output_state.as_ref().map_or(*work_area, |(_, _, _, work_area)| WorkArea {
                         x: work_area.x,

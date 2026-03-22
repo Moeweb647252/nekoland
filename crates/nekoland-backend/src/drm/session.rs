@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use bevy_app::App;
-use nekoland_core::calloop::CalloopSourceRegistry;
+use nekoland_core::calloop::with_wayland_calloop_registry;
 use nekoland_core::error::NekolandError;
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, PendingBackendInputEvents, PendingProtocolInputEvents,
@@ -60,59 +60,45 @@ pub(crate) struct DrmSessionExtractCtx<'a> {
 }
 
 pub(crate) fn install_drm_session_source(app: &mut App, session_state: SharedDrmSessionState) {
-    if app.world().get_non_send_resource::<CalloopSourceRegistry>().is_none() {
-        app.insert_non_send_resource(CalloopSourceRegistry::default());
-    }
-
-    let Some(mut registry) = app.world_mut().get_non_send_resource_mut::<CalloopSourceRegistry>()
-    else {
-        let message = "calloop registry unavailable during drm session installation".to_owned();
-        tracing::error!(error = %message);
-        let mut state = session_state.borrow_mut();
-        state.status = DrmSessionStatus::Failed(message);
-        state.session = None;
-        state.active = false;
-        state.was_active = Some(false);
-        return;
-    };
-
-    registry.push(move |handle| {
-        let (session, notifier) = match LibSeatSession::new() {
-            Ok(pair) => pair,
-            Err(error) => {
-                let message = format!("failed to create libseat session: {error}");
-                let mut state = session_state.borrow_mut();
-                state.status = DrmSessionStatus::Failed(message.clone());
-                state.session = None;
-                state.active = false;
-                state.was_active = Some(false);
-                return Err(NekolandError::Runtime(message));
-            }
-        };
-
-        let seat_name = session.seat();
-        let active = session.is_active();
-        {
-            let mut state = session_state.borrow_mut();
-            state.status = DrmSessionStatus::Ready;
-            state.session = Some(session);
-            state.seat_name = seat_name;
-            state.active = active;
-            state.was_active = Some(active);
-        }
-
-        let session_state_for_events = session_state.clone();
-        handle
-            .insert_source(notifier, move |event, _, _| {
-                let mut state = session_state_for_events.borrow_mut();
-                match event {
-                    SessionEvent::ActivateSession => state.active = true,
-                    SessionEvent::PauseSession => state.active = false,
+    with_wayland_calloop_registry(app, |registry| {
+        registry.push(move |handle| {
+            let (session, notifier) = match LibSeatSession::new() {
+                Ok(pair) => pair,
+                Err(error) => {
+                    let message = format!("failed to create libseat session: {error}");
+                    let mut state = session_state.borrow_mut();
+                    state.status = DrmSessionStatus::Failed(message.clone());
+                    state.session = None;
+                    state.active = false;
+                    state.was_active = Some(false);
+                    return Err(NekolandError::Runtime(message));
                 }
-            })
-            .map_err(|error| NekolandError::Runtime(error.error.to_string()))?;
+            };
 
-        Ok(())
+            let seat_name = session.seat();
+            let active = session.is_active();
+            {
+                let mut state = session_state.borrow_mut();
+                state.status = DrmSessionStatus::Ready;
+                state.session = Some(session);
+                state.seat_name = seat_name;
+                state.active = active;
+                state.was_active = Some(active);
+            }
+
+            let session_state_for_events = session_state.clone();
+            handle
+                .insert_source(notifier, move |event, _, _| {
+                    let mut state = session_state_for_events.borrow_mut();
+                    match event {
+                        SessionEvent::ActivateSession => state.active = true,
+                        SessionEvent::PauseSession => state.active = false,
+                    }
+                })
+                .map_err(|error| NekolandError::Runtime(error.error.to_string()))?;
+
+            Ok(())
+        });
     });
 }
 

@@ -7,7 +7,7 @@ use bevy_app::App;
 use bevy_ecs::prelude::Resource;
 use calloop::timer::{TimeoutAction, Timer};
 use nekoland_config::resources::CompositorConfig;
-use nekoland_core::calloop::CalloopSourceRegistry;
+use nekoland_core::calloop::with_wayland_calloop_registry;
 use nekoland_core::error::NekolandError;
 use nekoland_core::prelude::AppMetadata;
 use nekoland_ecs::components::{OutputDevice, OutputKind, OutputProperties};
@@ -24,7 +24,9 @@ use smithay::utils::{Monotonic, Physical, Rectangle, Size, Transform};
 
 use crate::common::cursor::SoftwareCursorCache;
 use crate::common::gles_executor::{
-    CommonGlesRenderElement, GlesExecutionState, execute_output_graph, final_output_texture_element,
+    CommonGlesRenderElement, GlesExecutionState, execute_output_graph,
+    final_output_texture_element, prepare_output_graph_process_shaders,
+    prepare_output_graph_targets, prepare_output_surface_imports,
 };
 use crate::common::outputs::{
     BackendOutputBlueprint, BackendOutputChange, BackendOutputEventRecord,
@@ -154,10 +156,6 @@ const WINIT_PRIMARY_OUTPUT_LOCAL_ID: &str = "primary";
 
 impl WinitRuntime {
     pub fn install(app: &mut App, id: BackendId) -> Self {
-        if app.world().get_non_send_resource::<CalloopSourceRegistry>().is_none() {
-            app.insert_non_send_resource(CalloopSourceRegistry::default());
-        }
-
         let initial_window_spec = desired_window_spec(
             app.world().get_resource::<AppMetadata>(),
             app.world().get_resource::<CompositorConfig>(),
@@ -166,9 +164,7 @@ impl WinitRuntime {
         let shared = Rc::new(RefCell::new(WinitPresentCompletionShared::default()));
         shared.borrow_mut().desired_window_spec = initial_window_spec.clone();
 
-        if let Some(mut registry) =
-            app.world_mut().get_non_send_resource_mut::<CalloopSourceRegistry>()
-        {
+        with_wayland_calloop_registry(app, |registry| {
             let source_shared = shared.clone();
             registry.push(move |handle| {
                 match install_host_winit_source(handle, source_shared.clone()) {
@@ -182,12 +178,7 @@ impl WinitRuntime {
                     }
                 }
             });
-        } else {
-            tracing::error!(
-                "calloop registry unavailable during nested winit installation; \
-                 host event source will not be registered"
-            );
-        }
+        });
 
         app.insert_resource(WinitWindowState {
             title: initial_window_spec.title.clone(),
@@ -464,17 +455,58 @@ impl Backend for WinitRuntime {
                 }
             };
 
-            let Some(execution) = cx.render_graph.outputs.get(&output.output_id) else {
+            let Some(compiled_output) = cx.compiled_frames.output(output.output_id) else {
                 return Ok(());
             };
+            if let Err(error) = prepare_output_graph_process_shaders(
+                renderer,
+                &mut self.render_state.execution,
+                compiled_output.gpu_prep.as_ref(),
+                &compiled_output.process_plan,
+            ) {
+                tracing::warn!(
+                    error = %error,
+                    "failed to prewarm process shaders for winit output"
+                );
+                return Ok(());
+            }
+            if let Err(error) = prepare_output_graph_targets(
+                renderer,
+                &mut self.render_state.execution,
+                &output,
+                &compiled_output.execution_plan,
+                compiled_output.target_allocation.as_ref(),
+            ) {
+                tracing::warn!(
+                    error = %error,
+                    "failed to prepare output targets for winit output"
+                );
+                return Ok(());
+            }
+            if let Err(error) = prepare_output_surface_imports(
+                renderer,
+                &mut self.render_state.execution,
+                &compiled_output.prepared_scene,
+                compiled_output.gpu_prep.as_ref(),
+                surface_registry,
+            ) {
+                tracing::warn!(
+                    error = %error,
+                    "failed to import wayland surfaces for winit output"
+                );
+                return Ok(());
+            }
             let executed = match execute_output_graph(
                 renderer,
                 &mut self.render_state.execution,
                 &output,
-                execution,
-                cx.render_plan,
-                cx.process_plan,
-                cx.materials,
+                &compiled_output.execution_plan,
+                compiled_output.final_output.as_ref(),
+                compiled_output.target_allocation.as_ref(),
+                &compiled_output.prepared_scene,
+                compiled_output.gpu_prep.as_ref(),
+                &compiled_output.process_plan,
+                &cx.compiled_frames.materials,
                 surface_registry,
                 cursor_cache,
                 cx.config,
@@ -556,8 +588,15 @@ impl Backend for WinitRuntime {
             .as_ref()
             .map(|backend| backend.dmabuf_formats())
             .unwrap_or_default();
+        let renderable_formats = self
+            .shared
+            .borrow()
+            .backend
+            .as_ref()
+            .map(|backend| backend.dmabuf_render_formats())
+            .unwrap_or_default();
         if !formats.is_empty() {
-            support.merge_formats(formats, true);
+            support.merge_formats(formats, renderable_formats, true);
         }
         Ok(())
     }
@@ -992,7 +1031,6 @@ mod tests {
     fn desired_window_spec_prefers_existing_owned_outputs() {
         let metadata = AppMetadata { name: "nekoland".to_owned() };
         let outputs = vec![OutputSnapshot {
-            entity: bevy_ecs::entity::Entity::PLACEHOLDER,
             output_id: nekoland_ecs::components::OutputId(1),
             backend_id: Some(BackendId(1)),
             backend_output_id: Some(crate::traits::BackendOutputId {

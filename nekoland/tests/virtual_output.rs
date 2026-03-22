@@ -4,17 +4,13 @@
 use std::time::Duration;
 
 use nekoland::build_app;
-use nekoland_backend::{BackendStatus, traits::BackendKind};
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
     OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry, WindowLayout,
     WindowMode, WlSurfaceHandle, XdgWindow,
 };
-use nekoland_ecs::resources::{
-    PresentAuditState, VirtualOutputCaptureState, VirtualOutputElementKind,
-};
-use nekoland_protocol::resources::OutputPresentationState;
+use nekoland_ecs::resources::{PlatformBackendKind, VirtualOutputElementKind, WaylandFeedback};
 
 mod common;
 
@@ -46,10 +42,6 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
     }
 
     let world = app.inner_mut().world_mut();
-    let Some(backend_status) = world.get_resource::<BackendStatus>() else {
-        panic!("backend status should remain available");
-    };
-    let backend_status = backend_status.clone();
     let output_state =
         world.query::<(&OutputId, &OutputDevice, &OutputProperties)>().iter(world).next().map(
             |(output_id, output, properties)| (*output_id, output.clone(), properties.clone()),
@@ -57,24 +49,26 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
     let Some((output_id, output, properties)) = output_state else {
         panic!("virtual backend should publish one output");
     };
-    let Some(capture_state) = world.get_resource::<VirtualOutputCaptureState>() else {
-        panic!("virtual output capture state should be available");
-    };
-    let Some(present_audit) = world.get_resource::<PresentAuditState>() else {
-        panic!("present audit state should be available");
-    };
-    let Some(presentation_state) = world.get_resource::<OutputPresentationState>() else {
-        panic!("output presentation state should be available");
+    let Some(wayland_feedback) = world.get_resource::<WaylandFeedback>() else {
+        panic!("wayland feedback should be available");
     };
 
     assert!(
-        backend_status.active.iter().any(|backend| backend.kind == BackendKind::Virtual),
-        "virtual backend should remain active: {backend_status:?}"
+        wayland_feedback
+            .platform_backends
+            .active
+            .iter()
+            .any(|backend| backend.kind == PlatformBackendKind::Virtual),
+        "virtual backend should remain active: {:?}",
+        wayland_feedback.platform_backends
     );
     assert_eq!(output.kind, OutputKind::Virtual);
-    assert!(!capture_state.frames.is_empty(), "virtual backend should capture at least one frame");
+    assert!(
+        !wayland_feedback.virtual_output_capture.frames.is_empty(),
+        "virtual backend should capture at least one frame"
+    );
 
-    let Some(latest_frame) = capture_state.frames.back() else {
+    let Some(latest_frame) = wayland_feedback.virtual_output_capture.frames.back() else {
         panic!("virtual backend should retain the latest offscreen frame");
     };
     assert_eq!(latest_frame.output_name, output.name);
@@ -93,7 +87,8 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
     assert_eq!(window.y, 48);
     assert_eq!(window.width, 400);
     assert_eq!(window.height, 240);
-    let audit = present_audit
+    let audit = wayland_feedback
+        .present_audit
         .outputs
         .get(&output_id)
         .unwrap_or_else(|| panic!("present audit should publish the active output"));
@@ -107,7 +102,8 @@ fn virtual_backend_captures_offscreen_frames_and_presentation_timeline() {
         Some((64, 48, 400, 240))
     );
 
-    let presentation = presentation_state
+    let presentation = wayland_feedback
+        .output_presentation
         .outputs
         .iter()
         .find(|timeline| timeline.output_id == output_id)

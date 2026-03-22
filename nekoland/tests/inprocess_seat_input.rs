@@ -15,9 +15,8 @@ use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::components::{SurfaceGeometry, WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, CompositorClock, GlobalPointerPosition,
-    KeyboardFocusState, PendingProtocolInputEvents,
+    KeyboardFocusState, PendingProtocolInputEvents, WaylandCommands,
 };
-use nekoland_protocol::ProtocolServerState;
 use nekoland_shell::decorations;
 use tempfile::tempfile;
 use wayland_client::protocol::{
@@ -127,21 +126,13 @@ fn run_seat_input_scenario() -> Option<SeatClientSummary> {
             pump_protocol_seat_input.after(decorations::server_decoration_system),
         );
 
-    let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
-        match (&server_state.socket_name, &server_state.startup_error) {
-            (Some(socket_name), _) => runtime_dir.path.join(socket_name),
-            (None, Some(error)) if error.contains("Operation not permitted") => {
-                eprintln!("skipping seat input test in restricted environment: {error}");
-                return None;
-            }
-            (None, Some(error)) => panic!("protocol startup failed before run: {error}"),
-            (None, None) => panic!("protocol startup produced neither socket nor error"),
+    let socket_path = match common::protocol_socket_path(&app, &runtime_dir.path) {
+        Ok(socket_path) => socket_path,
+        Err(error) if error.contains("Operation not permitted") => {
+            eprintln!("skipping seat input test in restricted environment: {error}");
+            return None;
         }
+        Err(error) => panic!("protocol startup failed before run: {error}"),
     };
 
     let client_thread = thread::spawn(move || run_seat_input_client(&socket_path));
@@ -171,7 +162,7 @@ fn pump_protocol_seat_input(
     mut pump: ResMut<SeatInputPump>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
     mut pointer: ResMut<GlobalPointerPosition>,
-    mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
+    mut wayland_commands: ResMut<WaylandCommands>,
     windows: Query<(&WlSurfaceHandle, &SurfaceGeometry), With<XdgWindow>>,
 ) {
     if pump.remaining_frames == 0 || clock.frame < INPUT_PUMP_START_FRAME {
@@ -191,7 +182,7 @@ fn pump_protocol_seat_input(
     pointer.x = x;
     pointer.y = y;
 
-    pending_protocol_inputs.extend([
+    wayland_commands.pending_protocol_input_events = PendingProtocolInputEvents::from_items(vec![
         BackendInputEvent {
             device: "seat-test".to_owned(),
             action: BackendInputAction::FocusChanged { focused: false },

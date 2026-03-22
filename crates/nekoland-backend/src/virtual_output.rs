@@ -192,9 +192,9 @@ impl Backend for VirtualRuntime {
             return Ok(());
         };
         let elements = render_graph_output_present_audit_elements(
-            cx.render_graph,
-            cx.render_plan,
-            cx.materials,
+            &cx.compiled_frames.render_graph,
+            &cx.compiled_frames.render_plan,
+            &cx.compiled_frames.materials,
             cx.surfaces,
             output.output_id,
         )
@@ -240,7 +240,6 @@ mod tests {
 
     fn output_snapshot(name: &str, backend_id: BackendId, local_id: &str) -> OutputSnapshot {
         OutputSnapshot {
-            entity: bevy_ecs::entity::Entity::PLACEHOLDER,
             output_id: OutputId(1),
             backend_id: Some(backend_id),
             backend_output_id: Some(BackendOutputId { backend_id, local_id: local_id.to_owned() }),

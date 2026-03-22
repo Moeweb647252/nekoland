@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
-use bevy_ecs::entity_disabling::Disabled;
-use bevy_ecs::prelude::{Query, Res, ResMut, With};
-use bevy_ecs::query::Allow;
-use nekoland_ecs::components::{WlSurfaceHandle, XdgPopup, XdgWindow};
-use nekoland_ecs::resources::{DamageState, FramePacingState, RenderPlan, RenderPlanItem};
+use bevy_ecs::prelude::{Res, ResMut};
+use nekoland_ecs::resources::{
+    DamageState, FramePacingState, RenderPlan, RenderPlanItem, ShellRenderInput,
+    SurfacePresentationRole,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrameCallbackDispatcher;
@@ -13,8 +13,7 @@ pub struct FrameCallbackDispatcher;
 /// the rest as throttled for pacing diagnostics.
 pub fn frame_callback_system(
     render_plan: Res<RenderPlan>,
-    surfaces: Query<&WlSurfaceHandle, (With<XdgWindow>, Allow<Disabled>)>,
-    popups: Query<&WlSurfaceHandle, (With<XdgPopup>, Allow<Disabled>)>,
+    shell_render_input: Option<Res<'_, ShellRenderInput>>,
     mut damage_state: ResMut<DamageState>,
     mut frame_pacing: ResMut<FramePacingState>,
 ) {
@@ -29,8 +28,23 @@ pub fn frame_callback_system(
             | RenderPlanItem::Cursor(_) => None,
         })
         .collect::<BTreeSet<_>>();
-    let known_surface_ids =
-        surfaces.iter().chain(popups.iter()).map(|surface| surface.id).collect::<BTreeSet<_>>();
+    let surface_presentation =
+        shell_render_input.as_deref().map(|mailbox| &mailbox.surface_presentation);
+    let known_surface_ids = surface_presentation
+        .map(|snapshot| {
+            snapshot
+                .surfaces
+                .iter()
+                .filter_map(|(surface_id, state)| {
+                    matches!(
+                        state.role,
+                        SurfacePresentationRole::Window | SurfacePresentationRole::Popup
+                    )
+                    .then_some(*surface_id)
+                })
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
 
     frame_pacing.callback_surface_ids = callback_surface_ids.iter().copied().collect();
     frame_pacing.throttled_surface_ids =

@@ -1,5 +1,10 @@
+use bevy_app::App;
+use bevy_ecs::error::Result as BevyResult;
+use bevy_ecs::prelude::{NonSendMut, Res};
 use calloop::LoopHandle;
+use std::time::Duration;
 
+use crate::app::{RunLoopSettings, WaylandSubApp};
 use crate::error::NekolandError;
 
 /// A deferred installer that only becomes usable once the top-level calloop loop exists.
@@ -34,4 +39,55 @@ impl CalloopSourceRegistry {
         self.installers.clear();
         Ok(())
     }
+}
+
+/// The live calloop event loop used by runtime backends and protocol sources.
+///
+/// This is intentionally owned by the `wayland` subapp so extract-time polling stays inside the
+/// platform runtime boundary rather than in the outer root runner.
+pub struct WaylandCalloopRuntime {
+    event_loop: calloop::EventLoop<'static, ()>,
+}
+
+impl WaylandCalloopRuntime {
+    pub fn new(event_loop: calloop::EventLoop<'static, ()>) -> Self {
+        Self { event_loop }
+    }
+
+    pub fn dispatch(&mut self, timeout: Duration) -> Result<(), calloop::Error> {
+        self.event_loop.dispatch(timeout, &mut ())
+    }
+}
+
+pub fn dispatch_wayland_calloop_system(
+    runtime: Option<NonSendMut<'_, WaylandCalloopRuntime>>,
+    settings: Option<Res<'_, RunLoopSettings>>,
+) -> BevyResult {
+    let Some(mut runtime) = runtime else {
+        return Ok(());
+    };
+    let timeout = settings
+        .as_deref()
+        .map(|settings| settings.frame_timeout)
+        .unwrap_or_else(|| Duration::from_millis(16));
+    runtime.dispatch(timeout).map_err(|error| NekolandError::Runtime(error.to_string()).into())
+}
+
+pub fn with_wayland_calloop_registry<R>(
+    app: &mut App,
+    f: impl FnOnce(&mut CalloopSourceRegistry) -> R,
+) -> R {
+    let wayland_world = if app.get_sub_app(WaylandSubApp).is_some() {
+        app.sub_app_mut(WaylandSubApp).world_mut()
+    } else {
+        app.world_mut()
+    };
+    if wayland_world.get_non_send_resource::<CalloopSourceRegistry>().is_none() {
+        wayland_world.insert_non_send_resource(CalloopSourceRegistry::default());
+    }
+
+    let mut registry = wayland_world
+        .get_non_send_resource_mut::<CalloopSourceRegistry>()
+        .expect("wayland calloop registry should exist after initialization");
+    f(&mut registry)
 }

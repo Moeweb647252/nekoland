@@ -6,17 +6,17 @@ use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{WindowLayout, WindowMode, WindowPosition, WindowSize, XdgWindow};
 use nekoland_ecs::events::WindowMoved;
 use nekoland_ecs::resources::{
-    EntityIndex, KeyboardFocusState, PendingWindowControls, PrimaryOutputState,
-    UNASSIGNED_WORKSPACE_STACK_ID, UNASSIGNED_WORKSPACE_TILING_ID, WindowStackingState,
+    EntityIndex, KeyboardFocusState, PendingWindowControls, PendingWindowServerRequests,
+    PrimaryOutputState, UNASSIGNED_WORKSPACE_STACK_ID, UNASSIGNED_WORKSPACE_TILING_ID,
+    WaylandIngress, WindowServerAction, WindowServerRequest, WindowStackingState,
     WorkspaceTilingState,
 };
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
-use nekoland_protocol::resources::{
-    PendingWindowServerRequests, WindowServerAction, WindowServerRequest,
-};
 
-use crate::viewport::{project_scene_geometry, resolve_output_state_for_workspace};
+use crate::viewport::{
+    preferred_primary_output_state, project_scene_geometry, resolve_output_state_for_workspace,
+};
 use crate::window_policy::{
     WindowBackgroundState, lock_window_policy, resolve_background_output_id,
     sync_window_background_role,
@@ -34,6 +34,7 @@ pub struct WindowControlParams<'w, 's> {
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
     stacking: ResMut<'w, WindowStackingState>,
     tiling: ResMut<'w, WorkspaceTilingState>,
+    wayland_ingress: Option<bevy_ecs::prelude::Res<'w, WaylandIngress>>,
     primary_output: Option<bevy_ecs::prelude::Res<'w, PrimaryOutputState>>,
     window_moved: MessageWriter<'w, WindowMoved>,
     windows: ControlledWindows<'w, 's>,
@@ -50,12 +51,26 @@ pub fn window_control_request_system(
     mut controls: WindowControlParams<'_, '_>,
 ) {
     if controls.pending_window_controls.is_empty() {
-        return;
+        if controls
+            .wayland_ingress
+            .as_deref()
+            .is_none_or(|wayland_ingress| wayland_ingress.pending_window_controls.is_empty())
+        {
+            return;
+        }
     }
 
+    let primary_output = preferred_primary_output_state(
+        controls.wayland_ingress.as_deref(),
+        controls.primary_output.as_deref(),
+    );
     let mut deferred = Vec::new();
+    let mut queued_controls = controls.pending_window_controls.take();
+    if let Some(wayland_ingress) = controls.wayland_ingress.as_deref() {
+        queued_controls.extend(wayland_ingress.pending_window_controls.as_slice().to_vec());
+    }
 
-    for control in controls.pending_window_controls.take() {
+    for control in queued_controls {
         let Some(entity) = controls.entity_index.entity_for_surface(control.surface_id.0) else {
             deferred.push(control);
             continue;
@@ -69,7 +84,7 @@ pub fn window_control_request_system(
         let output_state = resolve_output_state_for_workspace(
             &controls.outputs,
             Some(workspace_id),
-            controls.primary_output.as_deref(),
+            primary_output,
         );
         let is_background = window.role.is_output_background();
 
@@ -254,8 +269,8 @@ mod tests {
     };
     use nekoland_ecs::events::WindowMoved;
     use nekoland_ecs::resources::{
-        EntityIndex, KeyboardFocusState, PendingWindowControls, WindowStackingState, WorkArea,
-        WorkspaceTilingState, rebuild_entity_index_system,
+        EntityIndex, KeyboardFocusState, PendingWindowControls, WaylandIngress,
+        WindowStackingState, WorkArea, WorkspaceTilingState, rebuild_entity_index_system,
     };
     use nekoland_ecs::selectors::SurfaceId;
     use nekoland_protocol::resources::{PendingWindowServerRequests, WindowServerAction};
@@ -350,6 +365,59 @@ mod tests {
         assert_eq!((geometry.x, geometry.y, geometry.width, geometry.height), (100, 120, 800, 600));
         assert_eq!(*layout, WindowLayout::Floating);
         assert_eq!(*mode, WindowMode::Normal);
+    }
+
+    #[test]
+    fn ingress_window_controls_are_consumed_without_local_queue_sync() {
+        let mut app = NekolandApp::new("window-control-ingress-test");
+        app.inner_mut()
+            .init_resource::<PendingWindowControls>()
+            .init_resource::<PendingWindowServerRequests>()
+            .init_resource::<KeyboardFocusState>()
+            .init_resource::<EntityIndex>()
+            .init_resource::<WindowStackingState>()
+            .init_resource::<WorkspaceTilingState>()
+            .insert_resource(WorkArea { x: 0, y: 0, width: 1280, height: 720 })
+            .insert_resource(WaylandIngress {
+                pending_window_controls: {
+                    let mut controls = PendingWindowControls::default();
+                    controls.surface(SurfaceId(17)).move_to(40, 60);
+                    controls
+                },
+                ..WaylandIngress::default()
+            })
+            .add_message::<WindowMoved>()
+            .add_systems(
+                LayoutSchedule,
+                (rebuild_entity_index_system, window_control_request_system).chain(),
+            );
+
+        let entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn(WindowBundle {
+                surface: WlSurfaceHandle { id: 17 },
+                geometry: nekoland_ecs::components::SurfaceGeometry {
+                    x: 0,
+                    y: 0,
+                    width: 320,
+                    height: 240,
+                },
+                buffer: nekoland_ecs::components::BufferState { attached: true, scale: 1 },
+                layout: WindowLayout::Floating,
+                mode: WindowMode::Normal,
+                ..Default::default()
+            })
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        let scene_geometry = world
+            .get::<nekoland_ecs::components::WindowSceneGeometry>(entity)
+            .expect("scene geometry should exist");
+        assert_eq!((scene_geometry.x, scene_geometry.y), (40, 60));
+        assert!(world.resource::<PendingWindowControls>().is_empty());
     }
 
     #[test]
@@ -478,10 +546,7 @@ mod tests {
             panic!("window request queue should exist");
         };
         assert_eq!(requests.len(), 1);
-        assert!(matches!(
-            requests.as_slice()[0].action,
-            WindowServerAction::Close
-        ));
+        assert!(matches!(requests.as_slice()[0].action, WindowServerAction::Close));
     }
 
     #[test]

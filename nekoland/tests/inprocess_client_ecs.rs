@@ -13,7 +13,6 @@ use nekoland_ecs::components::{
 use nekoland_ecs::resources::{
     CursorSceneSnapshot, KeyboardFocusState, RenderPlan, RenderPlanItem,
 };
-use nekoland_protocol::ProtocolServerState;
 
 mod common;
 
@@ -32,11 +31,7 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
     });
 
     let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
+        let server_state = common::protocol_server_state(&app);
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
             (None, Some(error)) if error.contains("Operation not permitted") => {

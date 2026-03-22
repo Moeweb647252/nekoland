@@ -17,10 +17,10 @@ use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::components::{SurfaceGeometry, WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, CompositorClock, GlobalPointerPosition,
-    KeyboardFocusState, PendingProtocolInputEvents, PendingWindowControls,
+    KeyboardFocusState, PendingWindowControls, WaylandCommands, WaylandFeedback,
 };
 use nekoland_ecs::selectors::SurfaceId;
-use nekoland_protocol::{ProtocolServerState, resources::DragAndDropState};
+use nekoland_protocol::resources::DragAndDropState;
 use nekoland_shell::decorations;
 use tempfile::tempfile;
 use wayland_client::protocol::{
@@ -99,7 +99,7 @@ struct DndTransferPumpParams<'w, 's> {
     pump: ResMut<'w, DndTransferPump>,
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
     pointer: ResMut<'w, GlobalPointerPosition>,
-    pending_protocol_inputs: ResMut<'w, PendingProtocolInputEvents>,
+    wayland_commands: ResMut<'w, WaylandCommands>,
     pending_window_controls: ResMut<'w, PendingWindowControls>,
     windows: Query<
         'w,
@@ -275,21 +275,13 @@ fn run_dnd_transfer_scenario()
             pump_dnd_transfer_input.after(decorations::server_decoration_system),
         );
 
-    let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
-        match (&server_state.socket_name, &server_state.startup_error) {
-            (Some(socket_name), _) => runtime_dir.path.join(socket_name),
-            (None, Some(error)) if error.contains("Operation not permitted") => {
-                eprintln!("skipping DnD transfer test in restricted environment: {error}");
-                return None;
-            }
-            (None, Some(error)) => panic!("protocol startup failed before run: {error}"),
-            (None, None) => panic!("protocol startup produced neither socket nor error"),
+    let socket_path = match common::protocol_socket_path(&app, &runtime_dir.path) {
+        Ok(socket_path) => socket_path,
+        Err(error) if error.contains("Operation not permitted") => {
+            eprintln!("skipping DnD transfer test in restricted environment: {error}");
+            return None;
         }
+        Err(error) => panic!("protocol startup failed before run: {error}"),
     };
 
     let source_socket_path = socket_path.clone();
@@ -327,8 +319,13 @@ fn run_dnd_transfer_scenario()
         panic!("nekoland app should complete the configured frame budget: {error}");
     }
 
-    let Some(dnd_state) = app.inner().world().get_resource::<DragAndDropState>().cloned() else {
-        panic!("drag-and-drop state resource should be initialized");
+    let Some(dnd_state) = app
+        .inner()
+        .world()
+        .get_resource::<WaylandFeedback>()
+        .map(|feedback| feedback.drag_and_drop.clone())
+    else {
+        panic!("drag-and-drop feedback should be initialized");
     };
 
     let source_result = match source_thread.join() {
@@ -377,7 +374,7 @@ fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
         mut pump,
         mut keyboard_focus,
         mut pointer,
-        mut pending_protocol_inputs,
+        mut wayland_commands,
         mut pending_window_controls,
         mut windows,
     } = transfer;
@@ -453,7 +450,7 @@ fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
             keyboard_focus.focused_surface = Some(source_surface_id);
             apply_pointer_motion(
                 &mut pointer,
-                &mut pending_protocol_inputs,
+                &mut wayland_commands.pending_protocol_input_events,
                 source_position.0,
                 source_position.1,
             );
@@ -466,7 +463,7 @@ fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
                 keyboard_focus.focused_surface = Some(source_surface_id);
                 apply_pointer_motion(
                     &mut pointer,
-                    &mut pending_protocol_inputs,
+                    &mut wayland_commands.pending_protocol_input_events,
                     source_position.0,
                     source_position.1,
                 );
@@ -474,7 +471,7 @@ fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
             }
         }
         DndPumpPhase::PressSource => {
-            pending_protocol_inputs.push(BackendInputEvent {
+            wayland_commands.pending_protocol_input_events.push(BackendInputEvent {
                 device: "dnd-test".to_owned(),
                 action: BackendInputAction::PointerButton {
                     button_code: TEST_BUTTON_CODE,
@@ -494,7 +491,7 @@ fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
             keyboard_focus.focused_surface = Some(target_surface_id);
             apply_pointer_motion(
                 &mut pointer,
-                &mut pending_protocol_inputs,
+                &mut wayland_commands.pending_protocol_input_events,
                 target_position.0,
                 target_position.1,
             );
@@ -512,7 +509,7 @@ fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
                 keyboard_focus.focused_surface = Some(target_surface_id);
                 apply_pointer_motion(
                     &mut pointer,
-                    &mut pending_protocol_inputs,
+                    &mut wayland_commands.pending_protocol_input_events,
                     target_position.0,
                     target_position.1,
                 );
@@ -523,7 +520,7 @@ fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
             }
         }
         DndPumpPhase::ReleaseOnTarget => {
-            pending_protocol_inputs.push(BackendInputEvent {
+            wayland_commands.pending_protocol_input_events.push(BackendInputEvent {
                 device: "dnd-test".to_owned(),
                 action: BackendInputAction::PointerButton {
                     button_code: TEST_BUTTON_CODE,
@@ -539,7 +536,7 @@ fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
 /// Applies one pointer motion event to the protocol input queue.
 fn apply_pointer_motion(
     pointer: &mut GlobalPointerPosition,
-    pending_protocol_inputs: &mut PendingProtocolInputEvents,
+    pending_protocol_inputs: &mut nekoland_ecs::resources::PendingProtocolInputEvents,
     x: f64,
     y: f64,
 ) {

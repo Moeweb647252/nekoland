@@ -17,12 +17,9 @@ use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::components::{WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, CompositorClock, KeyboardFocusState,
-    PendingProtocolInputEvents,
+    WaylandCommands, WaylandFeedback,
 };
-use nekoland_protocol::{
-    ProtocolServerState,
-    resources::{ClipboardSelectionState, SelectionOwner},
-};
+use nekoland_protocol::resources::{ClipboardSelectionState, SelectionOwner};
 use nekoland_shell::decorations;
 use wayland_client::protocol::{
     wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
@@ -189,11 +186,7 @@ fn run_clipboard_transfer_scenario()
         );
 
     let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
+        let server_state = common::protocol_server_state(&app);
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
             (None, Some(error)) if error.contains("Operation not permitted") => {
@@ -227,11 +220,14 @@ fn run_clipboard_transfer_scenario()
         panic!("nekoland app should complete the configured frame budget: {error}");
     }
 
-    let Some(selection_state) = app.inner().world().get_resource::<ClipboardSelectionState>()
+    let Some(selection_state) = app
+        .inner()
+        .world()
+        .get_resource::<WaylandFeedback>()
+        .map(|feedback| feedback.clipboard_selection.clone())
     else {
-        panic!("clipboard selection resource should be initialized");
+        panic!("clipboard selection feedback should be initialized");
     };
-    let selection_state = selection_state.clone();
 
     let target_summary = match target_thread.join() {
         Ok(result) => match result {
@@ -288,11 +284,7 @@ fn run_clipboard_persistence_scenario()
         );
 
     let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
+        let server_state = common::protocol_server_state(&app);
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
             (None, Some(error)) if error.contains("Operation not permitted") => {
@@ -331,11 +323,14 @@ fn run_clipboard_persistence_scenario()
         panic!("nekoland app should complete the configured frame budget: {error}");
     }
 
-    let Some(selection_state) = app.inner().world().get_resource::<ClipboardSelectionState>()
+    let Some(selection_state) = app
+        .inner()
+        .world()
+        .get_resource::<WaylandFeedback>()
+        .map(|feedback| feedback.clipboard_selection.clone())
     else {
-        panic!("clipboard selection resource should be initialized");
+        panic!("clipboard selection feedback should be initialized");
     };
-    let selection_state = selection_state.clone();
 
     let target_summary = match target_thread.join() {
         Ok(result) => match result {
@@ -373,7 +368,7 @@ fn pump_clipboard_transfer_input(
     clock: Res<CompositorClock>,
     pump: Res<ClipboardTransferPump>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
-    mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
+    mut wayland_commands: ResMut<WaylandCommands>,
     windows: Query<&WlSurfaceHandle, With<XdgWindow>>,
 ) {
     if clock.frame < INPUT_PUMP_START_FRAME {
@@ -393,7 +388,7 @@ fn pump_clipboard_transfer_input(
         });
     } else {
         keyboard_focus.focused_surface = Some(surface_ids[0]);
-        pending_protocol_inputs.push(BackendInputEvent {
+        wayland_commands.pending_protocol_input_events.push(BackendInputEvent {
             device: "clipboard-transfer".to_owned(),
             action: BackendInputAction::Key { keycode: 36, pressed: true },
         });

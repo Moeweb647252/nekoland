@@ -1,14 +1,15 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
-    CursorRenderSource, OutputExecutionPlan, OutputPresentAudit, PresentAuditElement,
-    PresentAuditElementKind, RenderColor, RenderItemInstance, RenderMaterialFrameState,
-    RenderPassGraph, RenderPassKind, RenderPassPayload, RenderPlan, RenderPlanItem,
-    RenderSceneRole, RenderTargetId, RenderTargetKind,
+    CompiledOutputFrame, CompiledOutputFrames, CursorRenderSource, OutputExecutionPlan,
+    OutputPresentAudit, PresentAuditElement, PresentAuditElementKind, RenderColor,
+    RenderItemInstance, RenderMaterialFrameState, RenderPassGraph, RenderPassKind,
+    RenderPassPayload, RenderPlan, RenderPlanItem, RenderSceneRole, RenderSurfaceRole,
+    RenderSurfaceSnapshot, RenderTargetId, RenderTargetKind,
 };
 
-use crate::traits::{OutputSnapshot, RenderSurfaceRole, RenderSurfaceSnapshot};
+use crate::traits::OutputSnapshot;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct OutputSurfaceRenderRecord {
@@ -100,7 +101,7 @@ pub(crate) fn render_graph_output_present_audit_elements(
     render_graph: &RenderPassGraph,
     render_plan: &RenderPlan,
     materials: &RenderMaterialFrameState,
-    surfaces: &HashMap<u64, RenderSurfaceSnapshot>,
+    surfaces: &BTreeMap<u64, RenderSurfaceSnapshot>,
     output_id: OutputId,
 ) -> Vec<PresentAuditElement> {
     render_graph_output_records(render_graph, render_plan, materials, output_id)
@@ -148,25 +149,47 @@ pub(crate) fn render_graph_output_present_audit_elements(
         .collect()
 }
 
+pub(crate) fn compiled_output_frame_present_audit_elements(
+    output_id: OutputId,
+    compiled_output: &CompiledOutputFrame,
+    materials: &RenderMaterialFrameState,
+    surfaces: &BTreeMap<u64, RenderSurfaceSnapshot>,
+) -> Vec<PresentAuditElement> {
+    let render_graph = RenderPassGraph {
+        outputs: BTreeMap::from([(output_id, compiled_output.execution_plan.clone())]),
+    };
+    let render_plan =
+        RenderPlan { outputs: BTreeMap::from([(output_id, compiled_output.render_plan.clone())]) };
+    render_graph_output_present_audit_elements(
+        &render_graph,
+        &render_plan,
+        materials,
+        surfaces,
+        output_id,
+    )
+}
+
 pub(crate) fn snapshot_present_audit_outputs(
     frame: u64,
     uptime_millis: u64,
     outputs: &[OutputSnapshot],
-    render_graph: &RenderPassGraph,
-    render_plan: &RenderPlan,
-    materials: &RenderMaterialFrameState,
-    surfaces: &HashMap<u64, RenderSurfaceSnapshot>,
+    compiled_frames: &CompiledOutputFrames,
+    surfaces: &BTreeMap<u64, RenderSurfaceSnapshot>,
 ) -> BTreeMap<OutputId, OutputPresentAudit> {
     outputs
         .iter()
         .map(|output| {
-            let elements = render_graph_output_present_audit_elements(
-                render_graph,
-                render_plan,
-                materials,
-                surfaces,
-                output.output_id,
-            );
+            let elements = compiled_frames
+                .output(output.output_id)
+                .map(|compiled_output| {
+                    compiled_output_frame_present_audit_elements(
+                        output.output_id,
+                        compiled_output,
+                        &compiled_frames.materials,
+                        surfaces,
+                    )
+                })
+                .unwrap_or_default();
             (
                 output.output_id,
                 OutputPresentAudit {
@@ -263,9 +286,14 @@ fn execute_material_records(
         return source_records.to_vec();
     };
 
-    match descriptor.pipeline_key.0.as_str() {
-        "backdrop_blur" => execute_backdrop_blur_records(source_records),
-        _ => source_records.to_vec(),
+    match descriptor.pipeline_key.material {
+        nekoland_ecs::resources::RenderMaterialKind::BackdropBlur => {
+            execute_backdrop_blur_records(source_records)
+        }
+        nekoland_ecs::resources::RenderMaterialKind::Generic
+        | nekoland_ecs::resources::RenderMaterialKind::Blur
+        | nekoland_ecs::resources::RenderMaterialKind::Shadow
+        | nekoland_ecs::resources::RenderMaterialKind::RoundedCorners => source_records.to_vec(),
     }
 }
 
@@ -326,22 +354,24 @@ fn present_audit_surface_kind(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
 
+    use crate::traits::OutputSnapshot;
     use nekoland_ecs::components::{
         OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry,
     };
     use nekoland_ecs::resources::{
-        CursorRenderItem, CursorRenderSource, OutputExecutionPlan, OutputRenderPlan,
-        PresentAuditElementKind, RenderColor, RenderItemId, RenderItemIdentity, RenderItemInstance,
-        RenderMaterialDescriptor, RenderMaterialFrameState, RenderMaterialId,
-        RenderMaterialParamBlock, RenderMaterialParamValue, RenderMaterialPipelineKey,
-        RenderPassGraph, RenderPassId, RenderPassNode, RenderPlan, RenderPlanItem, RenderRect,
-        RenderSceneRole, RenderSourceId, RenderTargetId, RenderTargetKind, SolidRectRenderItem,
-        SurfaceRenderItem,
+        CompiledOutputFrame, CompiledOutputFrames, CursorRenderItem, CursorRenderSource,
+        OutputDamageRegions, OutputExecutionPlan, OutputProcessPlan, OutputRenderPlan,
+        PresentAuditElementKind, RenderColor, RenderFinalOutputPlan, RenderItemId,
+        RenderItemIdentity, RenderItemInstance, RenderMaterialDescriptor, RenderMaterialFrameState,
+        RenderMaterialId, RenderMaterialKind, RenderMaterialParamBlock, RenderMaterialPipelineKey,
+        RenderPassGraph, RenderPassId, RenderPassNode, RenderPipelineStage, RenderPlan,
+        RenderPlanItem, RenderProcessPlan, RenderReadbackPlan, RenderRect, RenderSceneRole,
+        RenderSourceId, RenderSurfaceRole, RenderSurfaceSnapshot, RenderTargetAllocationPlan,
+        RenderTargetId, RenderTargetKind, SolidRectRenderItem, SurfaceRenderItem,
+        SurfaceTextureBridgePlan,
     };
-
-    use crate::traits::{OutputSnapshot, RenderSurfaceRole, RenderSurfaceSnapshot};
 
     use super::{
         render_graph_output_present_audit_elements, render_graph_output_records,
@@ -359,7 +389,7 @@ mod tests {
 
     #[test]
     fn render_graph_records_drive_present_and_audit_outputs() {
-        let surfaces = HashMap::from([
+        let surfaces = BTreeMap::from([
             (
                 11,
                 RenderSurfaceSnapshot {
@@ -378,7 +408,6 @@ mod tests {
             ),
         ]);
         let output = OutputSnapshot {
-            entity: bevy_ecs::entity::Entity::PLACEHOLDER,
             output_id: OutputId(7),
             backend_id: None,
             backend_output_id: None,
@@ -511,9 +540,34 @@ mod tests {
             12,
             345,
             &[output.clone()],
-            &render_graph,
-            &render_plan,
-            &no_materials(),
+            &CompiledOutputFrames {
+                outputs: std::collections::BTreeMap::from([(
+                    OutputId(7),
+                    CompiledOutputFrame {
+                        render_plan: render_plan.outputs[&OutputId(7)].clone(),
+                        prepared_scene:
+                            nekoland_ecs::resources::OutputPreparedSceneResources::default(),
+                        execution_plan: render_graph.outputs[&OutputId(7)].clone(),
+                        process_plan: OutputProcessPlan::default(),
+                        final_output: None,
+                        readback: None,
+                        target_allocation: None,
+                        gpu_prep: None,
+                        damage_regions: Vec::new(),
+                    },
+                )]),
+                output_damage_regions: OutputDamageRegions::default(),
+                prepared_scene: nekoland_ecs::resources::PreparedSceneResources::default(),
+                materials: no_materials(),
+                render_graph: render_graph.clone(),
+                render_plan: render_plan.clone(),
+                process_plan: RenderProcessPlan::default(),
+                final_output_plan: RenderFinalOutputPlan::default(),
+                readback_plan: RenderReadbackPlan::default(),
+                render_target_allocation: RenderTargetAllocationPlan::default(),
+                surface_texture_bridge: SurfaceTextureBridgePlan::default(),
+                prepared_gpu: nekoland_ecs::resources::PreparedGpuResources::default(),
+            },
             &surfaces,
         );
         let audit = &audit_outputs[&OutputId(7)];
@@ -568,7 +622,7 @@ mod tests {
             &render_graph,
             &render_plan,
             &no_materials(),
-            &HashMap::default(),
+            &BTreeMap::default(),
             OutputId(1),
         );
         assert_eq!(elements.len(), 1);
@@ -698,7 +752,7 @@ mod tests {
             &render_graph,
             &render_plan,
             &no_materials(),
-            &HashMap::default(),
+            &BTreeMap::default(),
             OutputId(3),
         );
         assert_eq!(elements.len(), 1);
@@ -754,6 +808,7 @@ mod tests {
                                 vec![RenderPassId(1)],
                                 RenderMaterialId(7),
                                 Some(nekoland_ecs::resources::MaterialParamsId(9)),
+                                Vec::new(),
                             ),
                         ),
                         (
@@ -776,17 +831,21 @@ mod tests {
                 RenderMaterialId(7),
                 RenderMaterialDescriptor {
                     debug_name: "backdrop_blur".to_owned(),
-                    pipeline_key: RenderMaterialPipelineKey("backdrop_blur".to_owned()),
+                    pipeline_key: RenderMaterialPipelineKey {
+                        material: RenderMaterialKind::BackdropBlur,
+                        stage: RenderPipelineStage::PostProcess,
+                    },
+                    shader_source:
+                        nekoland_ecs::resources::RenderMaterialShaderSource::BackdropBlur,
+                    bind_group_layout:
+                        nekoland_ecs::resources::RenderBindGroupLayoutKey::BlurUniforms,
+                    queue_kind:
+                        nekoland_ecs::resources::RenderMaterialQueueKind::BackdropPostProcess,
                 },
             )]),
             params: std::collections::BTreeMap::from([(
                 nekoland_ecs::resources::MaterialParamsId(9),
-                RenderMaterialParamBlock {
-                    values: std::collections::BTreeMap::from([(
-                        "radius".to_owned(),
-                        RenderMaterialParamValue::Float(16.0),
-                    )]),
-                },
+                RenderMaterialParamBlock::blur(16.0),
             )]),
         };
 

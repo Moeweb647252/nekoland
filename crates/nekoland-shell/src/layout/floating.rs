@@ -5,13 +5,13 @@ use nekoland_ecs::components::{
     OutputProperties, OutputViewport, SurfaceGeometry, WindowLayout, WindowMode, WindowPlacement,
     WindowPosition, WindowSceneGeometry, XdgWindow,
 };
-use nekoland_ecs::resources::{PrimaryOutputState, WorkArea};
+use nekoland_ecs::resources::{PrimaryOutputState, WaylandIngress, WorkArea};
 use nekoland_ecs::views::WorkspaceRuntime;
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 use crate::viewport::{
-    initialize_scene_geometry_from_surface, project_scene_geometry,
+    initialize_scene_geometry_from_surface, preferred_primary_output_state, project_scene_geometry,
     resolve_output_state_for_workspace,
 };
 
@@ -34,13 +34,16 @@ pub fn floating_layout_system(
     mut previous_work_area: Local<Option<WorkArea>>,
     mut windows: Query<WindowRuntime, With<XdgWindow>>,
     outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
+    wayland_ingress: Option<Res<WaylandIngress>>,
     primary_output: Option<Res<PrimaryOutputState>>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime), Allow<Disabled>>,
     work_area: Res<WorkArea>,
 ) {
+    let primary_output =
+        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
     let placement_area = placement_work_area(
         &work_area,
-        resolve_output_state_for_workspace(&outputs, None, primary_output.as_deref())
+        resolve_output_state_for_workspace(&outputs, None, primary_output)
             .map(|(_, output, _, _)| output),
     );
     let work_area_changed =
@@ -68,7 +71,7 @@ pub fn floating_layout_system(
         }
         let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces);
         let output_state =
-            resolve_output_state_for_workspace(&outputs, workspace_id, primary_output.as_deref());
+            resolve_output_state_for_workspace(&outputs, workspace_id, primary_output);
         let window_work_area =
             output_state.as_ref().map_or(placement_area, |(_, output, _, work_area)| {
                 placement_work_area(

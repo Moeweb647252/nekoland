@@ -1,4 +1,4 @@
-use bevy_app::App;
+use bevy_app::{App, SubApp};
 use bevy_ecs::schedule::ScheduleLabel;
 
 /// Frame phase that extracts external runtime state into ECS resources.
@@ -35,6 +35,18 @@ pub struct PresentSchedule;
 
 /// Registers the canonical nekoland frame schedules onto the app.
 pub fn install_core_schedules(app: &mut App) {
+    app.init_schedule(ExtractSchedule)
+        .init_schedule(ProtocolSchedule)
+        .init_schedule(InputSchedule)
+        .init_schedule(LayoutSchedule)
+        .init_schedule(PreRenderSchedule)
+        .init_schedule(RenderSchedule)
+        .init_schedule(PostRenderSchedule)
+        .init_schedule(PresentSchedule);
+}
+
+/// Registers the canonical nekoland frame schedules onto a sub-app.
+pub fn install_core_schedules_sub_app(app: &mut SubApp) {
     app.init_schedule(ExtractSchedule)
         .init_schedule(ProtocolSchedule)
         .init_schedule(InputSchedule)

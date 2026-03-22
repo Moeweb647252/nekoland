@@ -20,19 +20,16 @@ use nekoland_config::{
 use nekoland_core::lifecycle::AppLifecycleState;
 use nekoland_ecs::control::{OutputControlApi, WindowControlApi, WorkspaceControlApi};
 use nekoland_ecs::resources::{
-    BackendOutputRegistry, CommandExecutionStatus, CommandHistoryState, CompositorClock,
-    EntityIndex, ExternalCommandRequest, KeyboardFocusState, OutputOverlayId,
-    PendingExternalCommandRequests, PendingOutputControls, PendingWindowControls,
-    PendingWorkspaceControls, PresentAuditElementKind, PresentAuditState, RenderColor, RenderPlan,
-    RenderPlanItem, RenderRect,
+    CommandExecutionStatus, CommandHistoryState, CompositorClock, EntityIndex,
+    ExternalCommandRequest, KeyboardFocusState, OutputOverlayId,
+    PendingExternalCommandRequests, PendingOutputControls, PendingPopupServerRequests,
+    PendingWindowControls, PendingWorkspaceControls, PopupServerAction, PopupServerRequest,
+    PresentAuditElementKind, RenderColor, RenderPlan, RenderPlanItem, RenderRect, WaylandFeedback,
 };
 use nekoland_ecs::selectors::{
     OutputName, SurfaceId, WorkspaceLookup, WorkspaceName, WorkspaceSelector,
 };
-use nekoland_protocol::resources::{
-    ClipboardSelectionState, PendingPopupServerRequests, PopupServerAction, PopupServerRequest,
-    PrimarySelectionState, SelectionOwner,
-};
+use nekoland_protocol::resources::SelectionOwner;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::query::{
@@ -156,10 +153,7 @@ pub(crate) struct IpcQuerySnapshotInputs<'w, 's> {
     command_history: Res<'w, CommandHistoryState>,
     config: Res<'w, CompositorConfig>,
     keyboard_layout_state: Res<'w, KeyboardLayoutState>,
-    backend_outputs: Option<Res<'w, BackendOutputRegistry>>,
-    present_audit: Option<Res<'w, PresentAuditState>>,
-    clipboard_selection: Res<'w, ClipboardSelectionState>,
-    primary_selection: Res<'w, PrimarySelectionState>,
+    wayland_feedback: Option<Res<'w, WaylandFeedback>>,
     config_source: Option<Res<'w, LoadedConfigSource>>,
     entity_index: Option<Res<'w, EntityIndex>>,
 }
@@ -568,26 +562,15 @@ pub(crate) fn refresh_query_cache_system(
         command_history,
         config,
         keyboard_layout_state,
-        backend_outputs,
-        present_audit,
-        clipboard_selection,
-        primary_selection,
+        wayland_feedback,
         config_source,
         entity_index,
     } = inputs;
 
-    let connected_output_names = backend_outputs
-        .as_deref()
-        .map(|registry| {
-            registry.connected_by_id.values().cloned().collect::<std::collections::BTreeSet<_>>()
-        })
-        .unwrap_or_else(|| outputs.iter().map(|output| output.device.name.clone()).collect());
-    let enabled_output_names = backend_outputs
-        .as_deref()
-        .map(|registry| {
-            registry.enabled_by_id.values().cloned().collect::<std::collections::BTreeSet<_>>()
-        })
-        .unwrap_or_else(|| outputs.iter().map(|output| output.device.name.clone()).collect());
+    let connected_output_names =
+        outputs.iter().map(|output| output.device.name.clone()).collect::<std::collections::BTreeSet<_>>();
+    let enabled_output_names =
+        outputs.iter().map(|output| output.device.name.clone()).collect::<std::collections::BTreeSet<_>>();
     let mut output_snapshots = outputs
         .iter()
         .map(|output| OutputSnapshot {
@@ -833,6 +816,15 @@ pub(crate) fn refresh_query_cache_system(
         keybindings: config.keybindings.clone(),
     };
 
+    let clipboard_selection = wayland_feedback
+        .as_deref()
+        .map(|feedback| feedback.clipboard_selection.clone())
+        .unwrap_or_default();
+    let primary_selection = wayland_feedback
+        .as_deref()
+        .map(|feedback| feedback.primary_selection.clone())
+        .unwrap_or_default();
+
     query_cache.clipboard = ClipboardSnapshot {
         seat_name: clipboard_selection
             .selection
@@ -873,9 +865,10 @@ pub(crate) fn refresh_query_cache_system(
             .map(|selection| selection.persisted_mime_types.clone())
             .unwrap_or_default(),
     };
-    query_cache.present_audit = present_audit
+    query_cache.present_audit = wayland_feedback
         .as_deref()
-        .map(|present_audit| {
+        .map(|feedback| {
+            let present_audit = &feedback.present_audit;
             let mut outputs = present_audit
                 .outputs
                 .values()
@@ -1560,11 +1553,9 @@ mod tests {
     use nekoland_ecs::resources::{
         CompositorClock, EntityIndex, KeyboardFocusState, PendingExternalCommandRequests,
         PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
-        PresentAuditElement, PresentAuditElementKind, PresentAuditState, RenderPlan,
+        PresentAuditElement, PresentAuditElementKind, RenderPlan, WaylandFeedback,
     };
-    use nekoland_protocol::resources::{
-        ClipboardSelectionState, PendingPopupServerRequests, PrimarySelectionState,
-    };
+    use nekoland_protocol::resources::PendingPopupServerRequests;
 
     use super::{
         IpcRequestDispatchCtx, RequestDisposition, refresh_query_cache_system, reply_for_request,
@@ -1621,12 +1612,10 @@ mod tests {
         world.insert_resource(nekoland_ecs::resources::CommandHistoryState::default());
         world.insert_resource(CompositorConfig::default());
         world.insert_resource(KeyboardLayoutState::default());
-        world.insert_resource(ClipboardSelectionState::default());
-        world.insert_resource(PrimarySelectionState::default());
         world.insert_resource(EntityIndex::default());
         world.insert_resource({
-            let mut audit = PresentAuditState::default();
-            audit.outputs.insert(
+            let mut feedback = WaylandFeedback::default();
+            feedback.present_audit.outputs.insert(
                 nekoland_ecs::components::OutputId(7),
                 nekoland_ecs::resources::OutputPresentAudit {
                     output_name: "Virtual-1".to_owned(),
@@ -1644,7 +1633,7 @@ mod tests {
                     }],
                 },
             );
-            audit
+            feedback
         });
         world.insert_resource(IpcQueryCache::default());
 

@@ -13,14 +13,13 @@ use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::components::{WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, CompositorClock, KeyboardFocusState,
-    PendingProtocolInputEvents,
+    WaylandCommands,
 };
 use nekoland_ipc::commands::{PrimarySelectionSnapshot, QueryCommand, SelectionOwnerSnapshot};
 use nekoland_ipc::{
     IpcCommand, IpcReply, IpcRequest, IpcServerState, IpcSubscription, IpcSubscriptionEvent,
     SubscriptionTopic, send_request_to_path, subscribe_to_path,
 };
-use nekoland_protocol::ProtocolServerState;
 use nekoland_shell::decorations;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
@@ -103,10 +102,8 @@ fn ipc_reports_primary_selection_query_and_subscription_updates() {
         );
 
     let (wayland_socket_path, ipc_socket_path) = {
+        let protocol_server_state = common::protocol_server_state(&app);
         let world = app.inner().world();
-        let Some(protocol_server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
         let Some(ipc_server_state) = world.get_resource::<IpcServerState>() else {
             panic!("ipc server state should be available immediately after build");
         };
@@ -213,7 +210,7 @@ fn pump_keyboard_selection_input(
     clock: Res<CompositorClock>,
     mut pump: ResMut<PrimarySelectionInputPump>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
-    mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
+    mut wayland_commands: ResMut<WaylandCommands>,
     windows: Query<&WlSurfaceHandle, With<XdgWindow>>,
 ) {
     if pump.remaining_frames == 0 || clock.frame < INPUT_PUMP_START_FRAME {
@@ -225,7 +222,7 @@ fn pump_keyboard_selection_input(
     };
 
     keyboard_focus.focused_surface = Some(surface.id);
-    pending_protocol_inputs.push(BackendInputEvent {
+    wayland_commands.pending_protocol_input_events.push(BackendInputEvent {
         device: "ipc-primary-selection-test".to_owned(),
         action: BackendInputAction::Key { keycode: 36, pressed: true },
     });

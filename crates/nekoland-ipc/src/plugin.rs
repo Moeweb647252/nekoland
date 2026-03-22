@@ -4,10 +4,9 @@ use nekoland_config::resources::KeyboardLayoutState;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, RenderSchedule};
 use nekoland_ecs::resources::{
-    PendingExternalCommandRequests, PendingOutputControls, PendingWindowControls,
-    PendingWorkspaceControls,
+    PendingExternalCommandRequests, PendingOutputControls, PendingPopupServerRequests,
+    PendingWindowControls, PendingWorkspaceControls,
 };
-use nekoland_protocol::resources::PendingPopupServerRequests;
 
 use crate::{server, subscribe};
 

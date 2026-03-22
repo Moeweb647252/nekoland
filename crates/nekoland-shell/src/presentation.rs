@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::prelude::{Local, Query, ResMut, With};
 use nekoland_ecs::components::{WindowMode, XdgWindow};
-use nekoland_ecs::views::{WindowSnapshotRuntime, WindowSnapshotRuntimeItem};
-use nekoland_protocol::resources::{
+use nekoland_ecs::resources::{
     PendingWindowServerRequests, SurfaceExtent, WindowServerAction, WindowServerRequest,
     X11WindowGeometry,
 };
+use nekoland_ecs::views::{WindowSnapshotRuntime, WindowSnapshotRuntimeItem};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WindowPresentationState {

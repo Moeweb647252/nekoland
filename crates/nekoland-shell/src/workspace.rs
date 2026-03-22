@@ -10,7 +10,8 @@ use nekoland_ecs::components::{
     XdgWindow,
 };
 use nekoland_ecs::resources::{
-    FocusedOutputState, PendingWorkspaceControls, PrimaryOutputState, WorkspaceControl,
+    FocusedOutputState, PendingWorkspaceControls, PrimaryOutputState, WaylandIngress,
+    WorkspaceControl,
 };
 use nekoland_ecs::selectors::{WorkspaceLookup, WorkspaceName, WorkspaceSelector};
 use nekoland_ecs::views::{OutputRuntime, WorkspaceRuntime};
@@ -66,6 +67,7 @@ type WorkspaceOutputRouteChanges<'w, 's> = Query<
 #[derive(SystemParam)]
 pub struct WorkspaceCommandParams<'w, 's> {
     pending_workspace_controls: ResMut<'w, PendingWorkspaceControls>,
+    wayland_ingress: Option<Res<'w, WaylandIngress>>,
     primary_output: Option<Res<'w, PrimaryOutputState>>,
     focused_output: Option<Res<'w, FocusedOutputState>>,
     workspaces: Query<'w, 's, (Entity, WorkspaceRuntime), Allow<Disabled>>,
@@ -80,6 +82,7 @@ pub(crate) struct WorkspaceReconciliationState<'w, 's> {
     active_workspaces: ActiveWorkspaceEntities<'w, 's>,
     workspace_additions: WorkspaceAdditions<'w, 's>,
     output_route_changes: WorkspaceOutputRouteChanges<'w, 's>,
+    wayland_ingress: Option<Res<'w, WaylandIngress>>,
     primary_output: Option<Res<'w, PrimaryOutputState>>,
     focused_output: Option<Res<'w, FocusedOutputState>>,
     removed_workspaces: RemovedComponents<'w, 's, Workspace>,
@@ -116,6 +119,7 @@ pub(crate) fn workspace_reconciliation_needed(state: WorkspaceReconciliationStat
         active_workspaces,
         workspace_additions,
         output_route_changes,
+        wayland_ingress,
         primary_output,
         focused_output,
         removed_workspaces,
@@ -136,6 +140,7 @@ pub(crate) fn workspace_reconciliation_needed(state: WorkspaceReconciliationStat
         || !removed_workspaces.is_empty()
         || !removed_outputs.is_empty()
         || !removed_output_routes.is_empty()
+        || wayland_ingress.as_ref().is_some_and(|wayland_ingress| wayland_ingress.is_changed())
         || primary_output.as_ref().is_some_and(|primary_output| primary_output.is_changed())
         || focused_output.as_ref().is_some_and(|focused_output| focused_output.is_changed())
 }
@@ -165,6 +170,10 @@ pub fn workspace_command_system(
             )
         })
         .collect::<Vec<_>>();
+    let primary_output = crate::viewport::preferred_primary_output_state(
+        workspace_commands.wayland_ingress.as_deref(),
+        workspace_commands.primary_output.as_deref(),
+    );
 
     for control in workspace_commands.pending_workspace_controls.take() {
         match control {
@@ -203,7 +212,7 @@ pub fn workspace_command_system(
                 if let Some(target_output_entity) = resolve_workspace_control_output_entity(
                     &output_snapshot,
                     workspace_commands.focused_output.as_deref(),
-                    workspace_commands.primary_output.as_deref(),
+                    primary_output,
                 ) {
                     commands
                         .entity(target_output_entity)
@@ -377,16 +386,18 @@ pub fn remember_output_workspace_routes_system(
 /// systems can ignore inactive workspaces without filtering every query manually.
 pub fn sync_active_workspace_marker_system(
     mut commands: Commands,
+    wayland_ingress: Option<Res<WaylandIngress>>,
     primary_output: Option<Res<PrimaryOutputState>>,
     focused_output: Option<Res<FocusedOutputState>>,
     outputs: Query<OutputRuntime>,
     mut workspaces: Query<(Entity, WorkspaceRuntime, Has<ActiveWorkspace>), Allow<Disabled>>,
 ) {
-    let active_workspace_id = resolve_preferred_workspace_id(
-        &outputs,
-        focused_output.as_deref(),
+    let primary_output = crate::viewport::preferred_primary_output_state(
+        wayland_ingress.as_deref(),
         primary_output.as_deref(),
     );
+    let active_workspace_id =
+        resolve_preferred_workspace_id(&outputs, focused_output.as_deref(), primary_output);
     let active_workspace = active_workspace_id
         .and_then(|active_workspace_id| {
             workspaces
@@ -578,6 +589,7 @@ mod tests {
     };
     use nekoland_ecs::resources::{
         EntityIndex, FocusedOutputState, PendingWorkspaceControls, PrimaryOutputState,
+        WaylandIngress,
     };
 
     use super::{
@@ -1008,6 +1020,110 @@ mod tests {
         app.inner_mut().world_mut().resource_mut::<FocusedOutputState>().id = Some(hdmi_output_id);
         app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id =
             Some(virtual_output_id);
+
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<PendingWorkspaceControls>()
+            .switch_or_create_named("3");
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner_mut().world_mut();
+        let mut outputs = world.query::<(&OutputDevice, &OutputCurrentWorkspace)>();
+        let assignments = outputs
+            .iter(world)
+            .map(|(output, current_workspace)| (output.name.clone(), current_workspace.workspace.0))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(assignments["Virtual-1"], 1);
+        assert_eq!(assignments["HDMI-A-1"], 3);
+    }
+
+    #[test]
+    fn workspace_switch_prefers_wayland_ingress_primary_output_over_stale_compat_state() {
+        let mut app = NekolandApp::new("workspace-switch-wayland-primary-output-test");
+        app.insert_resource(EntityIndex::default())
+            .insert_resource(RememberedOutputWorkspaceState::default())
+            .insert_resource(PendingWorkspaceControls::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(PrimaryOutputState::default())
+            .inner_mut()
+            .add_systems(
+                LayoutSchedule,
+                (
+                    workspace_command_system,
+                    output_workspace_housekeeping_system,
+                    remember_output_workspace_routes_system,
+                )
+                    .chain(),
+            );
+
+        app.inner_mut().world_mut().spawn(Workspace {
+            id: WorkspaceId(1),
+            name: "1".to_owned(),
+            active: true,
+        });
+        app.inner_mut().world_mut().spawn(Workspace {
+            id: WorkspaceId(2),
+            name: "2".to_owned(),
+            active: false,
+        });
+        let virtual_output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "Virtual-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "test".to_owned(),
+                        model: "one".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 1280,
+                        height: 720,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    ..Default::default()
+                },
+                OutputCurrentWorkspace { workspace: WorkspaceId(1) },
+            ))
+            .id();
+        let hdmi_output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "HDMI-A-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "test".to_owned(),
+                        model: "two".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 1920,
+                        height: 1080,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    ..Default::default()
+                },
+                OutputCurrentWorkspace { workspace: WorkspaceId(2) },
+            ))
+            .id();
+        let virtual_output_id = *app
+            .inner()
+            .world()
+            .get::<OutputId>(virtual_output)
+            .expect("virtual output id should exist");
+        let hdmi_output_id =
+            *app.inner().world().get::<OutputId>(hdmi_output).expect("hdmi output id should exist");
+        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id =
+            Some(virtual_output_id);
+        app.inner_mut().world_mut().insert_resource(WaylandIngress {
+            primary_output: PrimaryOutputState { id: Some(hdmi_output_id) },
+            ..WaylandIngress::default()
+        });
 
         app.inner_mut()
             .world_mut()

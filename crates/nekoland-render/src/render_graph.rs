@@ -2,48 +2,33 @@ use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::{Res, ResMut};
 use nekoland_ecs::resources::{
-    OutputExecutionPlan, PendingScreenshotRequests, RenderPassGraph, RenderPassId, RenderPassNode,
-    RenderPlan, RenderSceneRole, RenderTargetId, RenderTargetKind,
+    OutputExecutionPlan, RenderPassGraph, RenderPassId, RenderPassNode, RenderPhasePlan,
+    RenderSceneRole, RenderTargetId, RenderTargetKind,
 };
-
-use crate::material::RenderMaterialRequestQueue;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RenderGraphBuilder;
 
-const ROLE_ORDER: [RenderSceneRole; 4] = [
-    RenderSceneRole::Desktop,
-    RenderSceneRole::Compositor,
-    RenderSceneRole::Overlay,
-    RenderSceneRole::Cursor,
-];
-
 /// Projects the current output-local render plan into a backend-neutral execution graph.
 pub fn build_render_graph_system(
-    render_plan: Res<'_, RenderPlan>,
-    material_requests: Res<'_, RenderMaterialRequestQueue>,
-    screenshot_requests: Option<Res<'_, PendingScreenshotRequests>>,
+    phase_plan: Res<'_, RenderPhasePlan>,
     mut render_graph: ResMut<'_, RenderPassGraph>,
 ) {
     let mut next_target_id = 1_u64;
     let mut next_pass_id = 1_u64;
     let mut outputs = BTreeMap::new();
 
-    for (output_id, output_plan) in &render_plan.outputs {
+    for (output_id, output_phase) in &phase_plan.outputs {
         let swapchain_target = RenderTargetId(next_target_id);
         next_target_id = next_target_id.saturating_add(1);
-        let output_requests = material_requests.outputs.get(output_id).cloned().unwrap_or_default();
-        let output_readbacks = screenshot_requests
-            .as_deref()
-            .map(|requests| requests.requests_for_output(*output_id))
-            .unwrap_or_default();
-        let scene_target = if output_requests.is_empty() && output_readbacks.is_empty() {
-            swapchain_target
-        } else {
-            let target = RenderTargetId(next_target_id);
-            next_target_id = next_target_id.saturating_add(1);
-            target
-        };
+        let scene_target =
+            if output_phase.post_process_passes.is_empty() && output_phase.readback.is_none() {
+                swapchain_target
+            } else {
+                let target = RenderTargetId(next_target_id);
+                next_target_id = next_target_id.saturating_add(1);
+                target
+            };
 
         let mut execution = OutputExecutionPlan {
             targets: BTreeMap::from([(
@@ -57,27 +42,18 @@ pub fn build_render_graph_system(
         }
 
         let mut previous_pass = None;
-        for scene_role in ROLE_ORDER {
-            let item_ids = output_plan
-                .ordered_item_ids()
-                .iter()
-                .copied()
-                .filter(|item_id| {
-                    output_plan
-                        .item(*item_id)
-                        .is_some_and(|item| item.instance().scene_role == scene_role)
-                })
-                .collect::<Vec<_>>();
-            if item_ids.is_empty() {
-                continue;
-            }
-
+        for scene_phase in &output_phase.scene_passes {
             let pass_id = RenderPassId(next_pass_id);
             next_pass_id = next_pass_id.saturating_add(1);
             let dependencies = previous_pass.into_iter().collect::<Vec<_>>();
             execution.passes.insert(
                 pass_id,
-                RenderPassNode::scene(scene_role, scene_target, dependencies, item_ids),
+                RenderPassNode::scene(
+                    scene_phase.scene_role,
+                    scene_target,
+                    dependencies,
+                    scene_phase.item_ids.clone(),
+                ),
             );
             execution.ordered_passes.push(pass_id);
             previous_pass = Some(pass_id);
@@ -85,7 +61,7 @@ pub fn build_render_graph_system(
 
         let mut current_target = scene_target;
         if let Some(mut dependency_pass) = previous_pass {
-            for (request_index, request) in output_requests.into_iter().enumerate() {
+            for (request_index, request) in output_phase.post_process_passes.iter().enumerate() {
                 let next_target = if request_index % 2 == 0 {
                     let target = RenderTargetId(next_target_id);
                     next_target_id = next_target_id.saturating_add(1);
@@ -108,6 +84,7 @@ pub fn build_render_graph_system(
                         vec![dependency_pass],
                         request.material_id,
                         request.params_id,
+                        request.process_regions.clone(),
                     ),
                 );
                 execution.ordered_passes.push(pass_id);
@@ -134,7 +111,12 @@ pub fn build_render_graph_system(
             };
             execution.terminal_passes.push(present_dependency);
 
-            if !output_readbacks.is_empty() {
+            if output_phase.readback.is_some() {
+                let request_ids = output_phase
+                    .readback
+                    .as_ref()
+                    .map(|readback| readback.request_ids.clone())
+                    .unwrap_or_default();
                 let readback_pass = RenderPassId(next_pass_id);
                 next_pass_id = next_pass_id.saturating_add(1);
                 execution.passes.insert(
@@ -144,6 +126,7 @@ pub fn build_render_graph_system(
                         current_target,
                         current_target,
                         vec![present_dependency],
+                        request_ids,
                     ),
                 );
                 execution.ordered_passes.push(readback_pass);
@@ -166,17 +149,19 @@ pub fn build_render_graph_system(
 mod tests {
     use bevy_app::App;
     use bevy_ecs::prelude::World;
+    use bevy_ecs::schedule::IntoScheduleConfigs;
     use bevy_ecs::system::System;
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::components::OutputId;
     use nekoland_ecs::resources::{
         MaterialParamsId, OutputRenderPlan, PendingScreenshotRequests, RenderItemId,
         RenderItemIdentity, RenderItemInstance, RenderMaterialId, RenderPassGraph, RenderPassKind,
-        RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId,
-        SolidRectRenderItem, SurfaceRenderItem,
+        RenderPhasePlan, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId,
+        ShellRenderInput, SolidRectRenderItem, SurfaceRenderItem,
     };
 
     use crate::material::{RenderMaterialRequest, RenderMaterialRequestQueue};
+    use crate::phase_plan::build_render_phase_plan_system;
 
     use super::build_render_graph_system;
 
@@ -188,10 +173,14 @@ mod tests {
     fn render_graph_builder_emits_one_output_swapchain_chain_per_output() {
         let mut app = App::new();
         app.init_resource::<RenderPlan>()
+            .init_resource::<RenderPhasePlan>()
             .init_resource::<RenderPassGraph>()
             .init_resource::<RenderMaterialRequestQueue>()
-            .init_resource::<PendingScreenshotRequests>()
-            .add_systems(RenderSchedule, build_render_graph_system);
+            .init_resource::<ShellRenderInput>()
+            .add_systems(
+                RenderSchedule,
+                (build_render_phase_plan_system, build_render_graph_system).chain(),
+            );
 
         app.world_mut().resource_mut::<RenderPlan>().outputs = std::collections::BTreeMap::from([
             (
@@ -269,13 +258,18 @@ mod tests {
         world.insert_resource(RenderPlan {
             outputs: std::collections::BTreeMap::from([(OutputId(3), OutputRenderPlan::default())]),
         });
+        world.init_resource::<RenderPhasePlan>();
         world.init_resource::<RenderPassGraph>();
         world.init_resource::<RenderMaterialRequestQueue>();
-        world.init_resource::<PendingScreenshotRequests>();
+        world.init_resource::<ShellRenderInput>();
 
-        let mut system = bevy_ecs::system::IntoSystem::into_system(build_render_graph_system);
-        system.initialize(&mut world);
-        let _ = system.run((), &mut world);
+        let mut phase_system =
+            bevy_ecs::system::IntoSystem::into_system(build_render_phase_plan_system);
+        phase_system.initialize(&mut world);
+        let _ = phase_system.run((), &mut world);
+        let mut graph_system = bevy_ecs::system::IntoSystem::into_system(build_render_graph_system);
+        graph_system.initialize(&mut world);
+        let _ = graph_system.run((), &mut world);
 
         let graph = world.resource::<RenderPassGraph>();
         let output = &graph.outputs[&OutputId(3)];
@@ -311,15 +305,21 @@ mod tests {
                     scene_role: RenderSceneRole::Desktop,
                     material_id: RenderMaterialId(1),
                     params_id: Some(MaterialParamsId(2)),
+                    process_regions: Vec::new(),
                 }],
             )]),
         });
+        world.init_resource::<RenderPhasePlan>();
         world.init_resource::<RenderPassGraph>();
-        world.init_resource::<PendingScreenshotRequests>();
+        world.init_resource::<ShellRenderInput>();
 
-        let mut system = bevy_ecs::system::IntoSystem::into_system(build_render_graph_system);
-        system.initialize(&mut world);
-        let _ = system.run((), &mut world);
+        let mut phase_system =
+            bevy_ecs::system::IntoSystem::into_system(build_render_phase_plan_system);
+        phase_system.initialize(&mut world);
+        let _ = phase_system.run((), &mut world);
+        let mut graph_system = bevy_ecs::system::IntoSystem::into_system(build_render_graph_system);
+        graph_system.initialize(&mut world);
+        let _ = graph_system.run((), &mut world);
 
         let graph = world.resource::<RenderPassGraph>();
         let output = &graph.outputs[&OutputId(1)];
@@ -340,6 +340,7 @@ mod tests {
                     scene_role: RenderSceneRole::Desktop,
                     material_id: RenderMaterialId(3),
                     params_id: Some(MaterialParamsId(4)),
+                    process_regions: Vec::new(),
                 }],
             )]),
         });
@@ -367,15 +368,23 @@ mod tests {
                 })]),
             )]),
         });
+        world.init_resource::<RenderPhasePlan>();
         world.init_resource::<RenderMaterialRequestQueue>();
         world.init_resource::<RenderPassGraph>();
         let mut screenshot_requests = PendingScreenshotRequests::default();
         let _ = screenshot_requests.request_output(OutputId(1));
-        world.insert_resource(screenshot_requests);
+        world.insert_resource(ShellRenderInput {
+            pending_screenshot_requests: screenshot_requests,
+            ..Default::default()
+        });
 
-        let mut system = bevy_ecs::system::IntoSystem::into_system(build_render_graph_system);
-        system.initialize(&mut world);
-        let _ = system.run((), &mut world);
+        let mut phase_system =
+            bevy_ecs::system::IntoSystem::into_system(build_render_phase_plan_system);
+        phase_system.initialize(&mut world);
+        let _ = phase_system.run((), &mut world);
+        let mut graph_system = bevy_ecs::system::IntoSystem::into_system(build_render_graph_system);
+        graph_system.initialize(&mut world);
+        let _ = graph_system.run((), &mut world);
 
         let graph = world.resource::<RenderPassGraph>();
         let output = &graph.outputs[&OutputId(1)];

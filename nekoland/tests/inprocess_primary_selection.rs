@@ -12,9 +12,9 @@ use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::components::{WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, CompositorClock, KeyboardFocusState,
-    PendingProtocolInputEvents,
+    WaylandCommands, WaylandFeedback,
 };
-use nekoland_protocol::{ProtocolServerState, resources::PrimarySelectionState};
+use nekoland_protocol::resources::PrimarySelectionState;
 use nekoland_shell::decorations;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
@@ -127,21 +127,13 @@ fn run_primary_selection_scenario() -> Option<(PrimarySelectionClientSummary, Pr
             pump_keyboard_selection_input.after(decorations::server_decoration_system),
         );
 
-    let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
-        match (&server_state.socket_name, &server_state.startup_error) {
-            (Some(socket_name), _) => runtime_dir.path.join(socket_name),
-            (None, Some(error)) if error.contains("Operation not permitted") => {
-                eprintln!("skipping primary selection test in restricted environment: {error}");
-                return None;
-            }
-            (None, Some(error)) => panic!("protocol startup failed before run: {error}"),
-            (None, None) => panic!("protocol startup produced neither socket nor error"),
+    let socket_path = match common::protocol_socket_path(&app, &runtime_dir.path) {
+        Ok(socket_path) => socket_path,
+        Err(error) if error.contains("Operation not permitted") => {
+            eprintln!("skipping primary selection test in restricted environment: {error}");
+            return None;
         }
+        Err(error) => panic!("protocol startup failed before run: {error}"),
     };
 
     let client_thread = thread::spawn(move || run_primary_selection_client(&socket_path));
@@ -149,9 +141,13 @@ fn run_primary_selection_scenario() -> Option<(PrimarySelectionClientSummary, Pr
         panic!("nekoland app should complete the configured frame budget: {error}");
     }
 
-    let selection_state = app.inner().world().get_resource::<PrimarySelectionState>().cloned();
+    let selection_state = app
+        .inner()
+        .world()
+        .get_resource::<WaylandFeedback>()
+        .map(|feedback| feedback.primary_selection.clone());
     let Some(selection_state) = selection_state else {
-        panic!("primary selection resource should be initialized");
+        panic!("primary selection feedback should be initialized");
     };
 
     let summary = match client_thread.join() {
@@ -177,7 +173,7 @@ fn pump_keyboard_selection_input(
     clock: Res<CompositorClock>,
     mut pump: ResMut<PrimarySelectionInputPump>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
-    mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
+    mut wayland_commands: ResMut<WaylandCommands>,
     windows: Query<&WlSurfaceHandle, With<XdgWindow>>,
 ) {
     if pump.remaining_frames == 0 || clock.frame < INPUT_PUMP_START_FRAME {
@@ -189,7 +185,7 @@ fn pump_keyboard_selection_input(
     };
 
     keyboard_focus.focused_surface = Some(surface.id);
-    pending_protocol_inputs.push(BackendInputEvent {
+    wayland_commands.pending_protocol_input_events.push(BackendInputEvent {
         device: "primary-selection-test".to_owned(),
         action: BackendInputAction::Key { keycode: 36, pressed: true },
     });

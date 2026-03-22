@@ -1,58 +1,55 @@
 use bevy_ecs::message::MessageWriter;
-use bevy_ecs::prelude::ResMut;
+use bevy_ecs::prelude::{Res, ResMut};
 use nekoland_ecs::events::KeyPress;
 use nekoland_ecs::resources::{
-    BackendInputAction, ModifierState, PendingBackendInputEvents, PressedKeys,
-    update_modifier_state,
+    InputEventRecord, ModifierState, PendingInputEvents, PlatformInputAction, PressedKeys,
+    WaylandIngress, update_modifier_state,
 };
-use nekoland_protocol::resources::{InputEventRecord, PendingInputEvents};
 
 /// Consumes only keyboard-related backend input records, updates coarse modifier state, and
 /// forwards key presses into both ECS messages and the human-readable input event log.
 pub fn keyboard_input_system(
+    wayland_ingress: Option<Res<'_, WaylandIngress>>,
     mut key_events: MessageWriter<KeyPress>,
     mut pressed_keys: ResMut<PressedKeys>,
     mut modifiers: ResMut<ModifierState>,
-    mut pending_backend_input_events: ResMut<PendingBackendInputEvents>,
     mut pending_input_events: ResMut<PendingInputEvents>,
 ) {
     pressed_keys.clear_frame_transitions();
 
-    // Leave non-keyboard backend events in the queue so pointer/touch systems can process them
-    // later in the same frame.
-    let mut deferred = Vec::new();
+    let Some(wayland_ingress) = wayland_ingress else {
+        return;
+    };
 
-    for event in pending_backend_input_events.drain() {
-        match event.action {
-            BackendInputAction::Key { keycode, pressed } => {
-                pressed_keys.record_key(keycode, pressed);
-                update_modifier_state(&mut modifiers, keycode, pressed);
-                key_events.write(KeyPress { keycode, pressed });
+    for event in wayland_ingress.platform_input_events.iter() {
+        match &event.action {
+            PlatformInputAction::Key { keycode, pressed } => {
+                pressed_keys.record_key(*keycode, *pressed);
+                update_modifier_state(&mut modifiers, *keycode, *pressed);
+                key_events.write(KeyPress { keycode: *keycode, pressed: *pressed });
                 pending_input_events.push(InputEventRecord {
                     source: format!("keyboard:{}", event.device),
                     detail: format!(
                         "keycode {keycode} {}",
-                        if pressed { "pressed" } else { "released" }
+                        if *pressed { "pressed" } else { "released" }
                     ),
                 });
             }
-            BackendInputAction::FocusChanged { focused } => {
+            PlatformInputAction::FocusChanged { focused } => {
                 if !focused {
                     pressed_keys.reset_all();
                     *modifiers = ModifierState::default();
                 }
                 pending_input_events.push(InputEventRecord {
                     source: format!("keyboard:{}", event.device),
-                    detail: if focused {
+                    detail: if *focused {
                         "focus gained".to_owned()
                     } else {
                         "focus lost".to_owned()
                     },
                 });
             }
-            _ => deferred.push(event),
+            _ => {}
         }
     }
-
-    pending_backend_input_events.replace(deferred);
 }

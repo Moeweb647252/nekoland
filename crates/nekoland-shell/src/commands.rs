@@ -10,11 +10,8 @@ use nekoland_ecs::control::{
 use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
 use nekoland_ecs::resources::{
     CommandExecutionRecord, CommandExecutionStatus, CommandHistoryState, CompositorClock,
-    ExternalCommandRequest, PendingExternalCommandRequests,
-};
-use nekoland_protocol::{
-    ProtocolServerState, XWaylandServerState,
-    resources::{InputEventRecord, PendingInputEvents},
+    ExternalCommandRequest, InputEventRecord, PendingExternalCommandRequests, PendingInputEvents,
+    WaylandIngress,
 };
 
 /// Tracks whether startup actions have already been applied for this session.
@@ -43,8 +40,7 @@ impl ChildCommandEnvironment {
 #[derive(SystemParam)]
 pub struct StartupActionDispatch<'w, 's> {
     config: Res<'w, CompositorConfig>,
-    protocol_server: Option<Res<'w, ProtocolServerState>>,
-    xwayland_server: Option<Res<'w, XWaylandServerState>>,
+    wayland_ingress: Option<Res<'w, WaylandIngress>>,
     startup_actions: ResMut<'w, StartupActionState>,
     pending_input_events: ResMut<'w, PendingInputEvents>,
     pending_external_commands: ResMut<'w, PendingExternalCommandRequests>,
@@ -83,8 +79,7 @@ impl<'a, 'ops> ActionDispatchContext<'a, 'ops> {
 /// Attempts to launch queued external commands and records the result as both ECS messages and
 /// human-readable input-log entries.
 pub fn external_command_launch_system(
-    protocol_server: Option<Res<ProtocolServerState>>,
-    xwayland_server: Option<Res<XWaylandServerState>>,
+    wayland_ingress: Option<Res<WaylandIngress>>,
     mut pending_external_commands: ResMut<PendingExternalCommandRequests>,
     mut pending_input_events: ResMut<PendingInputEvents>,
     mut launched_events: MessageWriter<ExternalCommandLaunched>,
@@ -99,8 +94,7 @@ pub fn external_command_launch_system(
                 continue;
             };
 
-            let child_environment =
-                nested_wayland_env(protocol_server.as_deref(), xwayland_server.as_deref());
+            let child_environment = nested_wayland_env(wayland_ingress.as_deref());
             let mut command = Command::new(program);
             command.args(args);
             child_environment.apply_to(&mut command);
@@ -157,8 +151,7 @@ pub fn external_command_launch_system(
 pub fn startup_action_queue_system(startup: StartupActionDispatch<'_, '_>) {
     let StartupActionDispatch {
         config,
-        protocol_server,
-        xwayland_server,
+        wayland_ingress,
         mut startup_actions,
         mut pending_input_events,
         mut pending_external_commands,
@@ -177,17 +170,16 @@ pub fn startup_action_queue_system(startup: StartupActionDispatch<'_, '_>) {
         return;
     }
 
-    let Some(protocol_server) = protocol_server else {
+    let Some(wayland_ingress) = wayland_ingress else {
         return;
     };
+    let protocol_server = &wayland_ingress.protocol_server;
     let Some(socket_name) = protocol_server.socket_name.as_deref() else {
         return;
     };
 
-    if let Some(xwayland) = xwayland_server.as_deref()
-        && xwayland.enabled
-        && !xwayland.ready
-    {
+    let xwayland = &wayland_ingress.xwayland_server;
+    if xwayland.enabled && !xwayland.ready {
         return;
     }
 
@@ -405,10 +397,7 @@ fn startup_actions_disabled_by_env() -> bool {
 
 /// Builds the environment variables needed for child processes to connect to the nested Wayland
 /// and optional XWayland session created by the compositor.
-fn nested_wayland_env(
-    protocol_server: Option<&ProtocolServerState>,
-    xwayland_server: Option<&XWaylandServerState>,
-) -> ChildCommandEnvironment {
+fn nested_wayland_env(wayland_ingress: Option<&WaylandIngress>) -> ChildCommandEnvironment {
     let mut env = ChildCommandEnvironment {
         removals: vec![
             "DISPLAY".to_owned(),
@@ -425,7 +414,7 @@ fn nested_wayland_env(
         ..ChildCommandEnvironment::default()
     };
 
-    if let Some(protocol_server) = protocol_server {
+    if let Some(protocol_server) = wayland_ingress.map(|ingress| &ingress.protocol_server) {
         if let Some(socket_name) = protocol_server.socket_name.as_ref() {
             env.vars.push(("WAYLAND_DISPLAY".to_owned(), socket_name.clone()));
         }
@@ -439,7 +428,8 @@ fn nested_wayland_env(
     env.vars.push(("DESKTOP_SESSION".to_owned(), "nekoland".to_owned()));
     env.vars.push(("XDG_SESSION_TYPE".to_owned(), "wayland".to_owned()));
 
-    if let Some(display_name) = xwayland_server
+    if let Some(display_name) = wayland_ingress
+        .map(|ingress| &ingress.xwayland_server)
         .and_then(|state| state.ready.then_some(state.display_name.as_deref()).flatten())
     {
         env.vars.push(("DISPLAY".to_owned(), display_name.to_owned()));
@@ -460,29 +450,28 @@ mod tests {
     use nekoland_ecs::resources::{
         CommandHistoryState, CompositorClock, KeyboardFocusState, PendingExternalCommandRequests,
         PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
+        ProtocolServerState, WaylandIngress, XWaylandServerState,
     };
-    use nekoland_protocol::{
-        ProtocolServerState, XWaylandServerState,
-        resources::PendingInputEvents,
-    };
+    use nekoland_protocol::resources::PendingInputEvents;
 
     use super::{StartupActionState, startup_action_queue_system};
 
     #[test]
     fn nested_wayland_env_scrubs_host_display_leaks_without_xwayland() {
-        let env = super::nested_wayland_env(
-            Some(&ProtocolServerState {
+        let env = super::nested_wayland_env(Some(&WaylandIngress {
+            protocol_server: ProtocolServerState {
                 socket_name: Some("wayland-77".to_owned()),
                 runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
                 ..ProtocolServerState::default()
-            }),
-            Some(&XWaylandServerState {
+            },
+            xwayland_server: XWaylandServerState {
                 enabled: true,
                 ready: false,
                 display_name: Some(":77".to_owned()),
                 ..XWaylandServerState::default()
-            }),
-        );
+            },
+            ..WaylandIngress::default()
+        }));
 
         let vars = env.vars.iter().cloned().collect::<BTreeMap<_, _>>();
         assert_eq!(vars.get("WAYLAND_DISPLAY"), Some(&"wayland-77".to_owned()));
@@ -514,19 +503,20 @@ mod tests {
 
     #[test]
     fn nested_wayland_env_sets_nested_display_when_xwayland_ready() {
-        let env = super::nested_wayland_env(
-            Some(&ProtocolServerState {
+        let env = super::nested_wayland_env(Some(&WaylandIngress {
+            protocol_server: ProtocolServerState {
                 socket_name: Some("wayland-77".to_owned()),
                 runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
                 ..ProtocolServerState::default()
-            }),
-            Some(&XWaylandServerState {
+            },
+            xwayland_server: XWaylandServerState {
                 enabled: true,
                 ready: true,
                 display_name: Some(":77".to_owned()),
                 ..XWaylandServerState::default()
-            }),
-        );
+            },
+            ..WaylandIngress::default()
+        }));
 
         let vars = env.vars.iter().cloned().collect::<BTreeMap<_, _>>();
         assert_eq!(vars.get("DISPLAY"), Some(&":77".to_owned()));
@@ -552,15 +542,18 @@ mod tests {
             .insert_resource(PendingOutputControls::default())
             .insert_resource(KeyboardFocusState::default())
             .insert_resource(PendingInputEvents::default())
-            .insert_resource(ProtocolServerState {
-                socket_name: Some("wayland-77".to_owned()),
-                runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
-                ..ProtocolServerState::default()
-            })
-            .insert_resource(XWaylandServerState {
-                enabled: true,
-                ready: false,
-                ..XWaylandServerState::default()
+            .insert_resource(WaylandIngress {
+                protocol_server: ProtocolServerState {
+                    socket_name: Some("wayland-77".to_owned()),
+                    runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
+                    ..ProtocolServerState::default()
+                },
+                xwayland_server: XWaylandServerState {
+                    enabled: true,
+                    ready: false,
+                    ..XWaylandServerState::default()
+                },
+                ..WaylandIngress::default()
             })
             .inner_mut()
             .add_message::<ExternalCommandLaunched>()
@@ -583,7 +576,7 @@ mod tests {
         };
         assert!(!startup_state.queued, "should wait for xwayland ready");
 
-        app.inner_mut().world_mut().resource_mut::<XWaylandServerState>().ready = true;
+        app.inner_mut().world_mut().resource_mut::<WaylandIngress>().xwayland_server.ready = true;
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();
@@ -614,15 +607,18 @@ mod tests {
             .insert_resource(PendingOutputControls::default())
             .insert_resource(KeyboardFocusState::default())
             .insert_resource(PendingInputEvents::default())
-            .insert_resource(ProtocolServerState {
-                socket_name: Some("wayland-77".to_owned()),
-                runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
-                ..ProtocolServerState::default()
-            })
-            .insert_resource(XWaylandServerState {
-                enabled: false,
-                ready: false,
-                ..XWaylandServerState::default()
+            .insert_resource(WaylandIngress {
+                protocol_server: ProtocolServerState {
+                    socket_name: Some("wayland-77".to_owned()),
+                    runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
+                    ..ProtocolServerState::default()
+                },
+                xwayland_server: XWaylandServerState {
+                    enabled: false,
+                    ready: false,
+                    ..XWaylandServerState::default()
+                },
+                ..WaylandIngress::default()
             })
             .inner_mut()
             .add_message::<ExternalCommandLaunched>()
@@ -667,10 +663,13 @@ mod tests {
             .insert_resource(PendingOutputControls::default())
             .insert_resource(KeyboardFocusState::default())
             .insert_resource(PendingInputEvents::default())
-            .insert_resource(ProtocolServerState {
-                socket_name: Some("wayland-77".to_owned()),
-                runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
-                ..ProtocolServerState::default()
+            .insert_resource(WaylandIngress {
+                protocol_server: ProtocolServerState {
+                    socket_name: Some("wayland-77".to_owned()),
+                    runtime_dir: Some("/tmp/nekoland-runtime".to_owned()),
+                    ..ProtocolServerState::default()
+                },
+                ..WaylandIngress::default()
             })
             .inner_mut()
             .add_message::<ExternalCommandLaunched>()

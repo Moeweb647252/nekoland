@@ -4,7 +4,7 @@ use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
 use crate::components::OutputId;
-use crate::resources::{RenderItemId, RenderSceneRole};
+use crate::resources::{ProcessRect, RenderItemId, RenderSceneRole, ScreenshotRequestId};
 
 /// One graph-local render target identifier.
 #[derive(
@@ -73,12 +73,14 @@ pub struct PostProcessPassConfig {
     pub source_target: RenderTargetId,
     pub material_id: RenderMaterialId,
     pub params_id: Option<MaterialParamsId>,
+    pub process_regions: Vec<ProcessRect>,
 }
 
 /// Readback-pass payload exposing one source target for future capture/readback paths.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReadbackPassConfig {
     pub source_target: RenderTargetId,
+    pub request_ids: Vec<ScreenshotRequestId>,
 }
 
 /// Concrete payload carried by one execution-graph pass node.
@@ -142,6 +144,7 @@ impl RenderPassNode {
         dependencies: Vec<RenderPassId>,
         material_id: RenderMaterialId,
         params_id: Option<MaterialParamsId>,
+        process_regions: Vec<ProcessRect>,
     ) -> Self {
         Self {
             kind: RenderPassKind::PostProcess,
@@ -153,6 +156,7 @@ impl RenderPassNode {
                 source_target,
                 material_id,
                 params_id,
+                process_regions,
             }),
         }
     }
@@ -162,6 +166,7 @@ impl RenderPassNode {
         source_target: RenderTargetId,
         output_target: RenderTargetId,
         dependencies: Vec<RenderPassId>,
+        request_ids: Vec<ScreenshotRequestId>,
     ) -> Self {
         Self {
             kind: RenderPassKind::Readback,
@@ -169,7 +174,7 @@ impl RenderPassNode {
             input_targets: vec![source_target],
             output_target,
             dependencies,
-            payload: RenderPassPayload::Readback(ReadbackPassConfig { source_target }),
+            payload: RenderPassPayload::Readback(ReadbackPassConfig { source_target, request_ids }),
         }
     }
 
@@ -416,6 +421,7 @@ mod tests {
             vec![RenderPassId(3)],
             RenderMaterialId(7),
             Some(MaterialParamsId(9)),
+            Vec::new(),
         );
 
         assert_eq!(node.kind, RenderPassKind::PostProcess);

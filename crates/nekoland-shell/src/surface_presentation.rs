@@ -10,9 +10,11 @@ use nekoland_ecs::presentation_logic::{
 };
 use nekoland_ecs::resources::{
     PrimaryOutputState, SurfacePresentationRole, SurfacePresentationSnapshot,
-    SurfacePresentationState,
+    SurfacePresentationState, WaylandIngress,
 };
 use nekoland_ecs::views::{OutputRuntime, PopupSnapshotRuntime, WindowSnapshotRuntime};
+
+use crate::viewport::preferred_primary_output_state;
 
 type LayerPresentationQuery<'w, 's> = Query<
     'w,
@@ -29,6 +31,7 @@ type LayerPresentationQuery<'w, 's> = Query<
 
 pub fn surface_presentation_snapshot_system(
     outputs: Query<(Entity, OutputRuntime)>,
+    wayland_ingress: Option<Res<WaylandIngress>>,
     primary_output: Option<Res<PrimaryOutputState>>,
     windows: Query<(Entity, WindowSnapshotRuntime), With<XdgWindow>>,
     popups: Query<PopupSnapshotRuntime, With<XdgPopup>>,
@@ -40,7 +43,8 @@ pub fn surface_presentation_snapshot_system(
         .iter()
         .map(|(_, output)| (output.name().to_owned(), output.id()))
         .collect::<HashMap<_, _>>();
-    let primary_output = primary_output.as_deref();
+    let primary_output =
+        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
     let primary_output_id = primary_output
         .and_then(|primary_output| primary_output.id)
         .or_else(|| live_output_ids.iter().next().copied());

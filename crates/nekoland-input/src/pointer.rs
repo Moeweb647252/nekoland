@@ -1,16 +1,14 @@
 use bevy_ecs::message::MessageWriter;
-use bevy_ecs::prelude::{Local, Query, Res, ResMut};
+use bevy_ecs::prelude::{Local, Res, ResMut};
 use bevy_ecs::system::SystemParam;
 use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::events::{PointerButton, PointerMotion};
 use nekoland_ecs::resources::{
-    BackendInputAction, FocusedOutputState, GlobalPointerPosition, KeyShortcut,
-    PendingBackendInputEvents, PendingOutputControls, PhysicalPointerPosition, PointerDelta,
-    PressedKeys, ViewportPointerPanState,
+    FocusedOutputState, GlobalPointerPosition, InputEventRecord, KeyShortcut, OutputSnapshotState,
+    PendingInputEvents, PendingOutputControls, PhysicalPointerPosition, PlatformInputAction,
+    PointerDelta, PressedKeys, ViewportPointerPanState, WaylandIngress,
 };
 use nekoland_ecs::selectors::OutputSelector;
-use nekoland_ecs::views::OutputRuntime;
-use nekoland_protocol::resources::{InputEventRecord, PendingInputEvents};
 
 #[derive(Debug, Default)]
 pub(crate) struct ViewportPointerPanGestureState {
@@ -36,24 +34,25 @@ pub(crate) struct ViewportPointerPanParams<'w, 's> {
 /// Consumes pointer-related backend input records into raw pointer state, pointer deltas, and
 /// higher-level button messages.
 pub fn pointer_input_system(
+    wayland_ingress: Option<Res<'_, WaylandIngress>>,
     pointer: Res<GlobalPointerPosition>,
     mut physical_pointer: ResMut<PhysicalPointerPosition>,
     mut pointer_delta: ResMut<PointerDelta>,
     mut button_events: MessageWriter<PointerButton>,
-    mut pending_backend_input_events: ResMut<PendingBackendInputEvents>,
     mut pending_input_events: ResMut<PendingInputEvents>,
 ) {
     pointer_delta.dx = 0.0;
     pointer_delta.dy = 0.0;
+    let Some(wayland_ingress) = wayland_ingress else {
+        return;
+    };
 
-    let mut deferred = Vec::new();
-
-    for event in pending_backend_input_events.drain() {
-        match event.action {
-            BackendInputAction::PointerMoved { x, y } => {
+    for event in wayland_ingress.platform_input_events.iter() {
+        match &event.action {
+            PlatformInputAction::PointerMoved { x, y } => {
                 if physical_pointer.needs_resync {
-                    physical_pointer.x = x;
-                    physical_pointer.y = y;
+                    physical_pointer.x = *x;
+                    physical_pointer.y = *y;
                     physical_pointer.initialized = true;
                     physical_pointer.needs_resync = false;
 
@@ -69,10 +68,10 @@ pub fn pointer_input_system(
                 } else {
                     (pointer.x, pointer.y)
                 };
-                pointer_delta.dx += x - previous_x;
-                pointer_delta.dy += y - previous_y;
-                physical_pointer.x = x;
-                physical_pointer.y = y;
+                pointer_delta.dx += *x - previous_x;
+                pointer_delta.dy += *y - previous_y;
+                physical_pointer.x = *x;
+                physical_pointer.y = *y;
                 physical_pointer.initialized = true;
                 physical_pointer.needs_resync = false;
 
@@ -81,9 +80,9 @@ pub fn pointer_input_system(
                     detail: format!("moved to ({x:.1}, {y:.1})"),
                 });
             }
-            BackendInputAction::PointerDelta { dx, dy } => {
-                pointer_delta.dx += dx;
-                pointer_delta.dy += dy;
+            PlatformInputAction::PointerDelta { dx, dy } => {
+                pointer_delta.dx += *dx;
+                pointer_delta.dy += *dy;
                 physical_pointer.initialized = false;
                 physical_pointer.needs_resync = true;
 
@@ -92,36 +91,33 @@ pub fn pointer_input_system(
                     detail: format!("delta ({dx:.1}, {dy:.1})"),
                 });
             }
-            BackendInputAction::PointerButton { button_code, pressed } => {
-                button_events.write(PointerButton { button_code, pressed });
+            PlatformInputAction::PointerButton { button_code, pressed } => {
+                button_events.write(PointerButton { button_code: *button_code, pressed: *pressed });
                 pending_input_events.push(InputEventRecord {
                     source: format!("pointer:{}", event.device),
                     detail: format!(
                         "button {button_code} {}",
-                        if pressed { "pressed" } else { "released" }
+                        if *pressed { "pressed" } else { "released" }
                     ),
                 });
             }
-            BackendInputAction::PointerAxis { horizontal, vertical } => {
+            PlatformInputAction::PointerAxis { horizontal, vertical } => {
                 pending_input_events.push(InputEventRecord {
                     source: format!("pointer:{}", event.device),
                     detail: format!("axis ({horizontal:.1}, {vertical:.1})"),
                 });
             }
-            BackendInputAction::FocusChanged { focused } => {
+            PlatformInputAction::FocusChanged { focused } => {
                 if !focused {
                     physical_pointer.initialized = false;
                     physical_pointer.needs_resync = false;
                     pointer_delta.dx = 0.0;
                     pointer_delta.dy = 0.0;
                 }
-                deferred.push(event);
             }
-            _ => deferred.push(event),
+            _ => {}
         }
     }
-
-    pending_backend_input_events.replace(deferred);
 }
 
 /// Applies any unconsumed raw pointer delta to the logical cursor position shared by the rest of
@@ -129,7 +125,7 @@ pub fn pointer_input_system(
 pub fn cursor_motion_system(
     mut pointer: ResMut<GlobalPointerPosition>,
     focused_output: Option<Res<FocusedOutputState>>,
-    outputs: Query<OutputRuntime>,
+    wayland_ingress: Option<Res<WaylandIngress>>,
     mut pointer_delta: ResMut<PointerDelta>,
     mut motion_events: MessageWriter<PointerMotion>,
 ) {
@@ -139,13 +135,18 @@ pub fn cursor_motion_system(
 
     let next_x = pointer.x + pointer_delta.dx;
     let next_y = pointer.y + pointer_delta.dy;
-    let (clamped_x, clamped_y) = clamp_pointer_to_active_output(
-        (next_x, next_y),
-        &pointer,
-        focused_output.as_deref(),
-        &outputs,
-    )
-    .unwrap_or((next_x, next_y));
+    let (clamped_x, clamped_y) = wayland_ingress
+        .as_deref()
+        .map(|ingress| &ingress.output_snapshots)
+        .and_then(|outputs| {
+            clamp_pointer_to_active_output(
+                (next_x, next_y),
+                &pointer,
+                focused_output.as_deref(),
+                outputs,
+            )
+        })
+        .unwrap_or((next_x, next_y));
 
     pointer.x = clamped_x;
     pointer.y = clamped_y;
@@ -157,21 +158,24 @@ pub fn cursor_motion_system(
 pub fn focused_output_tracking_system(
     pointer: Res<GlobalPointerPosition>,
     mut focused_output: ResMut<FocusedOutputState>,
-    outputs: Query<OutputRuntime>,
+    wayland_ingress: Option<Res<WaylandIngress>>,
 ) {
+    let Some(outputs) = wayland_ingress.as_deref().map(|ingress| &ingress.output_snapshots) else {
+        return;
+    };
+
     let next_output = outputs
+        .outputs
         .iter()
-        .find(|output| {
-            let left = f64::from(output.placement.x);
-            let top = f64::from(output.placement.y);
-            let right = left + f64::from(output.properties.width.max(1));
-            let bottom = top + f64::from(output.properties.height.max(1));
-            pointer.x >= left && pointer.x < right && pointer.y >= top && pointer.y < bottom
-        })
-        .map(|output| Some(output.id()))
+        .find(|output| output.contains_point(pointer.x, pointer.y))
+        .map(|output| Some(output.output_id))
         .or_else(|| {
             focused_output.id.and_then(|current| {
-                outputs.iter().find(|output| output.id() == current).map(|_| Some(current))
+                outputs
+                    .outputs
+                    .iter()
+                    .find(|output| output.output_id == current)
+                    .map(|_| Some(current))
             })
         });
 
@@ -185,26 +189,28 @@ fn clamp_pointer_to_active_output(
     next_pointer: (f64, f64),
     current_pointer: &GlobalPointerPosition,
     focused_output: Option<&FocusedOutputState>,
-    outputs: &Query<OutputRuntime>,
+    outputs: &OutputSnapshotState,
 ) -> Option<(f64, f64)> {
     let output = focused_output
         .and_then(|focused_output| {
-            focused_output
-                .id
-                .and_then(|output_id| outputs.iter().find(|output| output.id() == output_id))
+            focused_output.id.and_then(|output_id| {
+                outputs.outputs.iter().find(|output| output.output_id == output_id)
+            })
         })
         .or_else(|| {
-            outputs.iter().find(|output| {
+            outputs.outputs.iter().find(|output| {
                 pointer_within_output((current_pointer.x, current_pointer.y), output)
             })
         })
-        .or_else(|| outputs.iter().find(|output| pointer_within_output(next_pointer, output)))
-        .or_else(|| outputs.iter().next())?;
+        .or_else(|| {
+            outputs.outputs.iter().find(|output| pointer_within_output(next_pointer, output))
+        })
+        .or_else(|| outputs.outputs.first())?;
 
-    let left = f64::from(output.placement.x);
-    let top = f64::from(output.placement.y);
-    let right = left + f64::from(output.properties.width.max(1));
-    let bottom = top + f64::from(output.properties.height.max(1));
+    let left = output.x as f64;
+    let top = output.y as f64;
+    let right = left + f64::from(output.width.max(1));
+    let bottom = top + f64::from(output.height.max(1));
 
     Some((
         next_pointer.0.clamp(left, right - POINTER_BOUNDS_EPSILON),
@@ -214,14 +220,9 @@ fn clamp_pointer_to_active_output(
 
 fn pointer_within_output(
     pointer: (f64, f64),
-    output: &nekoland_ecs::views::OutputRuntimeReadOnlyItem<'_, '_>,
+    output: &nekoland_ecs::resources::OutputGeometrySnapshot,
 ) -> bool {
-    let left = f64::from(output.placement.x);
-    let top = f64::from(output.placement.y);
-    let right = left + f64::from(output.properties.width.max(1));
-    let bottom = top + f64::from(output.properties.height.max(1));
-
-    pointer.0 >= left && pointer.0 < right && pointer.1 >= top && pointer.1 < bottom
+    output.contains_point(pointer.0, pointer.1)
 }
 
 /// Treats the configured viewport-pan shortcut plus pointer delta as direct viewport panning on
@@ -291,19 +292,21 @@ mod tests {
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::RunSystemOnce;
     use nekoland_config::resources::CompositorConfig;
-    use nekoland_ecs::bundles::OutputBundle;
     use nekoland_ecs::components::OutputId;
-    use nekoland_ecs::components::{OutputDevice, OutputKind, OutputPlacement, OutputProperties};
     use nekoland_ecs::events::{PointerButton, PointerMotion};
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, FocusedOutputState, GlobalPointerPosition,
-        ModifierMask, PendingBackendInputEvents, PendingOutputControls, PhysicalPointerPosition,
-        PointerDelta, PressedKeys, ViewportPointerPanState,
+        ModifierMask, OutputGeometrySnapshot, OutputSnapshotState, PendingOutputControls,
+        PendingPlatformInputEvents, PhysicalPointerPosition, PointerDelta, PressedKeys,
+        ViewportPointerPanState, WaylandIngress,
     };
     use nekoland_ecs::selectors::OutputSelector;
     use nekoland_protocol::resources::PendingInputEvents;
 
-    use super::{cursor_motion_system, pointer_input_system, viewport_pointer_pan_system};
+    use super::{
+        cursor_motion_system, focused_output_tracking_system, pointer_input_system,
+        viewport_pointer_pan_system,
+    };
 
     #[test]
     fn viewport_pointer_pan_consumes_pointer_delta_without_moving_cursor() {
@@ -429,23 +432,22 @@ mod tests {
         world.insert_resource(GlobalPointerPosition { x: 90.0, y: 40.0 });
         world.insert_resource(PointerDelta { dx: 20.0, dy: 30.0 });
         world.insert_resource(FocusedOutputState { id: Some(OutputId(1)) });
-        world.init_resource::<Messages<PointerMotion>>();
-        world.spawn(OutputBundle {
-            output: OutputDevice {
-                name: "DP-1".to_owned(),
-                kind: OutputKind::Nested,
-                make: "Nekoland".to_owned(),
-                model: "test".to_owned(),
+        world.insert_resource(WaylandIngress {
+            output_snapshots: OutputSnapshotState {
+                outputs: vec![OutputGeometrySnapshot {
+                    output_id: OutputId(1),
+                    name: "DP-1".to_owned(),
+                    x: 0,
+                    y: 0,
+                    width: 100,
+                    height: 50,
+                    scale: 1,
+                    refresh_millihz: 60_000,
+                }],
             },
-            properties: OutputProperties {
-                width: 100,
-                height: 50,
-                refresh_millihz: 60_000,
-                scale: 1,
-            },
-            placement: OutputPlacement { x: 0, y: 0 },
-            ..Default::default()
+            ..WaylandIngress::default()
         });
+        world.init_resource::<Messages<PointerMotion>>();
 
         let Ok(()) = world.run_system_once(cursor_motion_system) else {
             panic!("cursor motion system should run");
@@ -457,19 +459,62 @@ mod tests {
     }
 
     #[test]
+    fn focused_output_tracking_uses_output_snapshot_state() {
+        let mut world = World::default();
+        world.insert_resource(GlobalPointerPosition { x: 150.0, y: 40.0 });
+        world.insert_resource(FocusedOutputState::default());
+        world.insert_resource(WaylandIngress {
+            output_snapshots: OutputSnapshotState {
+                outputs: vec![
+                    OutputGeometrySnapshot {
+                        output_id: OutputId(1),
+                        name: "HDMI-A-1".to_owned(),
+                        x: 0,
+                        y: 0,
+                        width: 100,
+                        height: 80,
+                        scale: 1,
+                        refresh_millihz: 60_000,
+                    },
+                    OutputGeometrySnapshot {
+                        output_id: OutputId(2),
+                        name: "DP-1".to_owned(),
+                        x: 100,
+                        y: 0,
+                        width: 100,
+                        height: 80,
+                        scale: 1,
+                        refresh_millihz: 60_000,
+                    },
+                ],
+            },
+            ..WaylandIngress::default()
+        });
+
+        let Ok(()) = world.run_system_once(focused_output_tracking_system) else {
+            panic!("focused output tracking system should run");
+        };
+
+        assert_eq!(world.resource::<FocusedOutputState>().id, Some(OutputId(2)));
+    }
+
+    #[test]
     fn pointer_input_resyncs_after_relative_motion_without_jumping() {
         let mut world = World::default();
         world.insert_resource(GlobalPointerPosition { x: 20.0, y: 10.0 });
         world.insert_resource(PhysicalPointerPosition::default());
         world.insert_resource(PointerDelta::default());
-        world.init_resource::<PendingBackendInputEvents>();
         world.init_resource::<PendingInputEvents>();
         world.init_resource::<Messages<PointerButton>>();
         world.init_resource::<Messages<PointerMotion>>();
-
-        world.resource_mut::<PendingBackendInputEvents>().push(BackendInputEvent {
-            device: "winit".to_owned(),
-            action: BackendInputAction::PointerDelta { dx: 4.0, dy: 7.0 },
+        world.insert_resource(WaylandIngress {
+            platform_input_events: PendingPlatformInputEvents::from_items(vec![
+                BackendInputEvent {
+                    device: "winit".to_owned(),
+                    action: BackendInputAction::PointerDelta { dx: 4.0, dy: 7.0 },
+                },
+            ]),
+            ..WaylandIngress::default()
         });
         let Ok(()) = world.run_system_once(pointer_input_system) else {
             panic!("pointer input system should run");
@@ -484,10 +529,11 @@ mod tests {
         assert!(!physical.initialized);
         assert!(physical.needs_resync);
 
-        world.resource_mut::<PendingBackendInputEvents>().push(BackendInputEvent {
-            device: "winit".to_owned(),
-            action: BackendInputAction::PointerMoved { x: 300.0, y: 200.0 },
-        });
+        world.resource_mut::<WaylandIngress>().platform_input_events =
+            PendingPlatformInputEvents::from_items(vec![BackendInputEvent {
+                device: "winit".to_owned(),
+                action: BackendInputAction::PointerMoved { x: 300.0, y: 200.0 },
+            }]);
         let Ok(()) = world.run_system_once(pointer_input_system) else {
             panic!("pointer input system should run");
         };
@@ -499,10 +545,11 @@ mod tests {
         assert!(physical.initialized);
         assert!(!physical.needs_resync);
 
-        world.resource_mut::<PendingBackendInputEvents>().push(BackendInputEvent {
-            device: "winit".to_owned(),
-            action: BackendInputAction::PointerMoved { x: 302.0, y: 203.0 },
-        });
+        world.resource_mut::<WaylandIngress>().platform_input_events =
+            PendingPlatformInputEvents::from_items(vec![BackendInputEvent {
+                device: "winit".to_owned(),
+                action: BackendInputAction::PointerMoved { x: 302.0, y: 203.0 },
+            }]);
         let Ok(()) = world.run_system_once(pointer_input_system) else {
             panic!("pointer input system should run");
         };
@@ -522,13 +569,16 @@ mod tests {
             needs_resync: true,
         });
         world.insert_resource(PointerDelta { dx: 9.0, dy: -4.0 });
-        world.init_resource::<PendingBackendInputEvents>();
         world.init_resource::<PendingInputEvents>();
         world.init_resource::<Messages<PointerButton>>();
-
-        world.resource_mut::<PendingBackendInputEvents>().push(BackendInputEvent {
-            device: "winit".to_owned(),
-            action: BackendInputAction::FocusChanged { focused: false },
+        world.insert_resource(WaylandIngress {
+            platform_input_events: PendingPlatformInputEvents::from_items(vec![
+                BackendInputEvent {
+                    device: "winit".to_owned(),
+                    action: BackendInputAction::FocusChanged { focused: false },
+                },
+            ]),
+            ..WaylandIngress::default()
         });
         let Ok(()) = world.run_system_once(pointer_input_system) else {
             panic!("pointer input system should run");
@@ -536,13 +586,13 @@ mod tests {
 
         let physical = world.resource::<PhysicalPointerPosition>();
         let pointer_delta = world.resource::<PointerDelta>();
-        let pending_backend = world.resource::<PendingBackendInputEvents>();
+        let ingress = world.resource::<WaylandIngress>();
 
         assert!(!physical.initialized);
         assert!(!physical.needs_resync);
         assert_eq!((pointer_delta.dx, pointer_delta.dy), (0.0, 0.0));
         assert_eq!(
-            pending_backend.as_slice(),
+            ingress.platform_input_events.as_slice(),
             &[BackendInputEvent {
                 device: "winit".to_owned(),
                 action: BackendInputAction::FocusChanged { focused: false },

@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use bevy_ecs::prelude::{Local, Query, Res, ResMut};
-use bevy_ecs::system::SystemParam;
-use nekoland_ecs::components::{OutputId, SurfaceContentVersion, WlSurfaceHandle};
+use bevy_ecs::prelude::{Local, Res, ResMut};
+use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
     DamageRect, DamageState, OutputDamageRegions, RenderItemId, RenderMaterialFrameState,
-    RenderPassGraph, RenderPassKind, RenderPassPayload, RenderPlan, RenderPlanItem, RenderRect,
+    RenderMaterialParamBlock, RenderPassGraph, RenderPassKind, RenderPassPayload, RenderPlan,
+    RenderPlanItem, RenderRect, ShellRenderInput, SurfaceContentVersionSnapshot,
     SurfacePresentationSnapshot,
 };
 
@@ -26,52 +26,34 @@ pub(crate) struct DamageTrackerState {
     previous_snapshot: Option<OutputDamageSnapshot>,
 }
 
-type DamageSurfaceVersions<'w, 's> =
-    Query<'w, 's, (&'static WlSurfaceHandle, &'static SurfaceContentVersion)>;
-type DamageOutputs<'w, 's> = Query<'w, 's, &'static OutputId>;
-
-#[derive(SystemParam)]
-pub(crate) struct DamageTrackingParams<'w, 's> {
-    surface_versions: DamageSurfaceVersions<'w, 's>,
-    outputs: DamageOutputs<'w, 's>,
-    render_plan: Res<'w, RenderPlan>,
-    render_graph: Res<'w, RenderPassGraph>,
-    materials: Res<'w, RenderMaterialFrameState>,
-    surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
-    damage_state: ResMut<'w, DamageState>,
-    output_damage_regions: ResMut<'w, OutputDamageRegions>,
-    tracker_state: Local<'s, DamageTrackerState>,
-}
-
 /// Derives per-output scene damage from changes in the visible compositor scene graph.
 ///
 /// The tracker keeps the previous output-local geometry plus a content-commit version for each
 /// visible surface. Geometry-only changes emit a symmetric difference; content commits emit the
 /// full current rect, and disappearing geometry emits the previous rect.
-pub(crate) fn damage_tracking_system(damage: DamageTrackingParams<'_, '_>) {
-    let DamageTrackingParams {
-        surface_versions,
-        outputs,
-        render_plan,
-        render_graph,
-        materials,
-        surface_presentation,
-        mut damage_state,
-        mut output_damage_regions,
-        mut tracker_state,
-    } = damage;
-
-    let live_output_ids = outputs.iter().copied().collect::<BTreeSet<_>>();
+pub(crate) fn damage_tracking_system(
+    render_plan: Res<'_, RenderPlan>,
+    render_graph: Res<'_, RenderPassGraph>,
+    materials: Res<'_, RenderMaterialFrameState>,
+    surface_versions: Res<'_, SurfaceContentVersionSnapshot>,
+    shell_render_input: Option<Res<'_, ShellRenderInput>>,
+    mut damage_state: ResMut<'_, DamageState>,
+    mut output_damage_regions: ResMut<'_, OutputDamageRegions>,
+    mut tracker_state: Local<'_, DamageTrackerState>,
+) {
+    let live_output_ids = render_plan.outputs.keys().copied().collect::<BTreeSet<_>>();
     let mut current_snapshot = live_output_ids
         .iter()
         .copied()
         .map(|output_id| (output_id, BTreeMap::new()))
         .collect::<OutputDamageSnapshot>();
     let surface_versions = surface_versions
+        .versions
         .iter()
-        .map(|(surface, content_version)| (surface.id, content_version.value))
+        .map(|(surface_id, version)| (*surface_id, *version))
         .collect::<HashMap<_, _>>();
-    let surface_presentation = surface_presentation.as_deref();
+    let surface_presentation =
+        shell_render_input.as_deref().map(|mailbox| &mailbox.surface_presentation);
 
     for output_id in &live_output_ids {
         let Some(output_plan) = render_plan.outputs.get(output_id) else {
@@ -225,40 +207,35 @@ fn output_material_signature(
         if let Some(params_id) = config.params_id {
             params_id.hash(&mut hasher);
             if let Some(params) = materials.params(params_id) {
-                for (key, value) in &params.values {
-                    key.hash(&mut hasher);
-                    match value {
-                        nekoland_ecs::resources::RenderMaterialParamValue::Float(value) => {
-                            value.to_bits().hash(&mut hasher);
-                        }
-                        nekoland_ecs::resources::RenderMaterialParamValue::Vec2(value) => {
-                            value[0].to_bits().hash(&mut hasher);
-                            value[1].to_bits().hash(&mut hasher);
-                        }
-                        nekoland_ecs::resources::RenderMaterialParamValue::Vec4(value) => {
-                            for item in value {
-                                item.to_bits().hash(&mut hasher);
-                            }
-                        }
-                        nekoland_ecs::resources::RenderMaterialParamValue::Rect(value) => {
-                            value.x.hash(&mut hasher);
-                            value.y.hash(&mut hasher);
-                            value.width.hash(&mut hasher);
-                            value.height.hash(&mut hasher);
-                        }
-                        nekoland_ecs::resources::RenderMaterialParamValue::Bool(value) => {
-                            value.hash(&mut hasher);
-                        }
-                        nekoland_ecs::resources::RenderMaterialParamValue::Uint(value) => {
-                            value.hash(&mut hasher);
-                        }
-                    }
-                }
+                hash_material_params(params, &mut hasher);
             }
         }
     }
 
     hasher.finish()
+}
+
+fn hash_material_params(params: &RenderMaterialParamBlock, hasher: &mut DefaultHasher) {
+    match params {
+        RenderMaterialParamBlock::Empty => 0_u8.hash(hasher),
+        RenderMaterialParamBlock::Blur(params) => {
+            1_u8.hash(hasher);
+            params.radius.to_bits().hash(hasher);
+        }
+        RenderMaterialParamBlock::Shadow(params) => {
+            2_u8.hash(hasher);
+            params.spread.to_bits().hash(hasher);
+            params.offset[0].to_bits().hash(hasher);
+            params.offset[1].to_bits().hash(hasher);
+            for item in params.color {
+                item.to_bits().hash(hasher);
+            }
+        }
+        RenderMaterialParamBlock::RoundedCorners(params) => {
+            3_u8.hash(hasher);
+            params.radius.to_bits().hash(hasher);
+        }
+    }
 }
 
 fn diff_damage_snapshots(
@@ -370,7 +347,10 @@ fn normalize_damage_rects(rects: Vec<DamageRect>) -> Vec<DamageRect> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use bevy_ecs::schedule::IntoScheduleConfigs;
+    use bevy_ecs::system::{IntoSystem, System};
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
@@ -380,11 +360,13 @@ mod tests {
         WlSurfaceHandle, XdgPopup, XdgWindow,
     };
     use nekoland_ecs::resources::{
-        CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, CursorImageSnapshot,
-        CursorSceneSnapshot, DamageState, OutputCompositorScene, OutputDamageRegions, RenderColor,
-        RenderItemInstance, RenderMaterialFrameState, RenderPassGraph, RenderPlan, RenderRect,
-        RenderSceneRole, SurfacePresentationRole, SurfacePresentationSnapshot,
-        SurfacePresentationState, WindowStackingState,
+        CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, CursorRenderItem,
+        CursorRenderSource, CursorSceneSnapshot, DamageState, OutputCompositorScene,
+        OutputDamageRegions, OutputExecutionPlan, OutputRenderPlan, RenderColor, RenderItemId,
+        RenderItemIdentity, RenderItemInstance, RenderMaterialFrameState, RenderPassGraph,
+        RenderPassId, RenderPassNode, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
+        RenderSourceId, ShellRenderInput, SurfaceContentVersionSnapshot, SurfacePresentationRole,
+        SurfacePresentationSnapshot, SurfacePresentationState, WindowStackingState,
     };
 
     use crate::{
@@ -409,9 +391,18 @@ mod tests {
             .unwrap_or_else(|| panic!("missing output id for {name}"))
     }
 
+    fn sync_surface_content_version_snapshot_system(
+        surfaces: bevy_ecs::prelude::Query<'_, '_, (&WlSurfaceHandle, &SurfaceContentVersion)>,
+        mut snapshot: bevy_ecs::prelude::ResMut<'_, SurfaceContentVersionSnapshot>,
+    ) {
+        snapshot.versions =
+            surfaces.iter().map(|(surface, version)| (surface.id, version.value)).collect();
+    }
+
     fn install_damage_pipeline(app: &mut NekolandApp) {
         app.inner_mut()
             .init_resource::<RenderPlan>()
+            .init_resource::<nekoland_ecs::resources::RenderPhasePlan>()
             .init_resource::<RenderPassGraph>()
             .init_resource::<RenderMaterialFrameState>()
             .init_resource::<RenderMaterialRegistry>()
@@ -421,7 +412,8 @@ mod tests {
             .init_resource::<CompositorSceneState>()
             .init_resource::<RenderSceneContributionQueue>()
             .init_resource::<CursorSceneSnapshot>()
-            .init_resource::<CursorImageSnapshot>()
+            .init_resource::<ShellRenderInput>()
+            .init_resource::<SurfaceContentVersionSnapshot>()
             .init_resource::<CursorThemeGeometryCache>()
             .init_resource::<RenderSceneIdentityRegistry>()
             .init_resource::<WindowStackingState>()
@@ -435,6 +427,8 @@ mod tests {
                     emit_compositor_scene_contributions_system,
                     emit_cursor_scene_contributions_system,
                     assemble_render_plan_system,
+                    sync_surface_content_version_snapshot_system,
+                    crate::phase_plan::build_render_phase_plan_system,
                     build_render_graph_system,
                     damage_tracking_system,
                 )
@@ -518,7 +512,7 @@ mod tests {
             BufferState { attached: true, scale: 1 },
             DesiredOutputName(Some("Virtual-1".to_owned())),
         ));
-        app.inner_mut().world_mut().insert_resource(SurfacePresentationSnapshot {
+        let surface_presentation = SurfacePresentationSnapshot {
             surfaces: std::collections::BTreeMap::from([
                 (
                     1,
@@ -565,6 +559,11 @@ mod tests {
                     },
                 ),
             ]),
+        };
+        app.inner_mut().world_mut().insert_resource(surface_presentation.clone());
+        app.inner_mut().world_mut().insert_resource(ShellRenderInput {
+            surface_presentation,
+            ..Default::default()
         });
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
@@ -606,6 +605,17 @@ mod tests {
             panic!("window viewport visibility should remain present");
         };
         visibility.output = Some(virtual_id);
+        if let Some(mut shell_render_input) =
+            app.inner_mut().world_mut().get_resource_mut::<ShellRenderInput>()
+        {
+            let snapshot = &mut shell_render_input.surface_presentation;
+            if let Some(state) = snapshot.surfaces.get_mut(&2) {
+                state.target_output = Some(virtual_id);
+            }
+            if let Some(state) = snapshot.surfaces.get_mut(&3) {
+                state.target_output = Some(virtual_id);
+            }
+        }
         if let Some(mut snapshot) =
             app.inner_mut().world_mut().get_resource_mut::<SurfacePresentationSnapshot>()
         {
@@ -694,7 +704,7 @@ mod tests {
                 ..Default::default()
             })
             .id();
-        app.inner_mut().world_mut().insert_resource(SurfacePresentationSnapshot {
+        let surface_presentation = SurfacePresentationSnapshot {
             surfaces: std::collections::BTreeMap::from([(
                 10,
                 SurfacePresentationState {
@@ -706,6 +716,11 @@ mod tests {
                     role: SurfacePresentationRole::Window,
                 },
             )]),
+        };
+        app.inner_mut().world_mut().insert_resource(surface_presentation.clone());
+        app.inner_mut().world_mut().insert_resource(ShellRenderInput {
+            surface_presentation,
+            ..Default::default()
         });
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
@@ -717,6 +732,12 @@ mod tests {
             panic!("window geometry should remain present");
         };
         geometry.width = 120;
+        if let Some(mut shell_render_input) =
+            app.inner_mut().world_mut().get_resource_mut::<ShellRenderInput>()
+            && let Some(state) = shell_render_input.surface_presentation.surfaces.get_mut(&10)
+        {
+            state.geometry.width = 120;
+        }
         if let Some(mut snapshot) =
             app.inner_mut().world_mut().get_resource_mut::<SurfacePresentationSnapshot>()
             && let Some(state) = snapshot.surfaces.get_mut(&10)
@@ -771,7 +792,7 @@ mod tests {
                 ..Default::default()
             })
             .id();
-        app.inner_mut().world_mut().insert_resource(SurfacePresentationSnapshot {
+        let surface_presentation = SurfacePresentationSnapshot {
             surfaces: std::collections::BTreeMap::from([(
                 10,
                 SurfacePresentationState {
@@ -783,6 +804,11 @@ mod tests {
                     role: SurfacePresentationRole::Window,
                 },
             )]),
+        };
+        app.inner_mut().world_mut().insert_resource(surface_presentation.clone());
+        app.inner_mut().world_mut().insert_resource(ShellRenderInput {
+            surface_presentation,
+            ..Default::default()
         });
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
@@ -894,56 +920,85 @@ mod tests {
 
     #[test]
     fn cursor_contributions_participate_in_damage_diff() {
-        let mut app = NekolandApp::new("damage-tracker-cursor-test");
-        install_damage_pipeline(&mut app);
-
-        app.inner_mut().world_mut().spawn(OutputBundle {
-            output: OutputDevice {
-                name: "Virtual-1".to_owned(),
-                kind: OutputKind::Virtual,
-                make: "Virtual".to_owned(),
-                model: "one".to_owned(),
-            },
-            properties: OutputProperties {
-                width: 1280,
-                height: 720,
-                refresh_millihz: 60_000,
-                scale: 1,
-            },
-            ..Default::default()
+        let mut world = bevy_ecs::world::World::default();
+        let output_id = OutputId(1);
+        let identity = RenderItemIdentity::new(RenderSourceId(999), RenderItemId(123));
+        world.insert_resource(RenderMaterialFrameState::default());
+        world.insert_resource(SurfaceContentVersionSnapshot::default());
+        world.insert_resource(ShellRenderInput::default());
+        world.insert_resource(DamageState::default());
+        world.insert_resource(OutputDamageRegions::default());
+        world.insert_resource(RenderPlan {
+            outputs: BTreeMap::from([(
+                output_id,
+                OutputRenderPlan::from_items([RenderPlanItem::Cursor(CursorRenderItem {
+                    identity,
+                    source: CursorRenderSource::Named { icon_name: "default".to_owned() },
+                    instance: RenderItemInstance {
+                        rect: RenderRect { x: 10, y: 20, width: 16, height: 24 },
+                        opacity: 1.0,
+                        clip_rect: None,
+                        z_index: i32::MAX,
+                        scene_role: RenderSceneRole::Cursor,
+                    },
+                })]),
+            )]),
         });
-        let virtual_id = output_id_by_name(app.inner_mut().world_mut(), "Virtual-1");
-        *app.inner_mut().world_mut().resource_mut::<CursorSceneSnapshot>() =
-            CursorSceneSnapshot { visible: true, output_id: Some(virtual_id), x: 10.0, y: 20.0 };
-        *app.inner_mut().world_mut().resource_mut::<CursorImageSnapshot>() =
-            CursorImageSnapshot::Surface {
-                surface_id: 999,
-                hotspot_x: 0,
-                hotspot_y: 0,
-                width: 16,
-                height: 24,
-            };
+        world.insert_resource(RenderPassGraph {
+            outputs: BTreeMap::from([(
+                output_id,
+                OutputExecutionPlan {
+                    passes: BTreeMap::from([(
+                        RenderPassId(1),
+                        RenderPassNode::scene(
+                            RenderSceneRole::Cursor,
+                            nekoland_ecs::resources::RenderTargetId(1),
+                            Vec::new(),
+                            vec![RenderItemId(123)],
+                        ),
+                    )]),
+                    ordered_passes: vec![RenderPassId(1)],
+                    terminal_passes: vec![RenderPassId(1)],
+                    ..Default::default()
+                },
+            )]),
+        });
 
-        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+        let mut system = IntoSystem::into_system(damage_tracking_system);
+        system.initialize(&mut world);
+        let _ = system.run((), &mut world);
+
         {
-            let world = app.inner().world();
             let damage = world.resource::<OutputDamageRegions>();
             assert_eq!(
-                damage.regions[&virtual_id],
+                damage.regions[&output_id],
                 vec![nekoland_ecs::resources::DamageRect { x: 10, y: 20, width: 16, height: 24 }],
             );
         }
 
-        app.inner_mut().world_mut().resource_mut::<OutputDamageRegions>().regions.clear();
-        app.inner_mut().world_mut().resource_mut::<DamageState>().full_redraw = false;
-        *app.inner_mut().world_mut().resource_mut::<CursorSceneSnapshot>() =
-            CursorSceneSnapshot { visible: true, output_id: Some(virtual_id), x: 20.0, y: 20.0 };
-        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+        world.resource_mut::<OutputDamageRegions>().regions.clear();
+        world.resource_mut::<DamageState>().full_redraw = false;
+        world.insert_resource(RenderPlan {
+            outputs: BTreeMap::from([(
+                output_id,
+                OutputRenderPlan::from_items([RenderPlanItem::Cursor(CursorRenderItem {
+                    identity,
+                    source: CursorRenderSource::Named { icon_name: "default".to_owned() },
+                    instance: RenderItemInstance {
+                        rect: RenderRect { x: 20, y: 20, width: 16, height: 24 },
+                        opacity: 1.0,
+                        clip_rect: None,
+                        z_index: i32::MAX,
+                        scene_role: RenderSceneRole::Cursor,
+                    },
+                })]),
+            )]),
+        });
+        let _ = system.run((), &mut world);
 
-        let world = app.inner().world();
         let damage = world.resource::<OutputDamageRegions>();
         assert_eq!(
-            damage.regions[&virtual_id],
+            damage.regions[&output_id],
             vec![
                 nekoland_ecs::resources::DamageRect { x: 10, y: 20, width: 10, height: 24 },
                 nekoland_ecs::resources::DamageRect { x: 26, y: 20, width: 10, height: 24 },

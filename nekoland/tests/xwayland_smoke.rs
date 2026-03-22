@@ -10,9 +10,9 @@ use bevy_ecs::prelude::{Res, Resource};
 use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::ExtractSchedule;
+use nekoland_ecs::resources::WaylandIngress;
 use nekoland_ipc::commands::{QueryCommand, TreeSnapshot, WindowSnapshot};
 use nekoland_ipc::{IpcCommand, IpcRequest, IpcServerState, send_request_to_path};
-use nekoland_protocol::XWaylandServerState;
 use smithay::reexports::x11rb::connection::Connection;
 use smithay::reexports::x11rb::protocol::xproto::{
     AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, PropMode, WindowClass,
@@ -90,9 +90,7 @@ fn xwayland_window_appears_in_tree_snapshot() {
         Err(_) => panic!("X11 smoke client thread should exit cleanly"),
     };
 
-    let Some(xwayland_state) = app.inner().world().get_resource::<XWaylandServerState>() else {
-        panic!("xwayland server state should be present after run");
-    };
+    let xwayland_state = common::xwayland_server_state(&app);
 
     assert!(xwayland_state.ready, "xwayland should be ready after a successful smoke test");
     assert!(x11_window.xwayland, "tree snapshot should mark X11 clients as xwayland");
@@ -106,13 +104,18 @@ fn xwayland_window_appears_in_tree_snapshot() {
 
 /// Records the XWayland display name or startup error into the shared probe once available.
 fn record_xwayland_display_system(
-    xwayland_state: Res<XWaylandServerState>,
+    wayland_ingress: Option<Res<'_, WaylandIngress>>,
     display_probe: Res<XWaylandDisplayProbe>,
 ) {
     let mut slot = display_probe.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if slot.is_some() {
         return;
     }
+
+    let Some(wayland_ingress) = wayland_ingress else {
+        return;
+    };
+    let xwayland_state = &wayland_ingress.xwayland_server;
 
     if xwayland_state.ready {
         if let Some(display_name) = xwayland_state.display_name.clone() {

@@ -3,10 +3,12 @@ use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
 use bevy_ecs::query::Allow;
 use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{WindowLayout, WindowMode, XdgPopup, XdgWindow};
-use nekoland_ecs::resources::{EntityIndex, GlobalPointerPosition, KeyboardFocusState};
+use nekoland_ecs::resources::{
+    EntityIndex, GlobalPointerPosition, KeyboardFocusState, PendingXdgRequests, WaylandIngress,
+    WindowLifecycleAction, XdgSurfaceRole,
+};
 use nekoland_ecs::selectors::OutputName;
 use nekoland_ecs::views::{PopupConfigureRuntime, WindowRuntime};
-use nekoland_protocol::resources::{PendingXdgRequests, WindowLifecycleAction, XdgSurfaceRole};
 
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
 use crate::window_policy::{enter_temporary_window_mode, lock_window_policy, restore_window_state};
@@ -22,7 +24,8 @@ type XdgPopups<'w, 's> =
 
 #[derive(SystemParam)]
 pub struct ConfigureSequenceParams<'w, 's> {
-    pending_xdg_requests: ResMut<'w, PendingXdgRequests>,
+    pending_xdg_requests: Option<ResMut<'w, PendingXdgRequests>>,
+    wayland_ingress: Option<Res<'w, WaylandIngress>>,
     entity_index: Res<'w, EntityIndex>,
     pointer: Res<'w, GlobalPointerPosition>,
     active_grab: ResMut<'w, ActiveWindowGrab>,
@@ -33,8 +36,16 @@ pub struct ConfigureSequenceParams<'w, 's> {
 
 pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>) {
     let mut deferred = Vec::new();
+    let mut requests = configure
+        .pending_xdg_requests
+        .as_deref_mut()
+        .map(PendingXdgRequests::take)
+        .unwrap_or_default();
+    if let Some(wayland_ingress) = configure.wayland_ingress.as_deref() {
+        requests.extend(wayland_ingress.pending_xdg_requests.iter().cloned());
+    }
 
-    for request in configure.pending_xdg_requests.drain() {
+    for request in requests {
         match request.action.clone() {
             WindowLifecycleAction::ConfigureRequested { role: XdgSurfaceRole::Toplevel } => {
                 tracing::trace!(surface_id = request.surface_id, "toplevel configure requested");
@@ -277,7 +288,9 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
         }
     }
 
-    configure.pending_xdg_requests.replace(deferred);
+    if let Some(mut pending_xdg_requests) = configure.pending_xdg_requests {
+        pending_xdg_requests.replace(deferred);
+    }
     tracing::trace!("xdg configure sequencing system tick");
 }
 

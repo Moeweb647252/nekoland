@@ -6,12 +6,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use nekoland::build_app;
-use nekoland_backend::BackendOutputRegistry;
 use nekoland_core::app::RunLoopSettings;
+use nekoland_ecs::resources::WaylandIngress;
 use nekoland_ipc::IpcServerState;
-use nekoland_protocol::{
-    ProtocolRegistry, ProtocolServerState, XWaylandServerState, supported_protocols,
-};
+use nekoland_protocol::{ProtocolRegistry, supported_protocols};
 
 mod common;
 
@@ -37,17 +35,13 @@ fn startup_registers_protocol_globals_and_runtime_state() {
     let Some(registry) = world.get_resource::<ProtocolRegistry>() else {
         panic!("protocol registry should be inserted during startup");
     };
-    let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-        panic!("protocol server state should be inserted during startup");
-    };
-    let Some(outputs) = world.get_resource::<BackendOutputRegistry>() else {
-        panic!("backend output registry should be inserted during startup");
-    };
-    let Some(xwayland) = world.get_resource::<XWaylandServerState>() else {
-        panic!("xwayland server state should be inserted during startup");
-    };
+    let server_state = common::protocol_server_state(&app);
+    let xwayland = common::xwayland_server_state(&app);
     let Some(ipc_server_state) = world.get_resource::<IpcServerState>() else {
         panic!("IPC server state should be inserted during startup");
+    };
+    let Some(wayland_ingress) = world.get_resource::<WaylandIngress>() else {
+        panic!("wayland ingress should be available after startup");
     };
 
     let actual_globals = registry.globals.iter().copied().collect::<BTreeSet<_>>();
@@ -59,8 +53,13 @@ fn startup_registers_protocol_globals_and_runtime_state() {
         "startup should either publish a Wayland socket or record why binding failed: {server_state:?}"
     );
     assert!(
-        outputs.connected_by_id.values().any(|name| !name.is_empty()),
-        "startup should seed at least one output: {outputs:?}"
+        wayland_ingress
+            .output_snapshots
+            .outputs
+            .iter()
+            .all(|output| !output.name.is_empty()),
+        "startup output snapshots should use non-empty names when they exist: {:?}",
+        wayland_ingress.output_snapshots.outputs
     );
     assert!(
         ipc_server_state.listening || ipc_server_state.startup_error.is_some(),

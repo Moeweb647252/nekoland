@@ -9,7 +9,7 @@ use nekoland_ecs::presentation_logic::{
 };
 use nekoland_ecs::resources::{
     OutputRenderPlan, RenderItemInstance, RenderPlan, RenderRect, RenderSceneRole,
-    SurfacePresentationRole, SurfacePresentationSnapshot, UNASSIGNED_WORKSPACE_STACK_ID,
+    ShellRenderInput, SurfacePresentationRole, UNASSIGNED_WORKSPACE_STACK_ID,
     WindowStackingState,
 };
 use nekoland_ecs::views::{
@@ -28,6 +28,36 @@ use crate::scene_source::{
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrameComposer;
 
+#[derive(bevy_ecs::prelude::Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct RenderViewSnapshot {
+    pub views: Vec<RenderViewState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderViewState {
+    pub output_id: nekoland_ecs::components::OutputId,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale: u32,
+}
+
+impl RenderViewSnapshot {
+    pub fn ids(&self) -> impl Iterator<Item = nekoland_ecs::components::OutputId> + '_ {
+        self.views.iter().map(|view| view.output_id)
+    }
+
+    pub fn view(&self, output_id: nekoland_ecs::components::OutputId) -> Option<&RenderViewState> {
+        self.views.iter().find(|view| view.output_id == output_id)
+    }
+}
+
+#[derive(bevy_ecs::prelude::Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct DesktopSurfaceOrderSnapshot {
+    pub outputs: BTreeMap<nekoland_ecs::components::OutputId, Vec<u64>>,
+}
+
 #[derive(SystemParam)]
 pub struct FrameCompositionInputs<'w, 's> {
     outputs: Query<'w, 's, OutputRuntime>,
@@ -36,7 +66,7 @@ pub struct FrameCompositionInputs<'w, 's> {
     popups: Query<'w, 's, PopupRenderRuntime, With<XdgPopup>>,
     stacking: Res<'w, WindowStackingState>,
     workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
-    surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
+    shell_render_input: Option<Res<'w, ShellRenderInput>>,
     appearance: Option<Res<'w, AppearanceSnapshot>>,
     projection: Option<Res<'w, ProjectionSnapshot>>,
     scene_contributions: ResMut<'w, RenderSceneContributionQueue>,
@@ -48,6 +78,26 @@ pub struct RenderPlanAssemblyInputs<'w, 's> {
     scene_contributions: Res<'w, RenderSceneContributionQueue>,
     identity_registry: ResMut<'w, RenderSceneIdentityRegistry>,
     render_plan: ResMut<'w, RenderPlan>,
+}
+
+#[derive(SystemParam)]
+pub struct RenderPlanSnapshotAssemblyInputs<'w> {
+    views: Res<'w, RenderViewSnapshot>,
+    scene_contributions: Res<'w, RenderSceneContributionQueue>,
+    identity_registry: ResMut<'w, RenderSceneIdentityRegistry>,
+    render_plan: ResMut<'w, RenderPlan>,
+}
+
+#[derive(SystemParam)]
+pub struct DesktopSurfaceOrderInputs<'w, 's> {
+    outputs: Query<'w, 's, OutputRuntime>,
+    layers: Query<'w, 's, LayerRenderRuntime, With<nekoland_ecs::components::LayerShellSurface>>,
+    windows: Query<'w, 's, (Entity, WindowRenderRuntime), With<XdgWindow>>,
+    popups: Query<'w, 's, PopupRenderRuntime, With<XdgPopup>>,
+    stacking: Res<'w, WindowStackingState>,
+    workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
+    shell_render_input: Option<Res<'w, ShellRenderInput>>,
+    ordered_surfaces: ResMut<'w, DesktopSurfaceOrderSnapshot>,
 }
 
 /// Builds the per-frame output-scoped render plan from already-laid-out surfaces plus projected
@@ -63,12 +113,14 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
         popups,
         stacking,
         workspaces,
-        surface_presentation,
+        shell_render_input,
         appearance,
         projection,
         mut scene_contributions,
     } = composition;
-    let surface_presentation = surface_presentation.as_deref();
+    let surface_presentation = shell_render_input
+        .as_deref()
+        .map(|mailbox| &mailbox.surface_presentation);
     let appearance = appearance.as_deref();
     let projection = projection.as_deref();
     let live_outputs = outputs.iter().map(|output| output.id()).collect::<Vec<_>>();
@@ -221,7 +273,7 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
         };
 
         for output_id in target_outputs {
-            let source_key = RenderSourceKey::surface(surface_id);
+            let source_key = RenderSourceKey::surface_for_role(surface_id, state.role);
             let instance_key = RenderInstanceKey::new(source_key.clone(), output_id, 0);
             let mut instance = RenderItemInstance {
                 rect: RenderRect::from(&state.geometry),
@@ -243,10 +295,9 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
                 &instance_key,
                 projection,
             );
-            contributions
-                .entry(output_id)
-                .or_default()
-                .push(RenderSceneContribution::surface(output_id, surface_id, 0, instance));
+            contributions.entry(output_id).or_default().push(RenderSceneContribution::surface(
+                output_id, source_key, surface_id, 0, instance,
+            ));
         }
     }
 
@@ -289,6 +340,259 @@ pub fn assemble_render_plan_system(assembly: RenderPlanAssemblyInputs<'_, '_>) {
     );
 }
 
+pub fn assemble_render_plan_from_snapshot_system(assembly: RenderPlanSnapshotAssemblyInputs<'_>) {
+    let RenderPlanSnapshotAssemblyInputs {
+        views,
+        scene_contributions,
+        mut identity_registry,
+        mut render_plan,
+    } = assembly;
+
+    let mut plans = views
+        .ids()
+        .map(|output_id| (output_id, OutputRenderPlan::default()))
+        .collect::<BTreeMap<_, _>>();
+
+    for (output_id, output_contributions) in &scene_contributions.outputs {
+        let output_plan = plans.entry(*output_id).or_default();
+        for contribution in output_contributions {
+            output_plan.insert(contribution_to_plan_item(contribution, &mut identity_registry));
+        }
+        output_plan.sort_by_z_index();
+    }
+
+    render_plan.outputs = plans;
+}
+
+pub fn snapshot_desktop_surface_order_system(inputs: DesktopSurfaceOrderInputs<'_, '_>) {
+    let DesktopSurfaceOrderInputs {
+        outputs,
+        layers,
+        windows,
+        popups,
+        stacking,
+        workspaces,
+        shell_render_input,
+        mut ordered_surfaces,
+    } = inputs;
+    let surface_presentation = shell_render_input
+        .as_deref()
+        .map(|mailbox| &mailbox.surface_presentation);
+    let live_outputs = outputs.iter().map(|output| output.id()).collect::<Vec<_>>();
+    let mut ordered = live_outputs
+        .iter()
+        .copied()
+        .map(|output_id| (output_id, Vec::new()))
+        .collect::<BTreeMap<_, Vec<u64>>>();
+    let background_windows = windows
+        .iter()
+        .filter_map(|(_, window)| {
+            let state = surface_presentation
+                .and_then(|snapshot| snapshot.surfaces.get(&window.surface_id()));
+            let visible = state.map_or_else(
+                || {
+                    nekoland_ecs::presentation_logic::output_background_window_visible(
+                        *window.mode,
+                        window.background.is_some(),
+                        *window.role,
+                    )
+                },
+                |state| state.visible && state.role == SurfacePresentationRole::OutputBackground,
+            );
+            if !visible {
+                return None;
+            }
+            let output_id = state
+                .and_then(|state| state.target_output)
+                .or_else(|| window.background.as_ref().map(|background| background.output))?;
+            Some((output_id, window.surface_id()))
+        })
+        .fold(BTreeMap::new(), |mut backgrounds, (output_id, candidate)| {
+            backgrounds
+                .entry(output_id)
+                .and_modify(|current: &mut u64| {
+                    if candidate > *current {
+                        *current = candidate;
+                    }
+                })
+                .or_insert(candidate);
+            backgrounds
+        })
+        .into_values()
+        .collect::<Vec<_>>();
+    let visible_windows = windows
+        .iter()
+        .filter_map(|(entity, window)| {
+            let state = surface_presentation
+                .and_then(|snapshot| snapshot.surfaces.get(&window.surface_id()));
+            let visible = state.map_or_else(
+                || {
+                    managed_window_visible(
+                        *window.mode,
+                        window.viewport_visibility.visible,
+                        *window.role,
+                    )
+                },
+                |state| state.visible && state.role == SurfacePresentationRole::Window,
+            );
+            visible.then_some((
+                entity,
+                window.surface_id(),
+                window_workspace_runtime_id(window.child_of, &workspaces)
+                    .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let active_window_entities =
+        visible_windows.iter().map(|(entity, ..)| *entity).collect::<BTreeSet<_>>();
+    let ordered_window_surfaces = stacking.ordered_surfaces(
+        visible_windows.iter().map(|(_, surface_id, workspace_id)| (*workspace_id, *surface_id)),
+    );
+    let elements = background_windows
+        .into_iter()
+        .chain(
+            layers
+                .iter()
+                .filter(|layer| {
+                    surface_presentation
+                        .and_then(|snapshot| snapshot.surfaces.get(&layer.surface_id()))
+                        .map_or_else(
+                            || {
+                                layer.buffer.attached
+                                    && is_background_band_layer(layer.layer_surface.layer)
+                            },
+                            |state| {
+                                state.visible
+                                    && state.role == SurfacePresentationRole::Layer
+                                    && is_background_band_layer(layer.layer_surface.layer)
+                            },
+                        )
+                })
+                .map(|layer| layer.surface_id()),
+        )
+        .chain(ordered_window_surfaces)
+        .chain(
+            popups
+                .iter()
+                .filter(|popup| {
+                    surface_presentation
+                        .and_then(|snapshot| snapshot.surfaces.get(&popup.surface_id()))
+                        .map_or_else(
+                            || {
+                                popup_visible(
+                                    popup.buffer.attached,
+                                    popup_parent_visible(popup.child_of, &active_window_entities),
+                                )
+                            },
+                            |state| state.visible && state.role == SurfacePresentationRole::Popup,
+                        )
+                })
+                .map(|popup| popup.surface_id()),
+        )
+        .chain(
+            layers
+                .iter()
+                .filter(|layer| {
+                    surface_presentation
+                        .and_then(|snapshot| snapshot.surfaces.get(&layer.surface_id()))
+                        .map_or_else(
+                            || {
+                                layer.buffer.attached
+                                    && is_foreground_band_layer(layer.layer_surface.layer)
+                            },
+                            |state| {
+                                state.visible
+                                    && state.role == SurfacePresentationRole::Layer
+                                    && is_foreground_band_layer(layer.layer_surface.layer)
+                            },
+                        )
+                })
+                .map(|layer| layer.surface_id()),
+        )
+        .collect::<Vec<_>>();
+
+    for surface_id in elements {
+        let Some(state) =
+            surface_presentation.and_then(|snapshot| snapshot.surfaces.get(&surface_id))
+        else {
+            continue;
+        };
+        if !state.visible {
+            continue;
+        }
+
+        let target_outputs = if let Some(target_output_id) = state.target_output {
+            vec![target_output_id]
+        } else {
+            live_outputs.clone()
+        };
+
+        for output_id in target_outputs {
+            ordered.entry(output_id).or_default().push(surface_id);
+        }
+    }
+
+    ordered_surfaces.outputs = ordered;
+}
+
+pub fn emit_desktop_scene_contributions_from_snapshot_system(
+    views: Res<'_, RenderViewSnapshot>,
+    ordered_surfaces: Res<'_, DesktopSurfaceOrderSnapshot>,
+    shell_render_input: Option<Res<'_, ShellRenderInput>>,
+    appearance: Option<Res<'_, AppearanceSnapshot>>,
+    projection: Option<Res<'_, ProjectionSnapshot>>,
+    mut scene_contributions: ResMut<'_, RenderSceneContributionQueue>,
+) {
+    let surface_presentation =
+        shell_render_input.as_deref().map(|mailbox| &mailbox.surface_presentation);
+    let appearance = appearance.as_deref();
+    let projection = projection.as_deref();
+    let mut contributions = views
+        .ids()
+        .map(|output_id| (output_id, Vec::new()))
+        .collect::<BTreeMap<_, Vec<RenderSceneContribution>>>();
+
+    for (output_id, surfaces) in &ordered_surfaces.outputs {
+        for (z_index, surface_id) in surfaces.iter().copied().enumerate() {
+            let Some(state) =
+                surface_presentation.and_then(|snapshot| snapshot.surfaces.get(&surface_id))
+            else {
+                continue;
+            };
+            if !state.visible {
+                continue;
+            }
+            let source_key = RenderSourceKey::surface_for_role(surface_id, state.role);
+            let instance_key = RenderInstanceKey::new(source_key.clone(), *output_id, 0);
+            let mut instance = RenderItemInstance {
+                rect: RenderRect::from(&state.geometry),
+                opacity: 1.0,
+                clip_rect: None,
+                z_index: z_index as i32,
+                scene_role: RenderSceneRole::Desktop,
+            };
+            apply_appearance_snapshot(
+                &mut instance.opacity,
+                &source_key,
+                &instance_key,
+                appearance,
+            );
+            apply_projection_snapshot(
+                &mut instance.rect,
+                &mut instance.clip_rect,
+                &source_key,
+                &instance_key,
+                projection,
+            );
+            contributions.entry(*output_id).or_default().push(RenderSceneContribution::surface(
+                *output_id, source_key, surface_id, 0, instance,
+            ));
+        }
+    }
+
+    scene_contributions.outputs = contributions;
+}
+
 fn popup_parent_visible(child_of: &ChildOf, active_window_entities: &BTreeSet<Entity>) -> bool {
     active_window_entities.contains(&child_of.parent())
 }
@@ -308,7 +612,7 @@ mod tests {
         CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, OutputCompositorScene,
         OutputOverlayId, OutputOverlaySpec, OutputOverlayState, RenderColor, RenderItemIdentity,
         RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
-        RenderSourceId, SurfacePresentationRole, SurfacePresentationSnapshot,
+        RenderSourceId, ShellRenderInput, SurfacePresentationRole, SurfacePresentationSnapshot,
         SurfacePresentationState, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
     };
 
@@ -327,6 +631,7 @@ mod tests {
             .init_resource::<AppearanceSnapshot>()
             .init_resource::<ProjectionSnapshot>()
             .init_resource::<CompositorSceneState>()
+            .init_resource::<ShellRenderInput>()
             .init_resource::<OutputOverlayState>()
             .init_resource::<crate::output_overlay::OutputOverlaySceneSyncState>()
             .init_resource::<RenderSceneContributionQueue>()
@@ -437,6 +742,8 @@ mod tests {
             })
             .collect();
         world.insert_resource(SurfacePresentationSnapshot { surfaces: snapshot });
+        world.resource_mut::<ShellRenderInput>().surface_presentation =
+            world.resource::<SurfacePresentationSnapshot>().clone();
     }
 
     #[test]
@@ -616,7 +923,7 @@ mod tests {
             .world_mut()
             .resource_mut::<AppearanceSnapshot>()
             .sources
-            .insert(RenderSourceKey::surface(11), AppearanceState { opacity: 0.25 });
+            .insert(RenderSourceKey::window(11), AppearanceState { opacity: 0.25 });
         spawn_default_output(&mut app);
         set_surface_states(&mut app, [(11, SurfacePresentationRole::Window)]);
 
@@ -657,7 +964,7 @@ mod tests {
         set_surface_states(&mut app, [(11, SurfacePresentationRole::Window)]);
         app.inner_mut().world_mut().resource_mut::<AnimationTimelineStore>().upsert_track(
             AnimationBindingKey::Instance(RenderInstanceKey::new(
-                RenderSourceKey::surface(11),
+                RenderSourceKey::window(11),
                 output_id,
                 0,
             )),
@@ -673,7 +980,7 @@ mod tests {
         {
             let timelines = app.inner_mut().world_mut().resource_mut::<AnimationTimelineStore>();
             let binding = AnimationBindingKey::Instance(RenderInstanceKey::new(
-                RenderSourceKey::surface(11),
+                RenderSourceKey::window(11),
                 output_id,
                 0,
             ));
@@ -808,7 +1115,7 @@ mod tests {
             .insert_resource(WindowStackingState::default());
         add_render_plan_systems(&mut app);
         let output_id = spawn_default_output(&mut app);
-        app.inner_mut().world_mut().resource_mut::<OutputOverlayState>().upsert(
+        app.inner_mut().world_mut().resource_mut::<ShellRenderInput>().output_overlays.upsert(
             output_id,
             OutputOverlaySpec {
                 overlay_id: OutputOverlayId::from("debug"),

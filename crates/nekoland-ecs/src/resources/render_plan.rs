@@ -74,7 +74,9 @@ impl RenderRect {
 }
 
 /// Generic render-scene layer. The initial abstraction keeps the enum intentionally small.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RenderSceneRole {
     #[default]

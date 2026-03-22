@@ -13,7 +13,7 @@ use nekoland_ecs::components::{
     LayerShellSurface, OutputProperties, SurfaceGeometry, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::{RenderPlan, RenderPlanItem, WorkArea};
-use nekoland_protocol::{ProtocolServerState, ProtocolSurfaceRegistry};
+use nekoland_protocol::ProtocolSurfaceRegistry;
 use tempfile::tempfile;
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_output, wl_registry, wl_shm, wl_shm_pool, wl_surface,
@@ -485,10 +485,7 @@ fn protocol_socket_path(
     app: &NekolandApp,
     runtime_dir: &Path,
 ) -> Result<PathBuf, common::TestControl> {
-    let world = app.inner().world();
-    let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-        panic!("protocol server state should be available immediately after build");
-    };
+    let server_state = common::protocol_server_state(app);
 
     match (&server_state.socket_name, &server_state.startup_error) {
         (Some(socket_name), _) => Ok(runtime_dir.join(socket_name)),

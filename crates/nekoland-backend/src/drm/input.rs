@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use bevy_app::App;
 use nekoland_config::resources::CompositorConfig;
-use nekoland_core::calloop::CalloopSourceRegistry;
+use nekoland_core::calloop::with_wayland_calloop_registry;
 use nekoland_core::error::NekolandError;
 use nekoland_ecs::components::OutputProperties;
 use nekoland_ecs::resources::{
@@ -45,60 +45,52 @@ pub(crate) fn install_drm_input_source(
     session_state: SharedDrmSessionState,
     input_state: SharedDrmInputState,
 ) {
-    if app.world().get_non_send_resource::<CalloopSourceRegistry>().is_none() {
-        app.insert_non_send_resource(CalloopSourceRegistry::default());
-    }
-
-    let Some(mut registry) = app.world_mut().get_non_send_resource_mut::<CalloopSourceRegistry>()
-    else {
-        tracing::error!("calloop registry unavailable during drm input installation");
-        return;
-    };
-
-    registry.push(move |handle| {
-        let (session, seat_name) = {
-            let session_state = session_state.borrow();
-            match &session_state.status {
-                DrmSessionStatus::Ready => {
-                    let session = session_state.session.clone().ok_or_else(|| {
-                        NekolandError::Runtime(
-                            "drm session installed without an active libseat handle".to_owned(),
-                        )
-                    })?;
-                    (session, session_state.seat_name.clone())
+    with_wayland_calloop_registry(app, |registry| {
+        registry.push(move |handle| {
+            let (session, seat_name) = {
+                let session_state = session_state.borrow();
+                match &session_state.status {
+                    DrmSessionStatus::Ready => {
+                        let session = session_state.session.clone().ok_or_else(|| {
+                            NekolandError::Runtime(
+                                "drm session installed without an active libseat handle".to_owned(),
+                            )
+                        })?;
+                        (session, session_state.seat_name.clone())
+                    }
+                    DrmSessionStatus::Failed(error) => {
+                        return Err(NekolandError::Runtime(error.clone()));
+                    }
+                    DrmSessionStatus::Uninitialized => {
+                        return Err(NekolandError::Runtime(
+                            "drm tty session did not initialize before libinput setup".to_owned(),
+                        ));
+                    }
                 }
-                DrmSessionStatus::Failed(error) => {
-                    return Err(NekolandError::Runtime(error.clone()));
-                }
-                DrmSessionStatus::Uninitialized => {
-                    return Err(NekolandError::Runtime(
-                        "drm tty session did not initialize before libinput setup".to_owned(),
-                    ));
-                }
-            }
-        };
+            };
 
-        let mut context = Libinput::new_with_udev(LibinputSessionInterface::from(session));
-        context.udev_assign_seat(&seat_name).map_err(|_| {
-            NekolandError::Runtime(format!("failed to assign libinput to seat {seat_name}"))
-        })?;
+            let mut context = Libinput::new_with_udev(LibinputSessionInterface::from(session));
+            context.udev_assign_seat(&seat_name).map_err(|_| {
+                NekolandError::Runtime(format!("failed to assign libinput to seat {seat_name}"))
+            })?;
 
-        let session_state_for_events = session_state.clone();
-        let input_state_for_events = input_state.clone();
-        handle
-            .insert_source(LibinputInputBackend::new(context), move |event, _, _| {
-                if !session_state_for_events.borrow().active {
-                    return;
-                }
+            let session_state_for_events = session_state.clone();
+            let input_state_for_events = input_state.clone();
+            handle
+                .insert_source(LibinputInputBackend::new(context), move |event, _, _| {
+                    if !session_state_for_events.borrow().active {
+                        return;
+                    }
 
-                let mut input_state = input_state_for_events.borrow_mut();
-                if let Some(event) = translate_libinput_event(event, &mut input_state) {
-                    input_state.pending_input_events.push(event);
-                }
-            })
-            .map_err(|error| NekolandError::Runtime(error.error.to_string()))?;
+                    let mut input_state = input_state_for_events.borrow_mut();
+                    if let Some(event) = translate_libinput_event(event, &mut input_state) {
+                        input_state.pending_input_events.push(event);
+                    }
+                })
+                .map_err(|error| NekolandError::Runtime(error.error.to_string()))?;
 
-        Ok(())
+            Ok(())
+        });
     });
 }
 

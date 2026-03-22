@@ -10,15 +10,14 @@ use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::{Query, ResMut, Resource, With};
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use nekoland::build_app;
-use nekoland_backend::BackendStatus;
 use nekoland_core::app::{NekolandApp, RunLoopSettings};
 use nekoland_core::schedules::{LayoutSchedule, RenderSchedule};
 use nekoland_ecs::components::{WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::events::WindowClosed;
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, KeyboardFocusState, PendingBackendInputEvents,
+    WaylandFeedback,
 };
-use nekoland_protocol::ProtocolServerState;
 use nekoland_shell::decorations;
 use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
@@ -81,8 +80,10 @@ fn close_window_keybinding_reaches_real_wayland_client() {
     let backend_description = app
         .inner()
         .world()
-        .get_resource::<BackendStatus>()
-        .and_then(|status| status.primary_display().map(|backend| backend.description.clone()))
+        .get_resource::<WaylandFeedback>()
+        .and_then(|feedback| {
+            feedback.platform_backends.primary_display().map(|backend| backend.description.clone())
+        })
         .unwrap_or_default();
     if backend_description.contains("timer fallback") {
         eprintln!(
@@ -131,21 +132,13 @@ fn run_close_window_keybinding_scenario() -> Option<(NekolandApp, KeybindingClie
         )
         .add_systems(RenderSchedule, capture_window_closed_messages);
 
-    let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
-        match (&server_state.socket_name, &server_state.startup_error) {
-            (Some(socket_name), _) => runtime_dir.path.join(socket_name),
-            (None, Some(error)) if error.contains("Operation not permitted") => {
-                eprintln!("skipping keybinding test in restricted environment: {error}");
-                return None;
-            }
-            (None, Some(error)) => panic!("protocol startup failed before run: {error}"),
-            (None, None) => panic!("protocol startup produced neither socket nor error"),
+    let socket_path = match common::protocol_socket_path(&app, &runtime_dir.path) {
+        Ok(socket_path) => socket_path,
+        Err(error) if error.contains("Operation not permitted") => {
+            eprintln!("skipping keybinding test in restricted environment: {error}");
+            return None;
         }
+        Err(error) => panic!("protocol startup failed before run: {error}"),
     };
 
     let client_thread = thread::spawn(move || run_keybinding_client(&socket_path));

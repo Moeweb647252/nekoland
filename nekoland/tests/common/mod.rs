@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use nekoland_core::prelude::{NekolandApp, WaylandSubApp};
+use nekoland_protocol::{ProtocolServerState, XWaylandServerState};
 use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
@@ -193,6 +195,36 @@ pub fn assert_globals_present(globals: &[String]) {
     ]);
 
     assert_eq!(actual, expected, "client should observe the full nekoland global registry");
+}
+
+/// Returns the protocol server state directly from the wayland subapp world.
+pub fn protocol_server_state(app: &NekolandApp) -> ProtocolServerState {
+    app.inner()
+        .sub_app(WaylandSubApp)
+        .world()
+        .get_resource::<ProtocolServerState>()
+        .cloned()
+        .expect("protocol server state should exist in wayland subapp")
+}
+
+/// Returns the XWayland server state directly from the wayland subapp world.
+pub fn xwayland_server_state(app: &NekolandApp) -> XWaylandServerState {
+    app.inner()
+        .sub_app(WaylandSubApp)
+        .world()
+        .get_resource::<XWaylandServerState>()
+        .cloned()
+        .expect("xwayland server state should exist in wayland subapp")
+}
+
+/// Resolves the compositor Wayland socket path from the wayland subapp state.
+pub fn protocol_socket_path(app: &NekolandApp, runtime_dir: &Path) -> Result<PathBuf, String> {
+    let server_state = protocol_server_state(app);
+    match (&server_state.socket_name, &server_state.startup_error) {
+        (Some(socket_name), _) => Ok(runtime_dir.join(socket_name)),
+        (None, Some(error)) => Err(error.clone()),
+        (None, None) => Err("protocol startup produced neither socket nor error".to_owned()),
+    }
 }
 
 /// Test-level control flow used by helpers that may need to skip under restricted environments.

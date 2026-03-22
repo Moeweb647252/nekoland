@@ -32,6 +32,22 @@ pub struct PendingBackendInputEventsTag;
 
 pub type PendingBackendInputEvents = FrameQueue<BackendInputEvent, PendingBackendInputEventsTag>;
 
+/// Shell-facing alias used once backend input has crossed the platform boundary.
+///
+/// The underlying event shape is currently identical; the alias exists so main-app code can talk
+/// in terms of platform input rather than backend implementation details.
+pub type PlatformInputAction = BackendInputAction;
+
+/// Shell-facing alias for one normalized platform input record.
+pub type PlatformInputEvent = BackendInputEvent;
+
+/// Shell-facing alias for the input mailbox exported through `WaylandIngress`.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PendingPlatformInputEventsTag;
+
+pub type PendingPlatformInputEvents = FrameQueue<PlatformInputEvent, PendingPlatformInputEventsTag>;
+
 /// Copy of backend input records forwarded to protocol-side consumers that need the same physical
 /// input stream.
 #[doc(hidden)]

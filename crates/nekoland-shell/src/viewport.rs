@@ -5,7 +5,7 @@ use nekoland_ecs::components::{
     OutputId, OutputProperties, OutputViewport, OutputWorkArea, SurfaceGeometry,
     WindowFullscreenTarget, WindowMode, WindowSceneGeometry, XdgWindow,
 };
-use nekoland_ecs::resources::PrimaryOutputState;
+use nekoland_ecs::resources::{PrimaryOutputState, WaylandIngress};
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
@@ -70,6 +70,13 @@ pub(crate) fn center_viewport_on_scene_geometry(
     let target_y = scene_geometry.y.saturating_add((scene_geometry.height / 2) as isize);
     viewport.origin_x = target_x.saturating_sub(half_width);
     viewport.origin_y = target_y.saturating_sub(half_height);
+}
+
+pub(crate) fn preferred_primary_output_state<'a>(
+    wayland_ingress: Option<&'a WaylandIngress>,
+    primary_output: Option<&'a PrimaryOutputState>,
+) -> Option<&'a PrimaryOutputState> {
+    wayland_ingress.map(|ingress| &ingress.primary_output).or(primary_output)
 }
 
 #[allow(dead_code)]
@@ -147,10 +154,13 @@ pub(crate) fn resolve_output_state_for_window<'w, 's>(
 
 pub fn window_viewport_projection_system(
     outputs: Query<(Entity, OutputRuntime)>,
+    wayland_ingress: Option<Res<WaylandIngress>>,
     primary_output: Option<Res<PrimaryOutputState>>,
     workspaces: Query<(Entity, WorkspaceRuntime), Allow<Disabled>>,
     mut windows: Query<WindowRuntime, (With<XdgWindow>, Allow<Disabled>)>,
 ) {
+    let primary_output =
+        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
     for mut window in &mut windows {
         if let Some(background) = window.background.as_ref() {
             let Some((_, output)) =
@@ -177,10 +187,10 @@ pub fn window_viewport_projection_system(
                 &outputs,
                 workspace_id,
                 Some(window.fullscreen_target.as_ref()),
-                primary_output.as_deref(),
+                primary_output,
             )
         } else {
-            resolve_output_state_for_workspace(&outputs, workspace_id, primary_output.as_deref())
+            resolve_output_state_for_workspace(&outputs, workspace_id, primary_output)
         };
         let Some((output_id, output, viewport, _)) = output_state else {
             *window.viewport_visibility =
@@ -228,6 +238,7 @@ mod tests {
         WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle, Workspace, WorkspaceId,
         XdgWindow,
     };
+    use nekoland_ecs::resources::{PrimaryOutputState, WaylandIngress};
 
     use super::{OutputViewport, window_viewport_projection_system};
 
@@ -288,6 +299,99 @@ mod tests {
         let Some(geometry) = app.inner().world().get::<SurfaceGeometry>(window) else {
             panic!("window geometry");
         };
+        assert_eq!((geometry.x, geometry.y), (120, 90));
+    }
+
+    #[test]
+    fn viewport_projection_prefers_wayland_ingress_primary_output_over_stale_compat_state() {
+        let mut app = NekolandApp::new("viewport-projection-ingress-primary-output-test");
+        app.inner_mut().add_systems(LayoutSchedule, window_viewport_projection_system);
+
+        let output_one = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputId(7),
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "Virtual-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "Virtual".to_owned(),
+                        model: "test".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 800,
+                        height: 600,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    viewport: OutputViewport { origin_x: 0, origin_y: 0 },
+                    ..Default::default()
+                },
+            ))
+            .id();
+        let output_two = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputId(9),
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "Virtual-2".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "Virtual".to_owned(),
+                        model: "test".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 800,
+                        height: 600,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    viewport: OutputViewport { origin_x: 1000, origin_y: 2000 },
+                    ..Default::default()
+                },
+            ))
+            .id();
+
+        let output_one_id =
+            *app.inner().world().get::<OutputId>(output_one).expect("first output id");
+        let output_two_id =
+            *app.inner().world().get::<OutputId>(output_two).expect("second output id");
+        app.inner_mut().world_mut().insert_resource(PrimaryOutputState { id: Some(output_one_id) });
+        app.inner_mut().world_mut().insert_resource(WaylandIngress {
+            primary_output: PrimaryOutputState { id: Some(output_two_id) },
+            ..WaylandIngress::default()
+        });
+
+        let window = app
+            .inner_mut()
+            .world_mut()
+            .spawn(WindowBundle {
+                surface: WlSurfaceHandle { id: 31 },
+                geometry: SurfaceGeometry { x: 0, y: 0, width: 320, height: 240 },
+                window: XdgWindow::default(),
+                layout: WindowLayout::Floating,
+                mode: WindowMode::Normal,
+                ..Default::default()
+            })
+            .id();
+        app.inner_mut().world_mut().entity_mut(window).insert(WindowSceneGeometry {
+            x: 1120,
+            y: 2090,
+            width: 320,
+            height: 240,
+        });
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let visibility = app
+            .inner()
+            .world()
+            .get::<WindowViewportVisibility>(window)
+            .expect("viewport visibility");
+        let geometry = app.inner().world().get::<SurfaceGeometry>(window).expect("geometry");
+        assert_eq!(visibility.output, Some(output_two_id));
         assert_eq!((geometry.x, geometry.y), (120, 90));
     }
 

@@ -1,13 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use bevy_ecs::prelude::{Query, ResMut};
-use nekoland_ecs::components::{OutputDevice, OutputId, OutputProperties};
+use bevy_ecs::prelude::{Res, ResMut};
+use nekoland_ecs::components::{OutputId, OutputProperties};
 use nekoland_protocol::resources::{
     OutputPresentationEventRecord, OutputPresentationState, OutputPresentationTimeline,
     PendingOutputPresentationEvents,
 };
 use smithay::utils::{Clock, Monotonic};
+
+use crate::plugin::BackendPresentInputs;
 
 /// Maintains a per-output present-timeline cursor so backend-specific completion timestamps can
 /// be projected into the normalized ECS presentation stream.
@@ -28,11 +30,22 @@ struct OutputPresentationClock {
 
 /// Apply backend-produced presentation events into the normalized ECS snapshot.
 pub fn apply_output_presentation_events_system(
-    outputs: Query<(&OutputId, &OutputDevice)>,
+    outputs: Option<Res<'_, BackendPresentInputs>>,
     mut pending_presentation_events: ResMut<PendingOutputPresentationEvents>,
     mut presentation_state: ResMut<OutputPresentationState>,
 ) {
-    let known_outputs = outputs.iter().map(|(output_id, _)| *output_id).collect::<BTreeSet<_>>();
+    let known_outputs = outputs
+        .as_deref()
+        .map(|outputs| {
+            outputs.outputs().iter().map(|output| output.output_id).collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_else(|| {
+            presentation_state
+                .outputs
+                .iter()
+                .map(|timeline| timeline.output_id)
+                .collect::<BTreeSet<_>>()
+        });
     let mut timelines = presentation_state
         .outputs
         .drain(..)

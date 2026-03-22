@@ -1,15 +1,16 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
-    CompletedScreenshotFrames, CompositorClock, CursorRenderSource, OutputExecutionPlan,
-    OutputProcessPlan, PendingScreenshotRequests, ProcessRect, ProcessShaderKey,
-    ProcessUniformBlock, ProcessUniformValue, RenderColor, RenderMaterialFrameState,
-    RenderPassKind, RenderPassPayload, RenderPlan, RenderPlanItem, RenderProcessPlan, RenderRect,
-    RenderTargetId, ScreenshotFrame,
+    CompletedScreenshotFrames, CompositorClock, OutputExecutionPlan, OutputFinalTargetPlan,
+    OutputPreparedGpuResources, OutputPreparedSceneResources, OutputProcessPlan,
+    OutputTargetAllocationPlan, PendingScreenshotRequests, PreparedSceneItem, ProcessRect,
+    ProcessShaderKey, ProcessUniformBlock, ProcessUniformValue, RenderColor,
+    RenderMaterialFrameState, RenderPassKind, RenderPassPayload, RenderRect,
+    RenderTargetAllocationSpec, RenderTargetId, ScreenshotFrame,
 };
 use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::Fourcc;
@@ -28,6 +29,7 @@ use smithay::backend::renderer::gles::{
 };
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::backend::renderer::utils::draw_render_elements;
+use smithay::backend::renderer::utils::import_surface_tree;
 use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer, Texture};
 use smithay::render_elements;
 use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Size, Transform};
@@ -90,10 +92,17 @@ struct ProcessShaderCache {
     programs: BTreeMap<ProcessShaderKey, GlesTexProgram>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedSurfaceImport {
+    content_version: u64,
+    strategy: nekoland_ecs::resources::PreparedSurfaceImportStrategy,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct GlesExecutionState {
     outputs: HashMap<OutputId, OutputExecutionCache>,
     process_shaders: ProcessShaderCache,
+    surface_imports: BTreeMap<u64, CachedSurfaceImport>,
 }
 
 #[derive(Debug, Clone)]
@@ -145,8 +154,11 @@ pub(crate) fn execute_output_graph(
     state: &mut GlesExecutionState,
     output: &OutputSnapshot,
     execution: &OutputExecutionPlan,
-    render_plan: &RenderPlan,
-    process_plan: &RenderProcessPlan,
+    final_output: Option<&OutputFinalTargetPlan>,
+    allocation: Option<&OutputTargetAllocationPlan>,
+    prepared_scene: &OutputPreparedSceneResources,
+    prepared_gpu: Option<&OutputPreparedGpuResources>,
+    process_plan: &OutputProcessPlan,
     _materials: &RenderMaterialFrameState,
     surface_registry: &ProtocolSurfaceRegistry,
     cursor_cache: &mut SoftwareCursorCache,
@@ -155,11 +167,6 @@ pub(crate) fn execute_output_graph(
     completed_screenshots: &mut CompletedScreenshotFrames,
     clock: Option<&CompositorClock>,
 ) -> Result<Option<ExecutedOutputTexture>, GlesExecutionError> {
-    let Some(output_plan) = render_plan.outputs.get(&output.output_id) else {
-        return Ok(None);
-    };
-    let output_process = process_plan.outputs.get(&output.output_id);
-
     let output_size = Size::from((
         i32::try_from(output.properties.width.max(1)).unwrap_or(i32::MAX),
         i32::try_from(output.properties.height.max(1)).unwrap_or(i32::MAX),
@@ -167,11 +174,16 @@ pub(crate) fn execute_output_graph(
     let output_rect = Rectangle::from_size(output_size);
     let output_scale = output.properties.scale.max(1);
 
-    let output_cache = state.outputs.entry(output.output_id).or_default();
-    output_cache.targets.retain(|target_id, _| execution.targets.contains_key(target_id));
-    for target in output_cache.targets.values_mut() {
-        target.backdrop_regions.clear();
-    }
+    let output_cache = state
+        .outputs
+        .get_mut(&output.output_id)
+        .ok_or(GlesExecutionError::MissingExecutionTarget {
+            target_id: execution
+                .ordered_passes
+                .iter()
+                .find_map(|pass_id| execution.passes.get(pass_id).map(|pass| pass.output_target))
+                .unwrap_or(RenderTargetId(0)),
+        })?;
 
     for pass_id in execution.reachable_passes_in_order() {
         let Some(pass) = execution.passes.get(&pass_id) else {
@@ -180,15 +192,20 @@ pub(crate) fn execute_output_graph(
 
         match pass.kind {
             RenderPassKind::Scene => {
-                let target =
-                    ensure_target(renderer, output_cache, pass.output_target, output_size)?;
+                let target = output_cache
+                    .targets
+                    .get_mut(&pass.output_target)
+                    .ok_or(GlesExecutionError::MissingExecutionTarget {
+                        target_id: pass.output_target,
+                    })?;
                 let built = build_scene_pass_elements(
                     renderer,
+                    prepared_scene,
+                    prepared_gpu,
                     surface_registry,
                     cursor_cache,
                     config,
                     output_scale,
-                    output_plan,
                     pass.item_ids(),
                 );
                 target.backdrop_regions.extend(built.backdrop_regions);
@@ -213,7 +230,8 @@ pub(crate) fn execute_output_graph(
                     renderer,
                     &mut state.process_shaders,
                     output_cache,
-                    output_process,
+                    process_plan,
+                    allocation,
                     pass_id,
                     output_size,
                     output_rect,
@@ -225,7 +243,8 @@ pub(crate) fn execute_output_graph(
                     renderer,
                     &mut state.process_shaders,
                     output_cache,
-                    output_process,
+                    process_plan,
+                    allocation,
                     pass_id,
                     output_size,
                     output_rect,
@@ -236,12 +255,11 @@ pub(crate) fn execute_output_graph(
                 let RenderPassPayload::Readback(config_payload) = &pass.payload else {
                     continue;
                 };
-                let requests = pending_screenshot_requests.requests_for_output(output.output_id);
-                if requests.is_empty() {
+                if config_payload.request_ids.is_empty() {
                     continue;
                 }
-                let Some(target) = output_cache.targets.get_mut(&config_payload.source_target)
-                else {
+                let source_target = config_payload.source_target;
+                let Some(target) = output_cache.targets.get_mut(&source_target) else {
                     continue;
                 };
                 let pixels = readback_texture_rgba(renderer, &mut target.texture, output_size)?;
@@ -249,9 +267,9 @@ pub(crate) fn execute_output_graph(
                 let uptime_millis = clock
                     .map(|clock| clock.uptime_millis.min(u128::from(u64::MAX)) as u64)
                     .unwrap_or_default();
-                for request in &requests {
+                for request_id in &config_payload.request_ids {
                     completed_screenshots.push_frame(ScreenshotFrame {
-                        request_id: request.id,
+                        request_id: *request_id,
                         output_id: output.output_id,
                         frame,
                         uptime_millis,
@@ -261,20 +279,12 @@ pub(crate) fn execute_output_graph(
                         pixels_rgba: pixels.clone(),
                     });
                 }
-                let completed_ids = requests.iter().map(|request| request.id).collect::<Vec<_>>();
-                pending_screenshot_requests.finish_requests(&completed_ids);
+                pending_screenshot_requests.finish_requests(&config_payload.request_ids);
             }
         }
     }
 
-    let final_target = output_swapchain_target(execution, output.output_id).or_else(|| {
-        execution
-            .ordered_passes
-            .last()
-            .and_then(|pass_id| execution.passes.get(pass_id))
-            .map(|pass| pass.output_target)
-    });
-    let Some(final_target) = final_target else {
+    let Some(final_target) = final_output.map(|plan| plan.present_target_id) else {
         return Ok(None);
     };
     let Some(target) = output_cache.targets.get(&final_target) else {
@@ -282,6 +292,15 @@ pub(crate) fn execute_output_graph(
     };
 
     Ok(Some(ExecutedOutputTexture { texture: target.texture.clone() }))
+}
+
+pub(crate) fn prepare_output_graph_process_shaders(
+    renderer: &mut GlesRenderer,
+    state: &mut GlesExecutionState,
+    prepared_gpu: Option<&OutputPreparedGpuResources>,
+    process_plan: &OutputProcessPlan,
+) -> Result<(), GlesExecutionError> {
+    prewarm_process_shader_programs(renderer, &mut state.process_shaders, prepared_gpu, process_plan)
 }
 
 pub(crate) fn final_output_texture_element(
@@ -373,26 +392,36 @@ struct ScenePassBuilt {
 
 fn build_scene_pass_elements(
     renderer: &mut GlesRenderer,
+    prepared_scene: &OutputPreparedSceneResources,
+    prepared_gpu: Option<&OutputPreparedGpuResources>,
     surface_registry: &ProtocolSurfaceRegistry,
     cursor_cache: &mut SoftwareCursorCache,
     config: Option<&CompositorConfig>,
     output_scale: u32,
-    output_plan: &nekoland_ecs::resources::OutputRenderPlan,
     item_ids: &[nekoland_ecs::resources::RenderItemId],
 ) -> ScenePassBuilt {
     let mut elements = Vec::new();
     let mut backdrop_regions = Vec::new();
 
     for item_id in scene_pass_item_ids_in_presentation_order(item_ids) {
-        let Some(item) = output_plan.item(*item_id) else {
+        let Some(item) = prepared_scene.items.get(item_id) else {
             continue;
         };
         match item {
-            RenderPlanItem::Surface(item) => {
-                let Some(clip_rect) = item
-                    .instance
-                    .visible_rect()
-                    .and_then(|rect| render_rect_to_physical(&rect, output_scale))
+            PreparedSceneItem::Surface(item) => {
+                let import_ready = prepared_gpu
+                    .and_then(|prepared_gpu| prepared_gpu.surface_imports.get(&item.surface_id))
+                    .map(|prepared_import| {
+                        !matches!(
+                            prepared_import.strategy,
+                            nekoland_ecs::resources::PreparedSurfaceImportStrategy::Unsupported
+                        )
+                    })
+                    .unwrap_or(item.import_ready);
+                if !import_ready {
+                    continue;
+                }
+                let Some(clip_rect) = render_rect_to_physical(&item.visible_rect, output_scale)
                 else {
                     continue;
                 };
@@ -403,9 +432,9 @@ fn build_scene_pass_elements(
                     render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
                         renderer,
                         surface,
-                        (item.instance.rect.x, item.instance.rect.y),
+                        (item.x, item.y),
                         output_scale as f64,
-                        item.instance.opacity,
+                        item.opacity,
                         Kind::Unspecified,
                     )
                     .into_iter()
@@ -415,11 +444,8 @@ fn build_scene_pass_elements(
                     .map(CommonGlesRenderElement::from),
                 );
             }
-            RenderPlanItem::SolidRect(item) => {
-                let Some(visible_rect) = item
-                    .instance
-                    .visible_rect()
-                    .and_then(|rect| render_rect_to_physical(&rect, output_scale))
+            PreparedSceneItem::SolidRect(item) => {
+                let Some(visible_rect) = render_rect_to_physical(&item.visible_rect, output_scale)
                 else {
                     continue;
                 };
@@ -428,68 +454,71 @@ fn build_scene_pass_elements(
                         Id::new(),
                         visible_rect,
                         CommitCounter::default(),
-                        render_color_to_color32f(item.color, item.instance.opacity),
+                        render_color_to_color32f(item.color, item.opacity),
                         Kind::Unspecified,
                     )
                     .into(),
                 );
             }
-            RenderPlanItem::Backdrop(item) => {
-                let Some(visible_rect) = item
-                    .instance
-                    .visible_rect()
-                    .and_then(|rect| render_rect_to_physical(&rect, output_scale))
+            PreparedSceneItem::Backdrop(item) => {
+                let Some(visible_rect) = render_rect_to_physical(&item.visible_rect, output_scale)
                 else {
                     continue;
                 };
                 backdrop_regions.push(visible_rect);
             }
-            RenderPlanItem::Cursor(item) => match &item.source {
-                CursorRenderSource::Named { icon_name } => {
-                    let theme =
-                        config.map(|config| config.cursor_theme.as_str()).unwrap_or("default");
-                    match cursor_cache.render_element(
-                        renderer,
-                        theme,
-                        icon_name,
-                        output_scale.max(1),
-                        item.instance.rect.x,
-                        item.instance.rect.y,
-                    ) {
-                        Ok(element) => elements.push(element.into()),
-                        Err(error) => {
-                            tracing::warn!(error = %error, "failed to upload software cursor");
-                        }
+            PreparedSceneItem::CursorNamed(item) => {
+                let theme = config.map(|config| config.cursor_theme.as_str()).unwrap_or("default");
+                match cursor_cache.render_element(
+                    renderer,
+                    theme,
+                    &item.icon_name,
+                    item.scale.max(1),
+                    item.x,
+                    item.y,
+                ) {
+                    Ok(element) => elements.push(element.into()),
+                    Err(error) => {
+                        tracing::warn!(error = %error, "failed to upload software cursor");
                     }
                 }
-                CursorRenderSource::Surface { surface_id } => {
-                    let Some(clip_rect) = item
-                        .instance
-                        .visible_rect()
-                        .and_then(|rect| render_rect_to_physical(&rect, output_scale))
-                    else {
-                        continue;
-                    };
-                    let Some(surface) = surface_registry.surface(*surface_id) else {
-                        continue;
-                    };
-                    elements.extend(
-                        render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
-                            renderer,
-                            surface,
-                            (item.instance.rect.x, item.instance.rect.y),
-                            output_scale as f64,
-                            item.instance.opacity,
-                            Kind::Cursor,
+            }
+            PreparedSceneItem::CursorSurface(item) => {
+                let import_ready = prepared_gpu
+                    .and_then(|prepared_gpu| prepared_gpu.surface_imports.get(&item.surface_id))
+                    .map(|prepared_import| {
+                        !matches!(
+                            prepared_import.strategy,
+                            nekoland_ecs::resources::PreparedSurfaceImportStrategy::Unsupported
                         )
-                        .into_iter()
-                        .filter_map(|element| {
-                            CropRenderElement::from_element(element, output_scale as f64, clip_rect)
-                        })
-                        .map(CommonGlesRenderElement::from),
-                    );
+                    })
+                    .unwrap_or(item.import_ready);
+                if !import_ready {
+                    continue;
                 }
-            },
+                let Some(clip_rect) = render_rect_to_physical(&item.visible_rect, output_scale)
+                else {
+                    continue;
+                };
+                let Some(surface) = surface_registry.surface(item.surface_id) else {
+                    continue;
+                };
+                elements.extend(
+                    render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
+                        renderer,
+                        surface,
+                        (item.x, item.y),
+                        output_scale as f64,
+                        item.opacity,
+                        Kind::Cursor,
+                    )
+                    .into_iter()
+                    .filter_map(|element| {
+                        CropRenderElement::from_element(element, output_scale as f64, clip_rect)
+                    })
+                    .map(CommonGlesRenderElement::from),
+                );
+            }
         }
     }
 
@@ -506,18 +535,27 @@ fn ensure_target<'a>(
     renderer: &mut GlesRenderer,
     cache: &'a mut OutputExecutionCache,
     target_id: RenderTargetId,
+    allocation: Option<&RenderTargetAllocationSpec>,
     output_size: Size<i32, Physical>,
 ) -> Result<&'a mut CachedExecutionTarget, GlesExecutionError> {
-    let recreate = cache.targets.get(&target_id).is_none_or(|target| target.size != output_size);
+    let target_size = allocation
+        .map(|allocation| {
+            Size::from((
+                i32::try_from(allocation.width.max(1)).unwrap_or(i32::MAX),
+                i32::try_from(allocation.height.max(1)).unwrap_or(i32::MAX),
+            ))
+        })
+        .unwrap_or(output_size);
+    let recreate = cache.targets.get(&target_id).is_none_or(|target| target.size != target_size);
     if recreate {
         let texture = Offscreen::<GlesTexture>::create_buffer(
             renderer,
             Fourcc::Abgr8888,
-            Size::<i32, Buffer>::from((output_size.w, output_size.h)),
+            Size::<i32, Buffer>::from((target_size.w, target_size.h)),
         )?;
         cache.targets.insert(
             target_id,
-            CachedExecutionTarget { texture, size: output_size, backdrop_regions: Vec::new() },
+            CachedExecutionTarget { texture, size: target_size, backdrop_regions: Vec::new() },
         );
     }
 
@@ -554,27 +592,118 @@ fn composite_texture_to_target(
     Ok(())
 }
 
+pub(crate) fn prepare_output_graph_targets(
+    renderer: &mut GlesRenderer,
+    state: &mut GlesExecutionState,
+    output: &OutputSnapshot,
+    execution: &OutputExecutionPlan,
+    allocation: Option<&OutputTargetAllocationPlan>,
+) -> Result<(), GlesExecutionError> {
+    let output_size = Size::from((
+        i32::try_from(output.properties.width.max(1)).unwrap_or(i32::MAX),
+        i32::try_from(output.properties.height.max(1)).unwrap_or(i32::MAX),
+    ));
+    let output_cache = state.outputs.entry(output.output_id).or_default();
+    output_cache.targets.retain(|target_id, _| {
+        allocation.is_some_and(|allocation| allocation.targets.contains_key(target_id))
+            || execution.targets.contains_key(target_id)
+    });
+    for target in output_cache.targets.values_mut() {
+        target.backdrop_regions.clear();
+    }
+    for target_id in execution.targets.keys().copied() {
+        let _ = ensure_target(
+            renderer,
+            output_cache,
+            target_id,
+            allocation.and_then(|allocation| allocation.targets.get(&target_id)),
+            output_size,
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_output_surface_imports(
+    renderer: &mut GlesRenderer,
+    state: &mut GlesExecutionState,
+    prepared_scene: &OutputPreparedSceneResources,
+    prepared_gpu: Option<&OutputPreparedGpuResources>,
+    surface_registry: &ProtocolSurfaceRegistry,
+) -> Result<(), GlesExecutionError> {
+    let importable = importable_surface_imports(prepared_scene, prepared_gpu);
+    let needed_surface_ids = importable.iter().map(|prepared_import| prepared_import.surface_id).collect::<BTreeSet<_>>();
+    state.surface_imports.retain(|surface_id, _| needed_surface_ids.contains(surface_id));
+
+    for prepared_import in importable {
+        if !needs_surface_reimport(state.surface_imports.get(&prepared_import.surface_id), &prepared_import)
+        {
+            continue;
+        }
+        let surface_id = prepared_import.surface_id;
+        let Some(surface) = surface_registry.surface(surface_id) else {
+            continue;
+        };
+        import_surface_tree(renderer, surface)?;
+        state.surface_imports.insert(
+            surface_id,
+            CachedSurfaceImport {
+                content_version: prepared_import.descriptor.content_version,
+                strategy: prepared_import.strategy,
+            },
+        );
+    }
+
+    Ok(())
+}
+
+fn prewarm_process_shader_programs(
+    renderer: &mut GlesRenderer,
+    shaders: &mut ProcessShaderCache,
+    prepared_gpu: Option<&OutputPreparedGpuResources>,
+    output_process: &OutputProcessPlan,
+) -> Result<(), GlesExecutionError> {
+    let mut required = prepared_gpu
+        .map(|prepared_gpu| prepared_gpu.process_shaders.clone())
+        .unwrap_or_else(|| {
+            output_process
+                .units
+                .values()
+                .map(|unit| unit.shader_key.clone())
+                .collect::<BTreeSet<_>>()
+        });
+    required.remove(&ProcessShaderKey::Passthrough);
+    required.remove(&ProcessShaderKey::BuiltinComposite);
+
+    for shader_key in required {
+        let _ = process_shader_program(renderer, shaders, &shader_key)?;
+    }
+
+    Ok(())
+}
+
 fn execute_process_units_for_pass(
     renderer: &mut GlesRenderer,
     shaders: &mut ProcessShaderCache,
     output_cache: &mut OutputExecutionCache,
-    output_process: Option<&OutputProcessPlan>,
+    output_process: &OutputProcessPlan,
+    _allocation: Option<&OutputTargetAllocationPlan>,
     pass_id: nekoland_ecs::resources::RenderPassId,
     output_size: Size<i32, Physical>,
     output_rect: Rectangle<i32, Physical>,
     output_scale: u32,
 ) -> Result<(), GlesExecutionError> {
-    let Some(output_process) = output_process else {
-        return Ok(());
-    };
-
     for unit in output_process.units_for_pass(pass_id) {
         let source_texture =
             output_cache.targets.get(&unit.input.target_id).map(|target| target.texture.clone());
         let Some(source_texture) = source_texture else {
             continue;
         };
-        let target = ensure_target(renderer, output_cache, unit.output.target_id, output_size)?;
+        let target = output_cache
+            .targets
+            .get_mut(&unit.output.target_id)
+            .ok_or(GlesExecutionError::MissingExecutionTarget {
+                target_id: unit.output.target_id,
+            })?;
         execute_process_unit(
             renderer,
             shaders,
@@ -611,8 +740,10 @@ fn execute_process_unit(
         .and_then(|rect| process_rect_to_physical(&rect, output_scale))
         .unwrap_or(default_output_rect);
 
-    match unit.shader_key.0.as_str() {
-        "backdrop_blur" => {
+    match &unit.shader_key {
+        ProcessShaderKey::Material(key)
+            if key.material == nekoland_ecs::resources::RenderMaterialKind::BackdropBlur =>
+        {
             let backdrop_regions = unit
                 .process_regions
                 .iter()
@@ -642,6 +773,43 @@ fn execute_process_unit(
             Ok(())
         }
     }
+}
+
+fn importable_surface_imports(
+    prepared_scene: &OutputPreparedSceneResources,
+    prepared_gpu: Option<&OutputPreparedGpuResources>,
+) -> Vec<nekoland_ecs::resources::PreparedSurfaceImport> {
+    prepared_scene
+        .ordered_items
+        .iter()
+        .filter_map(|item_id| prepared_scene.items.get(item_id))
+        .filter_map(|item| match item {
+            PreparedSceneItem::Surface(item) if item.import_ready => Some(item.surface_id),
+            PreparedSceneItem::CursorSurface(item) if item.import_ready => Some(item.surface_id),
+            _ => None,
+        })
+        .filter_map(|surface_id| {
+            prepared_gpu
+                .and_then(|prepared_gpu| prepared_gpu.surface_imports.get(&surface_id))
+                .cloned()
+                .filter(|prepared_import| {
+                    !matches!(
+                        prepared_import.strategy,
+                        nekoland_ecs::resources::PreparedSurfaceImportStrategy::Unsupported
+                    )
+                })
+        })
+        .collect()
+}
+
+fn needs_surface_reimport(
+    cached: Option<&CachedSurfaceImport>,
+    prepared_import: &nekoland_ecs::resources::PreparedSurfaceImport,
+) -> bool {
+    cached.is_none_or(|cached| {
+        cached.content_version != prepared_import.descriptor.content_version
+            || cached.strategy != prepared_import.strategy
+    })
 }
 
 fn execute_backdrop_blur_pass(
@@ -676,9 +844,16 @@ fn execute_backdrop_blur_pass(
             _ => None,
         })
         .unwrap_or(12.0);
-    let program =
-        process_shader_program(renderer, shaders, &ProcessShaderKey("backdrop_blur".to_owned()))?
-            .clone();
+    let program = process_shader_program(
+        renderer,
+        shaders,
+        &ProcessShaderKey::Material(
+            nekoland_ecs::resources::RenderMaterialPipelineKey::post_process(
+                nekoland_ecs::resources::RenderMaterialKind::BackdropBlur,
+            ),
+        ),
+    )?
+    .clone();
     let shader_uniforms = vec![
         Uniform::new("tex_size", UniformValue::_2f(output_size.w as f32, output_size.h as f32)),
         Uniform::new("radius", UniformValue::_1f(radius)),
@@ -708,14 +883,18 @@ fn process_shader_program<'a>(
     shader_key: &ProcessShaderKey,
 ) -> Result<&'a GlesTexProgram, GlesExecutionError> {
     if !shaders.programs.contains_key(shader_key) {
-        let program = match shader_key.0.as_str() {
-            "backdrop_blur" => renderer.compile_custom_texture_shader(
-                BACKDROP_BLUR_SHADER,
-                &[
-                    UniformName::new("tex_size", UniformType::_2f),
-                    UniformName::new("radius", UniformType::_1f),
-                ],
-            )?,
+        let program = match shader_key {
+            ProcessShaderKey::Material(key)
+                if key.material == nekoland_ecs::resources::RenderMaterialKind::BackdropBlur =>
+            {
+                renderer.compile_custom_texture_shader(
+                    BACKDROP_BLUR_SHADER,
+                    &[
+                        UniformName::new("tex_size", UniformType::_2f),
+                        UniformName::new("radius", UniformType::_1f),
+                    ],
+                )?
+            }
             _ => return Err(GlesExecutionError::Renderer(GlesError::ShaderCompileError)),
         };
         shaders.programs.insert(shader_key.clone(), program);
@@ -738,20 +917,6 @@ fn readback_texture_rgba(
     Ok(bytes.to_vec())
 }
 
-fn output_swapchain_target(
-    execution: &OutputExecutionPlan,
-    output_id: OutputId,
-) -> Option<RenderTargetId> {
-    execution.targets.iter().find_map(|(target_id, target_kind)| match target_kind {
-        nekoland_ecs::resources::RenderTargetKind::OutputSwapchain(target_output_id)
-            if *target_output_id == output_id =>
-        {
-            Some(*target_id)
-        }
-        _ => None,
-    })
-}
-
 fn physical_rect_to_buffer_rect(rect: Rectangle<i32, Physical>) -> Rectangle<f64, Buffer> {
     Rectangle::new(
         (f64::from(rect.loc.x), f64::from(rect.loc.y)).into(),
@@ -770,9 +935,18 @@ fn process_rect_to_physical(rect: &ProcessRect, scale: u32) -> Option<Rectangle<
 
 #[cfg(test)]
 mod tests {
-    use nekoland_ecs::resources::RenderItemId;
+    use std::collections::{BTreeMap, BTreeSet};
 
-    use super::scene_pass_item_ids_in_presentation_order;
+    use nekoland_ecs::resources::{
+        OutputPreparedGpuResources, OutputPreparedSceneResources, PreparedSceneItem,
+        PreparedSurfaceCursorSceneItem, PreparedSurfaceImport, PreparedSurfaceImportStrategy,
+        PreparedSurfaceSceneItem, RenderItemId, RenderRect, SurfaceTextureImportDescriptor,
+    };
+
+    use super::{
+        CachedSurfaceImport, importable_surface_imports, needs_surface_reimport,
+        scene_pass_item_ids_in_presentation_order,
+    };
 
     #[test]
     fn scene_pass_draw_order_is_front_to_back() {
@@ -781,5 +955,243 @@ mod tests {
             scene_pass_item_ids_in_presentation_order(&item_ids).copied().collect::<Vec<_>>(),
             vec![RenderItemId(33), RenderItemId(22), RenderItemId(11)]
         );
+    }
+
+    #[test]
+    fn importable_surface_imports_skip_unsupported_or_not_ready_surfaces() {
+        let prepared_scene = OutputPreparedSceneResources {
+            items: BTreeMap::from([
+                (
+                    RenderItemId(1),
+                    PreparedSceneItem::Surface(PreparedSurfaceSceneItem {
+                        surface_id: 11,
+                        surface_kind: nekoland_ecs::resources::PlatformSurfaceKind::Toplevel,
+                        x: 0,
+                        y: 0,
+                        visible_rect: RenderRect { x: 0, y: 0, width: 10, height: 10 },
+                        opacity: 1.0,
+                        import_ready: true,
+                    }),
+                ),
+                (
+                    RenderItemId(2),
+                    PreparedSceneItem::Surface(PreparedSurfaceSceneItem {
+                        surface_id: 22,
+                        surface_kind: nekoland_ecs::resources::PlatformSurfaceKind::Toplevel,
+                        x: 0,
+                        y: 0,
+                        visible_rect: RenderRect { x: 0, y: 0, width: 10, height: 10 },
+                        opacity: 1.0,
+                        import_ready: false,
+                    }),
+                ),
+                (
+                    RenderItemId(3),
+                    PreparedSceneItem::CursorSurface(PreparedSurfaceCursorSceneItem {
+                        surface_id: 33,
+                        x: 0,
+                        y: 0,
+                        visible_rect: RenderRect { x: 0, y: 0, width: 5, height: 5 },
+                        opacity: 1.0,
+                        import_ready: true,
+                    }),
+                ),
+            ]),
+            ordered_items: vec![RenderItemId(1), RenderItemId(2), RenderItemId(3)],
+        };
+        let prepared_gpu = OutputPreparedGpuResources {
+            surface_imports: BTreeMap::from([
+                (
+                    11,
+                    PreparedSurfaceImport {
+                        surface_id: 11,
+                        descriptor: SurfaceTextureImportDescriptor {
+                            surface_id: 11,
+                            surface_kind: nekoland_ecs::resources::PlatformSurfaceKind::Toplevel,
+                            buffer_source:
+                                nekoland_ecs::resources::PlatformSurfaceBufferSource::Shm,
+                            dmabuf_format: None,
+                            import_strategy:
+                                nekoland_ecs::resources::PlatformSurfaceImportStrategy::ShmUpload,
+                            target_outputs: Default::default(),
+                            content_version: 1,
+                            attached: true,
+                            scale: 1,
+                        },
+                        strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                    },
+                ),
+                (
+                    22,
+                    PreparedSurfaceImport {
+                        surface_id: 22,
+                        descriptor: SurfaceTextureImportDescriptor {
+                            surface_id: 22,
+                            surface_kind: nekoland_ecs::resources::PlatformSurfaceKind::Toplevel,
+                            buffer_source:
+                                nekoland_ecs::resources::PlatformSurfaceBufferSource::Shm,
+                            dmabuf_format: None,
+                            import_strategy:
+                                nekoland_ecs::resources::PlatformSurfaceImportStrategy::ShmUpload,
+                            target_outputs: Default::default(),
+                            content_version: 1,
+                            attached: true,
+                            scale: 1,
+                        },
+                        strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                    },
+                ),
+                (
+                    33,
+                    PreparedSurfaceImport {
+                        surface_id: 33,
+                        descriptor: SurfaceTextureImportDescriptor {
+                            surface_id: 33,
+                            surface_kind: nekoland_ecs::resources::PlatformSurfaceKind::Cursor,
+                            buffer_source:
+                                nekoland_ecs::resources::PlatformSurfaceBufferSource::Unknown,
+                            dmabuf_format: None,
+                            import_strategy:
+                                nekoland_ecs::resources::PlatformSurfaceImportStrategy::Unsupported,
+                            target_outputs: Default::default(),
+                            content_version: 1,
+                            attached: true,
+                            scale: 1,
+                        },
+                        strategy: PreparedSurfaceImportStrategy::Unsupported,
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        let imports = importable_surface_imports(&prepared_scene, Some(&prepared_gpu));
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].surface_id, 11);
+    }
+
+    #[test]
+    fn importable_surface_imports_include_external_texture_strategy() {
+        let prepared_scene = OutputPreparedSceneResources {
+            items: BTreeMap::from([(
+                RenderItemId(1),
+                PreparedSceneItem::Surface(PreparedSurfaceSceneItem {
+                    surface_id: 44,
+                    surface_kind: nekoland_ecs::resources::PlatformSurfaceKind::Toplevel,
+                    x: 0,
+                    y: 0,
+                    visible_rect: RenderRect { x: 0, y: 0, width: 10, height: 10 },
+                    opacity: 1.0,
+                    import_ready: true,
+                }),
+            )]),
+            ordered_items: vec![RenderItemId(1)],
+        };
+        let prepared_gpu = OutputPreparedGpuResources {
+            surface_imports: BTreeMap::from([(
+                44,
+                PreparedSurfaceImport {
+                    surface_id: 44,
+                    descriptor: SurfaceTextureImportDescriptor {
+                        surface_id: 44,
+                        surface_kind: nekoland_ecs::resources::PlatformSurfaceKind::Toplevel,
+                        buffer_source:
+                            nekoland_ecs::resources::PlatformSurfaceBufferSource::DmaBuf,
+                        dmabuf_format: Some(nekoland_ecs::resources::PlatformDmabufFormat {
+                            code: 875713112,
+                            modifier: 0,
+                        }),
+                        import_strategy: nekoland_ecs::resources::PlatformSurfaceImportStrategy::ExternalTextureImport,
+                        target_outputs: Default::default(),
+                        content_version: 1,
+                        attached: true,
+                        scale: 1,
+                    },
+                    strategy: PreparedSurfaceImportStrategy::ExternalTextureImport,
+                },
+            )]),
+            ..Default::default()
+        };
+
+        let imports = importable_surface_imports(&prepared_scene, Some(&prepared_gpu));
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].surface_id, 44);
+        assert_eq!(imports[0].strategy, PreparedSurfaceImportStrategy::ExternalTextureImport);
+    }
+
+    #[test]
+    fn needs_surface_reimport_only_when_strategy_or_content_changes() {
+        let prepared_import = PreparedSurfaceImport {
+            surface_id: 11,
+            descriptor: SurfaceTextureImportDescriptor {
+                surface_id: 11,
+                surface_kind: nekoland_ecs::resources::PlatformSurfaceKind::Toplevel,
+                buffer_source: nekoland_ecs::resources::PlatformSurfaceBufferSource::Shm,
+                dmabuf_format: None,
+                import_strategy: nekoland_ecs::resources::PlatformSurfaceImportStrategy::ShmUpload,
+                target_outputs: Default::default(),
+                content_version: 7,
+                attached: true,
+                scale: 1,
+            },
+            strategy: PreparedSurfaceImportStrategy::ShmUpload,
+        };
+        assert!(needs_surface_reimport(None, &prepared_import));
+        assert!(!needs_surface_reimport(
+            Some(&CachedSurfaceImport {
+                content_version: 7,
+                strategy: PreparedSurfaceImportStrategy::ShmUpload,
+            }),
+            &prepared_import,
+        ));
+        assert!(needs_surface_reimport(
+            Some(&CachedSurfaceImport {
+                content_version: 6,
+                strategy: PreparedSurfaceImportStrategy::ShmUpload,
+            }),
+            &prepared_import,
+        ));
+        assert!(needs_surface_reimport(
+            Some(&CachedSurfaceImport {
+                content_version: 7,
+                strategy: PreparedSurfaceImportStrategy::Unsupported,
+            }),
+            &prepared_import,
+        ));
+    }
+
+    #[test]
+    fn surface_import_cache_can_drop_surfaces_that_are_no_longer_needed() {
+        let needed = BTreeSet::from([11_u64, 33_u64]);
+        let mut cached = BTreeMap::from([
+            (
+                11_u64,
+                CachedSurfaceImport {
+                    content_version: 1,
+                    strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                },
+            ),
+            (
+                22_u64,
+                CachedSurfaceImport {
+                    content_version: 1,
+                    strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                },
+            ),
+            (
+                33_u64,
+                CachedSurfaceImport {
+                    content_version: 2,
+                    strategy: PreparedSurfaceImportStrategy::DmaBufImport,
+                },
+            ),
+        ]);
+
+        cached.retain(|surface_id, _| needed.contains(surface_id));
+
+        assert_eq!(cached.len(), 2);
+        assert!(cached.contains_key(&11));
+        assert!(!cached.contains_key(&22));
+        assert!(cached.contains_key(&33));
     }
 }

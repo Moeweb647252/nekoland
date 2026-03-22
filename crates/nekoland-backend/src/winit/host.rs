@@ -10,6 +10,7 @@ use nekoland_core::error::NekolandError;
 use nekoland_ecs::resources::{BackendInputAction, BackendInputEvent};
 use smithay::backend::SwapBuffersError;
 use smithay::backend::allocator::Format as DmabufFormat;
+use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::egl::{
     EGLContext, EGLSurface, Error as EglError,
     context::{GlAttributes, PixelFormatRequirements},
@@ -121,6 +122,12 @@ impl HostWinitGraphicsBackend {
 
     pub(crate) fn dmabuf_formats(&self) -> Vec<DmabufFormat> {
         ImportDma::dmabuf_formats(&self.renderer).into_iter().collect::<Vec<_>>()
+    }
+
+    pub(crate) fn dmabuf_render_formats(&self) -> Vec<DmabufFormat> {
+        Bind::<Dmabuf>::supported_formats(&self.renderer)
+            .map(|formats| formats.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default()
     }
 }
 

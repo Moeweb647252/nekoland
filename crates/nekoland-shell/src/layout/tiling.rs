@@ -5,12 +5,15 @@ use bevy_ecs::prelude::{Query, Res, ResMut, With};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{WindowLayout, XdgWindow};
 use nekoland_ecs::resources::{
-    PrimaryOutputState, UNASSIGNED_WORKSPACE_TILING_ID, WorkArea, WorkspaceTilingState,
+    PrimaryOutputState, UNASSIGNED_WORKSPACE_TILING_ID, WaylandIngress, WorkArea,
+    WorkspaceTilingState,
 };
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
-use crate::viewport::{project_scene_geometry, resolve_output_state_for_workspace};
+use crate::viewport::{
+    preferred_primary_output_state, project_scene_geometry, resolve_output_state_for_workspace,
+};
 
 /// Tiling layout strategy backed by a workspace-scoped binary tile tree.
 ///
@@ -26,9 +29,12 @@ pub fn tiling_layout_system(
     mut windows: Query<WindowRuntime, (With<XdgWindow>, Allow<Disabled>)>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime), Allow<Disabled>>,
     outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
+    wayland_ingress: Option<Res<WaylandIngress>>,
     primary_output: Option<Res<PrimaryOutputState>>,
     work_area: Res<WorkArea>,
 ) {
+    let primary_output =
+        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
     let tiled_surfaces = windows
         .iter()
         .filter(|window| window.role.is_managed() && matches!(*window.layout, WindowLayout::Tiled))
@@ -48,18 +54,15 @@ pub fn tiling_layout_system(
 
     let mut arranged = BTreeMap::new();
     for (workspace_id, tree) in &tiling.workspaces {
-        let workspace_area = resolve_output_state_for_workspace(
-            &outputs,
-            Some(*workspace_id),
-            primary_output.as_deref(),
-        )
-        .map(|(_, _, _, work_area)| WorkArea {
-            x: work_area.x,
-            y: work_area.y,
-            width: work_area.width,
-            height: work_area.height,
-        })
-        .unwrap_or(*work_area);
+        let workspace_area =
+            resolve_output_state_for_workspace(&outputs, Some(*workspace_id), primary_output)
+                .map(|(_, _, _, work_area)| WorkArea {
+                    x: work_area.x,
+                    y: work_area.y,
+                    width: work_area.width,
+                    height: work_area.height,
+                })
+                .unwrap_or(*work_area);
         arranged.extend(tree.arranged_geometry(&workspace_area));
     }
     for mut window in &mut windows {
@@ -76,11 +79,9 @@ pub fn tiling_layout_system(
         window.scene_geometry.height = geometry.height;
         let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces)
             .unwrap_or(UNASSIGNED_WORKSPACE_TILING_ID);
-        if let Some((_, _, viewport, _)) = resolve_output_state_for_workspace(
-            &outputs,
-            Some(workspace_id),
-            primary_output.as_deref(),
-        ) {
+        if let Some((_, _, viewport, _)) =
+            resolve_output_state_for_workspace(&outputs, Some(workspace_id), primary_output)
+        {
             *window.geometry = project_scene_geometry(&window.scene_geometry, viewport);
         } else {
             *window.geometry = geometry.clone();

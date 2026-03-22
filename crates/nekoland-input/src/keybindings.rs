@@ -3,9 +3,10 @@ use std::collections::BTreeMap;
 use bevy_ecs::prelude::{Res, ResMut, Resource};
 use nekoland_config::resources::{CompositorConfig, ConfiguredAction, describe_action_sequence};
 use nekoland_ecs::control::{OutputOps, WindowOps, WorkspaceOps};
-use nekoland_ecs::resources::{KeyShortcut, PendingExternalCommandRequests, PressedKeys};
+use nekoland_ecs::resources::{
+    InputEventRecord, KeyShortcut, PendingExternalCommandRequests, PendingInputEvents, PressedKeys,
+};
 use nekoland_ecs::selectors::{OutputName, WorkspaceLookup};
-use nekoland_protocol::resources::{InputEventRecord, PendingInputEvents};
 
 /// Feature-local compiled keybindings derived from the latest compositor config.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
@@ -666,9 +667,10 @@ fn workspace_selector_label(workspace: &nekoland_ecs::selectors::WorkspaceSelect
 mod tests {
     use std::collections::BTreeMap;
 
+    use crate::InputPlugin;
+    use nekoland_config::resources::{CompositorConfig, ConfiguredAction};
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::InputSchedule;
-    use nekoland_config::resources::{CompositorConfig, ConfiguredAction};
     use nekoland_ecs::components::WorkspaceId;
     use nekoland_ecs::resources::SplitAxis;
     use nekoland_ecs::resources::{
@@ -677,9 +679,6 @@ mod tests {
         PendingWindowControls, PendingWorkspaceControls, WorkspaceControl,
     };
     use nekoland_ecs::selectors::{OutputName, SurfaceId, WorkspaceLookup};
-    use nekoland_protocol::resources::PendingInputEvents;
-
-    use crate::InputPlugin;
 
     use super::{CompiledKeybindings, compile_binding, parse_key_shortcut};
 
@@ -909,7 +908,9 @@ mod tests {
         CompositorConfig {
             keybindings: bindings
                 .into_iter()
-                .map(|(binding, action): (&str, ConfiguredAction)| (binding.to_owned(), vec![action]))
+                .map(|(binding, action): (&str, ConfiguredAction)| {
+                    (binding.to_owned(), vec![action])
+                })
                 .collect::<BTreeMap<_, _>>(),
             ..CompositorConfig::default()
         }

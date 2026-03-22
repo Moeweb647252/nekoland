@@ -2,15 +2,15 @@ use std::collections::BTreeSet;
 
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::hierarchy::ChildOf;
-use bevy_ecs::prelude::{Commands, Entity, Query, ResMut, With, Without};
+use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With, Without};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{
     BufferState, PopupGrab, SurfaceContentVersion, SurfaceGeometry, WindowAnimation,
     WlSurfaceHandle, XdgPopup, XdgWindow,
 };
-use nekoland_ecs::resources::EntityIndex;
-use nekoland_protocol::resources::{
-    PendingXdgRequests, PopupPlacement, WindowLifecycleAction, XdgSurfaceRole,
+use nekoland_ecs::resources::{
+    EntityIndex, PendingXdgRequests, PopupPlacement, WaylandIngress, WindowLifecycleAction,
+    XdgSurfaceRole,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -52,7 +52,8 @@ type PopupProjectionQuery<'w, 's> = Query<
 /// ECS hierarchy with the correct `ChildOf` relationship from the start.
 pub fn popup_management_system(
     mut commands: Commands,
-    mut pending_xdg_requests: ResMut<PendingXdgRequests>,
+    wayland_ingress: Option<Res<WaylandIngress>>,
+    mut pending_xdg_requests: Option<ResMut<PendingXdgRequests>>,
     entity_index: bevy_ecs::prelude::Res<EntityIndex>,
     parent_geometries: PopupParentGeometries<'_, '_>,
     mut popups: PopupManagementQuery<'_, '_>,
@@ -60,8 +61,13 @@ pub fn popup_management_system(
     let mut known_popups =
         popups.iter_mut().map(|(_, surface, _, _, _, _, _, _)| surface.id).collect::<BTreeSet<_>>();
     let mut deferred = Vec::new();
+    let mut requests =
+        pending_xdg_requests.as_deref_mut().map(PendingXdgRequests::take).unwrap_or_default();
+    if let Some(wayland_ingress) = wayland_ingress.as_deref() {
+        requests.extend(wayland_ingress.pending_xdg_requests.iter().cloned());
+    }
 
-    for request in pending_xdg_requests.drain() {
+    for request in requests {
         match request.action.clone() {
             WindowLifecycleAction::PopupCreated { parent_surface_id, placement }
                 if known_popups.insert(request.surface_id) =>
@@ -195,7 +201,9 @@ pub fn popup_management_system(
         }
     }
 
-    pending_xdg_requests.replace(deferred);
+    if let Some(mut pending_xdg_requests) = pending_xdg_requests {
+        pending_xdg_requests.replace(deferred);
+    }
     tracing::trace!(count = known_popups.len(), "xdg popup system tick");
 }
 

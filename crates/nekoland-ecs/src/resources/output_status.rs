@@ -1,7 +1,7 @@
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
-use crate::components::OutputId;
+use crate::components::{OutputDevice, OutputId, OutputProperties};
 
 /// Tracks the output names currently materialized in ECS by any backend runtime.
 #[derive(Debug, Clone, Default, Resource, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,4 +56,43 @@ impl BackendOutputRegistry {
             .is_some_and(|output_id| self.connected_by_id.contains_key(output_id))
             || self.connected_by_id.values().any(|candidate_name| candidate_name == output_name)
     }
+}
+
+/// Platform-facing output blueprint exported across app boundaries.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformOutputBlueprint {
+    pub device: OutputDevice,
+    pub properties: OutputProperties,
+}
+
+/// Platform-facing output lifecycle change exported across app boundaries.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PlatformOutputLifecycleChange {
+    Connected(PlatformOutputBlueprint),
+    Disconnected,
+}
+
+/// One normalized output lifecycle transition exported from platform runtime into shell/main.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformOutputLifecycleRecord {
+    pub backend_id: u64,
+    pub output_name: String,
+    pub local_id: String,
+    pub change: PlatformOutputLifecycleChange,
+}
+
+/// One normalized output property refresh exported from platform runtime into shell/main.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformOutputPropertyUpdate {
+    pub backend_id: u64,
+    pub output_name: String,
+    pub local_id: String,
+    pub properties: OutputProperties,
+}
+
+/// Stable output materialization plan exported through platform mailboxes.
+#[derive(Debug, Clone, Default, Resource, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformOutputMaterializationPlan {
+    pub lifecycle: Vec<PlatformOutputLifecycleRecord>,
+    pub property_updates: Vec<PlatformOutputPropertyUpdate>,
 }

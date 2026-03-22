@@ -34,3 +34,22 @@ impl<T: bevy_app::Plugin> NekolandPlugin for BevyPlugin<T> {
         std::any::type_name::<T>()
     }
 }
+
+/// Adapter that lets an internal `NekolandPlugin` be installed into a Bevy `SubApp`.
+pub struct NekolandAppPlugin<T: NekolandPlugin>(T);
+
+impl<T: NekolandPlugin> NekolandAppPlugin<T> {
+    pub fn new(plugin: T) -> Self {
+        Self(plugin)
+    }
+}
+
+impl<T: NekolandPlugin> bevy_app::Plugin for NekolandAppPlugin<T> {
+    fn build(&self, app: &mut App) {
+        self.0.build(app);
+    }
+
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+}

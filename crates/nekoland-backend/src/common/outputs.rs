@@ -14,16 +14,20 @@ use nekoland_ecs::components::{
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::kinds::{BackendEvent, FrameQueue};
 use nekoland_ecs::resources::{
-    BackendOutputRegistry, EntityIndex, FocusedOutputState, OutputOverlayState, OutputServerAction,
-    OutputServerRequest, PendingOutputControl, PendingOutputControls, PendingOutputOverlayControls,
-    PendingOutputServerRequests, PrimaryOutputState,
+    BackendOutputRegistry, EntityIndex, FocusedOutputState, OutputGeometrySnapshot,
+    OutputOverlayState, OutputServerAction, OutputServerRequest, OutputSnapshotState,
+    PendingOutputControl, PendingOutputControls, PendingOutputOverlayControls,
+    PendingOutputServerRequests, PlatformOutputBlueprint, PlatformOutputLifecycleChange,
+    PlatformOutputLifecycleRecord, PlatformOutputMaterializationPlan,
+    PlatformOutputPropertyUpdate, PrimaryOutputState, WaylandIngress,
 };
 use nekoland_ecs::selectors::OutputSelector;
 use nekoland_ecs::views::OutputRuntime;
 use serde::{Deserialize, Serialize};
 
 use crate::components::OutputBackend;
-use crate::manager::BackendManager;
+use crate::manager::SharedBackendManager;
+use crate::plugin::BackendPresentInputs;
 use crate::traits::{BackendId, BackendOutputId, OutputSnapshot};
 
 /// Remembers output-local viewport origins across output disable/enable and reconnect cycles.
@@ -117,6 +121,75 @@ pub struct BackendOutputPropertyUpdate {
 pub type PendingBackendOutputUpdates =
     FrameQueue<BackendOutputPropertyUpdate, BackendOutputUpdateQueueTag>;
 
+/// Stable output-materialization plan exported from the wayland subapp to the main world.
+///
+/// Unlike the raw backend extract queues, this plan is an ordinary snapshot payload with no
+/// frame-queue behavior. The wayland subapp owns the raw queues; the main world only applies the
+/// already-normalized materialization operations.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackendOutputMaterializationPlan {
+    pub lifecycle: Vec<BackendOutputEventRecord>,
+    pub property_updates: Vec<BackendOutputPropertyUpdate>,
+}
+
+impl BackendOutputMaterializationPlan {
+    pub fn from_pending_queues(
+        pending_output_events: &PendingBackendOutputEvents,
+        pending_output_updates: &PendingBackendOutputUpdates,
+    ) -> Self {
+        Self {
+            lifecycle: pending_output_events.as_slice().to_vec(),
+            property_updates: pending_output_updates.as_slice().to_vec(),
+        }
+    }
+}
+
+impl From<BackendOutputBlueprint> for PlatformOutputBlueprint {
+    fn from(value: BackendOutputBlueprint) -> Self {
+        Self { device: value.device, properties: value.properties }
+    }
+}
+
+impl From<BackendOutputChange> for PlatformOutputLifecycleChange {
+    fn from(value: BackendOutputChange) -> Self {
+        match value {
+            BackendOutputChange::Connected(blueprint) => Self::Connected(blueprint.into()),
+            BackendOutputChange::Disconnected => Self::Disconnected,
+        }
+    }
+}
+
+impl From<BackendOutputEventRecord> for PlatformOutputLifecycleRecord {
+    fn from(value: BackendOutputEventRecord) -> Self {
+        Self {
+            backend_id: value.backend_id.0,
+            output_name: value.output_name,
+            local_id: value.local_id,
+            change: value.change.into(),
+        }
+    }
+}
+
+impl From<BackendOutputPropertyUpdate> for PlatformOutputPropertyUpdate {
+    fn from(value: BackendOutputPropertyUpdate) -> Self {
+        Self {
+            backend_id: value.backend_id.0,
+            output_name: value.output_name,
+            local_id: value.local_id,
+            properties: value.properties,
+        }
+    }
+}
+
+impl From<BackendOutputMaterializationPlan> for PlatformOutputMaterializationPlan {
+    fn from(value: BackendOutputMaterializationPlan) -> Self {
+        Self {
+            lifecycle: value.lifecycle.into_iter().map(Into::into).collect(),
+            property_updates: value.property_updates.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 type OutputViewportQuery<'w, 's> = Query<
     'w,
     's,
@@ -129,25 +202,15 @@ type OutputViewportQuery<'w, 's> = Query<
 >;
 type OutputWindowSceneQuery<'w, 's> =
     Query<'w, 's, (&'static WlSurfaceHandle, &'static WindowSceneGeometry), With<XdgWindow>>;
-type ManagedOutputQuery<'w, 's> = Query<
-    'w,
-    's,
-    (
-        Entity,
-        &'static OutputId,
-        &'static OutputDevice,
-        &'static OutputBackend,
-        &'static mut OutputProperties,
-    ),
->;
 
 #[derive(SystemParam)]
 pub(crate) struct OutputControlRequestCtx<'w, 's> {
     pending_output_controls: ResMut<'w, PendingOutputControls>,
     pending_output_overlay_controls: ResMut<'w, PendingOutputOverlayControls>,
     pending_output_requests: ResMut<'w, PendingOutputServerRequests>,
-    primary_output: Res<'w, PrimaryOutputState>,
-    focused_output: Res<'w, FocusedOutputState>,
+    wayland_ingress: Option<Res<'w, WaylandIngress>>,
+    primary_output: Option<Res<'w, PrimaryOutputState>>,
+    focused_output: Option<Res<'w, FocusedOutputState>>,
     entity_index: Res<'w, EntityIndex>,
     remembered_viewports: ResMut<'w, RememberedOutputViewportState>,
     outputs: OutputViewportQuery<'w, 's>,
@@ -156,21 +219,19 @@ pub(crate) struct OutputControlRequestCtx<'w, 's> {
 
 #[derive(SystemParam)]
 pub(crate) struct OutputServerRequestCtx<'w, 's> {
-    commands: Commands<'w, 's>,
-    manager: NonSend<'w, BackendManager>,
-    output_registry: ResMut<'w, BackendOutputRegistry>,
-    remembered_viewports: Res<'w, RememberedOutputViewportState>,
+    manager: NonSend<'w, SharedBackendManager>,
+    outputs: Res<'w, BackendPresentInputs>,
     pending_output_requests: ResMut<'w, PendingOutputServerRequests>,
-    outputs: ManagedOutputQuery<'w, 's>,
-    output_connected: MessageWriter<'w, OutputConnected>,
-    output_disconnected: MessageWriter<'w, OutputDisconnected>,
+    pending_output_events: ResMut<'w, PendingBackendOutputEvents>,
+    pending_output_updates: ResMut<'w, PendingBackendOutputUpdates>,
+    _marker: std::marker::PhantomData<&'s ()>,
 }
 
 /// Translates the latest config snapshot into idempotent enable/configure/disable requests for
 /// the backend-facing output controller.
 pub fn sync_configured_outputs_system(
     config: Option<Res<CompositorConfig>>,
-    outputs: Query<OutputRuntime>,
+    outputs: Res<'_, BackendPresentInputs>,
     mut pending_output_requests: ResMut<PendingOutputServerRequests>,
     mut last_applied_outputs: bevy_ecs::prelude::Local<Option<Vec<ConfiguredOutput>>>,
 ) -> bevy_ecs::error::Result {
@@ -188,8 +249,9 @@ pub fn sync_configured_outputs_system(
     }
 
     let existing_outputs = outputs
+        .outputs()
         .iter()
-        .map(|output| (output.name().to_owned(), output.properties.clone()))
+        .map(|output| (output.device.name.clone(), output.properties.clone()))
         .collect::<BTreeMap<_, _>>();
 
     let invalid_outputs = enqueue_configured_output_requests(
@@ -227,6 +289,7 @@ pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<
         mut pending_output_controls,
         mut pending_output_overlay_controls,
         mut pending_output_requests,
+        wayland_ingress,
         primary_output,
         focused_output,
         entity_index,
@@ -234,6 +297,10 @@ pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<
         mut outputs,
         windows,
     } = ctx;
+    let primary_output_id = wayland_ingress
+        .as_deref()
+        .and_then(|wayland_ingress| wayland_ingress.primary_output.id)
+        .or(primary_output.as_deref().and_then(|primary_output| primary_output.id));
     let mut deferred = Vec::new();
 
     for control in pending_output_controls.take() {
@@ -249,7 +316,7 @@ pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<
             }
             OutputSelector::Name(output) => output.as_str().to_owned(),
             OutputSelector::Primary => {
-                let Some(output) = primary_output.id.and_then(|output_id| {
+                let Some(output) = primary_output_id.and_then(|output_id| {
                     outputs.iter_mut().find_map(|(candidate_id, device, _, _)| {
                         (*candidate_id == output_id).then(|| device.name.clone())
                     })
@@ -261,14 +328,15 @@ pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<
             }
             OutputSelector::Focused => {
                 let Some(output) = focused_output
-                    .id
+                    .as_deref()
+                    .and_then(|focused_output| focused_output.id)
                     .and_then(|output_id| {
                         outputs.iter_mut().find_map(|(candidate_id, device, _, _)| {
                             (*candidate_id == output_id).then(|| device.name.clone())
                         })
                     })
                     .or_else(|| {
-                        primary_output.id.and_then(|output_id| {
+                        primary_output_id.and_then(|output_id| {
                             outputs.iter_mut().find_map(|(candidate_id, device, _, _)| {
                                 (*candidate_id == output_id).then(|| device.name.clone())
                             })
@@ -446,24 +514,30 @@ pub fn synchronize_backend_outputs_system(
     mut commands: Commands,
     mut output_registry: ResMut<BackendOutputRegistry>,
     mut remembered_viewports: ResMut<RememberedOutputViewportState>,
-    mut pending_output_events: ResMut<PendingBackendOutputEvents>,
+    wayland_ingress: Option<ResMut<WaylandIngress>>,
     existing_outputs: Query<(Entity, &OutputId, &OutputDevice, &OutputBackend)>,
+    mut output_properties: Query<(&OutputBackend, &mut OutputProperties)>,
     mut output_connected: MessageWriter<OutputConnected>,
     mut output_disconnected: MessageWriter<OutputDisconnected>,
 ) {
+    let Some(mut wayland_ingress) = wayland_ingress else {
+        return;
+    };
+    let mut output_materialization = std::mem::take(&mut wayland_ingress.output_materialization);
+
     for (_, output_id, output, _) in &existing_outputs {
         output_registry.remember_connected(*output_id, output.name.clone());
         output_registry.remember_enabled(*output_id, output.name.clone());
     }
 
-    for record in pending_output_events.drain() {
+    for record in output_materialization.lifecycle.drain(..) {
         match record.change {
-            BackendOutputChange::Connected(blueprint) => {
+            PlatformOutputLifecycleChange::Connected(blueprint) => {
                 if let Some((entity, output_id, _, _)) =
                     existing_outputs.iter().find(|(_, _, _, owner)| {
                         owner.output_id
                             == (BackendOutputId {
-                                backend_id: record.backend_id,
+                                backend_id: BackendId(record.backend_id),
                                 local_id: record.local_id.clone(),
                             })
                     })
@@ -489,10 +563,10 @@ pub fn synchronize_backend_outputs_system(
                         ..Default::default()
                     },
                     OutputBackend {
-                        backend_id: record.backend_id,
+                        backend_id: BackendId(record.backend_id),
                         output_id: BackendOutputId {
-                            backend_id: record.backend_id,
-                            local_id: blueprint.local_id.clone(),
+                            backend_id: BackendId(record.backend_id),
+                            local_id: record.local_id.clone(),
                         },
                     },
                 ));
@@ -500,11 +574,11 @@ pub fn synchronize_backend_outputs_system(
                 output_registry.remember_enabled(output_id, record.output_name.clone());
                 output_connected.write(OutputConnected { name: record.output_name.clone() });
             }
-            BackendOutputChange::Disconnected => {
+            PlatformOutputLifecycleChange::Disconnected => {
                 for (entity, _, output, owner) in &existing_outputs {
                     if owner.output_id
                         == (BackendOutputId {
-                            backend_id: record.backend_id,
+                            backend_id: BackendId(record.backend_id),
                             local_id: record.local_id.clone(),
                         })
                     {
@@ -519,18 +593,12 @@ pub fn synchronize_backend_outputs_system(
             }
         }
     }
-}
 
-/// Applies backend-originated property refreshes to already-materialized ECS output entities.
-pub fn apply_backend_output_updates_system(
-    mut outputs: Query<(&OutputDevice, &OutputBackend, &mut OutputProperties)>,
-    mut pending_updates: ResMut<PendingBackendOutputUpdates>,
-) {
-    for update in pending_updates.drain() {
-        for (_, owner, mut properties) in &mut outputs {
+    for update in output_materialization.property_updates.drain(..) {
+        for (owner, mut properties) in &mut output_properties {
             if owner.output_id
                 == (BackendOutputId {
-                    backend_id: update.backend_id,
+                    backend_id: BackendId(update.backend_id),
                     local_id: update.local_id.clone(),
                 })
             {
@@ -584,66 +652,57 @@ pub fn sync_output_layout_state_system(
 /// backends, deferring requests that cannot yet be satisfied this frame.
 pub(crate) fn apply_output_server_requests_system(ctx: OutputServerRequestCtx<'_, '_>) {
     let OutputServerRequestCtx {
-        mut commands,
         manager,
-        mut output_registry,
-        remembered_viewports,
+        outputs,
         mut pending_output_requests,
-        mut outputs,
-        mut output_connected,
-        mut output_disconnected,
+        mut pending_output_events,
+        mut pending_output_updates,
+        ..
     } = ctx;
     let mut deferred = Vec::new();
 
     for request in pending_output_requests.drain() {
         match request.action {
             OutputServerAction::Enable { output } => {
-                if outputs.iter().any(|(_, _, existing, _, _)| existing.name == output)
-                    || output_registry.has_enabled_name(&output)
+                if outputs.outputs().iter().any(|existing| existing.device.name == output)
+                    || pending_output_events.as_slice().iter().any(|record| {
+                        record.output_name == output
+                            && matches!(record.change, BackendOutputChange::Connected(_))
+                    })
                 {
                     continue;
                 }
 
-                let Some(seed) = manager.seed_output(&output) else {
+                let Some(seed) = manager.borrow().seed_output(&output) else {
                     deferred.push(OutputServerRequest {
                         action: OutputServerAction::Enable { output },
                     });
                     continue;
                 };
                 let crate::manager::SeededBackendOutput { backend_id, blueprint } = seed;
-                let BackendOutputBlueprint { local_id, device, properties } = blueprint;
-
-                let output_id = OutputId::fresh();
-                commands.spawn((
-                    output_id,
-                    OutputBundle {
-                        output: device,
-                        properties,
-                        viewport: remembered_viewports
-                            .viewport_for_output_name(&output)
-                            .cloned()
-                            .unwrap_or_default(),
-                        ..Default::default()
-                    },
-                    OutputBackend {
-                        backend_id,
-                        output_id: BackendOutputId { backend_id, local_id },
-                    },
-                ));
-                output_registry.remember_connected(output_id, output.clone());
-                output_registry.remember_enabled(output_id, output.clone());
-                output_connected.write(OutputConnected { name: output });
+                let local_id = blueprint.local_id.clone();
+                pending_output_events.push(BackendOutputEventRecord {
+                    backend_id,
+                    output_name: output,
+                    local_id,
+                    change: BackendOutputChange::Connected(blueprint),
+                });
             }
             OutputServerAction::Disable { output } => {
-                let Some((entity, _, _, _, _)) =
-                    outputs.iter_mut().find(|(_, _, existing, _, _)| existing.name == output)
+                let Some(existing) =
+                    outputs.outputs().iter().find(|existing| existing.device.name == output)
                 else {
                     continue;
                 };
-
-                commands.entity(entity).despawn();
-                output_registry.forget_enabled_name(&output);
-                output_disconnected.write(OutputDisconnected { name: output });
+                let Some(backend_output_id) = existing.backend_output_id.as_ref() else {
+                    continue;
+                };
+                pending_output_events.push(BackendOutputEventRecord {
+                    backend_id: backend_output_id.backend_id,
+                    output_name: output,
+                    local_id: backend_output_id.local_id.clone(),
+                    change: BackendOutputChange::Disconnected,
+                });
             }
             OutputServerAction::Configure { output, mode, scale } => {
                 let Some(configured_mode) = parse_output_mode(&mode) else {
@@ -651,14 +710,18 @@ pub(crate) fn apply_output_server_requests_system(ctx: OutputServerRequestCtx<'_
                     continue;
                 };
 
-                let Some((_, _, _, _, mut properties)) =
-                    outputs.iter_mut().find(|(_, _, existing, _, _)| existing.name == output)
+                let Some(existing) =
+                    outputs.outputs().iter().find(|existing| existing.device.name == output)
                 else {
                     deferred.push(OutputServerRequest {
                         action: OutputServerAction::Configure { output, mode, scale },
                     });
                     continue;
                 };
+                let Some(backend_output_id) = existing.backend_output_id.as_ref() else {
+                    continue;
+                };
+                let mut properties = existing.properties.clone();
 
                 properties.width = configured_mode.width;
                 properties.height = configured_mode.height;
@@ -666,6 +729,13 @@ pub(crate) fn apply_output_server_requests_system(ctx: OutputServerRequestCtx<'_
                 if let Some(scale) = scale {
                     properties.scale = scale.max(1);
                 }
+
+                pending_output_updates.push(BackendOutputPropertyUpdate {
+                    backend_id: backend_output_id.backend_id,
+                    output_name: existing.device.name.clone(),
+                    local_id: backend_output_id.local_id.clone(),
+                    properties,
+                });
             }
         }
     }
@@ -696,6 +766,46 @@ pub fn sync_primary_output_state_system(
             "updated primary output"
         );
         primary_output.id = next_primary.as_ref().map(|(id, _)| *id);
+    }
+}
+
+pub fn sync_output_snapshot_state_from_present_inputs_system(
+    outputs: Res<'_, BackendPresentInputs>,
+    mut snapshots: ResMut<'_, OutputSnapshotState>,
+) {
+    snapshots.outputs = outputs
+        .outputs()
+        .iter()
+        .map(|output| OutputGeometrySnapshot {
+            output_id: output.output_id,
+            name: output.device.name.clone(),
+            x: 0,
+            y: 0,
+            width: output.properties.width,
+            height: output.properties.height,
+            scale: output.properties.scale,
+            refresh_millihz: output.properties.refresh_millihz,
+        })
+        .collect();
+}
+
+pub fn sync_primary_output_state_from_present_inputs_system(
+    config: Option<Res<'_, CompositorConfig>>,
+    snapshots: Res<'_, OutputSnapshotState>,
+    mut primary_output: ResMut<'_, PrimaryOutputState>,
+) {
+    let snapshot_inputs = snapshots
+        .outputs
+        .iter()
+        .map(|output| (output.name.clone(), u64::from(output.width), u64::from(output.height)))
+        .collect::<Vec<_>>();
+    let next_primary_name =
+        select_primary_output_name_from_snapshots(config.as_deref(), &snapshot_inputs);
+    let next_primary = next_primary_name.and_then(|name| {
+        snapshots.outputs.iter().find(|output| output.name == name).map(|output| output.output_id)
+    });
+    if primary_output.id != next_primary {
+        primary_output.id = next_primary;
     }
 }
 
@@ -767,8 +877,7 @@ pub fn collect_output_snapshots(
 ) -> Vec<OutputSnapshot> {
     outputs
         .iter()
-        .map(|(entity, output, owner)| OutputSnapshot {
-            entity,
+        .map(|(_, output, owner)| OutputSnapshot {
             output_id: output.id(),
             backend_id: owner.map(|owner| owner.backend_id),
             backend_output_id: owner.map(|owner| owner.output_id.clone()),
@@ -776,6 +885,25 @@ pub fn collect_output_snapshots(
             properties: output.properties.clone(),
         })
         .collect()
+}
+
+pub fn sync_output_snapshot_state_system(
+    outputs: Query<OutputRuntime>,
+    mut snapshots: ResMut<'_, OutputSnapshotState>,
+) {
+    snapshots.outputs = outputs
+        .iter()
+        .map(|output| OutputGeometrySnapshot {
+            output_id: output.id(),
+            name: output.name().to_owned(),
+            x: output.placement.x,
+            y: output.placement.y,
+            width: output.properties.width,
+            height: output.properties.height,
+            scale: output.properties.scale,
+            refresh_millihz: output.properties.refresh_millihz,
+        })
+        .collect();
 }
 
 fn center_viewport_on_scene_geometry(
@@ -828,30 +956,46 @@ pub fn parse_output_mode(mode: &str) -> Option<ParsedOutputMode> {
 mod tests {
     use bevy_ecs::prelude::Messages;
     use bevy_ecs::schedule::IntoScheduleConfigs;
+    use bevy_ecs::system::{IntoSystem, System};
+    use bevy_ecs::world::World;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::ExtractSchedule;
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
-        OutputDevice, OutputId, OutputKind, OutputProperties, OutputViewport, WindowLayout,
-        WindowMode, WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
+        OutputDevice, OutputId, OutputKind, OutputPlacement, OutputProperties, OutputViewport,
+        WindowLayout, WindowMode, WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
     use nekoland_ecs::resources::{
         EntityIndex, FocusedOutputState, OutputOverlayId, OutputOverlayState,
-        PendingOutputControls, PendingOutputOverlayControls, PendingOutputServerRequests,
-        PrimaryOutputState, RenderColor, RenderRect,
+        OutputServerAction, OutputServerRequest, OutputSnapshotState, PendingOutputControls,
+        PendingOutputOverlayControls, PendingOutputServerRequests, PlatformOutputBlueprint,
+        PlatformOutputLifecycleChange, PlatformOutputLifecycleRecord,
+        PlatformOutputMaterializationPlan, PlatformOutputPropertyUpdate, PrimaryOutputState,
+        RenderColor, RenderRect, WaylandIngress,
     };
     use nekoland_ecs::selectors::{OutputName, OutputSelector, SurfaceId};
+    use nekoland_ecs::views::OutputRuntime;
 
     use crate::components::OutputBackend;
+    use crate::manager::{BackendManager, SharedBackendManager};
+    use crate::plugin::BackendPresentInputs;
     use crate::traits::BackendId;
 
     use super::{
-        BackendOutputBlueprint, BackendOutputChange, BackendOutputEventRecord,
-        BackendOutputRegistry, PendingBackendOutputEvents, RememberedOutputViewportState,
+        BackendOutputChange, BackendOutputRegistry, PendingBackendOutputEvents,
+        PendingBackendOutputUpdates, RememberedOutputViewportState,
         apply_output_control_requests_system, apply_output_overlay_controls_system,
-        remember_output_viewports_system, synchronize_backend_outputs_system,
+        apply_output_server_requests_system, collect_output_snapshots,
+        remember_output_viewports_system, sync_configured_outputs_system,
+        sync_output_snapshot_state_system, synchronize_backend_outputs_system,
     };
+
+    #[derive(Debug, Default, bevy_ecs::prelude::Resource)]
+    struct SnapshotAudit(Vec<crate::traits::OutputSnapshot>);
+
+    #[derive(Debug, Default, bevy_ecs::prelude::Resource)]
+    struct OutputGeometryAudit(OutputSnapshotState);
 
     #[test]
     fn viewport_controls_update_output_viewport_state() {
@@ -917,6 +1061,121 @@ mod tests {
             remembered.viewport_for_output_name("Virtual-1"),
             Some(&OutputViewport { origin_x: 125, origin_y: 160 }),
         );
+    }
+
+    #[test]
+    fn output_snapshots_are_normalized_without_entity_handles() {
+        let mut app = NekolandApp::new("output-snapshot-normalization-test");
+        app.inner_mut()
+            .init_resource::<SnapshotAudit>()
+            .add_systems(ExtractSchedule, capture_output_snapshots_system);
+        let output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "Virtual-2".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "Virtual".to_owned(),
+                        model: "test".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 1024,
+                        height: 768,
+                        refresh_millihz: 60_000,
+                        scale: 2,
+                    },
+                    ..Default::default()
+                },
+                OutputBackend {
+                    backend_id: BackendId(7),
+                    output_id: crate::traits::BackendOutputId {
+                        backend_id: BackendId(7),
+                        local_id: "Virtual-2".to_owned(),
+                    },
+                },
+            ))
+            .id();
+        let output_id = *app.inner().world().get::<OutputId>(output).expect("output id");
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+
+        let snapshots = &app.inner().world().resource::<SnapshotAudit>().0;
+        assert_eq!(snapshots.len(), 1);
+        let snapshot = &snapshots[0];
+        assert_eq!(snapshot.output_id, output_id);
+        assert_eq!(snapshot.backend_id, Some(BackendId(7)));
+        assert_eq!(
+            snapshot.backend_output_id.as_ref().map(|id| id.local_id.as_str()),
+            Some("Virtual-2")
+        );
+        assert_eq!(snapshot.device.name, "Virtual-2");
+        assert_eq!(snapshot.properties.scale, 2);
+    }
+
+    fn capture_output_snapshots_system(
+        outputs: bevy_ecs::prelude::Query<
+            '_,
+            '_,
+            (bevy_ecs::entity::Entity, OutputRuntime, Option<&'static OutputBackend>),
+        >,
+        mut audit: bevy_ecs::prelude::ResMut<'_, SnapshotAudit>,
+    ) {
+        audit.0 = collect_output_snapshots(&outputs);
+    }
+
+    fn capture_output_geometry_snapshots_system(
+        snapshots: bevy_ecs::prelude::Res<'_, OutputSnapshotState>,
+        mut audit: bevy_ecs::prelude::ResMut<'_, OutputGeometryAudit>,
+    ) {
+        audit.0 = snapshots.clone();
+    }
+
+    #[test]
+    fn output_geometry_snapshot_state_is_normalized_without_runtime_handles() {
+        let mut app = NekolandApp::new("output-geometry-snapshot-test");
+        app.inner_mut()
+            .init_resource::<OutputSnapshotState>()
+            .init_resource::<OutputGeometryAudit>()
+            .add_systems(
+                ExtractSchedule,
+                (sync_output_snapshot_state_system, capture_output_geometry_snapshots_system)
+                    .chain(),
+            );
+
+        let output = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "DP-1".to_owned(),
+                    kind: OutputKind::Nested,
+                    make: "Nekoland".to_owned(),
+                    model: "test".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1920,
+                    height: 1080,
+                    refresh_millihz: 60_000,
+                    scale: 2,
+                },
+                placement: OutputPlacement { x: 200, y: 100 },
+                ..Default::default()
+            })
+            .id();
+        let output_id = *app.inner().world().get::<OutputId>(output).expect("output id");
+
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+
+        let snapshots = &app.inner().world().resource::<OutputGeometryAudit>().0.outputs;
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].output_id, output_id);
+        assert_eq!(snapshots[0].name, "DP-1");
+        assert_eq!(snapshots[0].x, 200);
+        assert_eq!(snapshots[0].y, 100);
+        assert_eq!(snapshots[0].width, 1920);
+        assert_eq!(snapshots[0].height, 1080);
+        assert_eq!(snapshots[0].scale, 2);
     }
 
     #[test]
@@ -1062,7 +1321,7 @@ mod tests {
         app.inner_mut()
             .insert_resource(BackendOutputRegistry::default())
             .insert_resource(RememberedOutputViewportState::default())
-            .init_resource::<PendingBackendOutputEvents>()
+            .init_resource::<WaylandIngress>()
             .init_resource::<Messages<OutputConnected>>()
             .init_resource::<Messages<OutputDisconnected>>()
             .add_systems(
@@ -1099,24 +1358,30 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
-        app.inner_mut().world_mut().resource_mut::<PendingBackendOutputEvents>().push(
-            BackendOutputEventRecord {
-                backend_id: BackendId(7),
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<WaylandIngress>()
+            .output_materialization
+            .lifecycle
+            .push(PlatformOutputLifecycleRecord {
+                backend_id: 7,
                 output_name: "Virtual-1".to_owned(),
                 local_id: "virtual-primary".to_owned(),
-                change: BackendOutputChange::Disconnected,
-            },
-        );
+                change: PlatformOutputLifecycleChange::Disconnected,
+            });
 
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
-        app.inner_mut().world_mut().resource_mut::<PendingBackendOutputEvents>().push(
-            BackendOutputEventRecord {
-                backend_id: BackendId(7),
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<WaylandIngress>()
+            .output_materialization
+            .lifecycle
+            .push(PlatformOutputLifecycleRecord {
+                backend_id: 7,
                 output_name: "Virtual-1".to_owned(),
                 local_id: "virtual-primary".to_owned(),
-                change: BackendOutputChange::Connected(BackendOutputBlueprint {
-                    local_id: "virtual-primary".to_owned(),
+                change: PlatformOutputLifecycleChange::Connected(PlatformOutputBlueprint {
                     device: OutputDevice {
                         name: "Virtual-1".to_owned(),
                         kind: OutputKind::Virtual,
@@ -1130,8 +1395,7 @@ mod tests {
                         scale: 1,
                     },
                 }),
-            },
-        );
+            });
 
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
@@ -1151,5 +1415,208 @@ mod tests {
             world.resource::<RememberedOutputViewportState>().viewport_for_output_name("Virtual-1"),
             Some(&OutputViewport { origin_x: 640, origin_y: -320 })
         );
+    }
+
+    #[test]
+    fn backend_output_materialization_plan_updates_existing_output_properties() {
+        let mut app = NekolandApp::new("backend-output-materialization-update-test");
+        app.inner_mut()
+            .insert_resource(BackendOutputRegistry::default())
+            .insert_resource(RememberedOutputViewportState::default())
+            .init_resource::<WaylandIngress>()
+            .init_resource::<Messages<OutputConnected>>()
+            .init_resource::<Messages<OutputDisconnected>>()
+            .add_systems(ExtractSchedule, synchronize_backend_outputs_system);
+
+        let output = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                OutputId(1),
+                OutputBundle {
+                    output: OutputDevice {
+                        name: "Virtual-1".to_owned(),
+                        kind: OutputKind::Virtual,
+                        make: "Virtual".to_owned(),
+                        model: "test".to_owned(),
+                    },
+                    properties: OutputProperties {
+                        width: 1920,
+                        height: 1080,
+                        refresh_millihz: 60_000,
+                        scale: 1,
+                    },
+                    ..Default::default()
+                },
+                OutputBackend {
+                    backend_id: BackendId(7),
+                    output_id: crate::traits::BackendOutputId {
+                        backend_id: BackendId(7),
+                        local_id: "virtual-primary".to_owned(),
+                    },
+                },
+            ))
+            .id();
+
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<WaylandIngress>()
+            .output_materialization = PlatformOutputMaterializationPlan {
+            property_updates: vec![PlatformOutputPropertyUpdate {
+                backend_id: 7,
+                output_name: "Virtual-1".to_owned(),
+                local_id: "virtual-primary".to_owned(),
+                properties: OutputProperties {
+                    width: 2560,
+                    height: 1440,
+                    refresh_millihz: 59_940,
+                    scale: 2,
+                },
+            }],
+            ..Default::default()
+        };
+
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+
+        let properties =
+            app.inner().world().get::<OutputProperties>(output).expect("output properties");
+        assert_eq!(properties.width, 2560);
+        assert_eq!(properties.height, 1440);
+        assert_eq!(properties.refresh_millihz, 59_940);
+        assert_eq!(properties.scale, 2);
+    }
+
+    #[test]
+    fn output_server_disable_requests_emit_backend_disconnect_events() {
+        let mut world = World::default();
+        world.insert_non_send_resource(SharedBackendManager::new(BackendManager::default()));
+        world.insert_resource(BackendPresentInputs::from_outputs(vec![
+            crate::traits::OutputSnapshot {
+                output_id: OutputId(7),
+                backend_id: Some(BackendId(3)),
+                backend_output_id: Some(crate::traits::BackendOutputId {
+                    backend_id: BackendId(3),
+                    local_id: "virtual-primary".to_owned(),
+                }),
+                device: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "Virtual".to_owned(),
+                    model: "test".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1920,
+                    height: 1080,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+            },
+        ]));
+        let mut pending_requests = PendingOutputServerRequests::default();
+        pending_requests.push(OutputServerRequest {
+            action: OutputServerAction::Disable { output: "Virtual-1".to_owned() },
+        });
+        world.insert_resource(pending_requests);
+        world.init_resource::<PendingBackendOutputEvents>();
+        world.init_resource::<PendingBackendOutputUpdates>();
+
+        let mut system = IntoSystem::into_system(apply_output_server_requests_system);
+        system.initialize(&mut world);
+        let _ = system.run((), &mut world);
+
+        let events = world.resource::<PendingBackendOutputEvents>();
+        assert_eq!(events.as_slice().len(), 1);
+        let event = &events.as_slice()[0];
+        assert_eq!(event.backend_id, BackendId(3));
+        assert_eq!(event.output_name, "Virtual-1");
+        assert_eq!(event.local_id, "virtual-primary");
+        assert!(matches!(event.change, BackendOutputChange::Disconnected));
+    }
+
+    #[test]
+    fn output_server_configure_requests_emit_backend_property_updates() {
+        let mut world = World::default();
+        world.insert_non_send_resource(SharedBackendManager::new(BackendManager::default()));
+        world.insert_resource(BackendPresentInputs::from_outputs(vec![
+            crate::traits::OutputSnapshot {
+                output_id: OutputId(7),
+                backend_id: Some(BackendId(3)),
+                backend_output_id: Some(crate::traits::BackendOutputId {
+                    backend_id: BackendId(3),
+                    local_id: "virtual-primary".to_owned(),
+                }),
+                device: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "Virtual".to_owned(),
+                    model: "test".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1920,
+                    height: 1080,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+            },
+        ]));
+        let mut pending_requests = PendingOutputServerRequests::default();
+        pending_requests.push(OutputServerRequest {
+            action: OutputServerAction::Configure {
+                output: "Virtual-1".to_owned(),
+                mode: "1280x720@60".to_owned(),
+                scale: Some(2),
+            },
+        });
+        world.insert_resource(pending_requests);
+        world.init_resource::<PendingBackendOutputEvents>();
+        world.init_resource::<PendingBackendOutputUpdates>();
+
+        let mut system = IntoSystem::into_system(apply_output_server_requests_system);
+        system.initialize(&mut world);
+        let _ = system.run((), &mut world);
+
+        let updates = world.resource::<PendingBackendOutputUpdates>();
+        assert_eq!(updates.as_slice().len(), 1);
+        let update = &updates.as_slice()[0];
+        assert_eq!(update.backend_id, BackendId(3));
+        assert_eq!(update.output_name, "Virtual-1");
+        assert_eq!(update.local_id, "virtual-primary");
+        assert_eq!(update.properties.width, 1280);
+        assert_eq!(update.properties.height, 720);
+        assert_eq!(update.properties.refresh_millihz, 60_000);
+        assert_eq!(update.properties.scale, 2);
+    }
+
+    #[test]
+    fn configured_outputs_sync_from_backend_present_input_snapshots() {
+        let mut world = World::default();
+        world.insert_resource(nekoland_config::resources::CompositorConfig {
+            outputs: vec![nekoland_config::resources::ConfiguredOutput {
+                name: "Virtual-2".to_owned(),
+                enabled: true,
+                mode: "1280x720@60".to_owned(),
+                scale: 2,
+            }],
+            ..Default::default()
+        });
+        world.insert_resource(BackendPresentInputs::default());
+        world.init_resource::<PendingOutputServerRequests>();
+
+        let mut system = IntoSystem::into_system(sync_configured_outputs_system);
+        system.initialize(&mut world);
+        let _: Result<(), _> = system.run((), &mut world);
+
+        let requests = world.resource::<PendingOutputServerRequests>();
+        let actions =
+            requests.as_slice().iter().map(|request| request.action.clone()).collect::<Vec<_>>();
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            OutputServerAction::Enable { output } if output == "Virtual-2"
+        )));
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            OutputServerAction::Configure { output, mode, scale }
+                if output == "Virtual-2" && mode == "1280x720@60" && *scale == Some(2)
+        )));
     }
 }

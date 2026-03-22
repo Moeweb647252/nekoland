@@ -1,9 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::prelude::{Query, Res, ResMut, Resource, With};
+use bevy_ecs::world::World;
 use nekoland_ecs::components::{LayerShellSurface, XdgPopup, XdgWindow};
-use nekoland_ecs::resources::{CompositorSceneState, RenderRect, SurfacePresentationSnapshot};
-use nekoland_ecs::views::OutputRuntime;
+use nekoland_ecs::resources::{
+    CompositorSceneState, OutputSnapshotState, RenderRect, ShellRenderInput,
+    SurfacePresentationRole, SurfacePresentationSnapshot, WaylandIngress,
+};
 
 use crate::animation::{
     AnimationBindingKey, AnimationProperty, AnimationTimelineStore, AnimationValue,
@@ -93,57 +96,118 @@ pub fn surface_scene_process_snapshot_system(
     windows: SurfaceAnimationQuery<'_, '_>,
     popups: PopupAnimationQuery<'_, '_>,
     layers: LayerAnimationQuery<'_, '_>,
-    outputs: Query<'_, '_, OutputRuntime>,
-    surface_presentation: Option<Res<'_, SurfacePresentationSnapshot>>,
+    wayland_ingress: Option<Res<'_, WaylandIngress>>,
+    output_snapshots: Option<Res<'_, OutputSnapshotState>>,
+    shell_render_input: Option<Res<'_, ShellRenderInput>>,
     timelines: Res<'_, AnimationTimelineStore>,
     mut appearance: ResMut<'_, AppearanceSnapshot>,
     mut projection: ResMut<'_, ProjectionSnapshot>,
 ) {
-    let live_outputs = outputs.iter().map(|output| output.id()).collect::<Vec<_>>();
-    let surface_presentation = surface_presentation.as_deref();
+    let live_outputs = wayland_ingress
+        .as_deref()
+        .map(|ingress| &ingress.output_snapshots)
+        .or(output_snapshots.as_deref())
+        .as_deref()
+        .map(|snapshots| {
+            snapshots.outputs.iter().map(|output| output.output_id).collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let surface_presentation =
+        shell_render_input.as_deref().map(|mailbox| &mailbox.surface_presentation);
 
-    for (surface, animation) in windows.iter().chain(popups.iter()).chain(layers.iter()) {
-        let source_key = RenderSourceKey::surface(surface.id);
-        let source_binding = AnimationBindingKey::Source(source_key.clone());
-        let source_samples = binding_samples(&timelines, &source_binding);
+    for (surface, animation) in windows.iter() {
+        snapshot_surface_process_entry(
+            surface.id,
+            RenderSourceKey::window(surface.id),
+            animation,
+            SurfacePresentationRole::Window,
+            &live_outputs,
+            surface_presentation,
+            &timelines,
+            &mut appearance,
+            &mut projection,
+        );
+    }
 
-        let mut source_appearance = AppearanceState { opacity: opacity_for_animation(animation) };
-        if let Some(opacity) = sampled_opacity(&timelines, &source_binding) {
-            source_appearance.opacity = opacity;
-        }
-        appearance.sources.insert(source_key.clone(), source_appearance);
+    for (surface, animation) in popups.iter() {
+        snapshot_surface_process_entry(
+            surface.id,
+            RenderSourceKey::popup(surface.id),
+            animation,
+            SurfacePresentationRole::Popup,
+            &live_outputs,
+            surface_presentation,
+            &timelines,
+            &mut appearance,
+            &mut projection,
+        );
+    }
 
-        let source_projection = ProjectionState {
-            rect_override: source_samples.rect,
-            clip_rect_override: source_samples.clip_rect,
-        };
-        if !source_projection.is_empty() {
-            projection.sources.insert(source_key.clone(), source_projection);
-        }
+    for (surface, animation) in layers.iter() {
+        snapshot_surface_process_entry(
+            surface.id,
+            RenderSourceKey::layer(surface.id),
+            animation,
+            SurfacePresentationRole::Layer,
+            &live_outputs,
+            surface_presentation,
+            &timelines,
+            &mut appearance,
+            &mut projection,
+        );
+    }
+}
 
-        let target_outputs = surface_presentation
-            .and_then(|snapshot| snapshot.surfaces.get(&surface.id))
-            .filter(|state| state.visible)
-            .map(|state| {
-                if let Some(target_output) = state.target_output {
-                    vec![target_output]
-                } else {
-                    live_outputs.clone()
-                }
-            })
-            .unwrap_or_default();
+fn snapshot_surface_process_entry(
+    surface_id: u64,
+    source_key: RenderSourceKey,
+    animation: &nekoland_ecs::components::WindowAnimation,
+    expected_role: SurfacePresentationRole,
+    live_outputs: &[nekoland_ecs::components::OutputId],
+    surface_presentation: Option<&SurfacePresentationSnapshot>,
+    timelines: &AnimationTimelineStore,
+    appearance: &mut AppearanceSnapshot,
+    projection: &mut ProjectionSnapshot,
+) {
+    let source_binding = AnimationBindingKey::Source(source_key.clone());
+    let source_samples = binding_samples(timelines, &source_binding);
 
-        for output_id in target_outputs {
-            let instance_key = RenderInstanceKey::new(source_key.clone(), output_id, 0);
-            let instance_binding = AnimationBindingKey::Instance(instance_key.clone());
-            if let Some(opacity) = sampled_opacity(&timelines, &instance_binding) {
-                appearance.instances.insert(instance_key.clone(), AppearanceState { opacity });
+    let mut source_appearance = AppearanceState { opacity: opacity_for_animation(animation) };
+    if let Some(opacity) = sampled_opacity(timelines, &source_binding) {
+        source_appearance.opacity = opacity;
+    }
+    appearance.sources.insert(source_key.clone(), source_appearance);
+
+    let source_projection = ProjectionState {
+        rect_override: source_samples.rect,
+        clip_rect_override: source_samples.clip_rect,
+    };
+    if !source_projection.is_empty() {
+        projection.sources.insert(source_key.clone(), source_projection);
+    }
+
+    let target_outputs = surface_presentation
+        .and_then(|snapshot| snapshot.surfaces.get(&surface_id))
+        .filter(|state| state.visible && state.role == expected_role)
+        .map(|state| {
+            if let Some(target_output) = state.target_output {
+                vec![target_output]
+            } else {
+                live_outputs.to_vec()
             }
+        })
+        .unwrap_or_default();
 
-            let instance_projection = projection_state_from_samples(&timelines, &instance_binding);
-            if !instance_projection.is_empty() {
-                projection.instances.insert(instance_key, instance_projection);
-            }
+    for output_id in target_outputs {
+        let instance_key = RenderInstanceKey::new(source_key.clone(), output_id, 0);
+        let instance_binding = AnimationBindingKey::Instance(instance_key.clone());
+        if let Some(opacity) = sampled_opacity(timelines, &instance_binding) {
+            appearance.instances.insert(instance_key.clone(), AppearanceState { opacity });
+        }
+
+        let instance_projection = projection_state_from_samples(timelines, &instance_binding);
+        if !instance_projection.is_empty() {
+            projection.instances.insert(instance_key, instance_projection);
         }
     }
 }
@@ -183,6 +247,116 @@ pub fn compositor_scene_process_snapshot_system(
             }
         }
     }
+}
+
+pub fn extract_scene_process_snapshots(main_world: &mut World, render_world: &mut World) {
+    let mut appearance = AppearanceSnapshot::default();
+    let mut projection = ProjectionSnapshot::default();
+
+    let Some(timelines) = main_world.get_resource::<AnimationTimelineStore>().cloned() else {
+        render_world.insert_resource(appearance);
+        render_world.insert_resource(projection);
+        return;
+    };
+
+    let live_outputs = main_world
+        .get_resource::<WaylandIngress>()
+        .map(|ingress| ingress.output_snapshots.clone())
+        .map(|snapshots| {
+            snapshots.outputs.iter().map(|output| output.output_id).collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let surface_presentation = main_world
+        .get_resource::<ShellRenderInput>()
+        .map(|mailbox| mailbox.surface_presentation.clone());
+    let surface_presentation = surface_presentation.as_ref();
+
+    let mut windows = main_world.query_filtered::<(
+        &'static nekoland_ecs::components::WlSurfaceHandle,
+        &'static nekoland_ecs::components::WindowAnimation,
+    ), With<XdgWindow>>();
+    let mut popups = main_world.query_filtered::<(
+        &'static nekoland_ecs::components::WlSurfaceHandle,
+        &'static nekoland_ecs::components::WindowAnimation,
+    ), With<XdgPopup>>();
+    let mut layers = main_world.query_filtered::<(
+        &'static nekoland_ecs::components::WlSurfaceHandle,
+        &'static nekoland_ecs::components::WindowAnimation,
+    ), With<LayerShellSurface>>();
+
+    for (surface, animation) in windows.iter(main_world) {
+        snapshot_surface_process_entry(
+            surface.id,
+            RenderSourceKey::window(surface.id),
+            animation,
+            SurfacePresentationRole::Window,
+            &live_outputs,
+            surface_presentation,
+            &timelines,
+            &mut appearance,
+            &mut projection,
+        );
+    }
+
+    for (surface, animation) in popups.iter(main_world) {
+        snapshot_surface_process_entry(
+            surface.id,
+            RenderSourceKey::popup(surface.id),
+            animation,
+            SurfacePresentationRole::Popup,
+            &live_outputs,
+            surface_presentation,
+            &timelines,
+            &mut appearance,
+            &mut projection,
+        );
+    }
+
+    for (surface, animation) in layers.iter(main_world) {
+        snapshot_surface_process_entry(
+            surface.id,
+            RenderSourceKey::layer(surface.id),
+            animation,
+            SurfacePresentationRole::Layer,
+            &live_outputs,
+            surface_presentation,
+            &timelines,
+            &mut appearance,
+            &mut projection,
+        );
+    }
+
+    if let Some(compositor_scene) = main_world.get_resource::<CompositorSceneState>() {
+        for (output_id, output_scene) in &compositor_scene.outputs {
+            for (entry_id, _) in output_scene.iter_ordered() {
+                let source_key = RenderSourceKey::compositor(entry_id);
+                let source_binding = AnimationBindingKey::Source(source_key.clone());
+                if let Some(opacity) = sampled_opacity(&timelines, &source_binding) {
+                    appearance.sources.insert(source_key.clone(), AppearanceState { opacity });
+                }
+
+                let source_projection = projection_state_from_samples(&timelines, &source_binding);
+                if !source_projection.is_empty() {
+                    projection.sources.insert(source_key.clone(), source_projection);
+                }
+
+                let instance_key = RenderInstanceKey::compositor(entry_id, *output_id);
+                let instance_binding = AnimationBindingKey::Instance(instance_key.clone());
+                if let Some(opacity) = sampled_opacity(&timelines, &instance_binding) {
+                    appearance.instances.insert(instance_key.clone(), AppearanceState { opacity });
+                }
+
+                let instance_projection =
+                    projection_state_from_samples(&timelines, &instance_binding);
+                if !instance_projection.is_empty() {
+                    projection.instances.insert(instance_key, instance_projection);
+                }
+            }
+        }
+    }
+
+    render_world.insert_resource(appearance);
+    render_world.insert_resource(projection);
 }
 
 pub fn prune_stale_compositor_animation_tracks_system(
@@ -314,14 +488,13 @@ mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::PreRenderSchedule;
-    use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
-    use nekoland_ecs::components::{
-        OutputDevice, OutputId, OutputKind, OutputProperties, WlSurfaceHandle, XdgWindow,
-    };
+    use nekoland_ecs::bundles::WindowBundle;
+    use nekoland_ecs::components::{OutputId, WlSurfaceHandle, XdgWindow};
     use nekoland_ecs::resources::{
         CompositorClock, CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState,
-        OutputCompositorScene, RenderItemInstance, RenderRect, RenderSceneRole,
-        SurfacePresentationRole, SurfacePresentationSnapshot, SurfacePresentationState,
+        OutputCompositorScene, OutputGeometrySnapshot, OutputSnapshotState, RenderItemInstance,
+        RenderRect, RenderSceneRole, ShellRenderInput, SurfacePresentationRole,
+        SurfacePresentationState,
     };
 
     use crate::animation::{
@@ -344,7 +517,19 @@ mod tests {
             .init_resource::<AnimationTimelineStore>()
             .init_resource::<AppearanceSnapshot>()
             .init_resource::<ProjectionSnapshot>()
-            .init_resource::<SurfacePresentationSnapshot>()
+            .insert_resource(OutputSnapshotState {
+                outputs: vec![OutputGeometrySnapshot {
+                    output_id: OutputId(3),
+                    name: "Virtual-1".to_owned(),
+                    x: 0,
+                    y: 0,
+                    width: 1280,
+                    height: 720,
+                    scale: 1,
+                    refresh_millihz: 60_000,
+                }],
+            })
+            .init_resource::<ShellRenderInput>()
             .add_systems(
                 PreRenderSchedule,
                 (
@@ -355,51 +540,37 @@ mod tests {
                     .chain(),
             );
 
-        let output = app
-            .inner_mut()
-            .world_mut()
-            .spawn(OutputBundle {
-                output: OutputDevice {
-                    name: "Virtual-1".to_owned(),
-                    kind: OutputKind::Virtual,
-                    make: "Virtual".to_owned(),
-                    model: "test".to_owned(),
-                },
-                properties: OutputProperties {
-                    width: 1280,
-                    height: 720,
-                    refresh_millihz: 60_000,
-                    scale: 1,
-                },
-                ..Default::default()
-            })
-            .id();
-        let output_id = app.inner().world().get::<OutputId>(output).copied().expect("output id");
+        let output_id = OutputId(3);
         app.inner_mut().world_mut().spawn(WindowBundle {
             surface: WlSurfaceHandle { id: 13 },
             window: XdgWindow::default(),
             ..Default::default()
         });
-        app.inner_mut().world_mut().resource_mut::<SurfacePresentationSnapshot>().surfaces.insert(
-            13,
-            SurfacePresentationState {
-                geometry: nekoland_ecs::components::SurfaceGeometry {
-                    x: 0,
-                    y: 0,
-                    width: 50,
-                    height: 50,
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<ShellRenderInput>()
+            .surface_presentation
+            .surfaces
+            .insert(
+                13,
+                SurfacePresentationState {
+                    geometry: nekoland_ecs::components::SurfaceGeometry {
+                        x: 0,
+                        y: 0,
+                        width: 50,
+                        height: 50,
+                    },
+                    role: SurfacePresentationRole::Window,
+                    target_output: Some(output_id),
+                    visible: true,
+                    input_enabled: true,
+                    damage_enabled: true,
                 },
-                role: SurfacePresentationRole::Window,
-                target_output: Some(output_id),
-                visible: true,
-                input_enabled: true,
-                damage_enabled: true,
-            },
-        );
+            );
         {
             let mut timelines =
                 app.inner_mut().world_mut().resource_mut::<AnimationTimelineStore>();
-            let source_binding = AnimationBindingKey::Source(RenderSourceKey::surface(13));
+            let source_binding = AnimationBindingKey::Source(RenderSourceKey::window(13));
             timelines.upsert_track(
                 source_binding,
                 AnimationTrack {
@@ -412,7 +583,7 @@ mod tests {
                 },
             );
             let instance_binding = AnimationBindingKey::Instance(RenderInstanceKey::new(
-                RenderSourceKey::surface(13),
+                RenderSourceKey::window(13),
                 output_id,
                 0,
             ));
@@ -434,13 +605,13 @@ mod tests {
         let appearance = app.inner().world().resource::<AppearanceSnapshot>();
         let projection = app.inner().world().resource::<ProjectionSnapshot>();
         assert_eq!(
-            appearance.sources.get(&RenderSourceKey::surface(13)).map(|state| state.opacity),
+            appearance.sources.get(&RenderSourceKey::window(13)).map(|state| state.opacity),
             Some(0.5)
         );
         assert_eq!(
             projection
                 .instances
-                .get(&RenderInstanceKey::new(RenderSourceKey::surface(13), output_id, 0))
+                .get(&RenderInstanceKey::new(RenderSourceKey::window(13), output_id, 0))
                 .and_then(|state| state.rect_override),
             Some(RenderRect { x: 5, y: 10, width: 55, height: 60 })
         );

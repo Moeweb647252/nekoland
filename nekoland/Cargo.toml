@@ -6,9 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+bevy_ecs.workspace = true
 nekoland-backend = { path = "../crates/nekoland-backend" }
 nekoland-config = { path = "../crates/nekoland-config" }
 nekoland-core = { path = "../crates/nekoland-core" }
+nekoland-ecs = { path = "../crates/nekoland-ecs" }
 nekoland-input = { path = "../crates/nekoland-input" }
 nekoland-ipc = { path = "../crates/nekoland-ipc" }
 nekoland-protocol = { path = "../crates/nekoland-protocol" }
@@ -18,8 +20,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-bevy_ecs.workspace = true
-nekoland-ecs = { path = "../crates/nekoland-ecs" }
 serde.workspace = true
 serde_json.workspace = true
 smithay.workspace = true

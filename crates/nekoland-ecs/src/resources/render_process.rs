@@ -4,7 +4,7 @@ use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
 use crate::components::OutputId;
-use crate::resources::{RenderPassId, RenderTargetId};
+use crate::resources::{RenderMaterialPipelineKey, RenderPassId, RenderTargetId};
 
 #[derive(
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
@@ -13,8 +13,13 @@ use crate::resources::{RenderPassId, RenderTargetId};
 pub struct ProcessUnitId(pub u64);
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[serde(transparent)]
-pub struct ProcessShaderKey(pub String);
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+pub enum ProcessShaderKey {
+    #[default]
+    Passthrough,
+    BuiltinComposite,
+    Material(RenderMaterialPipelineKey),
+}
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProcessRect {
@@ -103,7 +108,7 @@ mod tests {
     #[test]
     fn output_process_plan_returns_units_by_pass() {
         let unit = ProcessUnit {
-            shader_key: ProcessShaderKey("builtin.composite".to_owned()),
+            shader_key: ProcessShaderKey::BuiltinComposite,
             input: ProcessInputRef { target_id: RenderTargetId(1), sample_rect: None },
             output: ProcessTargetRef { target_id: RenderTargetId(2), output_rect: None },
             uniforms: ProcessUniformBlock::default(),
@@ -127,6 +132,9 @@ mod tests {
             ]),
         };
 
-        assert_eq!(plan.outputs.keys().copied().collect::<Vec<_>>(), vec![OutputId(1), OutputId(2)]);
+        assert_eq!(
+            plan.outputs.keys().copied().collect::<Vec<_>>(),
+            vec![OutputId(1), OutputId(2)]
+        );
     }
 }

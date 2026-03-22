@@ -1,16 +1,18 @@
 use std::collections::BTreeSet;
 
 use bevy_ecs::lifecycle::RemovedComponents;
-use bevy_ecs::prelude::{Commands, Entity, Query, ResMut, With};
+use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With};
 use bevy_ecs::query::{Added, Changed, Or};
 use nekoland_ecs::bundles::{LayerSurfaceBundle, LayerSurfaceBundleSpec};
 use nekoland_ecs::components::{
     BufferState, DesiredOutputName, LayerAnchor, LayerOnOutput, LayerShellSurface, OutputDevice,
     SurfaceContentVersion, SurfaceGeometry, WlSurfaceHandle,
 };
-use nekoland_ecs::resources::{EntityIndex, PrimaryOutputState, WorkArea};
+use nekoland_ecs::resources::{
+    EntityIndex, LayerLifecycleAction, PendingLayerRequests, PrimaryOutputState, WaylandIngress,
+    WorkArea,
+};
 use nekoland_ecs::views::{LayerOutputBindingRuntime, OutputRuntime};
-use nekoland_protocol::resources::{LayerLifecycleAction, PendingLayerRequests};
 
 type LayerLifecycleSurfaces<'w, 's> = Query<
     'w,
@@ -66,7 +68,8 @@ type WorkAreaLayers<'w, 's> = Query<
 /// geometry/buffer attachment state updated from protocol commits.
 pub fn layer_lifecycle_system(
     mut commands: Commands,
-    mut pending_layer_requests: ResMut<PendingLayerRequests>,
+    wayland_ingress: Option<Res<WaylandIngress>>,
+    mut pending_layer_requests: Option<ResMut<PendingLayerRequests>>,
     entity_index: bevy_ecs::prelude::Res<EntityIndex>,
     existing_layers: Query<&WlSurfaceHandle, With<LayerShellSurface>>,
     mut layers: LayerLifecycleSurfaces<'_, '_>,
@@ -74,8 +77,13 @@ pub fn layer_lifecycle_system(
     let mut known_surface_ids =
         existing_layers.iter().map(|surface| surface.id).collect::<BTreeSet<_>>();
     let mut deferred = Vec::new();
+    let mut requests =
+        pending_layer_requests.as_deref_mut().map(PendingLayerRequests::take).unwrap_or_default();
+    if let Some(wayland_ingress) = wayland_ingress.as_deref() {
+        requests.extend(wayland_ingress.pending_layer_requests.iter().cloned());
+    }
 
-    for request in pending_layer_requests.drain() {
+    for request in requests {
         match request.action {
             LayerLifecycleAction::Created { spec }
                 if known_surface_ids.insert(request.surface_id) =>
@@ -160,7 +168,9 @@ pub fn layer_lifecycle_system(
         }
     }
 
-    pending_layer_requests.replace(deferred);
+    if let Some(mut pending_layer_requests) = pending_layer_requests {
+        pending_layer_requests.replace(deferred);
+    }
 }
 
 /// Keeps each layer surface attached to the output entity named in its protocol state.
@@ -218,6 +228,7 @@ fn resolve_output_entity(
 
 /// Computes layer surface rectangles from anchors, desired size, margins, and bound output size.
 pub fn layer_arrangement_system(
+    wayland_ingress: Option<Res<WaylandIngress>>,
     primary_output: Option<bevy_ecs::prelude::Res<PrimaryOutputState>>,
     outputs: LayerOutputs<'_, '_>,
     mut layers: ArrangedLayers<'_, '_>,
@@ -228,8 +239,12 @@ pub fn layer_arrangement_system(
             (entity, output.properties.width.max(1) as i32, output.properties.height.max(1) as i32)
         })
         .collect::<Vec<_>>();
+    let primary_output = crate::viewport::preferred_primary_output_state(
+        wayland_ingress.as_deref(),
+        primary_output.as_deref(),
+    );
     let Some(primary_output) =
-        primary_output_from_state_or_sizes(primary_output.as_deref(), &output_sizes, &outputs)
+        primary_output_from_state_or_sizes(primary_output, &output_sizes, &outputs)
     else {
         return;
     };
@@ -301,6 +316,7 @@ pub fn layer_arrangement_system(
 /// Derives the layout work area by subtracting exclusive-zone layers anchored to the primary
 /// output from the full output rectangle.
 pub fn work_area_system(
+    wayland_ingress: Option<Res<WaylandIngress>>,
     primary_output: Option<bevy_ecs::prelude::Res<PrimaryOutputState>>,
     mut outputs: LayerOutputs<'_, '_>,
     layers: WorkAreaLayers<'_, '_>,
@@ -312,8 +328,12 @@ pub fn work_area_system(
             (entity, output.properties.width.max(1) as i32, output.properties.height.max(1) as i32)
         })
         .collect::<Vec<_>>();
+    let primary_output = crate::viewport::preferred_primary_output_state(
+        wayland_ingress.as_deref(),
+        primary_output.as_deref(),
+    );
     let Some((primary_output, output_width, output_height)) =
-        primary_output_from_state_or_sizes(primary_output.as_deref(), &output_sizes, &outputs)
+        primary_output_from_state_or_sizes(primary_output, &output_sizes, &outputs)
     else {
         return;
     };

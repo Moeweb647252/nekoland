@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 
-use bevy_ecs::prelude::{Query, Res, ResMut, Resource};
+use bevy_ecs::prelude::{Res, ResMut, Resource};
 use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::resources::{
     CursorImageSnapshot, CursorSceneSnapshot, GlobalPointerPosition, RenderItemInstance,
-    RenderRect, RenderSceneRole,
+    RenderRect, RenderSceneRole, ShellRenderInput,
 };
-use nekoland_ecs::views::OutputRuntime;
 
+use crate::compositor_render::RenderViewSnapshot;
 use crate::scene_source::RenderSceneContribution;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -55,23 +55,34 @@ impl CursorThemeGeometryCache {
 /// Tracks the pointer against the current output layout and produces an output-local cursor scene
 /// snapshot for the scene provider path.
 pub fn cursor_scene_snapshot_system(
-    pointer: Res<'_, GlobalPointerPosition>,
-    outputs: Query<'_, '_, OutputRuntime>,
+    shell_render_input: Option<Res<'_, ShellRenderInput>>,
+    pointer: Option<Res<'_, GlobalPointerPosition>>,
+    views: Res<'_, RenderViewSnapshot>,
     mut cursor_scene: ResMut<'_, CursorSceneSnapshot>,
 ) {
-    let next_output = outputs.iter().find(|output| {
-        let left = f64::from(output.placement.x);
-        let top = f64::from(output.placement.y);
-        let right = left + f64::from(output.properties.width.max(1));
-        let bottom = top + f64::from(output.properties.height.max(1));
+    let Some(pointer) =
+        shell_render_input.as_deref().map(|input| &input.pointer).or(pointer.as_deref())
+    else {
+        cursor_scene.visible = false;
+        cursor_scene.output_id = None;
+        cursor_scene.x = 0.0;
+        cursor_scene.y = 0.0;
+        return;
+    };
+
+    let next_output = views.views.iter().find(|output| {
+        let left = f64::from(output.x);
+        let top = f64::from(output.y);
+        let right = left + f64::from(output.width.max(1));
+        let bottom = top + f64::from(output.height.max(1));
         pointer.x >= left && pointer.x < right && pointer.y >= top && pointer.y < bottom
     });
 
     if let Some(output) = next_output {
         cursor_scene.visible = true;
-        cursor_scene.output_id = Some(output.id());
-        cursor_scene.x = pointer.x - f64::from(output.placement.x);
-        cursor_scene.y = pointer.y - f64::from(output.placement.y);
+        cursor_scene.output_id = Some(output.output_id);
+        cursor_scene.x = pointer.x - f64::from(output.x);
+        cursor_scene.y = pointer.y - f64::from(output.y);
     } else {
         cursor_scene.visible = false;
         cursor_scene.output_id = None;
@@ -93,8 +104,8 @@ pub fn cursor_scene_snapshot_system(
 pub fn emit_cursor_scene_contributions_system(
     config: Option<Res<'_, CompositorConfig>>,
     cursor_scene: Res<'_, CursorSceneSnapshot>,
-    cursor_image: Res<'_, CursorImageSnapshot>,
-    outputs: Query<'_, '_, OutputRuntime>,
+    shell_render_input: Option<Res<'_, ShellRenderInput>>,
+    views: Res<'_, RenderViewSnapshot>,
     mut geometry_cache: ResMut<'_, CursorThemeGeometryCache>,
     mut contributions: ResMut<'_, crate::scene_source::RenderSceneContributionQueue>,
 ) {
@@ -104,17 +115,20 @@ pub fn emit_cursor_scene_contributions_system(
     let Some(output_id) = cursor_scene.output_id else {
         return;
     };
-    let Some(output) = outputs.iter().find(|output| output.id() == output_id) else {
+    let Some(output) = views.view(output_id) else {
         return;
     };
 
-    let contribution = match &*cursor_image {
+    let Some(shell_render_input) = shell_render_input else {
+        return;
+    };
+
+    let contribution = match &shell_render_input.cursor_image {
         CursorImageSnapshot::Hidden => return,
         CursorImageSnapshot::Named { icon_name } => {
             let theme =
                 config.as_deref().map(|config| config.cursor_theme.as_str()).unwrap_or("default");
-            let metadata =
-                geometry_cache.geometry(theme, icon_name, output.properties.scale.max(1));
+            let metadata = geometry_cache.geometry(theme, icon_name, output.scale.max(1));
             RenderSceneContribution::cursor(
                 output_id,
                 nekoland_ecs::resources::CursorRenderSource::Named { icon_name: icon_name.clone() },
@@ -228,14 +242,12 @@ fn fallback_cursor_metadata(scale: u32) -> CursorImageMetadata {
 mod tests {
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::RenderSchedule;
-    use nekoland_ecs::bundles::OutputBundle;
-    use nekoland_ecs::components::{
-        OutputDevice, OutputId, OutputKind, OutputPlacement, OutputProperties,
-    };
+    use nekoland_ecs::components::OutputId;
     use nekoland_ecs::resources::{
-        CursorImageSnapshot, CursorSceneSnapshot, GlobalPointerPosition,
+        CursorImageSnapshot, CursorSceneSnapshot, GlobalPointerPosition, ShellRenderInput,
     };
 
+    use crate::compositor_render::{RenderViewSnapshot, RenderViewState};
     use crate::scene_source::RenderSceneContributionQueue;
 
     use super::{
@@ -249,28 +261,17 @@ mod tests {
         app.inner_mut()
             .init_resource::<GlobalPointerPosition>()
             .init_resource::<CursorSceneSnapshot>()
-            .add_systems(RenderSchedule, cursor_scene_snapshot_system);
-
-        let output = app
-            .inner_mut()
-            .world_mut()
-            .spawn(OutputBundle {
-                output: OutputDevice {
-                    name: "DP-1".to_owned(),
-                    kind: OutputKind::Nested,
-                    make: "Nekoland".to_owned(),
-                    model: "test".to_owned(),
-                },
-                properties: OutputProperties {
+            .insert_resource(RenderViewSnapshot {
+                views: vec![RenderViewState {
+                    output_id: OutputId(1),
+                    x: 640,
+                    y: 360,
                     width: 1920,
                     height: 1080,
-                    refresh_millihz: 60_000,
                     scale: 1,
-                },
-                placement: OutputPlacement { x: 640, y: 360 },
-                ..Default::default()
+                }],
             })
-            .id();
+            .add_systems(RenderSchedule, cursor_scene_snapshot_system);
 
         {
             let mut pointer = app.inner_mut().world_mut().resource_mut::<GlobalPointerPosition>();
@@ -282,7 +283,7 @@ mod tests {
 
         let cursor = app.inner().world().resource::<CursorSceneSnapshot>();
         assert!(cursor.visible);
-        assert_eq!(cursor.output_id, app.inner().world().get::<OutputId>(output).copied());
+        assert_eq!(cursor.output_id, Some(OutputId(1)));
         assert_eq!(cursor.x, 60.0);
         assert_eq!(cursor.y, 40.0);
     }
@@ -293,6 +294,7 @@ mod tests {
         app.inner_mut()
             .init_resource::<GlobalPointerPosition>()
             .init_resource::<CursorSceneSnapshot>()
+            .init_resource::<RenderViewSnapshot>()
             .add_systems(RenderSchedule, cursor_scene_snapshot_system);
 
         {
@@ -313,34 +315,24 @@ mod tests {
         let mut app = NekolandApp::new("cursor-scene-contribution-test");
         app.inner_mut()
             .init_resource::<CursorSceneSnapshot>()
-            .init_resource::<CursorImageSnapshot>()
+            .init_resource::<ShellRenderInput>()
             .init_resource::<CursorThemeGeometryCache>()
             .init_resource::<RenderSceneContributionQueue>()
-            .add_systems(RenderSchedule, emit_cursor_scene_contributions_system);
-        let output = app
-            .inner_mut()
-            .world_mut()
-            .spawn(OutputBundle {
-                output: OutputDevice {
-                    name: "Virtual-1".to_owned(),
-                    kind: OutputKind::Virtual,
-                    make: "Nekoland".to_owned(),
-                    model: "test".to_owned(),
-                },
-                properties: OutputProperties {
+            .insert_resource(RenderViewSnapshot {
+                views: vec![RenderViewState {
+                    output_id: OutputId(1),
+                    x: 0,
+                    y: 0,
                     width: 1280,
                     height: 720,
-                    refresh_millihz: 60_000,
                     scale: 1,
-                },
-                ..Default::default()
+                }],
             })
-            .id();
-        let output_id =
-            *app.inner().world().get::<OutputId>(output).expect("output id should exist");
+            .add_systems(RenderSchedule, emit_cursor_scene_contributions_system);
+        let output_id = OutputId(1);
         *app.inner_mut().world_mut().resource_mut::<CursorSceneSnapshot>() =
             CursorSceneSnapshot { visible: true, output_id: Some(output_id), x: 30.0, y: 40.0 };
-        *app.inner_mut().world_mut().resource_mut::<CursorImageSnapshot>() =
+        app.inner_mut().world_mut().resource_mut::<ShellRenderInput>().cursor_image =
             CursorImageSnapshot::Named { icon_name: "default".to_owned() };
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);

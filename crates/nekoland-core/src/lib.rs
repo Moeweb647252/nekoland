@@ -9,7 +9,7 @@ pub mod plugin;
 pub mod schedules;
 
 pub mod prelude {
-    pub use crate::app::{AppMetadata, NekolandApp, RunLoopSettings};
+    pub use crate::app::{AppMetadata, NekolandApp, RenderSubApp, RunLoopSettings, WaylandSubApp};
     pub use crate::bridge::{EventBridge, WaylandBridge};
     pub use crate::calloop::CalloopSourceRegistry;
     pub use crate::error::NekolandError;

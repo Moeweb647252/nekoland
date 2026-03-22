@@ -38,6 +38,17 @@ impl PendingScreenshotRequests {
         self.requests.iter().filter(|request| request.output_id == output_id).cloned().collect()
     }
 
+    pub fn requests_by_ids(
+        &self,
+        request_ids: &[ScreenshotRequestId],
+    ) -> Vec<OutputScreenshotRequest> {
+        if request_ids.is_empty() {
+            return Vec::new();
+        }
+
+        self.requests.iter().filter(|request| request_ids.contains(&request.id)).cloned().collect()
+    }
+
     pub fn finish_requests(&mut self, completed_ids: &[ScreenshotRequestId]) {
         if completed_ids.is_empty() {
             return;

@@ -15,10 +15,10 @@ use nekoland_core::schedules::PresentSchedule;
 use nekoland_ecs::components::{SurfaceGeometry, WindowLayout, WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, KeyboardFocusState, PendingBackendInputEvents,
-    PendingProtocolInputEvents, PendingWindowControls, RenderPlan, RenderPlanItem,
+    PendingWindowControls, RenderPlan, RenderPlanItem, WaylandCommands,
 };
 use nekoland_ecs::selectors::SurfaceId;
-use nekoland_protocol::{ProtocolSeatDispatchSystems, ProtocolServerState};
+use nekoland_protocol::ProtocolSeatDispatchSystems;
 use tempfile::tempfile;
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
@@ -140,11 +140,7 @@ fn overlapping_floating_click_targets_topmost_wayland_client() {
     );
 
     let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
+        let server_state = common::protocol_server_state(&app);
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
             (None, Some(error)) if error.contains("Operation not permitted") => {
@@ -223,7 +219,7 @@ fn drive_overlap_click_scenario(
     mut pump: ResMut<OverlapClickPump>,
     mut pending_window_controls: ResMut<PendingWindowControls>,
     mut pending_backend_inputs: ResMut<PendingBackendInputEvents>,
-    mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
+    mut wayland_commands: ResMut<WaylandCommands>,
     render_plan: Res<RenderPlan>,
     keyboard_focus: Res<KeyboardFocusState>,
     windows: Query<
@@ -325,7 +321,7 @@ fn drive_overlap_click_scenario(
         },
     ];
     pending_backend_inputs.extend(events.iter().cloned());
-    pending_protocol_inputs.extend(events);
+    wayland_commands.pending_protocol_input_events.extend(events);
     pump.top_render_surface_before_click = top_render_surface;
     pump.focused_surface_before_click = keyboard_focus.focused_surface;
     pump.click_sent = true;

@@ -5,7 +5,8 @@ use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
     BackdropRenderItem, CompositorSceneItem, CompositorSceneState, CursorRenderItem,
     CursorRenderSource, RenderColor, RenderItemId, RenderItemIdentity, RenderItemInstance,
-    RenderPlanItem, RenderSourceId, SolidRectRenderItem, SurfaceRenderItem,
+    RenderPlanItem, RenderSourceId, SolidRectRenderItem, SurfacePresentationRole,
+    SurfaceRenderItem,
 };
 
 use crate::scene_process::{
@@ -26,6 +27,35 @@ impl RenderSourceKey {
 
     pub fn surface(surface_id: u64) -> Self {
         Self::new("surface", surface_id.to_string())
+    }
+
+    pub fn window(surface_id: u64) -> Self {
+        Self::new("window", surface_id.to_string())
+    }
+
+    pub fn popup(surface_id: u64) -> Self {
+        Self::new("popup", surface_id.to_string())
+    }
+
+    pub fn layer(surface_id: u64) -> Self {
+        Self::new("layer", surface_id.to_string())
+    }
+
+    pub fn output_background(surface_id: u64) -> Self {
+        Self::new("output_background", surface_id.to_string())
+    }
+
+    pub fn cursor_primary() -> Self {
+        Self::new("cursor", "primary")
+    }
+
+    pub fn surface_for_role(surface_id: u64, role: SurfacePresentationRole) -> Self {
+        match role {
+            SurfacePresentationRole::Window => Self::window(surface_id),
+            SurfacePresentationRole::Popup => Self::popup(surface_id),
+            SurfacePresentationRole::Layer => Self::layer(surface_id),
+            SurfacePresentationRole::OutputBackground => Self::output_background(surface_id),
+        }
     }
 
     pub fn compositor(entry_id: nekoland_ecs::resources::CompositorSceneEntryId) -> Self {
@@ -74,16 +104,13 @@ pub struct RenderSceneContribution {
 impl RenderSceneContribution {
     pub fn surface(
         output_id: OutputId,
+        source_key: RenderSourceKey,
         surface_id: u64,
         instance_slot: u32,
         instance: RenderItemInstance,
     ) -> Self {
         Self {
-            key: RenderInstanceKey::new(
-                RenderSourceKey::surface(surface_id),
-                output_id,
-                instance_slot,
-            ),
+            key: RenderInstanceKey::new(source_key, output_id, instance_slot),
             instance,
             payload: RenderSceneContributionPayload::Surface { surface_id },
         }
@@ -107,7 +134,7 @@ impl RenderSceneContribution {
         instance: RenderItemInstance,
     ) -> Self {
         Self {
-            key: RenderInstanceKey::new(RenderSourceKey::new("cursor", "primary"), output_id, 0),
+            key: RenderInstanceKey::new(RenderSourceKey::cursor_primary(), output_id, 0),
             instance,
             payload: RenderSceneContributionPayload::Cursor { source },
         }
@@ -192,12 +219,7 @@ pub fn emit_compositor_scene_contributions_system(
 
             let key = RenderInstanceKey::compositor(entry_id, *output_id);
             let mut instance = entry.instance;
-            apply_appearance_snapshot(
-                &mut instance.opacity,
-                &key.source_key,
-                &key,
-                appearance,
-            );
+            apply_appearance_snapshot(&mut instance.opacity, &key.source_key, &key, appearance);
             apply_projection_snapshot(
                 &mut instance.rect,
                 &mut instance.clip_rect,
@@ -210,9 +232,7 @@ pub fn emit_compositor_scene_contributions_system(
                 CompositorSceneItem::SolidRect { color } => {
                     RenderSceneContribution::solid_rect(key, *color, instance)
                 }
-                CompositorSceneItem::Backdrop => {
-                    RenderSceneContribution::backdrop(key, instance)
-                }
+                CompositorSceneItem::Backdrop => RenderSceneContribution::backdrop(key, instance),
             };
             output_contributions.push(contribution);
         }
@@ -294,6 +314,14 @@ mod tests {
         assert_eq!(first.source_id, third.source_id);
         assert_ne!(first.item_id, second.item_id);
         assert_ne!(first.item_id, third.item_id);
+    }
+
+    #[test]
+    fn role_specific_surface_source_keys_are_distinct() {
+        assert_ne!(RenderSourceKey::window(7), RenderSourceKey::popup(7));
+        assert_ne!(RenderSourceKey::window(7), RenderSourceKey::layer(7));
+        assert_ne!(RenderSourceKey::window(7), RenderSourceKey::output_background(7));
+        assert_ne!(RenderSourceKey::cursor_primary(), RenderSourceKey::window(7));
     }
 
     #[test]

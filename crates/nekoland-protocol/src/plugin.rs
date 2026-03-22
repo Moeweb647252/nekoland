@@ -10,6 +10,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
+use std::marker::PhantomData;
 use std::os::fd::{AsFd, AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::process::Stdio;
@@ -19,40 +20,32 @@ use std::time::{Duration, Instant};
 
 use bevy_app::App;
 use bevy_ecs::change_detection::DetectChanges;
-use bevy_ecs::entity_disabling::Disabled;
-use bevy_ecs::hierarchy::ChildOf;
-use bevy_ecs::prelude::{Entity, Has, Local, NonSendMut, Query, Res, ResMut, Resource, With};
-use bevy_ecs::query::Allow;
-use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
+use bevy_ecs::prelude::{Local, NonSend, NonSendMut, Res, ResMut, Resource};
+use bevy_ecs::schedule::SystemSet;
 use bevy_ecs::system::SystemParam;
 use calloop::generic::{FdWrapper, Generic};
 use calloop::{Interest, Mode, PostAction};
 use nekoland_config::resources::{CompositorConfig, KeyboardLayoutState};
 use nekoland_core::bridge::WaylandBridge;
-use nekoland_core::calloop::CalloopSourceRegistry;
+use nekoland_core::calloop::with_wayland_calloop_registry;
 use nekoland_core::error::NekolandError;
 use nekoland_core::plugin::NekolandPlugin;
-use nekoland_core::schedules::{
-    ExtractSchedule, PresentSchedule, ProtocolSchedule, RenderSchedule,
-};
-#[cfg(test)]
-use nekoland_ecs::components::{
-    DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow, WindowRole,
-    WindowViewportVisibility,
-};
-use nekoland_ecs::components::{OutputDevice, OutputPlacement, X11WindowType, XdgPopup, XdgWindow};
-use nekoland_ecs::presentation_logic::{managed_window_visible, popup_visible};
+use nekoland_core::prelude::WaylandSubApp;
+use nekoland_core::schedules::PresentSchedule;
+use nekoland_ecs::components::X11WindowType;
 use nekoland_ecs::resources::{
     BackendInputAction, CompositorClock, CursorImageSnapshot, FramePacingState,
-    GlobalPointerPosition, KeyboardFocusState, PendingProtocolInputEvents, PendingWindowControls,
-    RenderPlan, SurfacePresentationRole, SurfacePresentationSnapshot,
+    GlobalPointerPosition, KeyboardFocusState, OutputSnapshotState, PendingProtocolInputEvents,
+    PendingWindowControls, PlatformDmabufFormat, PlatformSurfaceBufferSource, PlatformSurfaceKind,
+    PlatformSurfaceImportStrategy, PlatformSurfaceSnapshot, PlatformSurfaceSnapshotState,
+    PopupPlacement, ProtocolServerState, RenderPlan, ResizeEdges,
+    SurfaceContentVersionSnapshot, SurfaceExtent,
+    SurfacePresentationSnapshot, WindowServerAction, X11WindowGeometry, XWaylandServerState,
 };
-#[cfg(test)]
-use nekoland_ecs::views::SurfaceRuntime;
-use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowVisibilityRuntime, WorkspaceRuntime};
 use smithay::backend::allocator::{Buffer, Format as DmabufFormat, dmabuf::Dmabuf};
 use smithay::backend::input::{Axis as InputAxis, AxisSource, ButtonState, KeyState};
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
+use smithay::backend::renderer::{BufferType, buffer_type};
 use smithay::delegate_data_device;
 use smithay::delegate_dmabuf;
 use smithay::delegate_foreign_toplevel_list;
@@ -76,8 +69,7 @@ use smithay::input::keyboard::FilterResult;
 use crate::resources::{
     ClipboardSelectionState, DragAndDropState, OutputPresentationState, PendingLayerRequests,
     PendingOutputEvents, PendingPopupServerRequests, PendingWindowServerRequests,
-    PendingX11Requests, PendingXdgRequests, PopupPlacement, PopupServerAction,
-    PrimarySelectionState, ResizeEdges, SurfaceExtent, WindowServerAction, X11WindowGeometry,
+    PendingX11Requests, PendingXdgRequests, PopupServerAction, PrimarySelectionState,
     XdgSurfaceRole,
 };
 use smithay::input::keyboard::XkbConfig;
@@ -107,10 +99,11 @@ use smithay::utils::{
 };
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    self, CompositorClientState, CompositorHandler, CompositorState as SmithayCompositorState,
+    self, BufferAssignment, CompositorClientState, CompositorHandler,
+    CompositorState as SmithayCompositorState, SurfaceAttributes,
 };
 use smithay::wayland::dmabuf::{
-    DmabufGlobal, DmabufHandler, DmabufState as SmithayDmabufState, ImportNotifier,
+    DmabufGlobal, DmabufHandler, DmabufState as SmithayDmabufState, ImportNotifier, get_dmabuf,
 };
 use smithay::wayland::fractional_scale::{
     FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale,
@@ -187,6 +180,24 @@ const SUPPORTED_XDG_WM_CAPABILITIES: [xdg_toplevel::WmCapabilities; 4] = [
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ProtocolPlugin;
 
+#[derive(Debug, Clone, bevy_ecs::prelude::Resource)]
+pub(crate) struct ProtocolBootstrapConfig {
+    repeat_rate: u16,
+    initial_keyboard_layout: nekoland_config::resources::ConfiguredKeyboardLayout,
+    xwayland_enabled: bool,
+}
+
+impl Default for ProtocolBootstrapConfig {
+    fn default() -> Self {
+        Self {
+            repeat_rate: DEFAULT_KEYBOARD_REPEAT_RATE,
+            initial_keyboard_layout: nekoland_config::resources::ConfiguredKeyboardLayout::default(
+            ),
+            xwayland_enabled: true,
+        }
+    }
+}
+
 /// Present-phase system set that updates Smithay seat focus/hit-test state from the current frame.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProtocolSeatDispatchSystems;
@@ -197,8 +208,8 @@ struct SurfaceIdentity(u64);
 #[derive(Debug, Clone, Copy)]
 struct XdgSurfaceMarker(XdgSurfaceRole);
 
-#[derive(Debug)]
-struct SmithayProtocolServer {
+#[derive(Debug, Clone)]
+pub(crate) struct SmithayProtocolServer {
     runtime: Option<SharedProtocolRuntime>,
 }
 
@@ -267,30 +278,10 @@ struct ProtocolClientState {
     compositor_state: CompositorClientState,
 }
 
-/// Public status snapshot for the compositor's Wayland protocol server socket.
-#[derive(Debug, Clone, Default, Resource)]
-pub struct ProtocolServerState {
-    pub socket_name: Option<String>,
-    pub runtime_dir: Option<String>,
-    pub startup_error: Option<String>,
-    pub last_accept_error: Option<String>,
-    pub last_dispatch_error: Option<String>,
-}
-
-/// Public status snapshot for the compositor's XWayland server integration.
-#[derive(Debug, Clone, Default, Resource)]
-pub struct XWaylandServerState {
-    pub enabled: bool,
-    pub ready: bool,
-    pub display_number: Option<u32>,
-    pub display_name: Option<String>,
-    pub startup_error: Option<String>,
-    pub last_error: Option<String>,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
 pub struct ProtocolDmabufSupport {
     pub formats: Vec<DmabufFormat>,
+    pub renderable_formats: Vec<DmabufFormat>,
     pub importable: bool,
 }
 
@@ -298,6 +289,7 @@ impl ProtocolDmabufSupport {
     pub fn merge_formats(
         &mut self,
         formats: impl IntoIterator<Item = DmabufFormat>,
+        renderable_formats: impl IntoIterator<Item = DmabufFormat>,
         importable: bool,
     ) {
         for format in formats {
@@ -305,7 +297,20 @@ impl ProtocolDmabufSupport {
                 self.formats.push(format);
             }
         }
+        for format in renderable_formats {
+            if !self.renderable_formats.contains(&format) {
+                self.renderable_formats.push(format);
+            }
+        }
         self.importable |= importable;
+    }
+
+    pub fn importable_format(&self, format: DmabufFormat) -> bool {
+        self.formats.contains(&format)
+    }
+
+    pub fn renderable_format(&self, format: DmabufFormat) -> bool {
+        self.renderable_formats.contains(&format)
     }
 }
 
@@ -342,12 +347,20 @@ struct XWaylandRuntimeState {
 }
 
 #[derive(Debug, Default)]
-struct WorkspaceVisibilityState {
+pub(crate) struct WorkspaceVisibilityState {
     initialized: bool,
     active_workspace: Option<u32>,
     visible_toplevels: BTreeSet<u64>,
     visible_popups: BTreeSet<u64>,
     hidden_parent_popups: BTreeSet<u64>,
+}
+
+#[derive(Debug, Clone, Default, Resource)]
+pub(crate) struct WorkspaceVisibilitySnapshot {
+    pub active_workspace: Option<u32>,
+    pub visible_toplevels: BTreeSet<u64>,
+    pub visible_popups: BTreeSet<u64>,
+    pub hidden_parent_popups: BTreeSet<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -363,7 +376,7 @@ struct SyntheticPointerGrab {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SeatInputSyncState {
+pub(crate) struct SeatInputSyncState {
     initialized: bool,
     host_focused: bool,
     keyboard_focus: Option<u64>,
@@ -383,56 +396,8 @@ impl Default for SeatInputSyncState {
     }
 }
 
-type WorkspaceVisibilityWindows<'w, 's> = Query<
-    'w,
-    's,
-    (Entity, WindowVisibilityRuntime, Has<Disabled>),
-    (With<XdgWindow>, Allow<Disabled>),
->;
-type WorkspaceVisibilityPopups<'w, 's> =
-    Query<'w, 's, (PopupRuntime, Has<Disabled>), (With<XdgPopup>, Allow<Disabled>)>;
-type ProtocolOutputQuery<'w, 's> = Query<
-    'w,
-    's,
-    (
-        Entity,
-        &'static nekoland_ecs::components::OutputId,
-        &'static OutputDevice,
-        &'static OutputPlacement,
-    ),
->;
-#[cfg(test)]
-type PointerWindows<'w, 's> = Query<
-    'w,
-    's,
-    (
-        Entity,
-        SurfaceRuntime,
-        &'static WindowRole,
-        Option<&'static WindowViewportVisibility>,
-        Option<&'static OutputBackgroundWindow>,
-    ),
-    With<XdgWindow>,
->;
-#[cfg(test)]
-type PointerPopups<'w, 's> = Query<'w, 's, (SurfaceRuntime, &'static ChildOf), With<XdgPopup>>;
-#[cfg(test)]
-type PointerLayers<'w, 's> = Query<
-    'w,
-    's,
-    (SurfaceRuntime, Option<&'static LayerOnOutput>, Option<&'static DesiredOutputName>),
-    With<LayerShellSurface>,
->;
-#[cfg(test)]
-type PointerHitTestState<'w, 's> = (
-    ProtocolOutputQuery<'w, 's>,
-    PointerWindows<'w, 's>,
-    PointerPopups<'w, 's>,
-    PointerLayers<'w, 's>,
-);
-
 #[derive(SystemParam)]
-struct FlushProtocolQueueParams<'w> {
+pub(crate) struct FlushProtocolQueueParams<'w> {
     pending_xdg_requests: ResMut<'w, PendingXdgRequests>,
     pending_layer_requests: ResMut<'w, PendingLayerRequests>,
     pending_window_controls: ResMut<'w, PendingWindowControls>,
@@ -444,24 +409,25 @@ struct FlushProtocolQueueParams<'w> {
 }
 
 #[derive(SystemParam)]
-struct DispatchSeatInputParams<'w, 's> {
-    clock: Res<'w, CompositorClock>,
+pub(crate) struct DispatchSeatInputParams<'w, 's> {
+    clock: Option<Res<'w, CompositorClock>>,
     keyboard_focus: Option<Res<'w, KeyboardFocusState>>,
     pointer: Option<Res<'w, GlobalPointerPosition>>,
     render_plan: Option<Res<'w, RenderPlan>>,
     surface_presentation: Option<Res<'w, SurfacePresentationSnapshot>>,
     pending_protocol_input_events: ResMut<'w, PendingProtocolInputEvents>,
-    outputs: ProtocolOutputQuery<'w, 's>,
+    output_snapshots: Option<Res<'w, OutputSnapshotState>>,
+    _marker: PhantomData<&'s ()>,
 }
 
-struct PointerFocusInputs<'a, 'w, 's> {
+struct PointerFocusInputs<'a> {
     render_plan: Option<&'a RenderPlan>,
     surface_presentation: Option<&'a SurfacePresentationSnapshot>,
-    outputs: &'a ProtocolOutputQuery<'w, 's>,
+    output_snapshots: Option<&'a OutputSnapshotState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct OutputTiming {
+pub(crate) struct OutputTiming {
     output_name: String,
     width: u32,
     height: u32,
@@ -470,10 +436,15 @@ struct OutputTiming {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ForeignToplevelSnapshot {
-    surface_id: u64,
-    title: String,
-    app_id: String,
+pub(crate) struct ForeignToplevelSnapshot {
+    pub(crate) surface_id: u64,
+    pub(crate) title: String,
+    pub(crate) app_id: String,
+}
+
+#[derive(Debug, Clone, Default, Resource)]
+pub(crate) struct ForeignToplevelSnapshotState {
+    pub windows: Vec<ForeignToplevelSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -572,64 +543,34 @@ impl NekolandPlugin for ProtocolPlugin {
             .get_resource::<CompositorConfig>()
             .map(|config| config.xwayland.enabled)
             .unwrap_or(true);
-        let (server, server_state) =
-            SmithayProtocolServer::new(repeat_rate, initial_keyboard_layout, xwayland_enabled);
-        register_calloop_sources(app, &server);
+        app.sub_app_mut(WaylandSubApp).world_mut().insert_resource(ProtocolBootstrapConfig {
+            repeat_rate,
+            initial_keyboard_layout,
+            xwayland_enabled,
+        });
 
-        app.insert_resource(state)
-            .insert_resource(registry)
-            .insert_resource(server_state)
-            .init_resource::<ProtocolDmabufSupport>()
-            .init_resource::<XWaylandServerState>()
-            .insert_non_send_resource(server)
-            .insert_non_send_resource(ProtocolSurfaceRegistry::default())
-            .insert_non_send_resource(ProtocolCursorState::default())
-            .init_resource::<CursorImageSnapshot>()
+        app.insert_resource(registry)
             .init_resource::<CompositorClock>()
-            .init_resource::<PendingProtocolInputEvents>()
-            .init_resource::<PendingXdgRequests>()
-            .init_resource::<PendingX11Requests>()
-            .init_resource::<PendingWindowControls>()
-            .init_resource::<PendingWindowServerRequests>()
-            .init_resource::<PendingPopupServerRequests>()
-            .init_resource::<PendingOutputEvents>()
-            .init_resource::<ClipboardSelectionState>()
-            .init_resource::<DragAndDropState>()
-            .init_resource::<PrimarySelectionState>()
-            .add_systems(ExtractSchedule, advance_compositor_clock_system)
-            .add_systems(
-                ProtocolSchedule,
-                (
-                    sync_protocol_server_state_system,
-                    sync_protocol_dmabuf_support_system,
-                    sync_xwayland_server_state_system,
-                    sync_keyboard_repeat_config_system,
-                    sync_keyboard_layout_config_system,
-                    dispatch_xwayland_runtime_system,
-                    dispatch_window_server_requests_system,
-                    dispatch_popup_server_requests_system,
-                    dispatch_surface_frame_callbacks_system,
-                    sync_protocol_output_timing_system,
-                    process_selection_persistence_system,
-                    collect_smithay_callbacks_system,
-                    sync_protocol_surface_registry_system,
-                    sync_protocol_cursor_state_system,
-                    flush_protocol_queue_system,
-                )
-                    .chain(),
-            )
-            .add_systems(
-                RenderSchedule,
-                (sync_foreign_toplevel_list_system, sync_workspace_visibility_system).chain(),
-            )
-            .add_systems(
-                PresentSchedule,
-                dispatch_seat_input_system.in_set(ProtocolSeatDispatchSystems),
-            );
+            .configure_sets(PresentSchedule, ProtocolSeatDispatchSystems);
     }
 }
 
-fn advance_compositor_clock_system(
+pub(crate) fn bootstrap_protocol_runtime_in_subapp(app: &mut App) {
+    let bootstrap =
+        app.world().get_resource::<ProtocolBootstrapConfig>().cloned().unwrap_or_default();
+    let (server, server_state) = SmithayProtocolServer::new(
+        bootstrap.repeat_rate,
+        bootstrap.initial_keyboard_layout,
+        bootstrap.xwayland_enabled,
+    );
+    register_calloop_sources(app, &server);
+    app.insert_non_send_resource(server);
+    app.insert_non_send_resource(ProtocolSurfaceRegistry::default());
+    app.insert_non_send_resource(ProtocolCursorState::default());
+    app.insert_resource(server_state);
+}
+
+pub(crate) fn advance_compositor_clock_system(
     mut clock: ResMut<CompositorClock>,
     mut started_at: Local<Option<Instant>>,
 ) {
@@ -638,10 +579,13 @@ fn advance_compositor_clock_system(
     clock.uptime_millis = started_at.elapsed().as_millis();
 }
 
-fn sync_protocol_server_state_system(
-    server: NonSendMut<SmithayProtocolServer>,
+pub(crate) fn sync_protocol_server_state_system(
+    server: Option<NonSendMut<SmithayProtocolServer>>,
     mut server_state: ResMut<ProtocolServerState>,
 ) {
+    let Some(server) = server else {
+        return;
+    };
     let Some(runtime) = server.runtime.as_ref() else {
         return;
     };
@@ -649,10 +593,13 @@ fn sync_protocol_server_state_system(
     runtime.borrow().sync_server_state(&mut server_state);
 }
 
-fn sync_protocol_dmabuf_support_system(
-    support: Res<ProtocolDmabufSupport>,
-    mut server: NonSendMut<SmithayProtocolServer>,
+pub(crate) fn sync_protocol_dmabuf_support_system(
+    support: Option<Res<ProtocolDmabufSupport>>,
+    server: Option<NonSendMut<SmithayProtocolServer>>,
 ) {
+    let (Some(support), Some(mut server)) = (support, server) else {
+        return;
+    };
     if !support.is_changed() {
         return;
     }
@@ -660,50 +607,195 @@ fn sync_protocol_dmabuf_support_system(
     server.sync_dmabuf_support(&support);
 }
 
-fn sync_xwayland_server_state_system(
-    server: NonSendMut<SmithayProtocolServer>,
+pub(crate) fn sync_xwayland_server_state_system(
+    server: Option<NonSendMut<SmithayProtocolServer>>,
     mut xwayland_state: ResMut<XWaylandServerState>,
 ) {
+    let Some(server) = server else {
+        return;
+    };
     server.sync_xwayland_state(&mut xwayland_state);
 }
 
-fn sync_protocol_cursor_state_system(
-    mut server: NonSendMut<SmithayProtocolServer>,
-    mut cursor_state: NonSendMut<ProtocolCursorState>,
+pub(crate) fn sync_protocol_cursor_state_system(
+    server: Option<NonSendMut<SmithayProtocolServer>>,
+    cursor_state: Option<NonSendMut<ProtocolCursorState>>,
     mut cursor_image_snapshot: ResMut<CursorImageSnapshot>,
 ) {
+    let (Some(mut server), Some(mut cursor_state)) = (server, cursor_state) else {
+        return;
+    };
     server.sync_cursor_state(&mut cursor_state);
     server.sync_cursor_image_snapshot(&cursor_state, &mut cursor_image_snapshot);
 }
 
-fn dispatch_xwayland_runtime_system(mut server: NonSendMut<SmithayProtocolServer>) {
+pub(crate) fn dispatch_xwayland_runtime_system(server: Option<NonSendMut<SmithayProtocolServer>>) {
+    let Some(mut server) = server else {
+        return;
+    };
     server.dispatch_xwayland();
 }
 
-fn collect_smithay_callbacks_system(
+pub(crate) fn collect_smithay_callbacks_system(
     mut protocol_state: ResMut<ProtocolState>,
-    mut server: NonSendMut<SmithayProtocolServer>,
+    server: Option<NonSendMut<SmithayProtocolServer>>,
 ) {
+    let Some(mut server) = server else {
+        return;
+    };
     for event in server.drain_events() {
         protocol_state.queue_event(event);
     }
 }
 
-fn process_selection_persistence_system(mut server: NonSendMut<SmithayProtocolServer>) {
+pub(crate) fn process_selection_persistence_system(
+    server: Option<NonSendMut<SmithayProtocolServer>>,
+) {
+    let Some(mut server) = server else {
+        return;
+    };
     server.process_selection_persistence();
 }
 
-fn sync_protocol_surface_registry_system(
-    mut server: NonSendMut<SmithayProtocolServer>,
-    mut registry: NonSendMut<ProtocolSurfaceRegistry>,
+pub(crate) fn sync_protocol_surface_registry_system(
+    server: Option<NonSendMut<SmithayProtocolServer>>,
+    registry: Option<NonSendMut<ProtocolSurfaceRegistry>>,
 ) {
+    let (Some(mut server), Some(mut registry)) = (server, registry) else {
+        return;
+    };
     server.sync_surface_registry(&mut registry);
 }
 
-fn dispatch_window_server_requests_system(
-    mut pending_window_requests: ResMut<PendingWindowServerRequests>,
-    mut server: NonSendMut<SmithayProtocolServer>,
+pub(crate) fn sync_platform_surface_snapshot_state_system(
+    registry: Option<NonSend<'_, ProtocolSurfaceRegistry>>,
+    dmabuf_support: Option<Res<'_, ProtocolDmabufSupport>>,
+    content_versions: Option<Res<'_, SurfaceContentVersionSnapshot>>,
+    mut snapshots: ResMut<'_, PlatformSurfaceSnapshotState>,
 ) {
+    let Some(registry) = registry else {
+        return;
+    };
+    let dmabuf_support = dmabuf_support.as_deref();
+    let content_versions = content_versions.as_deref();
+    snapshots.surfaces = registry
+        .surfaces
+        .iter()
+        .map(|(surface_id, entry)| {
+            let buffer_source = platform_surface_buffer_source(&entry.surface);
+            let dmabuf_format = platform_surface_dmabuf_format(&entry.surface);
+            (
+                *surface_id,
+                PlatformSurfaceSnapshot {
+                    surface_id: *surface_id,
+                    kind: match entry.kind {
+                        ProtocolSurfaceKind::Toplevel => PlatformSurfaceKind::Toplevel,
+                        ProtocolSurfaceKind::Popup => PlatformSurfaceKind::Popup,
+                        ProtocolSurfaceKind::Layer => PlatformSurfaceKind::Layer,
+                        ProtocolSurfaceKind::Cursor => PlatformSurfaceKind::Cursor,
+                    },
+                    buffer_source,
+                    dmabuf_format,
+                    import_strategy: platform_surface_import_strategy(
+                        buffer_source,
+                        dmabuf_format,
+                        dmabuf_support,
+                    ),
+                    attached: platform_surface_attached(&entry.surface),
+                    scale: platform_surface_buffer_scale(&entry.surface),
+                    content_version: content_versions
+                        .and_then(|content_versions| {
+                            content_versions.versions.get(surface_id).copied()
+                        })
+                        .unwrap_or_default(),
+                },
+            )
+        })
+        .collect();
+}
+
+fn platform_surface_import_strategy(
+    buffer_source: PlatformSurfaceBufferSource,
+    dmabuf_format: Option<PlatformDmabufFormat>,
+    dmabuf_support: Option<&ProtocolDmabufSupport>,
+) -> PlatformSurfaceImportStrategy {
+    match buffer_source {
+        PlatformSurfaceBufferSource::Shm => PlatformSurfaceImportStrategy::ShmUpload,
+        PlatformSurfaceBufferSource::DmaBuf => {
+            let Some(dmabuf_support) = dmabuf_support else {
+                return PlatformSurfaceImportStrategy::Unsupported;
+            };
+            let Some(format) = dmabuf_format.map(platform_dmabuf_format_to_protocol) else {
+                return PlatformSurfaceImportStrategy::Unsupported;
+            };
+            if !dmabuf_support.importable_format(format) {
+                PlatformSurfaceImportStrategy::Unsupported
+            } else if dmabuf_support.renderable_format(format) {
+                PlatformSurfaceImportStrategy::DmaBufImport
+            } else {
+                PlatformSurfaceImportStrategy::ExternalTextureImport
+            }
+        }
+        PlatformSurfaceBufferSource::SinglePixel => PlatformSurfaceImportStrategy::SinglePixelFill,
+        PlatformSurfaceBufferSource::Unknown => PlatformSurfaceImportStrategy::Unsupported,
+    }
+}
+
+fn platform_surface_buffer_source(surface: &WlSurface) -> PlatformSurfaceBufferSource {
+    with_renderer_surface_state(surface, |state| {
+        state.buffer().and_then(|buffer| buffer_type(buffer)).map(|buffer_type| match buffer_type {
+            BufferType::Shm => PlatformSurfaceBufferSource::Shm,
+            BufferType::Dma => PlatformSurfaceBufferSource::DmaBuf,
+            BufferType::SinglePixel => PlatformSurfaceBufferSource::SinglePixel,
+            _ => PlatformSurfaceBufferSource::Unknown,
+        })
+    })
+    .flatten()
+    .unwrap_or_default()
+}
+
+fn platform_surface_dmabuf_format(surface: &WlSurface) -> Option<PlatformDmabufFormat> {
+    with_renderer_surface_state(surface, |state| {
+        let buffer = state.buffer()?;
+        let dmabuf = get_dmabuf(buffer).ok()?;
+        Some(PlatformDmabufFormat {
+            code: dmabuf.format().code as u32,
+            modifier: u64::from(dmabuf.format().modifier),
+        })
+    })
+    .flatten()
+}
+
+fn platform_dmabuf_format_to_protocol(format: PlatformDmabufFormat) -> DmabufFormat {
+    DmabufFormat {
+        code: smithay::backend::allocator::Fourcc::try_from(format.code)
+            .unwrap_or(smithay::backend::allocator::Fourcc::Argb8888),
+        modifier: smithay::backend::allocator::Modifier::from(format.modifier),
+    }
+}
+
+fn platform_surface_attached(surface: &WlSurface) -> bool {
+    compositor::with_states(surface, |states| {
+        matches!(
+            states.cached_state.get::<SurfaceAttributes>().current().buffer,
+            Some(BufferAssignment::NewBuffer { .. })
+        )
+    })
+}
+
+fn platform_surface_buffer_scale(surface: &WlSurface) -> i32 {
+    compositor::with_states(surface, |states| {
+        states.cached_state.get::<SurfaceAttributes>().current().buffer_scale
+    })
+}
+
+pub(crate) fn dispatch_window_server_requests_system(
+    mut pending_window_requests: ResMut<PendingWindowServerRequests>,
+    server: Option<NonSendMut<SmithayProtocolServer>>,
+) {
+    let Some(mut server) = server else {
+        return;
+    };
     let mut deferred = Vec::new();
 
     for request in pending_window_requests.drain() {
@@ -730,10 +822,13 @@ fn dispatch_window_server_requests_system(
     pending_window_requests.replace(deferred);
 }
 
-fn dispatch_popup_server_requests_system(
+pub(crate) fn dispatch_popup_server_requests_system(
     mut pending_popup_requests: ResMut<PendingPopupServerRequests>,
-    mut server: NonSendMut<SmithayProtocolServer>,
+    server: Option<NonSendMut<SmithayProtocolServer>>,
 ) {
+    let Some(mut server) = server else {
+        return;
+    };
     let mut deferred = Vec::new();
 
     for request in pending_popup_requests.drain() {
@@ -749,26 +844,30 @@ fn dispatch_popup_server_requests_system(
     pending_popup_requests.replace(deferred);
 }
 
-fn dispatch_surface_frame_callbacks_system(
-    outputs: Query<OutputRuntime>,
-    output_presentation: Option<Res<OutputPresentationState>>,
+pub(crate) fn dispatch_surface_frame_callbacks_system(
+    output_snapshots: Option<Res<'_, OutputSnapshotState>>,
+    output_presentation: Option<Res<'_, OutputPresentationState>>,
     frame_pacing: Res<FramePacingState>,
-    mut server: NonSendMut<SmithayProtocolServer>,
+    server: Option<NonSendMut<SmithayProtocolServer>>,
 ) {
+    let Some(mut server) = server else {
+        return;
+    };
     if frame_pacing.callback_surface_ids.is_empty()
         && frame_pacing.presentation_surface_ids.is_empty()
     {
         return;
     }
 
-    let timing = current_output_presentation(&outputs, output_presentation.as_deref())
-        .unwrap_or_else(|| {
-            let frame_time = Clock::<Monotonic>::new().now();
-            let refresh = current_output_timing(&outputs)
-                .map(refresh_from_output_timing)
-                .unwrap_or(Refresh::Unknown);
-            PresentationFeedbackTiming { frame_time, refresh, sequence: None }
-        });
+    let timing =
+        current_output_presentation(output_snapshots.as_deref(), output_presentation.as_deref())
+            .unwrap_or_else(|| {
+                let frame_time = Clock::<Monotonic>::new().now();
+                let refresh = current_output_timing(output_snapshots.as_deref())
+                    .map(refresh_from_output_timing)
+                    .unwrap_or(Refresh::Unknown);
+                PresentationFeedbackTiming { frame_time, refresh, sequence: None }
+            });
     server.send_frame_callbacks(&frame_pacing.callback_surface_ids, timing.frame_time);
     server.send_presentation_feedback(
         &frame_pacing.presentation_surface_ids,
@@ -778,7 +877,7 @@ fn dispatch_surface_frame_callbacks_system(
     );
 }
 
-fn flush_protocol_queue_system(
+pub(crate) fn flush_protocol_queue_system(
     mut protocol_state: ResMut<ProtocolState>,
     mut params: FlushProtocolQueueParams<'_>,
 ) {
@@ -795,84 +894,18 @@ fn flush_protocol_queue_system(
     protocol_state.flush_into_ecs(&mut targets);
 }
 
-fn sync_workspace_visibility_system(
-    workspaces: Query<(Entity, WorkspaceRuntime)>,
-    windows: WorkspaceVisibilityWindows<'_, '_>,
-    popups: WorkspaceVisibilityPopups<'_, '_>,
-    surface_presentation: Option<Res<SurfacePresentationSnapshot>>,
+pub(crate) fn sync_workspace_visibility_system(
+    visibility_snapshot: Res<'_, WorkspaceVisibilitySnapshot>,
     mut visibility: Local<WorkspaceVisibilityState>,
-    mut server: NonSendMut<SmithayProtocolServer>,
+    server: Option<NonSendMut<SmithayProtocolServer>>,
 ) {
-    let (_, active_workspace) =
-        nekoland_ecs::workspace_membership::active_workspace_runtime_target(&workspaces);
-    let surface_presentation = surface_presentation.as_deref();
-    let visible_toplevels = windows
-        .iter()
-        .filter(|(_, window, disabled)| {
-            !disabled
-                && surface_presentation.map_or_else(
-                    || {
-                        managed_window_visible(
-                            *window.mode,
-                            window.viewport_visibility.visible,
-                            *window.role,
-                        )
-                    },
-                    |snapshot| {
-                        snapshot.surfaces.get(&window.surface_id()).is_some_and(|state| {
-                            state.visible && state.role == SurfacePresentationRole::Window
-                        })
-                    },
-                )
-        })
-        .map(|(_, window, _)| window.surface_id())
-        .collect::<BTreeSet<_>>();
-    let visible_toplevel_entities = windows
-        .iter()
-        .filter(|(_, window, disabled)| {
-            !disabled
-                && surface_presentation.map_or_else(
-                    || {
-                        managed_window_visible(
-                            *window.mode,
-                            window.viewport_visibility.visible,
-                            *window.role,
-                        )
-                    },
-                    |snapshot| {
-                        snapshot.surfaces.get(&window.surface_id()).is_some_and(|state| {
-                            state.visible && state.role == SurfacePresentationRole::Window
-                        })
-                    },
-                )
-        })
-        .map(|(entity, _, _)| entity)
-        .collect::<BTreeSet<_>>();
-    let visible_popups = popups
-        .iter()
-        .filter(|(popup, disabled)| {
-            !disabled
-                && surface_presentation.map_or_else(
-                    || {
-                        popup_visible(
-                            popup.buffer.attached,
-                            popup_parent_visible(popup.child_of, &visible_toplevel_entities),
-                        )
-                    },
-                    |snapshot| {
-                        snapshot.surfaces.get(&popup.surface_id()).is_some_and(|state| {
-                            state.visible && state.role == SurfacePresentationRole::Popup
-                        })
-                    },
-                )
-        })
-        .map(|(popup, _)| popup.surface_id())
-        .collect::<BTreeSet<_>>();
-    let hidden_parent_popups = popups
-        .iter()
-        .filter(|(popup, _)| !visible_toplevel_entities.contains(&popup.child_of.parent()))
-        .map(|(popup, _)| popup.surface_id())
-        .collect::<BTreeSet<_>>();
+    let Some(mut server) = server else {
+        return;
+    };
+    let active_workspace = visibility_snapshot.active_workspace;
+    let visible_toplevels = visibility_snapshot.visible_toplevels.clone();
+    let visible_popups = visibility_snapshot.visible_popups.clone();
+    let hidden_parent_popups = visibility_snapshot.hidden_parent_popups.clone();
 
     if !visibility.initialized {
         visibility.initialized = true;
@@ -908,15 +941,14 @@ fn sync_workspace_visibility_system(
     visibility.hidden_parent_popups = hidden_parent_popups;
 }
 
-fn popup_parent_visible(child_of: &ChildOf, visible_toplevel_entities: &BTreeSet<Entity>) -> bool {
-    visible_toplevel_entities.contains(&child_of.parent())
-}
-
-fn dispatch_seat_input_system(
+pub(crate) fn dispatch_seat_input_system(
     params: DispatchSeatInputParams<'_, '_>,
     mut seat_sync: Local<SeatInputSyncState>,
-    mut server: NonSendMut<SmithayProtocolServer>,
+    server: Option<NonSendMut<SmithayProtocolServer>>,
 ) {
+    let Some(mut server) = server else {
+        return;
+    };
     if !seat_sync.initialized {
         seat_sync.initialized = true;
         seat_sync.host_focused = true;
@@ -929,15 +961,16 @@ fn dispatch_seat_input_system(
         render_plan,
         surface_presentation,
         mut pending_protocol_input_events,
-        outputs,
+        output_snapshots,
+        ..
     } = params;
-    let time = compositor_time_millis(&clock);
+    let time = clock.as_deref().map_or(0, compositor_time_millis);
     let keyboard_focus = keyboard_focus.as_deref();
     let pointer = pointer.as_deref();
     let focus_inputs = PointerFocusInputs {
         render_plan: render_plan.as_deref(),
         surface_presentation: surface_presentation.as_deref(),
-        outputs: &outputs,
+        output_snapshots: output_snapshots.as_deref(),
     };
 
     for event in pending_protocol_input_events.drain() {
@@ -1276,12 +1309,15 @@ impl SmithayProtocolServer {
     }
 }
 
-fn sync_protocol_output_timing_system(
-    outputs: Query<OutputRuntime>,
+pub(crate) fn sync_protocol_output_timing_system(
+    output_snapshots: Option<Res<'_, OutputSnapshotState>>,
     mut last_output_timing: Local<Option<OutputTiming>>,
-    mut server: NonSendMut<SmithayProtocolServer>,
+    server: Option<NonSendMut<SmithayProtocolServer>>,
 ) {
-    if let Some(output_timing) = current_output_timing(&outputs)
+    let Some(mut server) = server else {
+        return;
+    };
+    if let Some(output_timing) = current_output_timing(output_snapshots.as_deref())
         && last_output_timing.as_ref() != Some(&output_timing)
     {
         server.sync_output_timing(output_timing.clone());
@@ -1338,11 +1374,14 @@ fn selection_target_name(target: SelectionTarget) -> &'static str {
     }
 }
 
-fn sync_keyboard_repeat_config_system(
-    server: NonSendMut<SmithayProtocolServer>,
-    config: Res<CompositorConfig>,
+pub(crate) fn sync_keyboard_repeat_config_system(
+    server: Option<NonSendMut<SmithayProtocolServer>>,
+    config: Option<Res<CompositorConfig>>,
     mut last_repeat_rate: Local<Option<u16>>,
 ) {
+    let (Some(server), Some(config)) = (server, config) else {
+        return;
+    };
     if *last_repeat_rate == Some(config.repeat_rate) {
         return;
     }
@@ -1355,11 +1394,14 @@ fn sync_keyboard_repeat_config_system(
     *last_repeat_rate = Some(config.repeat_rate);
 }
 
-fn sync_keyboard_layout_config_system(
-    server: NonSendMut<SmithayProtocolServer>,
-    keyboard_layout_state: Res<KeyboardLayoutState>,
+pub(crate) fn sync_keyboard_layout_config_system(
+    server: Option<NonSendMut<SmithayProtocolServer>>,
+    keyboard_layout_state: Option<Res<KeyboardLayoutState>>,
     mut last_layout: Local<Option<nekoland_config::resources::ConfiguredKeyboardLayout>>,
 ) {
+    let (Some(server), Some(keyboard_layout_state)) = (server, keyboard_layout_state) else {
+        return;
+    };
     let active_layout = keyboard_layout_state.active_layout().clone();
     if last_layout.as_ref() == Some(&active_layout) {
         return;
@@ -1374,24 +1416,15 @@ fn sync_keyboard_layout_config_system(
     }
 }
 
-fn sync_foreign_toplevel_list_system(
-    windows: Query<nekoland_ecs::views::WindowSnapshotRuntime, (With<XdgWindow>, Allow<Disabled>)>,
-    mut server: NonSendMut<SmithayProtocolServer>,
+pub(crate) fn sync_foreign_toplevel_list_system(
+    snapshots: Res<'_, ForeignToplevelSnapshotState>,
+    server: Option<NonSendMut<SmithayProtocolServer>>,
 ) {
-    let snapshots = windows
-        .iter()
-        .filter(|window| {
-            window.role.is_managed()
-                && window.x11_window.is_none_or(|x11_window| !x11_window.is_helper_surface())
-        })
-        .map(|window| ForeignToplevelSnapshot {
-            surface_id: window.surface_id(),
-            title: window.window.title.clone(),
-            app_id: window.window.app_id.clone(),
-        })
-        .collect::<Vec<_>>();
+    let Some(mut server) = server else {
+        return;
+    };
 
-    server.sync_foreign_toplevel_list(&snapshots);
+    server.sync_foreign_toplevel_list(&snapshots.windows);
 }
 
 impl SmithayProtocolRuntime {
@@ -3840,7 +3873,7 @@ fn sync_pointer_focus_if_needed(
     server: &mut SmithayProtocolServer,
     seat_sync: &mut SeatInputSyncState,
     pointer: Option<&GlobalPointerPosition>,
-    focus_inputs: &PointerFocusInputs<'_, '_, '_>,
+    focus_inputs: &PointerFocusInputs<'_>,
     time: u32,
 ) {
     let location = pointer
@@ -3869,13 +3902,14 @@ fn pointer_focus_target(
     pointer_y: f64,
     server: Option<&SmithayProtocolServer>,
     location: Point<f64, Logical>,
-    focus_inputs: &PointerFocusInputs<'_, '_, '_>,
+    focus_inputs: &PointerFocusInputs<'_>,
 ) -> Option<PointerSurfaceFocus> {
     let render_plan = focus_inputs.render_plan?;
     let output_contexts = focus_inputs
+        .output_snapshots?
         .outputs
         .iter()
-        .map(|(_, output_id, _, placement)| (*output_id, placement.x, placement.y))
+        .map(|output| (output.output_id, output.x, output.y))
         .collect::<Vec<_>>();
     if let Some(surface_presentation) = focus_inputs.surface_presentation {
         for (output_id, placement_x, placement_y) in &output_contexts {
@@ -3982,25 +4016,28 @@ fn global_surface_bounds_for_item(
     })
 }
 
-fn current_output_timing(outputs: &Query<OutputRuntime>) -> Option<OutputTiming> {
-    outputs.iter().min_by(|left, right| left.name().cmp(right.name())).map(|output| OutputTiming {
-        output_name: output.name().to_owned(),
-        width: output.properties.width.max(1),
-        height: output.properties.height.max(1),
-        refresh_millihz: output.properties.refresh_millihz,
-        scale: output.properties.scale.max(1),
-    })
+fn current_output_timing(output_snapshots: Option<&OutputSnapshotState>) -> Option<OutputTiming> {
+    output_snapshots?.outputs.iter().min_by(|left, right| left.name.cmp(&right.name)).map(
+        |output| OutputTiming {
+            output_name: output.name.clone(),
+            width: output.width.max(1),
+            height: output.height.max(1),
+            refresh_millihz: output.refresh_millihz,
+            scale: output.scale.max(1),
+        },
+    )
 }
 
 fn current_output_presentation(
-    outputs: &Query<OutputRuntime>,
+    output_snapshots: Option<&OutputSnapshotState>,
     output_presentation: Option<&OutputPresentationState>,
 ) -> Option<PresentationFeedbackTiming> {
     let output_presentation = output_presentation?;
-    let output_id = outputs
+    let output_id = output_snapshots?
+        .outputs
         .iter()
-        .min_by(|left, right| left.name().cmp(right.name()))
-        .map(|output| output.id())?;
+        .min_by(|left, right| left.name.cmp(&right.name))
+        .map(|output| output.output_id)?;
     let timeline =
         output_presentation.outputs.iter().find(|timeline| timeline.output_id == output_id)?;
     let frame_time = Time::<Monotonic>::from(Duration::from_nanos(timeline.present_time_nanos));
@@ -4151,10 +4188,6 @@ fn remember_protocol_error(
 }
 
 fn register_calloop_sources(app: &mut App, server: &SmithayProtocolServer) {
-    if app.world().get_non_send_resource::<CalloopSourceRegistry>().is_none() {
-        app.insert_non_send_resource(CalloopSourceRegistry::default());
-    }
-
     let Some(runtime) = server.runtime.as_ref() else {
         return;
     };
@@ -4163,46 +4196,42 @@ fn register_calloop_sources(app: &mut App, server: &SmithayProtocolServer) {
     let display_fd = runtime.borrow().display.as_fd().as_raw_fd();
     let socket_fd = runtime.borrow().socket.as_ref().map(AsRawFd::as_raw_fd);
 
-    let Some(mut registry) = app.world_mut().get_non_send_resource_mut::<CalloopSourceRegistry>()
-    else {
-        tracing::warn!("protocol calloop registry was unavailable; source install skipped");
-        return;
-    };
-
-    registry.push(move |handle| {
-        let display_runtime = runtime.clone();
-        handle
-            .insert_source(
-                Generic::new(
-                    unsafe { FdWrapper::new(RegisteredRawFd(display_fd)) },
-                    Interest::READ,
-                    Mode::Level,
-                ),
-                move |_, _, _| {
-                    display_runtime.borrow_mut().on_display_ready();
-                    Ok(PostAction::Continue)
-                },
-            )
-            .map_err(|error| NekolandError::Runtime(error.error.to_string()))?;
-
-        if let Some(socket_fd) = socket_fd {
-            let socket_runtime = runtime.clone();
+    with_wayland_calloop_registry(app, |registry| {
+        registry.push(move |handle| {
+            let display_runtime = runtime.clone();
             handle
                 .insert_source(
                     Generic::new(
-                        unsafe { FdWrapper::new(RegisteredRawFd(socket_fd)) },
+                        unsafe { FdWrapper::new(RegisteredRawFd(display_fd)) },
                         Interest::READ,
                         Mode::Level,
                     ),
                     move |_, _, _| {
-                        socket_runtime.borrow_mut().on_socket_ready();
+                        display_runtime.borrow_mut().on_display_ready();
                         Ok(PostAction::Continue)
                     },
                 )
                 .map_err(|error| NekolandError::Runtime(error.error.to_string()))?;
-        }
 
-        Ok(())
+            if let Some(socket_fd) = socket_fd {
+                let socket_runtime = runtime.clone();
+                handle
+                    .insert_source(
+                        Generic::new(
+                            unsafe { FdWrapper::new(RegisteredRawFd(socket_fd)) },
+                            Interest::READ,
+                            Mode::Level,
+                        ),
+                        move |_, _, _| {
+                            socket_runtime.borrow_mut().on_socket_ready();
+                            Ok(PostAction::Continue)
+                        },
+                    )
+                    .map_err(|error| NekolandError::Runtime(error.error.to_string()))?;
+            }
+
+            Ok(())
+        });
     });
 }
 
@@ -4241,16 +4270,19 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use bevy_ecs::prelude::World;
-    use bevy_ecs::system::SystemState;
     use nekoland_ecs::bundles::OutputBundle;
     use nekoland_ecs::components::{
         LayerShellSurface, OutputDevice, OutputId, OutputPlacement, OutputProperties,
         SurfaceGeometry, WindowViewportVisibility, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{
-        OutputRenderPlan, RenderItemId, RenderItemIdentity, RenderItemInstance, RenderPlan,
-        RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId, SurfaceRenderItem,
+        OutputGeometrySnapshot, OutputPresentationState, OutputPresentationTimeline,
+        PlatformDmabufFormat, PlatformSurfaceBufferSource, PlatformSurfaceImportStrategy,
+        OutputRenderPlan, OutputSnapshotState, RenderItemId, RenderItemIdentity,
+        RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
+        RenderSourceId, SurfaceRenderItem,
     };
+    use smithay::backend::allocator::{Format as DmabufFormat, Fourcc, Modifier};
     use smithay::reexports::wayland_server::Display;
     use wayland_client::protocol::{wl_compositor, wl_output, wl_registry, wl_surface};
     use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
@@ -4261,8 +4293,9 @@ mod tests {
 
     use super::{
         DEFAULT_KEYBOARD_REPEAT_RATE, ForeignToplevelSnapshot, PointerFocusInputs,
-        PointerHitTestState, ProtocolClientState, ProtocolEvent, ProtocolRuntimeState,
-        SmithayProtocolRuntime, XdgSurfaceRole, pointer_focus_target,
+        ProtocolClientState, ProtocolDmabufSupport, ProtocolEvent, ProtocolRuntimeState,
+        SmithayProtocolRuntime,
+        XdgSurfaceRole, current_output_presentation, current_output_timing, pointer_focus_target,
     };
 
     #[derive(Debug)]
@@ -4291,6 +4324,128 @@ mod tests {
 
     fn identity(id: u64) -> RenderItemIdentity {
         RenderItemIdentity::new(RenderSourceId(id), RenderItemId(id))
+    }
+
+    #[test]
+    fn platform_surface_import_strategy_marks_non_renderable_dmabufs_as_external_textures() {
+        let format = DmabufFormat { code: Fourcc::Argb8888, modifier: Modifier::Linear };
+        let dmabuf_format = PlatformDmabufFormat {
+            code: Fourcc::Argb8888 as u32,
+            modifier: u64::from(Modifier::Linear),
+        };
+        let support = ProtocolDmabufSupport {
+            formats: vec![format],
+            renderable_formats: Vec::new(),
+            importable: true,
+        };
+
+        assert_eq!(
+            super::platform_surface_import_strategy(
+                PlatformSurfaceBufferSource::DmaBuf,
+                Some(dmabuf_format),
+                Some(&support),
+            ),
+            PlatformSurfaceImportStrategy::ExternalTextureImport
+        );
+    }
+
+    #[test]
+    fn platform_surface_import_strategy_keeps_renderable_dmabufs_on_direct_import_path() {
+        let format = DmabufFormat { code: Fourcc::Argb8888, modifier: Modifier::Linear };
+        let dmabuf_format = PlatformDmabufFormat {
+            code: Fourcc::Argb8888 as u32,
+            modifier: u64::from(Modifier::Linear),
+        };
+        let support = ProtocolDmabufSupport {
+            formats: vec![format],
+            renderable_formats: vec![format],
+            importable: true,
+        };
+
+        assert_eq!(
+            super::platform_surface_import_strategy(
+                PlatformSurfaceBufferSource::DmaBuf,
+                Some(dmabuf_format),
+                Some(&support),
+            ),
+            PlatformSurfaceImportStrategy::DmaBufImport
+        );
+    }
+
+    #[test]
+    fn output_timing_prefers_normalized_output_snapshots() {
+        let timing = current_output_timing(Some(&OutputSnapshotState {
+            outputs: vec![
+                OutputGeometrySnapshot {
+                    output_id: OutputId(8),
+                    name: "DP-2".to_owned(),
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                    scale: 1,
+                    refresh_millihz: 60_000,
+                },
+                OutputGeometrySnapshot {
+                    output_id: OutputId(3),
+                    name: "DP-1".to_owned(),
+                    x: 1920,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                    scale: 2,
+                    refresh_millihz: 144_000,
+                },
+            ],
+        }))
+        .expect("normalized output snapshots should produce timing");
+
+        assert_eq!(timing.output_name, "DP-1");
+        assert_eq!(timing.width, 2560);
+        assert_eq!(timing.height, 1440);
+        assert_eq!(timing.scale, 2);
+        assert_eq!(timing.refresh_millihz, 144_000);
+    }
+
+    #[test]
+    fn output_presentation_uses_snapshot_ids_to_pick_feedback_timeline() {
+        let timing = current_output_presentation(
+            Some(&OutputSnapshotState {
+                outputs: vec![
+                    OutputGeometrySnapshot {
+                        output_id: OutputId(5),
+                        name: "DP-2".to_owned(),
+                        x: 0,
+                        y: 0,
+                        width: 1920,
+                        height: 1080,
+                        scale: 1,
+                        refresh_millihz: 60_000,
+                    },
+                    OutputGeometrySnapshot {
+                        output_id: OutputId(2),
+                        name: "DP-1".to_owned(),
+                        x: 1920,
+                        y: 0,
+                        width: 2560,
+                        height: 1440,
+                        scale: 2,
+                        refresh_millihz: 144_000,
+                    },
+                ],
+            }),
+            Some(&OutputPresentationState {
+                outputs: vec![OutputPresentationTimeline {
+                    output_id: OutputId(2),
+                    sequence: 77,
+                    refresh_interval_nanos: 16_666_667,
+                    present_time_nanos: 123_456_789,
+                }],
+            }),
+        )
+        .expect("matching output snapshot and presentation timeline should produce timing");
+
+        assert_eq!(timing.sequence, Some(77));
     }
 
     #[test]
@@ -4431,12 +4586,21 @@ mod tests {
                 ]),
             )]),
         };
-        let mut system_state = SystemState::<PointerHitTestState<'_, '_>>::new(&mut world);
-        let (outputs, _, _, _) = system_state.get(&world);
         let focus_inputs = PointerFocusInputs {
             render_plan: Some(&render_plan),
             surface_presentation: None,
-            outputs: &outputs,
+            output_snapshots: Some(&OutputSnapshotState {
+                outputs: vec![OutputGeometrySnapshot {
+                    output_id: OutputId(1),
+                    name: "Virtual-1".to_owned(),
+                    x: 0,
+                    y: 0,
+                    width: 320,
+                    height: 64,
+                    scale: 1,
+                    refresh_millihz: 60_000,
+                }],
+            }),
         };
 
         let Some(target) =
@@ -4502,12 +4666,33 @@ mod tests {
                 })]),
             )]),
         };
-        let mut system_state = SystemState::<PointerHitTestState<'_, '_>>::new(&mut world);
-        let (outputs, _, _, _) = system_state.get(&world);
         let focus_inputs = PointerFocusInputs {
             render_plan: Some(&render_plan),
             surface_presentation: None,
-            outputs: &outputs,
+            output_snapshots: Some(&OutputSnapshotState {
+                outputs: vec![
+                    OutputGeometrySnapshot {
+                        output_id: OutputId(1),
+                        name: "DP-1".to_owned(),
+                        x: 0,
+                        y: 0,
+                        width: 100,
+                        height: 100,
+                        scale: 1,
+                        refresh_millihz: 60_000,
+                    },
+                    OutputGeometrySnapshot {
+                        output_id: dp2_id,
+                        name: "DP-2".to_owned(),
+                        x: 100,
+                        y: 0,
+                        width: 100,
+                        height: 100,
+                        scale: 1,
+                        refresh_millihz: 60_000,
+                    },
+                ],
+            }),
         };
 
         let Some(target) =
@@ -4563,12 +4748,21 @@ mod tests {
                 })]),
             )]),
         };
-        let mut system_state = SystemState::<PointerHitTestState<'_, '_>>::new(&mut world);
-        let (outputs, _, _, _) = system_state.get(&world);
         let focus_inputs = PointerFocusInputs {
             render_plan: Some(&render_plan),
             surface_presentation: None,
-            outputs: &outputs,
+            output_snapshots: Some(&OutputSnapshotState {
+                outputs: vec![OutputGeometrySnapshot {
+                    output_id,
+                    name: "Virtual-1".to_owned(),
+                    x: 0,
+                    y: 0,
+                    width: 128,
+                    height: 128,
+                    scale: 1,
+                    refresh_millihz: 60_000,
+                }],
+            }),
         };
 
         assert!(

@@ -3,9 +3,8 @@ use std::collections::{HashMap, HashSet};
 use drm_fourcc::DrmFourcc;
 use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::resources::{
-    CompletedScreenshotFrames, CompositorClock, DamageRect, OutputDamageRegions,
-    PendingScreenshotRequests, RenderMaterialFrameState, RenderPassGraph, RenderPlan,
-    RenderProcessPlan, RenderRect,
+    CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock, DamageRect,
+    OutputDamageRegions, PendingScreenshotRequests, RenderRect,
 };
 use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags};
@@ -23,7 +22,9 @@ use smithay::utils::{Physical, Rectangle, Size, Transform};
 
 use crate::common::cursor::SoftwareCursorCache;
 use crate::common::gles_executor::{
-    CommonGlesRenderElement, GlesExecutionState, execute_output_graph, final_output_texture_element,
+    CommonGlesRenderElement, GlesExecutionState, execute_output_graph,
+    final_output_texture_element, prepare_output_graph_process_shaders,
+    prepare_output_graph_targets, prepare_output_surface_imports,
 };
 use crate::traits::OutputSnapshot;
 
@@ -52,11 +53,7 @@ pub(crate) struct DrmPresentCtx<'a> {
     pub outputs: &'a [OutputSnapshot],
     pub config: Option<&'a CompositorConfig>,
     pub clock: Option<&'a CompositorClock>,
-    pub output_damage_regions: &'a OutputDamageRegions,
-    pub materials: &'a RenderMaterialFrameState,
-    pub render_graph: &'a RenderPassGraph,
-    pub render_plan: &'a RenderPlan,
-    pub process_plan: &'a RenderProcessPlan,
+    pub compiled_frames: &'a CompiledOutputFrames,
     pub pending_screenshot_requests: &'a mut PendingScreenshotRequests,
     pub completed_screenshots: &'a mut CompletedScreenshotFrames,
     pub surface_registry: Option<&'a ProtocolSurfaceRegistry>,
@@ -71,11 +68,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         outputs,
         config,
         clock,
-        output_damage_regions,
-        materials,
-        render_graph,
-        render_plan,
-        process_plan,
+        compiled_frames,
         pending_screenshot_requests,
         completed_screenshots,
         surface_registry,
@@ -154,17 +147,61 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
             continue;
         };
 
-        let Some(execution) = render_graph.outputs.get(&output.output_id) else {
+        let Some(compiled_output) = compiled_frames.output(output.output_id) else {
             continue;
         };
+        if let Err(error) = prepare_output_graph_process_shaders(
+            renderer,
+            &mut render_state.execution,
+            compiled_output.gpu_prep.as_ref(),
+            &compiled_output.process_plan,
+        ) {
+            tracing::warn!(
+                connector = %connector_info.name,
+                error = %error,
+                "failed to prewarm DRM process shaders"
+            );
+            continue;
+        }
+        if let Err(error) = prepare_output_graph_targets(
+            renderer,
+            &mut render_state.execution,
+            output,
+            &compiled_output.execution_plan,
+            compiled_output.target_allocation.as_ref(),
+        ) {
+            tracing::warn!(
+                connector = %connector_info.name,
+                error = %error,
+                "failed to prepare DRM output targets"
+            );
+            continue;
+        }
+        if let Err(error) = prepare_output_surface_imports(
+            renderer,
+            &mut render_state.execution,
+            &compiled_output.prepared_scene,
+            compiled_output.gpu_prep.as_ref(),
+            surface_registry,
+        ) {
+            tracing::warn!(
+                connector = %connector_info.name,
+                error = %error,
+                "failed to import DRM wayland surfaces"
+            );
+            continue;
+        }
         let Some(executed) = execute_output_graph(
             renderer,
             &mut render_state.execution,
             output,
-            execution,
-            render_plan,
-            process_plan,
-            materials,
+            &compiled_output.execution_plan,
+            compiled_output.final_output.as_ref(),
+            compiled_output.target_allocation.as_ref(),
+            &compiled_output.prepared_scene,
+            compiled_output.gpu_prep.as_ref(),
+            &compiled_output.process_plan,
+            &compiled_frames.materials,
             surface_registry,
             cursor_cache,
             config,
@@ -189,7 +226,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
         )];
         elements.extend(
             ecs_damage_render_elements(
-                output_damage_regions,
+                &compiled_frames.output_damage_regions,
                 output.output_id,
                 output.properties.scale.max(1),
             )

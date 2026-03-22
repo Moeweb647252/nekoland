@@ -1,4 +1,7 @@
+use bevy_app::App;
 use bevy_ecs::prelude::{Query, Res, ResMut};
+use nekoland_core::plugin::NekolandPlugin;
+use nekoland_core::schedules::PreRenderSchedule;
 use nekoland_ecs::components::{FadeState, WindowAnimation, WlSurfaceHandle};
 use nekoland_ecs::resources::CompositorClock;
 
@@ -7,6 +10,15 @@ use crate::animation::{
     AnimationTrack, AnimationValue,
 };
 use crate::scene_source::RenderSourceKey;
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FadeEffectPlugin;
+
+impl NekolandPlugin for FadeEffectPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(PreRenderSchedule, fade_effect_system);
+    }
+}
 
 /// Fade-in/fade-out animation driver.
 #[derive(Debug, Clone, Default, PartialEq)]

@@ -22,7 +22,7 @@ use nekoland_ecs::components::{
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, FramePacingState, GlobalPointerPosition,
-    KeyboardFocusState, PendingProtocolInputEvents, RenderPlan, RenderPlanItem, WorkArea,
+    KeyboardFocusState, RenderPlan, RenderPlanItem, WaylandCommands, WorkArea,
 };
 use nekoland_ipc::commands::{
     PopupCommand, QueryCommand, TreeSnapshot, WindowCommand, WorkspaceCommand,
@@ -31,7 +31,6 @@ use nekoland_ipc::{
     IpcCommand, IpcReply, IpcRequest, IpcServerState, IpcSubscription, IpcSubscriptionEvent,
     SubscriptionTopic, send_request_to_path, subscribe_to_path,
 };
-use nekoland_protocol::ProtocolServerState;
 use nekoland_protocol::resources::{
     PendingPopupServerRequests, PendingWindowServerRequests, PopupServerAction, PopupServerRequest,
     WindowServerAction, WindowServerRequest,
@@ -983,11 +982,7 @@ fn run_scenario(
     }
 
     let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
+        let server_state = common::protocol_server_state(&app);
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
             (None, Some(error)) if error.contains("Operation not permitted") => {
@@ -1123,11 +1118,7 @@ fn run_scenario_with_subscription(
     }
 
     let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
+        let server_state = common::protocol_server_state(&app);
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
             (None, Some(error)) if error.contains("Operation not permitted") => {
@@ -1308,7 +1299,7 @@ fn pump_interactive_seat_input(
     mut pump: ResMut<InteractiveSeatInputPump>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
     mut pointer: ResMut<GlobalPointerPosition>,
-    mut pending_protocol_inputs: ResMut<PendingProtocolInputEvents>,
+    mut wayland_commands: ResMut<WaylandCommands>,
     windows: Query<(&WlSurfaceHandle, &SurfaceGeometry, &BufferState), With<XdgWindow>>,
 ) {
     if pump.remaining_frames == 0 {
@@ -1381,7 +1372,7 @@ fn pump_interactive_seat_input(
             action: BackendInputAction::PointerButton { button_code: 0x110, pressed },
         });
     }
-    pending_protocol_inputs.extend(events);
+    wayland_commands.pending_protocol_input_events.extend(events);
 
     pump.remaining_frames = pump.remaining_frames.saturating_sub(1);
     pump.tick = pump.tick.saturating_add(1);

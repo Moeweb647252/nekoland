@@ -14,16 +14,15 @@ use nekoland_ecs::components::{
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
 use nekoland_ecs::resources::{
-    EntityIndex, FocusedOutputState, GlobalPointerPosition, KeyboardFocusState, PrimaryOutputState,
+    EntityIndex, FocusedOutputState, GlobalPointerPosition, KeyboardFocusState,
+    PendingPopupServerRequests, PendingX11Requests, PopupServerAction, PopupServerRequest,
+    PrimaryOutputState, WaylandIngress, X11LifecycleAction, X11WindowGeometry,
 };
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_target;
-use nekoland_protocol::resources::{
-    PendingPopupServerRequests, PendingX11Requests, PopupServerAction, PopupServerRequest,
-    X11LifecycleAction, X11WindowGeometry,
-};
 
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
+use crate::viewport::preferred_primary_output_state;
 use crate::window_policy::{
     WindowBackgroundState, apply_window_policy, enter_temporary_window_mode, lock_window_policy,
     refresh_window_policy, resolve_background_output_id, restore_window_policy,
@@ -51,13 +50,14 @@ pub struct X11PopupDismissals<'w, 's> {
 
 #[derive(SystemParam)]
 pub struct X11BridgeParams<'w, 's> {
-    pending_x11_requests: ResMut<'w, PendingX11Requests>,
+    pending_x11_requests: Option<ResMut<'w, PendingX11Requests>>,
     entity_index: Res<'w, EntityIndex>,
     pointer: Res<'w, GlobalPointerPosition>,
     active_grab: ResMut<'w, ActiveWindowGrab>,
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
     _workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
     outputs: Query<'w, 's, (Entity, OutputRuntime)>,
+    wayland_ingress: Option<Res<'w, WaylandIngress>>,
     primary_output: Option<Res<'w, PrimaryOutputState>>,
     focused_output: Option<Res<'w, FocusedOutputState>>,
     windows: X11Windows<'w, 's>,
@@ -109,6 +109,7 @@ pub fn xwayland_bridge_system(
         mut keyboard_focus,
         _workspaces,
         outputs,
+        wayland_ingress,
         primary_output,
         focused_output,
         mut windows,
@@ -118,16 +119,23 @@ pub fn xwayland_bridge_system(
         mut window_moved,
     } = bridge;
 
+    let primary_output =
+        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
     let active_workspace_entity = focused_or_primary_workspace_runtime_target(
         &outputs,
         focused_output.as_deref(),
-        primary_output.as_deref(),
+        primary_output,
         &entity_index,
         1,
     );
     let mut deferred = Vec::new();
+    let mut requests =
+        pending_x11_requests.as_deref_mut().map(PendingX11Requests::take).unwrap_or_default();
+    if let Some(wayland_ingress) = wayland_ingress.as_deref() {
+        requests.extend(wayland_ingress.pending_x11_requests.iter().cloned());
+    }
 
-    for request in pending_x11_requests.drain() {
+    for request in requests {
         match request.action.clone() {
             X11LifecycleAction::Mapped {
                 window_id,
@@ -286,7 +294,9 @@ pub fn xwayland_bridge_system(
         }
     }
 
-    pending_x11_requests.replace(deferred);
+    if let Some(mut pending_x11_requests) = pending_x11_requests {
+        pending_x11_requests.replace(deferred);
+    }
 }
 
 fn resolve_x11_window_entity(
@@ -737,6 +747,7 @@ mod tests {
     use bevy_ecs::hierarchy::ChildOf;
     use bevy_ecs::prelude::Entity;
     use bevy_ecs::schedule::IntoScheduleConfigs;
+    use nekoland_config::resources::{CompositorConfig, ConfiguredWindowRule};
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::{OutputBundle, X11WindowBundle};
@@ -751,7 +762,6 @@ mod tests {
         EntityIndex, GlobalPointerPosition, KeyboardFocusState, PrimaryOutputState,
         WindowStackingState, WorkArea, rebuild_entity_index_system,
     };
-    use nekoland_config::resources::{CompositorConfig, ConfiguredWindowRule};
     use nekoland_protocol::resources::{
         PendingPopupServerRequests, PendingX11Requests, ResizeEdges, X11LifecycleAction,
         X11LifecycleRequest, X11WindowGeometry,

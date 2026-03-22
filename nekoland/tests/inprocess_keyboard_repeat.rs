@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
-use nekoland_protocol::ProtocolServerState;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
@@ -63,11 +62,7 @@ fn run_keyboard_repeat_scenario() -> Option<KeyboardRepeatSummary> {
     });
 
     let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
+        let server_state = common::protocol_server_state(&app);
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
             (None, Some(error)) if error.contains("Operation not permitted") => {

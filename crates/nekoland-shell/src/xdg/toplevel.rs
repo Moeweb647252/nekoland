@@ -14,20 +14,20 @@ use nekoland_ecs::components::{
     WindowRole, WindowSceneGeometry, WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
-use nekoland_ecs::resources::{EntityIndex, FocusedOutputState, PrimaryOutputState, WorkArea};
+use nekoland_ecs::resources::{
+    EntityIndex, FocusedOutputState, PendingPopupServerRequests, PendingXdgRequests,
+    PopupServerAction, PopupServerRequest, PrimaryOutputState, SurfaceExtent, WaylandIngress,
+    WindowLifecycleAction, WindowLifecycleRequest, WorkArea, XdgSurfaceRole,
+};
 use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::{
     focused_or_primary_workspace_runtime_target, window_workspace_runtime_id,
-};
-use nekoland_protocol::resources::{
-    PendingPopupServerRequests, PendingXdgRequests, PopupServerAction, PopupServerRequest,
-    SurfaceExtent, WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
 };
 
 use crate::layout::floating::{
     centre_x, centre_y, placement_work_area, should_auto_place_floating_window,
 };
-use crate::viewport::resolve_output_state_for_workspace;
+use crate::viewport::{preferred_primary_output_state, resolve_output_state_for_workspace};
 use crate::window_policy::{
     WindowBackgroundState, refresh_window_policy, resolve_background_output_id,
     sync_window_background_role,
@@ -46,11 +46,12 @@ type ToplevelWindows<'w, 's> =
 
 #[derive(SystemParam)]
 pub struct ToplevelLifecycleParams<'w, 's> {
-    pending_xdg_requests: ResMut<'w, PendingXdgRequests>,
+    pending_xdg_requests: Option<ResMut<'w, PendingXdgRequests>>,
     pending_popup_requests: ResMut<'w, PendingPopupServerRequests>,
     entity_index: Res<'w, EntityIndex>,
     existing_surfaces: ToplevelSurfaces<'w, 's>,
     outputs: ToplevelOutputs<'w, 's>,
+    wayland_ingress: Option<Res<'w, WaylandIngress>>,
     primary_output: Option<Res<'w, PrimaryOutputState>>,
     focused_output: Option<Res<'w, FocusedOutputState>>,
     windows: ToplevelWindows<'w, 's>,
@@ -76,6 +77,7 @@ pub fn toplevel_lifecycle_system(
         entity_index,
         existing_surfaces,
         outputs,
+        wayland_ingress,
         primary_output,
         focused_output,
         mut windows,
@@ -88,8 +90,15 @@ pub fn toplevel_lifecycle_system(
     let mut known_surfaces =
         existing_surfaces.iter().map(|surface| surface.id).collect::<BTreeSet<_>>();
     let mut deferred = Vec::new();
+    let primary_output =
+        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
+    let mut requests =
+        pending_xdg_requests.as_deref_mut().map(PendingXdgRequests::take).unwrap_or_default();
+    if let Some(wayland_ingress) = wayland_ingress.as_deref() {
+        requests.extend(wayland_ingress.pending_xdg_requests.iter().cloned());
+    }
 
-    for request in pending_xdg_requests.drain() {
+    for request in requests {
         match request.action.clone() {
             WindowLifecycleAction::Committed { role: XdgSurfaceRole::Toplevel, size }
                 if known_surfaces.insert(request.surface_id) =>
@@ -97,7 +106,7 @@ pub fn toplevel_lifecycle_system(
                 let workspace_entity = focused_or_primary_workspace_runtime_target(
                     &outputs,
                     focused_output.as_deref(),
-                    primary_output.as_deref(),
+                    primary_output,
                     &entity_index,
                     1,
                 );
@@ -218,7 +227,7 @@ pub fn toplevel_lifecycle_system(
                         let placement_area = placement_area_for_workspace(
                             &outputs,
                             workspace_id,
-                            primary_output.as_deref(),
+                            primary_output,
                             &work_area,
                         );
                         restored.geometry.x = centre_x(&placement_area, 0, restored.geometry.width);
@@ -336,7 +345,9 @@ pub fn toplevel_lifecycle_system(
         }
     }
 
-    pending_xdg_requests.replace(deferred);
+    if let Some(mut pending_xdg_requests) = pending_xdg_requests {
+        pending_xdg_requests.replace(deferred);
+    }
 }
 
 fn placement_area_for_workspace(
@@ -482,6 +493,7 @@ mod tests {
     use bevy_ecs::hierarchy::ChildOf;
     use bevy_ecs::prelude::Entity;
     use bevy_ecs::schedule::IntoScheduleConfigs;
+    use nekoland_config::resources::{CompositorConfig, ConfiguredWindowRule};
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
@@ -495,7 +507,6 @@ mod tests {
     use nekoland_ecs::resources::{
         EntityIndex, PrimaryOutputState, WorkArea, rebuild_entity_index_system,
     };
-    use nekoland_config::resources::{CompositorConfig, ConfiguredWindowRule};
     use nekoland_protocol::resources::{
         PendingPopupServerRequests, PendingXdgRequests, PopupServerAction, SurfaceExtent,
         WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,

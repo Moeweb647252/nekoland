@@ -1,7 +1,12 @@
 use bevy_app::App;
 use bevy_ecs::prelude::Resource;
+use nekoland_ecs::resources::{
+    PlatformBackendDescriptor, PlatformBackendKind, PlatformBackendRole, PlatformBackendState,
+};
 use nekoland_protocol::ProtocolDmabufSupport;
 use serde::{Deserialize, Serialize};
+use std::cell::{Ref, RefCell, RefMut};
+use std::rc::Rc;
 
 use crate::drm::DrmRuntime;
 use crate::traits::{
@@ -26,6 +31,32 @@ impl BackendStatus {
                 || descriptor.role == BackendRole::SecondaryDisplay
         })
     }
+
+    pub fn platform_state(&self) -> PlatformBackendState {
+        PlatformBackendState {
+            active: self
+                .active
+                .iter()
+                .map(|descriptor| PlatformBackendDescriptor {
+                    id: descriptor.id.0,
+                    kind: match descriptor.kind {
+                        BackendKind::Drm => PlatformBackendKind::Drm,
+                        BackendKind::Winit => PlatformBackendKind::Winit,
+                        BackendKind::Virtual => PlatformBackendKind::Virtual,
+                        BackendKind::Auto => PlatformBackendKind::Auto,
+                    },
+                    role: match descriptor.role {
+                        BackendRole::PrimaryDisplay => PlatformBackendRole::PrimaryDisplay,
+                        BackendRole::SecondaryDisplay => PlatformBackendRole::SecondaryDisplay,
+                        BackendRole::CaptureSink => PlatformBackendRole::CaptureSink,
+                        BackendRole::DebugSink => PlatformBackendRole::DebugSink,
+                    },
+                    label: descriptor.label.clone(),
+                    description: descriptor.description.clone(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -42,6 +73,23 @@ pub struct BackendManager {
     next_backend_id: u64,
     /// Heterogeneous list of installed runtime backends.
     backends: Vec<Box<dyn Backend>>,
+}
+
+#[derive(Clone, Default)]
+pub struct SharedBackendManager(Rc<RefCell<BackendManager>>);
+
+impl SharedBackendManager {
+    pub fn new(manager: BackendManager) -> Self {
+        Self(Rc::new(RefCell::new(manager)))
+    }
+
+    pub fn borrow(&self) -> Ref<'_, BackendManager> {
+        self.0.borrow()
+    }
+
+    pub fn borrow_mut(&self) -> RefMut<'_, BackendManager> {
+        self.0.borrow_mut()
+    }
 }
 
 impl Default for BackendManager {

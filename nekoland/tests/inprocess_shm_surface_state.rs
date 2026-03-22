@@ -10,7 +10,7 @@ use nekoland::build_app;
 use nekoland_config::resources::{CompositorConfig, DefaultLayout};
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ecs::components::{SurfaceGeometry, WlSurfaceHandle, XdgWindow};
-use nekoland_protocol::{ProtocolServerState, ProtocolSurfaceRegistry};
+use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::utils::{Logical, Size};
 use tempfile::tempfile;
@@ -76,11 +76,7 @@ fn shm_buffer_commit_populates_renderer_surface_state() {
     }
 
     let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
+        let server_state = common::protocol_server_state(&app);
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
             (None, Some(error)) if error.contains("Operation not permitted") => {

@@ -7,10 +7,10 @@ use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::components::{OutputId, SurfaceGeometry, WindowLayout, WindowMode, XdgWindow};
 use nekoland_ecs::events::PointerButton;
 use nekoland_ecs::resources::{
-    GlobalPointerPosition, KeyboardFocusState, UNASSIGNED_WORKSPACE_STACK_ID,
-    ViewportPointerPanState, WindowStackingState,
+    GlobalPointerPosition, KeyboardFocusState, OutputSnapshotState, UNASSIGNED_WORKSPACE_STACK_ID,
+    ViewportPointerPanState, WaylandIngress, WindowStackingState,
 };
-use nekoland_ecs::views::{OutputRuntime, WindowFocusRuntime, WorkspaceRuntime};
+use nekoland_ecs::views::{WindowFocusRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 use crate::interaction::ActiveWindowGrab;
@@ -25,17 +25,16 @@ pub struct FocusHoverState {
 }
 
 type FocusWindows<'w, 's> = Query<'w, 's, WindowFocusRuntime, With<XdgWindow>>;
-type FocusOutputs<'w, 's> = Query<'w, 's, OutputRuntime>;
 type FocusWorkspaces<'w, 's> = Query<'w, 's, (Entity, WorkspaceRuntime)>;
 
 #[derive(SystemParam)]
 pub struct FocusManagementParams<'w, 's> {
     active_grab: Option<Res<'w, ActiveWindowGrab>>,
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
+    wayland_ingress: Option<Res<'w, WaylandIngress>>,
     stacking: Res<'w, WindowStackingState>,
     viewport_pan: Option<Res<'w, ViewportPointerPanState>>,
     windows: FocusWindows<'w, 's>,
-    outputs: FocusOutputs<'w, 's>,
     workspaces: FocusWorkspaces<'w, 's>,
 }
 
@@ -49,7 +48,7 @@ pub fn pointer_button_focus_system(
     mut keyboard_focus: ResMut<KeyboardFocusState>,
     mut stacking: ResMut<WindowStackingState>,
     windows: Query<WindowFocusRuntime, With<XdgWindow>>,
-    outputs: Query<OutputRuntime>,
+    wayland_ingress: Option<Res<WaylandIngress>>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
 ) {
     if !pointer_buttons.read().any(|event| event.pressed) {
@@ -57,7 +56,9 @@ pub fn pointer_button_focus_system(
     }
 
     let visible_windows = visible_window_geometries(&windows, &workspaces);
-    let output_context = pointer_output_context(&pointer, &outputs);
+    let output_context = wayland_ingress
+        .as_deref()
+        .and_then(|ingress| pointer_output_context(&pointer, &ingress.output_snapshots));
     let ordered_surfaces = stacking.ordered_surfaces(
         visible_windows
             .iter()
@@ -93,7 +94,10 @@ pub fn focus_management_system(
     mut focus: FocusManagementParams<'_, '_>,
 ) {
     let visible_windows = visible_window_geometries(&focus.windows, &focus.workspaces);
-    let output_context = pointer_output_context(&pointer, &focus.outputs);
+    let output_context = focus
+        .wayland_ingress
+        .as_deref()
+        .and_then(|ingress| pointer_output_context(&pointer, &ingress.output_snapshots));
     let visible_surfaces = focus.stacking.ordered_surfaces(
         visible_windows
             .iter()
@@ -191,15 +195,15 @@ fn visible_window_geometries(
 
 fn pointer_output_context(
     pointer: &GlobalPointerPosition,
-    outputs: &Query<OutputRuntime>,
+    outputs: &OutputSnapshotState,
 ) -> Option<(OutputId, f64, f64)> {
-    outputs.iter().find_map(|output| {
-        let left = f64::from(output.placement.x);
-        let top = f64::from(output.placement.y);
-        let right = left + f64::from(output.properties.width.max(1));
-        let bottom = top + f64::from(output.properties.height.max(1));
+    outputs.outputs.iter().find_map(|output| {
+        let left = f64::from(output.x);
+        let top = f64::from(output.y);
+        let right = left + f64::from(output.width.max(1));
+        let bottom = top + f64::from(output.height.max(1));
         (pointer.x >= left && pointer.x < right && pointer.y >= top && pointer.y < bottom)
-            .then(|| (output.id(), pointer.x - left, pointer.y - top))
+            .then(|| (output.output_id, pointer.x - left, pointer.y - top))
     })
 }
 
@@ -216,9 +220,9 @@ fn pointer_in_geometry(pointer_x: f64, pointer_y: f64, geometry: &SurfaceGeometr
 
 #[cfg(test)]
 mod tests {
+    use nekoland_config::resources::CompositorConfig;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
-    use nekoland_config::resources::CompositorConfig;
     use nekoland_ecs::bundles::WindowBundle;
     use nekoland_ecs::components::{SurfaceGeometry, WindowLayout, WlSurfaceHandle};
     use nekoland_ecs::events::PointerButton;

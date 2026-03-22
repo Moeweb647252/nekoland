@@ -4,7 +4,7 @@ use bevy_ecs::prelude::{Res, ResMut, Resource};
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
     CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, OutputOverlayState,
-    RenderItemInstance, RenderSceneRole,
+    RenderItemInstance, RenderSceneRole, ShellRenderInput,
 };
 
 /// Render-local bookkeeping for overlay-owned compositor-scene entries from the previous frame.
@@ -15,11 +15,16 @@ pub struct OutputOverlaySceneSyncState {
 
 /// Synchronizes user-controlled output overlays into the formal compositor scene provider state.
 pub fn sync_output_overlay_scene_state_system(
+    shell_render_input: Option<Res<'_, ShellRenderInput>>,
     overlay_state: Option<Res<'_, OutputOverlayState>>,
     mut compositor_scene: ResMut<'_, CompositorSceneState>,
     mut sync_state: ResMut<'_, OutputOverlaySceneSyncState>,
 ) {
     let mut current_entries = BTreeMap::<OutputId, BTreeSet<CompositorSceneEntryId>>::new();
+    let overlay_state = shell_render_input
+        .as_deref()
+        .map(|input| &input.output_overlays)
+        .or(overlay_state.as_deref());
 
     if let Some(overlay_state) = overlay_state {
         for (output_id, overlays) in &overlay_state.outputs {

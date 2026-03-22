@@ -9,7 +9,8 @@ pub mod traits;
 pub mod virtual_output;
 pub mod winit;
 
-pub use manager::BackendStatus;
-pub use nekoland_ecs::resources::BackendOutputRegistry;
-pub use plugin::BackendPlugin;
+pub use manager::{BackendStatus, SharedBackendManager};
+pub use plugin::{
+    BackendPlugin, BackendWaylandSubAppPlugin, extract_backend_wayland_subapp_inputs,
+};
 pub use winit::backend::WinitWindowState;

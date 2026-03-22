@@ -5,11 +5,10 @@ use nekoland_core::schedules::InputSchedule;
 use nekoland_ecs::events::{GestureSwipe, KeyPress, PointerButton, PointerMotion};
 use nekoland_ecs::resources::{
     FocusedOutputState, GlobalPointerPosition, KeyboardFocusState, ModifierState,
-    PendingBackendInputEvents, PendingExternalCommandRequests, PendingOutputControls,
+    PendingExternalCommandRequests, PendingInputEvents, PendingOutputControls,
     PendingWindowControls, PendingWorkspaceControls, PhysicalPointerPosition, PointerDelta,
     PressedKeys, ViewportPointerPanState,
 };
-use nekoland_protocol::resources::PendingInputEvents;
 
 use crate::{gestures, keybindings, keyboard, pointer, seat_manager, touch};
 
@@ -27,7 +26,6 @@ impl NekolandPlugin for InputPlugin {
             .init_resource::<KeyboardFocusState>()
             .init_resource::<ModifierState>()
             .init_resource::<PressedKeys>()
-            .init_resource::<PendingBackendInputEvents>()
             .init_resource::<PendingExternalCommandRequests>()
             .init_resource::<PendingInputEvents>()
             .init_resource::<PendingOutputControls>()
@@ -68,13 +66,14 @@ mod tests {
     use bevy_ecs::message::MessageReader;
     use bevy_ecs::prelude::{ResMut, Resource};
     use bevy_ecs::schedule::IntoScheduleConfigs;
+    use nekoland_config::resources::CompositorConfig;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::InputSchedule;
-    use nekoland_config::resources::CompositorConfig;
     use nekoland_ecs::events::{KeyPress, PointerMotion};
     use nekoland_ecs::resources::{
-        BackendInputAction, BackendInputEvent, CompositorClock, GlobalPointerPosition,
-        ModifierState, PendingBackendInputEvents, PressedKeys,
+        BackendInputAction, BackendInputEvent, CompositorClock, FocusedOutputState,
+        GlobalPointerPosition, ModifierState, OutputGeometrySnapshot, OutputSnapshotState,
+        PressedKeys, WaylandIngress,
     };
     use nekoland_protocol::resources::PendingInputEvents;
 
@@ -94,26 +93,30 @@ mod tests {
         let mut app = NekolandApp::new("input-test");
         app.insert_resource(CompositorClock::default())
             .insert_resource(CompositorConfig::default())
+            .insert_resource(WaylandIngress {
+                platform_input_events:
+                    nekoland_ecs::resources::PendingPlatformInputEvents::from_items(vec![
+                        BackendInputEvent {
+                            device: "winit".to_owned(),
+                            action: BackendInputAction::Key { keycode: 133, pressed: true },
+                        },
+                        BackendInputEvent {
+                            device: "winit".to_owned(),
+                            action: BackendInputAction::Key { keycode: 36, pressed: true },
+                        },
+                        BackendInputEvent {
+                            device: "winit".to_owned(),
+                            action: BackendInputAction::PointerMoved { x: 320.5, y: 128.0 },
+                        },
+                    ]),
+                ..WaylandIngress::default()
+            })
             .add_plugin(InputPlugin);
 
         app.inner_mut().init_resource::<InputAudit>().add_systems(
             InputSchedule,
             capture_input_messages.after(seat_manager::seat_management_system),
         );
-        app.inner_mut().insert_resource(PendingBackendInputEvents::from_items(vec![
-            BackendInputEvent {
-                device: "winit".to_owned(),
-                action: BackendInputAction::Key { keycode: 133, pressed: true },
-            },
-            BackendInputEvent {
-                device: "winit".to_owned(),
-                action: BackendInputAction::Key { keycode: 36, pressed: true },
-            },
-            BackendInputEvent {
-                device: "winit".to_owned(),
-                action: BackendInputAction::PointerMoved { x: 320.5, y: 128.0 },
-            },
-        ]));
 
         app.inner_mut().world_mut().run_schedule(InputSchedule);
 
@@ -133,10 +136,6 @@ mod tests {
         let Some(pending_input_events) = world.get_resource::<PendingInputEvents>() else {
             panic!("pending input events should be initialized");
         };
-        let Some(pending_backend_input_events) = world.get_resource::<PendingBackendInputEvents>()
-        else {
-            panic!("backend input queue should be initialized");
-        };
 
         assert_eq!(audit.key_events, vec![(133, true), (36, true)]);
         assert_eq!(audit.pointer_events, vec![(320.5, 128.0)]);
@@ -151,9 +150,36 @@ mod tests {
                 .iter()
                 .any(|event| event.detail.contains("moved to (320.5, 128.0)"))
         );
-        assert!(
-            pending_backend_input_events.is_empty(),
-            "backend input queue should be fully drained by the input systems"
+    }
+
+    #[test]
+    fn focused_output_tracking_uses_wayland_ingress_output_snapshots() {
+        let mut app = NekolandApp::new("input-output-snapshot-sync-test");
+        app.insert_resource(CompositorClock::default())
+            .insert_resource(CompositorConfig::default())
+            .insert_resource(WaylandIngress {
+                output_snapshots: OutputSnapshotState {
+                    outputs: vec![OutputGeometrySnapshot {
+                        output_id: nekoland_ecs::components::OutputId(7),
+                        name: "DP-1".to_owned(),
+                        x: 10,
+                        y: 20,
+                        width: 1920,
+                        height: 1080,
+                        scale: 2,
+                        refresh_millihz: 60_000,
+                    }],
+                },
+                ..WaylandIngress::default()
+            })
+            .insert_resource(GlobalPointerPosition { x: 500.0, y: 500.0 })
+            .add_plugin(InputPlugin);
+
+        app.inner_mut().world_mut().run_schedule(InputSchedule);
+
+        assert_eq!(
+            app.inner().world().resource::<FocusedOutputState>().id,
+            Some(nekoland_ecs::components::OutputId(7))
         );
     }
 

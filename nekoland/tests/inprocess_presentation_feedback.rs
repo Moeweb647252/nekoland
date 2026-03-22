@@ -7,11 +7,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use nekoland::build_app;
-use nekoland_backend::BackendStatus;
 use nekoland_core::app::RunLoopSettings;
+use nekoland_ecs::resources::WaylandFeedback;
 use nekoland_ipc::commands::{OutputCommand, OutputSnapshot, QueryCommand, WorkspaceCommand};
 use nekoland_ipc::{IpcCommand, IpcReply, IpcRequest, IpcServerState, send_request_to_path};
-use nekoland_protocol::ProtocolServerState;
 use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};
@@ -203,11 +202,7 @@ fn inactive_workspace_surfaces_delay_presentation_feedback_until_reactivated() {
     });
 
     let socket_path = {
-        let world = app.inner().world();
-        let Some(server_state) = world.get_resource::<ProtocolServerState>() else {
-            panic!("protocol server state should be available immediately after build");
-        };
-
+        let server_state = common::protocol_server_state(&app);
         match (&server_state.socket_name, &server_state.startup_error) {
             (Some(socket_name), _) => runtime_dir.path.join(socket_name),
             (None, Some(error)) if error.contains("Operation not permitted") => {
@@ -261,8 +256,10 @@ fn inactive_workspace_surfaces_delay_presentation_feedback_until_reactivated() {
     let backend_description = app
         .inner()
         .world()
-        .get_resource::<BackendStatus>()
-        .and_then(|status| status.primary_display().map(|backend| backend.description.clone()))
+        .get_resource::<WaylandFeedback>()
+        .and_then(|feedback| {
+            feedback.platform_backends.primary_display().map(|backend| backend.description.clone())
+        })
         .unwrap_or_default();
     if backend_description.contains("timer fallback") {
         eprintln!(

@@ -1,15 +1,13 @@
-use bevy_ecs::entity::Entity;
 use nekoland_config::resources::CompositorConfig;
 use serde::{Deserialize, Serialize};
 
 use nekoland_core::error::NekolandError;
 use nekoland_core::prelude::AppMetadata;
-use nekoland_ecs::components::{OutputDevice, OutputId, OutputProperties, SurfaceGeometry};
+use nekoland_ecs::components::{OutputDevice, OutputId, OutputProperties};
 use nekoland_ecs::resources::{
-    CompletedScreenshotFrames, CompositorClock, GlobalPointerPosition, OutputDamageRegions,
+    CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock, GlobalPointerPosition,
     PendingBackendInputEvents, PendingProtocolInputEvents, PendingScreenshotRequests,
-    RenderMaterialFrameState, RenderPassGraph, RenderPlan, RenderProcessPlan,
-    VirtualOutputCaptureState,
+    RenderSurfaceSnapshot, VirtualOutputCaptureState,
 };
 use nekoland_protocol::{
     ProtocolDmabufSupport, ProtocolSurfaceRegistry, resources::PendingOutputPresentationEvents,
@@ -100,29 +98,11 @@ pub struct BackendOutputId {
 /// ECS-side output snapshot exposed to backend runtimes through constrained contexts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputSnapshot {
-    pub entity: Entity,
     pub output_id: OutputId,
     pub backend_id: Option<BackendId>,
     pub backend_output_id: Option<BackendOutputId>,
     pub device: OutputDevice,
     pub properties: OutputProperties,
-}
-
-/// Minimal render-surface snapshot exposed to backends during present.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderSurfaceRole {
-    Window,
-    Popup,
-    Layer,
-    Unknown,
-}
-
-/// Present-time surface metadata reconstructed from ECS and protocol state.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RenderSurfaceSnapshot {
-    pub geometry: SurfaceGeometry,
-    pub role: RenderSurfaceRole,
-    pub target_output: Option<OutputId>,
 }
 
 /// Constrained extract context that keeps backend runtimes ECS-native without handing them an
@@ -152,15 +132,11 @@ pub struct BackendPresentCtx<'a> {
     pub config: Option<&'a CompositorConfig>,
     pub clock: Option<&'a CompositorClock>,
     pub pointer: Option<&'a GlobalPointerPosition>,
-    pub output_damage_regions: &'a OutputDamageRegions,
     pub outputs: &'a [OutputSnapshot],
-    pub materials: &'a RenderMaterialFrameState,
-    pub render_graph: &'a RenderPassGraph,
-    pub render_plan: &'a RenderPlan,
-    pub process_plan: &'a RenderProcessPlan,
+    pub compiled_frames: &'a CompiledOutputFrames,
     pub pending_screenshot_requests: &'a mut PendingScreenshotRequests,
     pub completed_screenshots: &'a mut CompletedScreenshotFrames,
-    pub surfaces: &'a std::collections::HashMap<u64, RenderSurfaceSnapshot>,
+    pub surfaces: &'a std::collections::BTreeMap<u64, RenderSurfaceSnapshot>,
     pub surface_registry: Option<&'a ProtocolSurfaceRegistry>,
     pub virtual_output_capture: Option<&'a mut VirtualOutputCaptureState>,
 }
