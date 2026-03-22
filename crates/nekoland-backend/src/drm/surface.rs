@@ -24,7 +24,7 @@ use crate::common::cursor::SoftwareCursorCache;
 use crate::common::gles_executor::{
     CommonGlesRenderElement, GlesExecutionState, execute_output_graph,
     final_output_texture_element, prepare_output_graph_process_shaders,
-    prepare_output_graph_targets, prepare_output_surface_imports,
+    prepare_output_graph_targets, prepare_output_material_bindings, prepare_output_surface_imports,
 };
 use crate::traits::OutputSnapshot;
 
@@ -171,6 +171,7 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
             output,
             &compiled_output.execution_plan,
             compiled_output.target_allocation.as_ref(),
+            compiled_output.gpu_prep.as_ref(),
         ) {
             tracing::warn!(
                 connector = %connector_info.name,
@@ -179,6 +180,12 @@ pub(crate) fn render_drm_outputs(ctx: DrmPresentCtx<'_>) {
             );
             continue;
         }
+        prepare_output_material_bindings(
+            &mut render_state.execution,
+            output.output_id,
+            &compiled_frames.prepared_gpu,
+            compiled_output.gpu_prep.as_ref(),
+        );
         if let Err(error) = prepare_output_surface_imports(
             renderer,
             &mut render_state.execution,

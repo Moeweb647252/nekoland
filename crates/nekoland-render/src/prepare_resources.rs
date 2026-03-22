@@ -6,9 +6,10 @@ use nekoland_ecs::resources::{
     CursorRenderSource, OutputPreparedGpuResources, OutputPreparedSceneResources,
     OutputTargetAllocationPlan, PlatformSurfaceImportStrategy, PlatformSurfaceSnapshotState,
     PreparedBackdropSceneItem, PreparedGpuResources, PreparedMaterialBinding,
-    PreparedMaterialBindingKey, PreparedNamedCursorSceneItem, PreparedRenderTargetResource,
-    PreparedSceneItem, PreparedSceneResources, PreparedSolidRectSceneItem,
-    PreparedSurfaceCursorSceneItem, PreparedSurfaceImport, PreparedSurfaceImportStrategy,
+    PreparedMaterialBindingCacheKey, PreparedMaterialBindingKey, PreparedNamedCursorSceneItem,
+    PreparedRenderTargetCacheKey, PreparedRenderTargetResource, PreparedSceneItem,
+    PreparedSceneResources, PreparedSolidRectSceneItem, PreparedSurfaceCursorSceneItem,
+    PreparedSurfaceImport, PreparedSurfaceImportCacheKey, PreparedSurfaceImportStrategy,
     PreparedSurfaceSceneItem, RenderMaterialFrameState, RenderPassGraph, RenderPlan,
     RenderProcessPlan, RenderTargetAllocationPlan, RenderTargetAllocationSpec, ShellRenderInput,
     SurfaceBufferAttachmentSnapshot, SurfaceBufferAttachmentState, SurfaceTextureBridgePlan,
@@ -223,6 +224,11 @@ pub fn build_prepared_gpu_resources_system(
                     surface_id: *surface_id,
                     descriptor: descriptor.clone(),
                     strategy: prepared_surface_import_strategy(descriptor.import_strategy),
+                    cache_key: PreparedSurfaceImportCacheKey {
+                        surface_id: *surface_id,
+                        content_version: descriptor.content_version,
+                        strategy: prepared_surface_import_strategy(descriptor.import_strategy),
+                    },
                 },
             )
         })
@@ -261,6 +267,13 @@ pub fn build_prepared_gpu_resources_system(
                                     kind: spec.kind.clone(),
                                     width: spec.width,
                                     height: spec.height,
+                                    cache_key: PreparedRenderTargetCacheKey {
+                                        output_id,
+                                        target_id: *target_id,
+                                        kind: spec.kind.clone(),
+                                        width: spec.width,
+                                        height: spec.height,
+                                    },
                                 },
                             )
                         })
@@ -301,6 +314,16 @@ pub fn build_prepared_gpu_resources_system(
                                         .params_id
                                         .and_then(|params_id| materials.params.get(&params_id))
                                         .cloned(),
+                                    cache_key: PreparedMaterialBindingCacheKey {
+                                        output_id,
+                                        binding_key: key,
+                                        descriptor: descriptor.clone(),
+                                        bind_group_layout: descriptor.bind_group_layout.clone(),
+                                        params: request
+                                            .params_id
+                                            .and_then(|params_id| materials.params.get(&params_id))
+                                            .cloned(),
+                                    },
                                 }
                             });
                             Some(key)
@@ -840,11 +863,23 @@ mod tests {
             output.surface_imports.get(&11).map(|prepared_import| prepared_import.strategy),
             Some(nekoland_ecs::resources::PreparedSurfaceImportStrategy::ShmUpload)
         );
+        assert_eq!(
+            output
+                .surface_imports
+                .get(&11)
+                .map(|prepared_import| prepared_import.cache_key.content_version),
+            Some(3)
+        );
         assert!(output.material_bindings.contains(&binding_key));
+        assert_eq!(
+            output.targets.get(&RenderTargetId(2)).map(|target| target.cache_key.output_id),
+            Some(OutputId(7))
+        );
         assert_eq!(
             prepared.surface_imports[&11].strategy,
             nekoland_ecs::resources::PreparedSurfaceImportStrategy::ShmUpload
         );
+        assert_eq!(prepared.surface_imports[&11].cache_key.surface_id, 11);
         assert!(output.process_shaders.contains(&ProcessShaderKey::Material(
             RenderMaterialPipelineKey::post_process(RenderMaterialKind::Blur),
         )));
@@ -855,5 +890,6 @@ mod tests {
                 .and_then(nekoland_ecs::resources::RenderMaterialParamBlock::radius),
             Some(6.0)
         );
+        assert_eq!(prepared.material_bindings[&binding_key].cache_key.output_id, OutputId(7));
     }
 }

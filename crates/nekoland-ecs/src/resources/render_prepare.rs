@@ -84,11 +84,21 @@ pub struct OutputPreparedGpuResources {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreparedRenderTargetCacheKey {
+    pub output_id: OutputId,
+    pub target_id: RenderTargetId,
+    pub kind: RenderTargetKind,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PreparedRenderTargetResource {
     pub target_id: RenderTargetId,
     pub kind: RenderTargetKind,
     pub width: u32,
     pub height: u32,
+    pub cache_key: PreparedRenderTargetCacheKey,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -102,11 +112,19 @@ pub enum PreparedSurfaceImportStrategy {
     Unsupported,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreparedSurfaceImportCacheKey {
+    pub surface_id: u64,
+    pub content_version: u64,
+    pub strategy: PreparedSurfaceImportStrategy,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PreparedSurfaceImport {
     pub surface_id: u64,
     pub descriptor: SurfaceTextureImportDescriptor,
     pub strategy: PreparedSurfaceImportStrategy,
+    pub cache_key: PreparedSurfaceImportCacheKey,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -116,11 +134,21 @@ pub struct PreparedMaterialBindingKey {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PreparedMaterialBindingCacheKey {
+    pub output_id: OutputId,
+    pub binding_key: PreparedMaterialBindingKey,
+    pub descriptor: RenderMaterialDescriptor,
+    pub bind_group_layout: RenderBindGroupLayoutKey,
+    pub params: Option<RenderMaterialParamBlock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PreparedMaterialBinding {
     pub key: PreparedMaterialBindingKey,
     pub descriptor: RenderMaterialDescriptor,
     pub bind_group_layout: RenderBindGroupLayoutKey,
     pub params: Option<RenderMaterialParamBlock>,
+    pub cache_key: PreparedMaterialBindingCacheKey,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

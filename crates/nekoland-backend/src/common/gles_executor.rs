@@ -8,9 +8,10 @@ use nekoland_ecs::resources::{
     CompletedScreenshotFrames, CompositorClock, OutputExecutionPlan, OutputFinalTargetPlan,
     OutputPreparedGpuResources, OutputPreparedSceneResources, OutputProcessPlan,
     OutputTargetAllocationPlan, PendingScreenshotRequests, PlatformSurfaceImportStrategy,
-    PreparedSceneItem, ProcessRect, ProcessShaderKey, ProcessUniformBlock, ProcessUniformValue,
-    RenderColor, RenderMaterialFrameState, RenderPassKind, RenderPassPayload, RenderRect,
-    RenderTargetAllocationSpec, RenderTargetId, ScreenshotFrame,
+    PreparedGpuResources, PreparedMaterialBinding, PreparedMaterialBindingKey,
+    PreparedRenderTargetResource, PreparedSceneItem, ProcessRect, ProcessShaderKey,
+    ProcessUniformBlock, ProcessUniformValue, RenderColor, RenderMaterialFrameState,
+    RenderPassKind, RenderPassPayload, RenderRect, RenderTargetId, ScreenshotFrame,
 };
 use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::Fourcc;
@@ -78,13 +79,14 @@ render_elements! {
 #[derive(Debug, Clone)]
 struct CachedExecutionTarget {
     texture: GlesTexture,
-    size: Size<i32, Physical>,
+    cache_key: nekoland_ecs::resources::PreparedRenderTargetCacheKey,
     backdrop_regions: Vec<Rectangle<i32, Physical>>,
 }
 
 #[derive(Debug, Default)]
 struct OutputExecutionCache {
     targets: BTreeMap<RenderTargetId, CachedExecutionTarget>,
+    material_bindings: BTreeSet<PreparedMaterialBindingKey>,
 }
 
 #[derive(Debug, Default)]
@@ -94,8 +96,12 @@ struct ProcessShaderCache {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CachedSurfaceImport {
-    content_version: u64,
-    strategy: nekoland_ecs::resources::PreparedSurfaceImportStrategy,
+    cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CachedMaterialBinding {
+    cache_key: nekoland_ecs::resources::PreparedMaterialBindingCacheKey,
 }
 
 #[derive(Debug, Default)]
@@ -103,6 +109,7 @@ pub(crate) struct GlesExecutionState {
     outputs: HashMap<OutputId, OutputExecutionCache>,
     process_shaders: ProcessShaderCache,
     surface_imports: BTreeMap<u64, CachedSurfaceImport>,
+    material_bindings: BTreeMap<PreparedMaterialBindingKey, CachedMaterialBinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -543,19 +550,15 @@ fn scene_pass_item_ids_in_presentation_order(
 fn ensure_target<'a>(
     renderer: &mut GlesRenderer,
     cache: &'a mut OutputExecutionCache,
-    target_id: RenderTargetId,
-    allocation: Option<&RenderTargetAllocationSpec>,
-    output_size: Size<i32, Physical>,
+    resource: &PreparedRenderTargetResource,
 ) -> Result<&'a mut CachedExecutionTarget, GlesExecutionError> {
-    let target_size = allocation
-        .map(|allocation| {
-            Size::from((
-                i32::try_from(allocation.width.max(1)).unwrap_or(i32::MAX),
-                i32::try_from(allocation.height.max(1)).unwrap_or(i32::MAX),
-            ))
-        })
-        .unwrap_or(output_size);
-    let recreate = cache.targets.get(&target_id).is_none_or(|target| target.size != target_size);
+    let target_size: Size<i32, Physical> = Size::from((
+        i32::try_from(resource.cache_key.width.max(1)).unwrap_or(i32::MAX),
+        i32::try_from(resource.cache_key.height.max(1)).unwrap_or(i32::MAX),
+    ));
+    let target_id = resource.target_id;
+    let recreate =
+        cache.targets.get(&target_id).is_none_or(|target| target.cache_key != resource.cache_key);
     if recreate {
         let texture = Offscreen::<GlesTexture>::create_buffer(
             renderer,
@@ -564,7 +567,11 @@ fn ensure_target<'a>(
         )?;
         cache.targets.insert(
             target_id,
-            CachedExecutionTarget { texture, size: target_size, backdrop_regions: Vec::new() },
+            CachedExecutionTarget {
+                texture,
+                cache_key: resource.cache_key.clone(),
+                backdrop_regions: Vec::new(),
+            },
         );
     }
 
@@ -607,11 +614,8 @@ pub(crate) fn prepare_output_graph_targets(
     output: &OutputSnapshot,
     execution: &OutputExecutionPlan,
     allocation: Option<&OutputTargetAllocationPlan>,
+    prepared_gpu: Option<&OutputPreparedGpuResources>,
 ) -> Result<(), GlesExecutionError> {
-    let output_size = Size::from((
-        i32::try_from(output.properties.width.max(1)).unwrap_or(i32::MAX),
-        i32::try_from(output.properties.height.max(1)).unwrap_or(i32::MAX),
-    ));
     let output_cache = state.outputs.entry(output.output_id).or_default();
     output_cache.targets.retain(|target_id, _| {
         allocation.is_some_and(|allocation| allocation.targets.contains_key(target_id))
@@ -621,15 +625,67 @@ pub(crate) fn prepare_output_graph_targets(
         target.backdrop_regions.clear();
     }
     for target_id in execution.targets.keys().copied() {
-        let _ = ensure_target(
-            renderer,
-            output_cache,
-            target_id,
-            allocation.and_then(|allocation| allocation.targets.get(&target_id)),
-            output_size,
-        )?;
+        let prepared_target = prepared_gpu
+            .and_then(|prepared_gpu| prepared_gpu.targets.get(&target_id))
+            .cloned()
+            .or_else(|| {
+                allocation.and_then(|allocation| allocation.targets.get(&target_id)).map(|spec| {
+                    PreparedRenderTargetResource {
+                        target_id,
+                        kind: spec.kind.clone(),
+                        width: spec.width,
+                        height: spec.height,
+                        cache_key: nekoland_ecs::resources::PreparedRenderTargetCacheKey {
+                            output_id: output.output_id,
+                            target_id,
+                            kind: spec.kind.clone(),
+                            width: spec.width,
+                            height: spec.height,
+                        },
+                    }
+                })
+            })
+            .unwrap_or_else(|| PreparedRenderTargetResource {
+                target_id,
+                kind: execution.targets[&target_id].clone(),
+                width: output.properties.width.max(1),
+                height: output.properties.height.max(1),
+                cache_key: nekoland_ecs::resources::PreparedRenderTargetCacheKey {
+                    output_id: output.output_id,
+                    target_id,
+                    kind: execution.targets[&target_id].clone(),
+                    width: output.properties.width.max(1),
+                    height: output.properties.height.max(1),
+                },
+            });
+        let _ = ensure_target(renderer, output_cache, &prepared_target)?;
     }
     Ok(())
+}
+
+pub(crate) fn prepare_output_material_bindings(
+    state: &mut GlesExecutionState,
+    output_id: OutputId,
+    prepared_gpu: &PreparedGpuResources,
+    output_prepared_gpu: Option<&OutputPreparedGpuResources>,
+) {
+    let output_cache = state.outputs.entry(output_id).or_default();
+    output_cache.material_bindings =
+        output_prepared_gpu.map(|prepared| prepared.material_bindings.clone()).unwrap_or_default();
+
+    state.material_bindings.retain(|key, _| prepared_gpu.material_bindings.contains_key(key));
+
+    for key in &output_cache.material_bindings {
+        let Some(prepared_binding) = prepared_gpu.material_bindings.get(key) else {
+            continue;
+        };
+        if needs_material_binding_refresh(state.material_bindings.get(key), prepared_binding) {
+            state.material_bindings.insert(
+                *key,
+                CachedMaterialBinding { cache_key: prepared_binding.cache_key.clone() },
+            );
+        }
+    }
 }
 
 pub(crate) fn prepare_output_surface_imports(
@@ -664,13 +720,9 @@ pub(crate) fn prepare_output_surface_imports(
                 source,
             }
         })?;
-        state.surface_imports.insert(
-            surface_id,
-            CachedSurfaceImport {
-                content_version: prepared_import.descriptor.content_version,
-                strategy: prepared_import.strategy,
-            },
-        );
+        state
+            .surface_imports
+            .insert(surface_id, CachedSurfaceImport { cache_key: prepared_import.cache_key });
     }
 
     Ok(())
@@ -823,10 +875,14 @@ fn needs_surface_reimport(
     cached: Option<&CachedSurfaceImport>,
     prepared_import: &nekoland_ecs::resources::PreparedSurfaceImport,
 ) -> bool {
-    cached.is_none_or(|cached| {
-        cached.content_version != prepared_import.descriptor.content_version
-            || cached.strategy != prepared_import.strategy
-    })
+    cached.is_none_or(|cached| cached.cache_key != prepared_import.cache_key)
+}
+
+fn needs_material_binding_refresh(
+    cached: Option<&CachedMaterialBinding>,
+    prepared_binding: &PreparedMaterialBinding,
+) -> bool {
+    cached.is_none_or(|cached| cached.cache_key != prepared_binding.cache_key)
 }
 
 fn execute_backdrop_blur_pass(
@@ -954,14 +1010,21 @@ fn process_rect_to_physical(rect: &ProcessRect, scale: u32) -> Option<Rectangle<
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
+    use nekoland_ecs::components::OutputId;
     use nekoland_ecs::resources::{
-        OutputPreparedGpuResources, OutputPreparedSceneResources, PreparedSceneItem,
-        PreparedSurfaceCursorSceneItem, PreparedSurfaceImport, PreparedSurfaceImportStrategy,
-        PreparedSurfaceSceneItem, RenderItemId, RenderRect, SurfaceTextureImportDescriptor,
+        MaterialParamsId, OutputPreparedGpuResources, OutputPreparedSceneResources,
+        PreparedGpuResources, PreparedMaterialBinding, PreparedMaterialBindingKey,
+        PreparedSceneItem, PreparedSurfaceCursorSceneItem, PreparedSurfaceImport,
+        PreparedSurfaceImportStrategy, PreparedSurfaceSceneItem, RenderBindGroupLayoutKey,
+        RenderItemId, RenderMaterialDescriptor, RenderMaterialId, RenderMaterialKind,
+        RenderMaterialParamBlock, RenderMaterialPipelineKey, RenderMaterialQueueKind,
+        RenderMaterialShaderSource, RenderPipelineStage, RenderRect,
+        SurfaceTextureImportDescriptor,
     };
 
     use super::{
-        CachedSurfaceImport, importable_surface_imports, needs_surface_reimport,
+        CachedMaterialBinding, CachedSurfaceImport, GlesExecutionState, importable_surface_imports,
+        needs_material_binding_refresh, needs_surface_reimport, prepare_output_material_bindings,
         scene_pass_item_ids_in_presentation_order,
     };
 
@@ -1036,6 +1099,11 @@ mod tests {
                             scale: 1,
                         },
                         strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                        cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey {
+                            surface_id: 11,
+                            content_version: 1,
+                            strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                        },
                     },
                 ),
                 (
@@ -1056,6 +1124,11 @@ mod tests {
                             scale: 1,
                         },
                         strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                        cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey {
+                            surface_id: 22,
+                            content_version: 1,
+                            strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                        },
                     },
                 ),
                 (
@@ -1076,6 +1149,11 @@ mod tests {
                             scale: 1,
                         },
                         strategy: PreparedSurfaceImportStrategy::Unsupported,
+                        cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey {
+                            surface_id: 33,
+                            content_version: 1,
+                            strategy: PreparedSurfaceImportStrategy::Unsupported,
+                        },
                     },
                 ),
             ]),
@@ -1125,6 +1203,11 @@ mod tests {
                         scale: 1,
                     },
                     strategy: PreparedSurfaceImportStrategy::ExternalTextureImport,
+                    cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey {
+                        surface_id: 44,
+                        content_version: 1,
+                        strategy: PreparedSurfaceImportStrategy::ExternalTextureImport,
+                    },
                 },
             )]),
             ..Default::default()
@@ -1152,26 +1235,40 @@ mod tests {
                 scale: 1,
             },
             strategy: PreparedSurfaceImportStrategy::ShmUpload,
+            cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey {
+                surface_id: 11,
+                content_version: 7,
+                strategy: PreparedSurfaceImportStrategy::ShmUpload,
+            },
         };
         assert!(needs_surface_reimport(None, &prepared_import));
         assert!(!needs_surface_reimport(
             Some(&CachedSurfaceImport {
-                content_version: 7,
-                strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey {
+                    surface_id: 11,
+                    content_version: 7,
+                    strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                },
             }),
             &prepared_import,
         ));
         assert!(needs_surface_reimport(
             Some(&CachedSurfaceImport {
-                content_version: 6,
-                strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey {
+                    surface_id: 11,
+                    content_version: 6,
+                    strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                },
             }),
             &prepared_import,
         ));
         assert!(needs_surface_reimport(
             Some(&CachedSurfaceImport {
-                content_version: 7,
-                strategy: PreparedSurfaceImportStrategy::Unsupported,
+                cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey {
+                    surface_id: 11,
+                    content_version: 7,
+                    strategy: PreparedSurfaceImportStrategy::Unsupported,
+                },
             }),
             &prepared_import,
         ));
@@ -1184,22 +1281,31 @@ mod tests {
             (
                 11_u64,
                 CachedSurfaceImport {
-                    content_version: 1,
-                    strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                    cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey {
+                        surface_id: 11,
+                        content_version: 1,
+                        strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                    },
                 },
             ),
             (
                 22_u64,
                 CachedSurfaceImport {
-                    content_version: 1,
-                    strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                    cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey {
+                        surface_id: 22,
+                        content_version: 1,
+                        strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                    },
                 },
             ),
             (
                 33_u64,
                 CachedSurfaceImport {
-                    content_version: 2,
-                    strategy: PreparedSurfaceImportStrategy::DmaBufImport,
+                    cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey {
+                        surface_id: 33,
+                        content_version: 2,
+                        strategy: PreparedSurfaceImportStrategy::DmaBufImport,
+                    },
                 },
             ),
         ]);
@@ -1210,5 +1316,147 @@ mod tests {
         assert!(cached.contains_key(&11));
         assert!(!cached.contains_key(&22));
         assert!(cached.contains_key(&33));
+    }
+
+    #[test]
+    fn needs_material_binding_refresh_only_when_descriptor_layout_or_params_change() {
+        let prepared = PreparedMaterialBinding {
+            key: PreparedMaterialBindingKey {
+                material_id: RenderMaterialId(3),
+                params_id: Some(MaterialParamsId(7)),
+            },
+            descriptor: RenderMaterialDescriptor {
+                debug_name: "blur".to_owned(),
+                pipeline_key: RenderMaterialPipelineKey::new(
+                    RenderMaterialKind::Blur,
+                    RenderPipelineStage::PostProcess,
+                ),
+                shader_source: RenderMaterialShaderSource::Blur,
+                bind_group_layout: RenderBindGroupLayoutKey::BlurUniforms,
+                queue_kind: RenderMaterialQueueKind::PostProcess,
+            },
+            bind_group_layout: RenderBindGroupLayoutKey::BlurUniforms,
+            params: Some(RenderMaterialParamBlock::blur(12.0)),
+            cache_key: nekoland_ecs::resources::PreparedMaterialBindingCacheKey {
+                output_id: OutputId(1),
+                binding_key: PreparedMaterialBindingKey {
+                    material_id: RenderMaterialId(3),
+                    params_id: Some(MaterialParamsId(7)),
+                },
+                descriptor: RenderMaterialDescriptor {
+                    debug_name: "blur".to_owned(),
+                    pipeline_key: RenderMaterialPipelineKey::new(
+                        RenderMaterialKind::Blur,
+                        RenderPipelineStage::PostProcess,
+                    ),
+                    shader_source: RenderMaterialShaderSource::Blur,
+                    bind_group_layout: RenderBindGroupLayoutKey::BlurUniforms,
+                    queue_kind: RenderMaterialQueueKind::PostProcess,
+                },
+                bind_group_layout: RenderBindGroupLayoutKey::BlurUniforms,
+                params: Some(RenderMaterialParamBlock::blur(12.0)),
+            },
+        };
+
+        assert!(needs_material_binding_refresh(None, &prepared));
+        assert!(!needs_material_binding_refresh(
+            Some(&CachedMaterialBinding { cache_key: prepared.cache_key.clone() }),
+            &prepared,
+        ));
+        assert!(needs_material_binding_refresh(
+            Some(&CachedMaterialBinding {
+                cache_key: nekoland_ecs::resources::PreparedMaterialBindingCacheKey {
+                    output_id: OutputId(1),
+                    binding_key: prepared.key,
+                    descriptor: prepared.descriptor.clone(),
+                    bind_group_layout: RenderBindGroupLayoutKey::Generic,
+                    params: prepared.params.clone(),
+                },
+            }),
+            &prepared,
+        ));
+        assert!(needs_material_binding_refresh(
+            Some(&CachedMaterialBinding {
+                cache_key: nekoland_ecs::resources::PreparedMaterialBindingCacheKey {
+                    output_id: OutputId(1),
+                    binding_key: prepared.key,
+                    descriptor: prepared.descriptor.clone(),
+                    bind_group_layout: prepared.bind_group_layout.clone(),
+                    params: Some(RenderMaterialParamBlock::blur(6.0)),
+                },
+            }),
+            &prepared,
+        ));
+    }
+
+    #[test]
+    fn prepare_output_material_bindings_tracks_output_local_runtime_cache() {
+        let binding_key = PreparedMaterialBindingKey {
+            material_id: RenderMaterialId(5),
+            params_id: Some(MaterialParamsId(9)),
+        };
+        let prepared_binding = PreparedMaterialBinding {
+            key: binding_key,
+            descriptor: RenderMaterialDescriptor {
+                debug_name: "shadow".to_owned(),
+                pipeline_key: RenderMaterialPipelineKey::new(
+                    RenderMaterialKind::Shadow,
+                    RenderPipelineStage::PostProcess,
+                ),
+                shader_source: RenderMaterialShaderSource::Shadow,
+                bind_group_layout: RenderBindGroupLayoutKey::ShadowUniforms,
+                queue_kind: RenderMaterialQueueKind::PostProcess,
+            },
+            bind_group_layout: RenderBindGroupLayoutKey::ShadowUniforms,
+            params: Some(RenderMaterialParamBlock::shadow(3.0, 1.0, 2.0, [0.0, 0.0, 0.0, 0.5])),
+            cache_key: nekoland_ecs::resources::PreparedMaterialBindingCacheKey {
+                output_id: OutputId(7),
+                binding_key,
+                descriptor: RenderMaterialDescriptor {
+                    debug_name: "shadow".to_owned(),
+                    pipeline_key: RenderMaterialPipelineKey::new(
+                        RenderMaterialKind::Shadow,
+                        RenderPipelineStage::PostProcess,
+                    ),
+                    shader_source: RenderMaterialShaderSource::Shadow,
+                    bind_group_layout: RenderBindGroupLayoutKey::ShadowUniforms,
+                    queue_kind: RenderMaterialQueueKind::PostProcess,
+                },
+                bind_group_layout: RenderBindGroupLayoutKey::ShadowUniforms,
+                params: Some(RenderMaterialParamBlock::shadow(3.0, 1.0, 2.0, [0.0, 0.0, 0.0, 0.5])),
+            },
+        };
+        let prepared_gpu = PreparedGpuResources {
+            material_bindings: BTreeMap::from([(binding_key, prepared_binding.clone())]),
+            ..Default::default()
+        };
+        let output_prepared_gpu = OutputPreparedGpuResources {
+            material_bindings: BTreeSet::from([binding_key]),
+            ..Default::default()
+        };
+        let mut state = GlesExecutionState::default();
+
+        prepare_output_material_bindings(
+            &mut state,
+            OutputId(7),
+            &prepared_gpu,
+            Some(&output_prepared_gpu),
+        );
+
+        assert!(state.outputs[&OutputId(7)].material_bindings.contains(&binding_key));
+        assert_eq!(
+            state
+                .material_bindings
+                .get(&binding_key)
+                .map(|cached| cached.cache_key.bind_group_layout.clone()),
+            Some(RenderBindGroupLayoutKey::ShadowUniforms),
+        );
+        assert_eq!(
+            state
+                .material_bindings
+                .get(&binding_key)
+                .and_then(|cached| cached.cache_key.params.clone()),
+            prepared_binding.cache_key.params,
+        );
     }
 }
