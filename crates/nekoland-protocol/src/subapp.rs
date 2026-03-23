@@ -19,7 +19,8 @@ use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule, ProtocolSchedule};
 use nekoland_ecs::resources::{
     ClipboardSelectionState, CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock,
-    CursorImageSnapshot, DragAndDropState, FramePacingState, KeyboardFocusState,
+    CursorImageSnapshot, DragAndDropState, FramePacingState, GlobalPointerPosition,
+    KeyboardFocusState,
     OutputPresentationState, OutputSnapshotState, PendingLayerRequests, PendingOutputControls,
     PendingOutputEvents, PendingOutputOverlayControls, PendingOutputServerRequests,
     PendingPlatformInputEvents, PendingPopupServerRequests, PendingProtocolInputEvents,
@@ -152,8 +153,8 @@ pub fn extract_wayland_subapp_inputs(main_world: &mut World, wayland_world: &mut
     clone_resource_into::<WaylandCommands>(main_world, wayland_world);
     clone_resource_into::<CompiledOutputFrames>(main_world, wayland_world);
     clone_default_resource_into::<CompositorClock>(main_world, wayland_world);
+    clone_resource_into::<GlobalPointerPosition>(main_world, wayland_world);
     let shell_render_input = main_world.resource::<ShellRenderInput>().clone();
-    wayland_world.insert_resource(shell_render_input.pointer.clone());
     wayland_world.insert_resource(shell_render_input.surface_presentation.clone());
     clone_resource_into::<KeyboardFocusState>(main_world, wayland_world);
     clone_resource_into::<CompositorConfig>(main_world, wayland_world);
@@ -177,6 +178,7 @@ pub fn sync_wayland_subapp_back(
     match schedule {
         Some(schedule) if schedule == ExtractSchedule.intern() => {
             clone_resource_into::<CompositorClock>(wayland_world, main_world);
+            clear_main_world_protocol_input_command_boundary(main_world);
         }
         Some(schedule) if schedule == ProtocolSchedule.intern() => {
             clone_resource_into::<WaylandIngress>(wayland_world, main_world);
@@ -190,6 +192,13 @@ pub fn sync_wayland_subapp_back(
             clone_resource_into::<WaylandFeedback>(wayland_world, main_world);
         }
     }
+}
+
+fn clear_main_world_protocol_input_command_boundary(main_world: &mut World) {
+    let Some(mut wayland_commands) = main_world.get_resource_mut::<WaylandCommands>() else {
+        return;
+    };
+    wayland_commands.pending_protocol_input_events.clear();
 }
 
 fn clone_resource_into<R>(source: &World, dest: &mut World)
@@ -342,31 +351,33 @@ fn sync_wayland_ingress_boundary_system(
     xwayland_server: Res<'_, XWaylandServerState>,
     dmabuf_support: Option<Res<'_, ProtocolDmabufSupport>>,
     cursor_image: Res<'_, CursorImageSnapshot>,
-    platform_input_events: Res<'_, PendingPlatformInputEvents>,
+    mut platform_input_events: ResMut<'_, PendingPlatformInputEvents>,
     output_snapshots: Res<'_, OutputSnapshotState>,
     surface_snapshots: Res<'_, PlatformSurfaceSnapshotState>,
-    pending_xdg_requests: Res<'_, PendingXdgRequests>,
-    pending_layer_requests: Res<'_, PendingLayerRequests>,
-    pending_x11_requests: Res<'_, PendingX11Requests>,
-    pending_window_controls: Res<'_, PendingWindowControls>,
-    pending_output_events: Res<'_, PendingOutputEvents>,
+    mut pending_xdg_requests: ResMut<'_, PendingXdgRequests>,
+    mut pending_layer_requests: ResMut<'_, PendingLayerRequests>,
+    mut pending_x11_requests: ResMut<'_, PendingX11Requests>,
+    mut pending_window_controls: ResMut<'_, PendingWindowControls>,
+    mut pending_output_events: ResMut<'_, PendingOutputEvents>,
     mut wayland_ingress: ResMut<'_, WaylandIngress>,
 ) {
     let output_materialization = wayland_ingress.output_materialization.clone();
     let primary_output = wayland_ingress.primary_output.clone();
+    let mut pending_window_controls_boundary = PendingWindowControls::default();
+    pending_window_controls_boundary.replace(pending_window_controls.take());
     *wayland_ingress = WaylandIngress {
         protocol_server: protocol_server.clone(),
         xwayland_server: xwayland_server.clone(),
         primary_output,
         cursor_image: cursor_image.clone(),
-        platform_input_events: platform_input_events.clone(),
+        platform_input_events: PendingPlatformInputEvents::from_items(platform_input_events.take()),
         output_snapshots: output_snapshots.clone(),
         surface_snapshots: surface_snapshots.clone(),
-        pending_xdg_requests: pending_xdg_requests.clone(),
-        pending_layer_requests: pending_layer_requests.clone(),
-        pending_x11_requests: pending_x11_requests.clone(),
-        pending_window_controls: pending_window_controls.clone(),
-        pending_output_events: pending_output_events.clone(),
+        pending_xdg_requests: PendingXdgRequests::from_items(pending_xdg_requests.take()),
+        pending_layer_requests: PendingLayerRequests::from_items(pending_layer_requests.take()),
+        pending_x11_requests: PendingX11Requests::from_items(pending_x11_requests.take()),
+        pending_window_controls: pending_window_controls_boundary,
+        pending_output_events: PendingOutputEvents::from_items(pending_output_events.take()),
         output_materialization,
         import_capabilities: nekoland_ecs::resources::PlatformImportCapabilities {
             dmabuf_importable: dmabuf_support.as_deref().is_some_and(|support| support.importable),
@@ -431,6 +442,7 @@ mod tests {
     use bevy_app::SubApp;
     use bevy_ecs::hierarchy::ChildOf;
     use bevy_ecs::schedule::ScheduleLabel;
+    use bevy_ecs::system::{IntoSystem, System};
     use bevy_ecs::world::World;
     use nekoland_core::plugin::NekolandAppPlugin;
     use nekoland_core::schedules::{
@@ -447,7 +459,8 @@ mod tests {
         OutputGeometrySnapshot, OutputPresentationState, OutputPresentationTimeline,
         OutputSnapshotState, PendingLayerRequests, PendingOutputControls, PendingOutputEvents,
         PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
-        PendingProtocolInputEvents, PendingScreenshotRequests, PendingWindowControls,
+        PendingPlatformInputEvents, PendingProtocolInputEvents, PendingScreenshotRequests,
+        PendingWindowControls,
         PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests, PlatformSurfaceKind,
         PlatformSurfaceSnapshot, PlatformSurfaceSnapshotState, PresentAuditElement,
         PresentAuditElementKind, PresentAuditState, PrimarySelection, PrimarySelectionState,
@@ -461,18 +474,31 @@ mod tests {
 
     use super::{
         WaylandSubAppPlugin, configure_wayland_subapp, extract_workspace_visibility_snapshot,
-        sync_wayland_subapp_back,
+        sync_wayland_ingress_boundary_system, sync_wayland_subapp_back,
     };
 
     #[test]
     fn wayland_subapp_extracts_inputs_from_main_world() {
         let mut main_world = World::default();
+        main_world.insert_resource(GlobalPointerPosition { x: 48.0, y: 64.0 });
         main_world.insert_resource(WaylandCommands {
             pending_output_controls: PendingOutputControls::default(),
+            pending_protocol_input_events: PendingProtocolInputEvents::from_items(vec![
+                BackendInputEvent {
+                    device: "test-seat".to_owned(),
+                    action: BackendInputAction::PointerButton {
+                        button_code: 0x110,
+                        pressed: true,
+                    },
+                },
+            ]),
             ..Default::default()
         });
         main_world.insert_resource(CompiledOutputFrames::default());
-        main_world.insert_resource(ShellRenderInput::default());
+        main_world.insert_resource(ShellRenderInput {
+            pointer: GlobalPointerPosition { x: 1.0, y: 2.0 },
+            ..ShellRenderInput::default()
+        });
         main_world.init_resource::<CompletedScreenshotFrames>();
 
         let mut sub_app = SubApp::new();
@@ -482,8 +508,18 @@ mod tests {
         sub_app.extract(&mut main_world);
         assert_eq!(
             sub_app.world().get_resource::<GlobalPointerPosition>(),
-            Some(&GlobalPointerPosition::default()),
-            "wayland extract should mirror the shell boundary pointer resource",
+            Some(&GlobalPointerPosition { x: 48.0, y: 64.0 }),
+            "wayland extract should mirror the latest main-world pointer resource",
+        );
+        assert_eq!(
+            sub_app
+                .world()
+                .resource::<WaylandCommands>()
+                .pending_protocol_input_events
+                .as_slice()
+                .len(),
+            1,
+            "wayland extract should forward one-shot protocol input events into the subapp",
         );
         assert_eq!(
             sub_app.world().get_resource::<SurfacePresentationSnapshot>(),
@@ -633,6 +669,75 @@ mod tests {
         assert_eq!(ingress.pending_xdg_requests, pending_xdg_requests);
         assert!(main_world.get_resource::<PendingWindowControls>().is_none());
         assert!(main_world.get_resource::<PendingOutputEvents>().is_none());
+    }
+
+    #[test]
+    fn ingress_boundary_drains_protocol_queues_after_sync() {
+        let mut world = World::default();
+        let mut pending_xdg_requests = PendingXdgRequests::default();
+        pending_xdg_requests.push(nekoland_ecs::resources::WindowLifecycleRequest {
+            surface_id: 11,
+            action: nekoland_ecs::resources::WindowLifecycleAction::InteractiveMove {
+                seat_name: "seat-0".to_owned(),
+                serial: 9,
+            },
+        });
+
+        world.insert_resource(ProtocolServerState::default());
+        world.insert_resource(XWaylandServerState::default());
+        world.insert_resource(CursorImageSnapshot::default());
+        world.insert_resource(PendingPlatformInputEvents::default());
+        world.insert_resource(OutputSnapshotState::default());
+        world.insert_resource(PlatformSurfaceSnapshotState::default());
+        world.insert_resource(pending_xdg_requests.clone());
+        world.insert_resource(PendingLayerRequests::default());
+        world.insert_resource(PendingX11Requests::default());
+        world.insert_resource(PendingWindowControls::default());
+        world.insert_resource(PendingOutputEvents::default());
+        world.insert_resource(WaylandIngress::default());
+
+        let mut system = IntoSystem::into_system(sync_wayland_ingress_boundary_system);
+        system.initialize(&mut world);
+        let _ = system.run((), &mut world);
+
+        assert_eq!(world.resource::<WaylandIngress>().pending_xdg_requests, pending_xdg_requests);
+        assert!(world.resource::<PendingXdgRequests>().is_empty());
+
+        let _ = system.run((), &mut world);
+
+        assert!(world.resource::<WaylandIngress>().pending_xdg_requests.is_empty());
+    }
+
+    #[test]
+    fn extract_schedule_sync_back_drains_main_world_protocol_input_commands() {
+        let mut main_world = World::default();
+        let mut wayland_world = World::default();
+        main_world.insert_resource(WaylandCommands {
+            pending_protocol_input_events: PendingProtocolInputEvents::from_items(vec![
+                BackendInputEvent {
+                    device: "test-seat".to_owned(),
+                    action: BackendInputAction::PointerButton {
+                        button_code: 0x110,
+                        pressed: true,
+                    },
+                },
+            ]),
+            ..WaylandCommands::default()
+        });
+
+        sync_wayland_subapp_back(
+            &mut main_world,
+            &mut wayland_world,
+            Some(ExtractSchedule.intern()),
+        );
+
+        assert!(
+            main_world
+                .resource::<WaylandCommands>()
+                .pending_protocol_input_events
+                .is_empty(),
+            "extract schedule sync-back should clear one-shot protocol input commands after handoff",
+        );
     }
 
     #[test]
