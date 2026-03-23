@@ -79,7 +79,7 @@ pub(crate) struct ProtocolClientState {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct RecentPointerPress {
+pub(crate) struct SyntheticPointerGrab {
     pub(crate) serial: u32,
     pub(crate) surface_id: u64,
 }
@@ -152,7 +152,7 @@ pub(crate) struct ProtocolRuntimeState {
     pub(crate) event_queue: std::collections::VecDeque<crate::ProtocolEvent>,
     pub(crate) next_surface_id: u64,
     pub(crate) presentation_sequence: u64,
-    pub(crate) recent_pointer_press: Option<RecentPointerPress>,
+    pub(crate) synthetic_pointer_grab: Option<SyntheticPointerGrab>,
     pub(crate) selection_persistence: super::selection::SelectionPersistenceState,
     pub(crate) xwayland_state: super::xwayland::XWaylandRuntimeState,
     pub(crate) cursor_state: ProtocolCursorState,
@@ -686,7 +686,7 @@ impl ProtocolRuntimeState {
             event_queue: std::collections::VecDeque::new(),
             next_surface_id: 1,
             presentation_sequence: 0,
-            recent_pointer_press: None,
+            synthetic_pointer_grab: None,
             selection_persistence: super::selection::SelectionPersistenceState::default(),
             xwayland_state: super::xwayland::XWaylandRuntimeState::default(),
             cursor_state: ProtocolCursorState::default(),
@@ -769,15 +769,12 @@ impl ProtocolRuntimeState {
             return false;
         };
 
-        let raw_serial = u32::from(serial);
-
         if !pointer.has_grab(serial) {
-            if recent_pointer_press_matches(
-                self.recent_pointer_press,
-                raw_serial,
-                expected_focus_surface_id,
-                kind,
-            ) {
+            if self.synthetic_pointer_grab.is_some_and(|grab| {
+                grab.serial == u32::from(serial)
+                    && (grab.surface_id == expected_focus_surface_id
+                        || matches!(kind, super::surface::InteractiveRequestKind::PopupGrab))
+            }) {
                 return true;
             }
             tracing::warn!(
@@ -785,7 +782,7 @@ impl ProtocolRuntimeState {
                 seat_name = seat.name(),
                 seat_resource = %seat_name(wl_seat),
                 expected_focus_surface_id,
-                serial = raw_serial,
+                serial = u32::from(serial),
                 "rejecting interactive xdg request without a matching implicit pointer grab"
             );
             return false;
@@ -797,7 +794,7 @@ impl ProtocolRuntimeState {
                 seat_name = seat.name(),
                 seat_resource = %seat_name(wl_seat),
                 expected_focus_surface_id,
-                serial = raw_serial,
+                serial = u32::from(serial),
                 "rejecting interactive xdg request because the pointer grab has no start data"
             );
             return false;
@@ -808,7 +805,7 @@ impl ProtocolRuntimeState {
                 seat_name = seat.name(),
                 seat_resource = %seat_name(wl_seat),
                 expected_focus_surface_id,
-                serial = raw_serial,
+                serial = u32::from(serial),
                 "rejecting interactive xdg request because the implicit grab did not start on a surface"
             );
             return false;
@@ -816,12 +813,11 @@ impl ProtocolRuntimeState {
 
         let focused_surface_id = self.surface_id(&focused_surface);
         if focused_surface_id != expected_focus_surface_id {
-            if recent_pointer_press_matches(
-                self.recent_pointer_press,
-                raw_serial,
-                expected_focus_surface_id,
-                kind,
-            ) {
+            if self.synthetic_pointer_grab.is_some_and(|grab| {
+                grab.serial == u32::from(serial)
+                    && (grab.surface_id == expected_focus_surface_id
+                        || matches!(kind, super::surface::InteractiveRequestKind::PopupGrab))
+            }) {
                 return true;
             }
             tracing::warn!(
@@ -830,7 +826,7 @@ impl ProtocolRuntimeState {
                 seat_resource = %seat_name(wl_seat),
                 expected_focus_surface_id,
                 focused_surface_id,
-                serial = raw_serial,
+                serial = u32::from(serial),
                 "rejecting interactive xdg request because the implicit grab belongs to a different surface"
             );
             return false;
@@ -1308,11 +1304,10 @@ impl SmithayProtocolRuntime {
         };
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
         if pressed {
-            self.state.recent_pointer_press =
-                focus_surface_id.map(|surface_id| RecentPointerPress {
-                    serial: u32::from(serial),
-                    surface_id,
-                });
+            self.state.synthetic_pointer_grab = focus_surface_id
+                .map(|surface_id| SyntheticPointerGrab { serial: u32::from(serial), surface_id });
+        } else {
+            self.state.synthetic_pointer_grab = None;
         }
 
         pointer.button(
@@ -1783,19 +1778,6 @@ pub(crate) fn wl_output_resource_key(
     format!("wl_output@{:?}", output.id())
 }
 
-fn recent_pointer_press_matches(
-    recent_pointer_press: Option<RecentPointerPress>,
-    serial: u32,
-    expected_focus_surface_id: u64,
-    kind: super::surface::InteractiveRequestKind,
-) -> bool {
-    recent_pointer_press.is_some_and(|press| {
-        press.serial == serial
-            && (press.surface_id == expected_focus_surface_id
-                || matches!(kind, super::surface::InteractiveRequestKind::PopupGrab))
-    })
-}
-
 pub(crate) fn remember_protocol_error(
     slot: &mut Option<String>,
     error: impl std::fmt::Display,
@@ -1806,31 +1788,4 @@ pub(crate) fn remember_protocol_error(
         tracing::warn!(error = %error, "{message}");
     }
     *slot = Some(error);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::recent_pointer_press_matches;
-    use super::RecentPointerPress;
-    use crate::plugin::surface::InteractiveRequestKind;
-
-    #[test]
-    fn popup_grab_accepts_recent_pointer_press_on_same_serial() {
-        assert!(recent_pointer_press_matches(
-            Some(RecentPointerPress { serial: 35, surface_id: 3 }),
-            35,
-            1,
-            InteractiveRequestKind::PopupGrab,
-        ));
-    }
-
-    #[test]
-    fn non_popup_interactive_request_requires_exact_surface_match() {
-        assert!(!recent_pointer_press_matches(
-            Some(RecentPointerPress { serial: 35, surface_id: 3 }),
-            35,
-            1,
-            InteractiveRequestKind::Move,
-        ));
-    }
 }
