@@ -14,7 +14,7 @@ use crate::resources::{
     XWaylandServerState,
 };
 
-/// Platform-to-shell mailbox carrying normalized platform/runtime snapshots.
+/// Platform-to-shell boundary resource carrying normalized platform/runtime snapshots.
 #[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct WaylandIngress {
     pub protocol_server: ProtocolServerState,
@@ -33,7 +33,7 @@ pub struct WaylandIngress {
     pub import_capabilities: PlatformImportCapabilities,
 }
 
-/// Shell-to-render mailbox carrying shell-owned presentation snapshots.
+/// Shell-to-render boundary resource carrying shell-owned presentation snapshots.
 #[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ShellRenderInput {
     pub pointer: GlobalPointerPosition,
@@ -43,7 +43,7 @@ pub struct ShellRenderInput {
     pub pending_screenshot_requests: PendingScreenshotRequests,
 }
 
-/// Shell-to-platform command mailbox carrying protocol/backend-side requests.
+/// Shell-to-platform command boundary carrying protocol/backend-side requests.
 #[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct WaylandCommands {
     pub pending_output_controls: PendingOutputControls,
@@ -54,7 +54,7 @@ pub struct WaylandCommands {
     pub pending_protocol_input_events: PendingProtocolInputEvents,
 }
 
-/// Platform-to-shell/render feedback mailbox carrying present-time and server-side results.
+/// Platform-to-shell/render feedback boundary carrying present-time and server-side results.
 #[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct WaylandFeedback {
     pub platform_backends: PlatformBackendState,

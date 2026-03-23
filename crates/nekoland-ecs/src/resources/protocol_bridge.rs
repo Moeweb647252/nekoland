@@ -116,7 +116,7 @@ pub struct WindowLifecycleRequest {
 
 impl ProtocolEvent for WindowLifecycleRequest {}
 
-/// Platform-to-shell mailbox for XDG lifecycle events.
+/// Platform-to-shell queue for XDG lifecycle events.
 pub type PendingXdgRequests = ProtocolEventQueue<WindowLifecycleRequest>;
 
 /// Human-readable input log entry used by tests and diagnostics.

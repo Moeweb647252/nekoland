@@ -1,7 +1,7 @@
 //! ECS resources that carry frame-to-frame compositor state, pending requests, and queryable
 //! runtime snapshots.
 
-pub mod app_mailbox;
+pub mod app_boundary;
 pub mod backend_input;
 pub mod clock;
 pub mod command_history;
@@ -46,7 +46,7 @@ pub mod work_area;
 pub mod workspace_control;
 pub mod workspace_tiling;
 
-pub use app_mailbox::*;
+pub use app_boundary::*;
 pub use backend_input::*;
 pub use clock::*;
 pub use command_history::*;

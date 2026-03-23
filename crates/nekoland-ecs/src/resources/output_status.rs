@@ -90,7 +90,7 @@ pub struct PlatformOutputPropertyUpdate {
     pub properties: OutputProperties,
 }
 
-/// Stable output materialization plan exported through platform mailboxes.
+/// Stable output materialization plan exported through platform boundary resources.
 #[derive(Debug, Clone, Default, Resource, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlatformOutputMaterializationPlan {
     pub lifecycle: Vec<PlatformOutputLifecycleRecord>,

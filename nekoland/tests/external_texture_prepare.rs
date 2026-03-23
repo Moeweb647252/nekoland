@@ -23,7 +23,7 @@ const TEST_SURFACE_ID: u64 = 4242;
 const TEST_OUTPUT_ID: OutputId = OutputId(7);
 
 #[test]
-fn render_subapp_prepares_external_texture_imports_from_mailboxes() {
+fn render_subapp_prepares_external_texture_imports_from_boundaries() {
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-external-texture-prepare");
     let config_path = common::write_default_config_with_xwayland_disabled(
         &runtime_dir.path,

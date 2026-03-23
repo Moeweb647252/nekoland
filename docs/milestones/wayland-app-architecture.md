@@ -14,27 +14,27 @@ Build a dedicated `wayland` subapp that owns protocol runtime, backend runtime, 
 - [x] `wayland` owns protocol objects, backend handles, and output/present runtime state
 - [x] `wayland` does not own shell policy, workspace state, focus rules, or layout decisions
 - [x] `wayland` does not consume cross-world `Entity` values from `main app` or `render`
-- [x] Cross-app communication uses explicit mailbox resources only
+- [x] Cross-app communication uses explicit boundary resources only
 - [x] `wayland` may import compiled frame outputs for presentation, but render-world internals stay
       out of the subapp
 - [x] The subapp is split into explicit phases such as:
       `poll/extract -> normalize/apply -> present -> feedback -> cleanup`
 
-## Cross-App Mailboxes
+## Cross-App Boundaries
 
 - [x] Read external events and normalized platform snapshots into `WaylandIngress`
 - [x] Accept shell-directed protocol/backend actions through `WaylandCommands`
 - [x] Accept render outputs through `CompiledOutputFrames`
 - [x] Emit present-time results through `WaylandFeedback`
-- [x] Keep the mailbox contract stable enough that `main app` and `render subapp` do not need
+- [x] Keep the boundary contract stable enough that `main app` and `render subapp` do not need
       direct access to protocol/backend internals
-- [x] Feed main-world compatibility resources from `WaylandIngress` / `WaylandFeedback` mailbox
-      mirrors instead of direct per-resource sync-back where mailbox data already exists
-- [x] Route backend-owned output reconciliation queues through explicit platform mailboxes instead
+- [x] Feed main-world compatibility resources from `WaylandIngress` / `WaylandFeedback` boundary
+      mirrors instead of direct per-resource sync-back where boundary data already exists
+- [x] Route backend-owned output reconciliation queues through explicit platform boundary resources instead
       of direct `wayland subapp -> main` queue clones
 - [x] Let main-world output reconciliation consume `WaylandIngress.output_materialization`
       directly instead of hydrating separate compatibility queue resources first
-- [x] Export backend output discovery/materialization through an explicit normalized plan mailbox
+- [x] Export backend output discovery/materialization through an explicit normalized plan boundary
       instead of syncing raw backend extract queues into main-world reconciliation
 
 ## Work Items
@@ -48,7 +48,7 @@ Build a dedicated `wayland` subapp that owns protocol runtime, backend runtime, 
       before main-world protocol/backend schedules run
 - [x] Keep `WaylandCommands` one-way by consuming them inside the subapp without syncing the same
       pending command queues back into `main app`
-- [x] Keep `WaylandIngress` and `WaylandFeedback` mailbox production inside the subapp boundary
+- [x] Keep `WaylandIngress` and `WaylandFeedback` boundary production inside the subapp boundary
 - [x] Keep protocol/backend runtime non-send handles seeded directly inside the subapp boundary
 - [x] Keep protocol event-queue state and dmabuf support subapp-local instead of mirroring them
       back through main-world resources each frame
@@ -57,8 +57,8 @@ Build a dedicated `wayland` subapp that owns protocol runtime, backend runtime, 
 - [x] Stop bootstrap-seeding backend/protocol raw input and output queues from `main app`; keep
       them owned entirely by the subapp runtime
 - [x] Stop seeding screenshot/readback request queues from `main app` into the subapp; keep the
-      normal request lifecycle in subapp runtime plus mailbox feedback
-- [x] Normalize backend raw input into a distinct platform-input mailbox inside the subapp
+      normal request lifecycle in subapp runtime plus feedback boundary
+- [x] Normalize backend raw input into a distinct platform-input queue inside the subapp
       instead of aliasing the same queue type across the boundary
 - [x] Keep protocol clock advance inside the subapp extract phase
 - [x] Keep `CompositorClock` subapp-owned after bootstrap instead of re-seeding it from
@@ -68,26 +68,27 @@ Build a dedicated `wayland` subapp that owns protocol runtime, backend runtime, 
 - [x] Stop initializing main-world present-audit / virtual-output / presentation-timeline
       compatibility resources where `WaylandFeedback` already provides the normal path
 - [x] Stop pre-initializing `WaylandIngress` / `WaylandFeedback` in `main app`; let the subapp
-      own mailbox production and insertion
-- [x] Stop pre-initializing backend-owned wayland mailboxes in `main app`; let subapp sync-back
+      own boundary production and insertion
+- [x] Stop pre-initializing backend-owned wayland boundary resources in `main app`; let subapp
+      sync-back
       insert them when needed
 - [x] Move backend runtime bootstrap into the subapp build path so backend install and calloop
       registration no longer depend on main-app ownership
 - [x] Move protocol runtime bootstrap into the subapp build path so Smithay server creation and
       calloop registration no longer depend on main-app ownership
 - [x] Remove redundant ProtocolPlugin main-world initialization for resources already owned by
-      shell/render mailbox paths
+      shell/render boundary paths
 - [x] Stop pre-initializing protocol-originated output-event compatibility queues in `main app`;
       let `WaylandIngress` insertion own that path
 - [x] Stop pre-initializing protocol server/xwayland compatibility state in `main app`; let
       `WaylandIngress` / `WaylandFeedback` insertion own that path
 - [x] Remove main-world bootstrap seeding of `ProtocolServerState` / `XWaylandServerState`;
-      read protocol runtime state from the `wayland` subapp or mailboxes instead
+      read protocol runtime state from the `wayland` subapp or boundary resources instead
 - [x] Stop seeding protocol-owned server, output, surface, and request snapshot resources from
       `main app` into the subapp; keep those runtime snapshots subapp-owned and mirror them back
-      only through mailbox sync-back
+      only through boundary sync-back
 - [x] Stop rehydrating main-world `ProtocolServerState` / `XWaylandServerState` every protocol
-      tick from `WaylandIngress`; keep the mailbox as the canonical runtime path and leave only
+      tick from `WaylandIngress`; keep the boundary as the canonical runtime path and leave only
       bootstrap compat where tests still need it
 - [x] Keep protocol keyboard repeat/layout sync and dmabuf support application inside the subapp
 - [x] Register protocol/backend calloop source installers through the subapp-owned registry
@@ -138,7 +139,7 @@ Build a dedicated `wayland` subapp that owns protocol runtime, backend runtime, 
       `PrimaryOutputState` / `SurfacePresentationSnapshot` reads as fallback-only
 - [x] Stop falling back to main-world `PrimaryOutputState` / `SurfacePresentationSnapshot` in
       backend present input extraction; use `WaylandIngress` / `ShellRenderInput` or
-      mailbox-default state instead
+      boundary-default state instead
 - [x] Keep backend-specific present logic behind a platform-facing interface
 - [x] Generate config-driven output enable/disable/configure requests from backend-owned output
       snapshots inside the subapp before main-world ECS reconciliation
@@ -152,7 +153,7 @@ Build a dedicated `wayland` subapp that owns protocol runtime, backend runtime, 
 
 - [x] Keep raw keyboard, pointer, touch, gesture, and seat state in the `wayland` subapp
 - [x] Normalize raw input into shell-facing events before handing them to `main app`
-- [x] Let input decoding consume platform-input mailboxes directly instead of synchronizing a
+- [x] Let input decoding consume platform-input queues directly instead of synchronizing a
       separate main-world raw platform-input queue first
 - [x] Leave high-level policy, bindings, and semantic actions to `main app`
 - [x] Ensure pointer focus/input routing can consume exported output geometry snapshots without
@@ -179,7 +180,7 @@ Build a dedicated `wayland` subapp that owns protocol runtime, backend runtime, 
 - [x] Let `wayland subapp` extract present-time pointer and surface-presentation state from
       `ShellRenderInput` instead of directly cloning separate main-world compatibility resources
 - [x] Stop falling back to direct main-world pointer / surface-presentation resource clones during
-      wayland/backend extract; use `ShellRenderInput` or mailbox-default state instead
+      wayland/backend extract; use `ShellRenderInput` or boundary-default state instead
 - [x] Route shell startup/command launch environment checks through `WaylandIngress` instead of
       direct protocol server resources
 - [x] Feed protocol-originated window-control requests through `WaylandIngress` instead of direct
@@ -195,7 +196,7 @@ Build a dedicated `wayland` subapp that owns protocol runtime, backend runtime, 
       `ShellPlugin`; keep them optional and instantiate local queues only where deferred handling
       or tests still need them
 - [x] Hydrate legacy protocol/cursor/surface compatibility resources from `WaylandIngress`
-      instead of direct subapp-to-main per-resource sync-back where the mailbox already carries
+      instead of direct subapp-to-main per-resource sync-back where the boundary already carries
       the same data
 - [x] Accept shell-driven actions such as configure, focus handoff, seat state changes, popup
       grabs, output control requests, and protocol replies through `WaylandCommands`
@@ -231,7 +232,7 @@ Build a dedicated `wayland` subapp that owns protocol runtime, backend runtime, 
 - [x] Mirror clipboard, primary-selection, and drag-and-drop state through `WaylandFeedback`
       instead of direct subapp-to-main per-resource sync-back
 - [x] Stop hydrating main-world clipboard, primary-selection, and drag-and-drop compatibility
-      resources from `WaylandFeedback`; keep selection state canonical in the feedback mailbox
+      resources from `WaylandFeedback`; keep selection state canonical in the feedback boundary
 - [x] Keep `WaylandFeedback` as the canonical source for presentation/audit/completed-screenshot/
       capture queries instead of hydrating extra main-world compatibility resources
 - [x] Let tooling/query paths prefer `WaylandFeedback` for present-time and selection snapshots
@@ -239,7 +240,7 @@ Build a dedicated `wayland` subapp that owns protocol runtime, backend runtime, 
 - [x] Make IPC selection snapshots feedback-only instead of falling back to main-world
       clipboard/primary-selection compatibility resources
 - [x] Stop depending on main-world `BackendOutputRegistry` in startup/tooling query paths; use
-      normalized output snapshots and platform-facing mailbox data instead
+      normalized output snapshots and platform-facing boundary data instead
 
 ### 9. Render Interop Contract
 
@@ -265,7 +266,7 @@ Build a dedicated `wayland` subapp that owns protocol runtime, backend runtime, 
 
 ### 11. Verification
 
-- [x] Add tests for `wayland` mailbox extraction and command application
+- [x] Add tests for `wayland` boundary extraction and command application
 - [x] Add tests for surface/output snapshot normalization
 - [x] Add tests for present/feedback flow using compiled frame inputs
 - [x] Add at least one smoke path that exercises:

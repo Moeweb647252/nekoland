@@ -198,7 +198,7 @@ fn real_drm_backend_imports_dmabuf_surface_end_to_end() {
     let shell_render_input = app.inner().world().resource::<ShellRenderInput>();
     assert!(
         shell_render_input.surface_presentation.surfaces.contains_key(&surface_id),
-        "shell render mailbox should track the imported dma-buf surface presentation"
+        "shell render boundary should track the imported dma-buf surface presentation"
     );
 }
 

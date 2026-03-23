@@ -4,7 +4,7 @@ This roadmap starts after `docs/TODO.md` and the milestone architecture docs are
 
 ## Goal
 
-Turn the finished mailbox/subapp migration into a better-validated and more production-ready
+Turn the finished boundary/subapp migration into a better-validated and more production-ready
 runtime without reopening the architectural boundary work that has already landed.
 
 ## Work Items

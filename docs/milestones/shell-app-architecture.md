@@ -6,24 +6,24 @@ Parent milestone: [Main App / Shell Authority](../TODO.md)
 
 Build `main app` as the authoritative shell world of the compositor. The shell app should own
 focus, workspace, layout, window/layer/popup policy, and semantic input handling while depending
-on explicit mailbox resources instead of direct protocol/backend/render coupling.
+on explicit boundary resources instead of direct protocol/backend/render coupling.
 
 ## Architecture Constraints
 
 - [x] `main app` owns shell policy and authoritative shell state
 - [x] `main app` does not own protocol objects, backend handles, or present runtime state
 - [x] `main app` does not own render-world GPU resources or render executor internals
-- [x] Cross-app communication uses explicit mailbox resources only
+- [x] Cross-app communication uses explicit boundary resources only
 - [x] Shell-facing state that must cross app boundaries uses stable ids and immutable frame
       snapshots instead of cross-world `Entity` values
 
-## Cross-App Mailboxes
+## Cross-App Boundaries
 
-- [x] Consume `WaylandIngress` as the only platform-to-shell input mailbox
-- [x] Produce `ShellRenderInput` as the only shell-to-render mailbox
-- [x] Produce `WaylandCommands` as the only shell-to-platform command mailbox
+- [x] Consume `WaylandIngress` as the only platform-to-shell input boundary
+- [x] Produce `ShellRenderInput` as the only shell-to-render boundary
+- [x] Produce `WaylandCommands` as the only shell-to-platform command boundary
 - [x] Consume `WaylandFeedback` where shell state needs present-time results or protocol feedback
-- [x] Keep mailbox ownership explicit so `main app`, `wayland`, and `render` do not reach into
+- [x] Keep boundary ownership explicit so `main app`, `wayland`, and `render` do not reach into
       each other's private world state
 
 ## Work Items
@@ -92,7 +92,7 @@ on explicit mailbox resources instead of direct protocol/backend/render coupling
 ### 8. Verification
 
 - [x] Add tests that verify shell policy still works when platform and render are treated as
-      mailbox-driven boundaries
+      boundary-driven boundaries
 - [x] Add tests for stable-id usage across shell/platform/render boundaries
 - [x] Add at least one smoke path that exercises:
       `wayland poll -> main shell update -> render update -> wayland present`

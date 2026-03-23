@@ -33,11 +33,11 @@ subapp should consume shell-owned frame snapshots, maintain its own render world
 
 ### 2. Cross-App Inputs And Outputs
 
-- [x] Define `ShellRenderInput` as the only shell-to-render mailbox
+- [x] Define `ShellRenderInput` as the only shell-to-render boundary
 - [x] Define stable render-facing ids for outputs, surfaces, windows, layers, cursors, and scene
       items where needed
-- [x] Define `CompiledOutputFrame` / `CompiledOutputFrames` as the only render-to-wayland mailbox
-- [x] Ensure readback requests/results and damage metadata travel through explicit mailbox
+- [x] Define `CompiledOutputFrame` / `CompiledOutputFrames` as the only render-to-wayland boundary
+- [x] Ensure readback requests/results and damage metadata travel through explicit boundary
       resources instead of hidden side channels
 
 ### 3. Render Scene Extraction
@@ -49,8 +49,8 @@ subapp should consume shell-owned frame snapshots, maintain its own render world
 - [x] Keep extraction deterministic and frame-local
 - [x] Separate extraction of shell scene data from GPU resource preparation
 - [x] Feed shell-owned pointer, cursor, surface-presentation, and overlay snapshots through the
-      `ShellRenderInput` mailbox instead of direct per-resource render extract clones
-- [x] Feed pending screenshot/readback requests through the `ShellRenderInput` mailbox instead of
+      `ShellRenderInput` boundary instead of direct per-resource render extract clones
+- [x] Feed pending screenshot/readback requests through the `ShellRenderInput` boundary instead of
       a direct render extract clone
 - [x] Let cursor-scene emission and readback phase planning consume `ShellRenderInput` directly
       instead of rehydrating separate render-world cursor/readback compatibility resources first
@@ -64,31 +64,31 @@ subapp should consume shell-owned frame snapshots, maintain its own render world
       `ShellRenderInput.surface_presentation` directly instead of depending on a separate
       render-world surface-presentation compatibility resource first
 - [x] Stop passing `SurfacePresentationSnapshot` as a normal runtime input into desktop scene
-      contribution assembly; keep that path mailbox-first on
+      contribution assembly; keep that path boundary-first on
       `ShellRenderInput.surface_presentation`
 - [x] Stop passing `SurfacePresentationSnapshot` as a normal runtime input into surface-process
-      snapshot extraction; keep that path mailbox-first on
+      snapshot extraction; keep that path boundary-first on
       `ShellRenderInput.surface_presentation`
 - [x] Stop passing `SurfacePresentationSnapshot` as a normal runtime input into legacy desktop
-      surface ordering and composition helpers; keep those paths mailbox-first on
+      surface ordering and composition helpers; keep those paths boundary-first on
       `ShellRenderInput.surface_presentation`
 - [x] Stop passing `SurfacePresentationSnapshot` as a normal runtime input into frame-callback and
-      surface-bridge preparation; keep those paths mailbox-first on
+      surface-bridge preparation; keep those paths boundary-first on
       `ShellRenderInput.surface_presentation`
 - [x] Stop passing `SurfacePresentationSnapshot` as a normal runtime input into damage tracking;
-      keep that path mailbox-first on `ShellRenderInput.surface_presentation`
-- [x] Stop default-initializing and mailbox-rehydrating `SurfacePresentationSnapshot` inside the
+      keep that path boundary-first on `ShellRenderInput.surface_presentation`
+- [x] Stop default-initializing and boundary-rehydrating `SurfacePresentationSnapshot` inside the
       `render subapp` now that the normal path consumes `ShellRenderInput.surface_presentation`
       directly
 - [x] Prefer platform-owned output and surface snapshots from `WaylandIngress` during render
-      extract instead of direct main-world compatibility resources where the mailbox already
+      extract instead of direct main-world compatibility resources where the boundary already
       carries the same data
-- [x] Consume mailbox-owned output, surface, and presentation snapshots for render-view,
+- [x] Consume boundary-owned output, surface, and presentation snapshots for render-view,
       desktop-order, content-version, attachment, and scene-process extract paths
 - [x] Prefer `WaylandIngress.output_snapshots` even in the main-world legacy scene-process path
       instead of local output snapshot compatibility resources first
 - [x] Stop initializing main-world render compat copies of platform feedback/surface snapshots
-      where normal render extract already consumes mailbox-owned data
+      where normal render extract already consumes boundary-owned data
 - [x] Remove direct `WaylandFeedback -> render` extraction where render only needed debug-side
       screenshot bookkeeping
 - [x] Build simple render-world snapshots such as output views, surface content versions, and
@@ -149,7 +149,7 @@ subapp should consume shell-owned frame snapshots, maintain its own render world
 - [x] Carry per-output surface import strategies through compiled GPU preparation state so
       present-time executors can reject unsupported imports from prepared data
 - [x] Export platform import capabilities through `WaylandIngress` and gate prepared dma-buf
-      import strategy on mailbox-owned capability snapshots
+      import strategy on boundary-owned capability snapshots
 - [x] Move SHM/dma-buf import-strategy selection behind wayland-owned platform snapshots instead
       of deriving it inside render prepare
 - [x] Promote prepared surface-import descriptors into actual runtime import caches keyed by
@@ -208,7 +208,7 @@ subapp should consume shell-owned frame snapshots, maintain its own render world
 
 ### 11. Verification
 
-- [x] Add tests for cross-app mailbox extraction and frame compilation
+- [x] Add tests for cross-app boundary extraction and frame compilation
 - [x] Add tests for typed material registration and specialization
 - [x] Add tests for per-output graph compilation and readback
 - [x] Add at least one smoke path that exercises `main -> render -> wayland present`

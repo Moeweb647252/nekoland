@@ -41,7 +41,7 @@ pub type PlatformInputAction = BackendInputAction;
 /// Shell-facing alias for one normalized platform input record.
 pub type PlatformInputEvent = BackendInputEvent;
 
-/// Shell-facing alias for the input mailbox exported through `WaylandIngress`.
+/// Shell-facing alias for the input queue exported through `WaylandIngress`.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PendingPlatformInputEventsTag;

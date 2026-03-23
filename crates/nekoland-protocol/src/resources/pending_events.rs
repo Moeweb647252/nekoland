@@ -109,7 +109,7 @@ pub struct WindowLifecycleRequest {
     pub action: WindowLifecycleAction,
 }
 
-/// Protocol-to-shell mailbox for XDG lifecycle events.
+/// Protocol-to-shell queue for XDG lifecycle events.
 pub type PendingXdgRequests = ProtocolEventQueue<WindowLifecycleRequest>;
 
 /// Human-readable input log entry used by tests and diagnostics.

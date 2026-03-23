@@ -60,7 +60,7 @@ pub fn build_default_app() -> NekolandApp {
 }
 
 fn extract_combined_wayland_subapp_inputs(main_world: &mut World, wayland_world: &mut World) {
-    // Pull shell-owned command mailboxes and normalized ECS snapshots into the platform runtime.
+    // Pull shell-owned command boundaries and normalized ECS snapshots into the platform runtime.
     extract_wayland_subapp_inputs(main_world, wayland_world);
     extract_backend_wayland_subapp_inputs(main_world, wayland_world);
 }
@@ -70,7 +70,7 @@ fn sync_combined_wayland_subapp_back(
     wayland_world: &mut World,
     schedule: Option<InternedScheduleLabel>,
 ) {
-    // Push only platform-owned mailbox outputs back into `main app`; backend-specific sync-back
+    // Push only platform-owned boundary resources back into `main app`; backend-specific sync-back
     // should happen by enriching `WaylandIngress` / `WaylandFeedback`, not by special-case clones.
     sync_wayland_subapp_back(main_world, wayland_world, schedule);
 

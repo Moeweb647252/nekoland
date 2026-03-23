@@ -1,6 +1,6 @@
 # Real DRM Import Verification
 
-This document describes the hardware-backed validation path for non-SHM imports after the mailbox
+This document describes the hardware-backed validation path for non-SHM imports after the boundary
 and subapp migration.
 
 ## Scope
@@ -56,7 +56,7 @@ When a backend advertises non-SHM import capability but runtime import/present s
 backend now records structured diagnostics in:
 
 - [PlatformImportDiagnosticsState](/home/misaka/Code/nekoland/crates/nekoland-ecs/src/resources/platform_backend.rs)
-- [WaylandFeedback.import_diagnostics](/home/misaka/Code/nekoland/crates/nekoland-ecs/src/resources/app_mailbox.rs)
+- [WaylandFeedback.import_diagnostics](/home/misaka/Code/nekoland/crates/nekoland-ecs/src/resources/app_boundary.rs)
 
 Each diagnostic includes:
 
