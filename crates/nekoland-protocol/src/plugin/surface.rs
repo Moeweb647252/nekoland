@@ -600,17 +600,6 @@ impl smithay::wayland::shell::xdg::XdgShellHandler for super::server::ProtocolRu
             );
             return;
         };
-        let parent_surface_id = self.surface_id(&parent_surface);
-        if !self.validate_interactive_request(
-            &seat,
-            serial,
-            parent_surface_id,
-            InteractiveRequestKind::PopupGrab,
-        ) {
-            surface.send_popup_done();
-            return;
-        }
-
         let popup_kind = smithay::desktop::PopupKind::from(surface.clone());
         let root_surface = match smithay::desktop::find_popup_root_surface(&popup_kind) {
             Ok(root_surface) => root_surface,
@@ -625,6 +614,24 @@ impl smithay::wayland::shell::xdg::XdgShellHandler for super::server::ProtocolRu
                 return;
             }
         };
+        let parent_surface_id = self.surface_id(&parent_surface);
+        let root_surface_id = self.surface_id(&root_surface);
+        if !self.validate_interactive_request(
+            &seat,
+            serial,
+            root_surface_id,
+            InteractiveRequestKind::PopupGrab,
+        ) {
+            tracing::trace!(
+                surface_id,
+                parent_surface_id,
+                root_surface_id,
+                serial = u32::from(serial),
+                "popup grab validation rejected the popup stack root for this request"
+            );
+            surface.send_popup_done();
+            return;
+        }
 
         let popup_grab = match self.popup_manager.grab_popup::<Self>(
             root_surface,

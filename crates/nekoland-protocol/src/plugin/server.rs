@@ -769,12 +769,15 @@ impl ProtocolRuntimeState {
             return false;
         };
 
+        let raw_serial = u32::from(serial);
+
         if !pointer.has_grab(serial) {
-            if self.synthetic_pointer_grab.is_some_and(|grab| {
-                grab.serial == u32::from(serial)
-                    && (grab.surface_id == expected_focus_surface_id
-                        || matches!(kind, super::surface::InteractiveRequestKind::PopupGrab))
-            }) {
+            if synthetic_pointer_grab_matches(
+                self.synthetic_pointer_grab,
+                raw_serial,
+                expected_focus_surface_id,
+                kind,
+            ) {
                 return true;
             }
             tracing::warn!(
@@ -782,7 +785,7 @@ impl ProtocolRuntimeState {
                 seat_name = seat.name(),
                 seat_resource = %seat_name(wl_seat),
                 expected_focus_surface_id,
-                serial = u32::from(serial),
+                serial = raw_serial,
                 "rejecting interactive xdg request without a matching implicit pointer grab"
             );
             return false;
@@ -794,7 +797,7 @@ impl ProtocolRuntimeState {
                 seat_name = seat.name(),
                 seat_resource = %seat_name(wl_seat),
                 expected_focus_surface_id,
-                serial = u32::from(serial),
+                serial = raw_serial,
                 "rejecting interactive xdg request because the pointer grab has no start data"
             );
             return false;
@@ -805,7 +808,7 @@ impl ProtocolRuntimeState {
                 seat_name = seat.name(),
                 seat_resource = %seat_name(wl_seat),
                 expected_focus_surface_id,
-                serial = u32::from(serial),
+                serial = raw_serial,
                 "rejecting interactive xdg request because the implicit grab did not start on a surface"
             );
             return false;
@@ -813,11 +816,12 @@ impl ProtocolRuntimeState {
 
         let focused_surface_id = self.surface_id(&focused_surface);
         if focused_surface_id != expected_focus_surface_id {
-            if self.synthetic_pointer_grab.is_some_and(|grab| {
-                grab.serial == u32::from(serial)
-                    && (grab.surface_id == expected_focus_surface_id
-                        || matches!(kind, super::surface::InteractiveRequestKind::PopupGrab))
-            }) {
+            if synthetic_pointer_grab_matches(
+                self.synthetic_pointer_grab,
+                raw_serial,
+                expected_focus_surface_id,
+                kind,
+            ) {
                 return true;
             }
             tracing::warn!(
@@ -826,7 +830,7 @@ impl ProtocolRuntimeState {
                 seat_resource = %seat_name(wl_seat),
                 expected_focus_surface_id,
                 focused_surface_id,
-                serial = u32::from(serial),
+                serial = raw_serial,
                 "rejecting interactive xdg request because the implicit grab belongs to a different surface"
             );
             return false;
@@ -1306,8 +1310,6 @@ impl SmithayProtocolRuntime {
         if pressed {
             self.state.synthetic_pointer_grab = focus_surface_id
                 .map(|surface_id| SyntheticPointerGrab { serial: u32::from(serial), surface_id });
-        } else {
-            self.state.synthetic_pointer_grab = None;
         }
 
         pointer.button(
@@ -1778,6 +1780,19 @@ pub(crate) fn wl_output_resource_key(
     format!("wl_output@{:?}", output.id())
 }
 
+fn synthetic_pointer_grab_matches(
+    synthetic_pointer_grab: Option<SyntheticPointerGrab>,
+    serial: u32,
+    expected_focus_surface_id: u64,
+    kind: super::surface::InteractiveRequestKind,
+) -> bool {
+    synthetic_pointer_grab.is_some_and(|grab| {
+        grab.serial == serial
+            && (grab.surface_id == expected_focus_surface_id
+                || matches!(kind, super::surface::InteractiveRequestKind::PopupGrab))
+    })
+}
+
 pub(crate) fn remember_protocol_error(
     slot: &mut Option<String>,
     error: impl std::fmt::Display,
@@ -1788,4 +1803,31 @@ pub(crate) fn remember_protocol_error(
         tracing::warn!(error = %error, "{message}");
     }
     *slot = Some(error);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::synthetic_pointer_grab_matches;
+    use super::SyntheticPointerGrab;
+    use crate::plugin::surface::InteractiveRequestKind;
+
+    #[test]
+    fn popup_grab_accepts_matching_press_serial_even_after_pointer_grab_ends() {
+        assert!(synthetic_pointer_grab_matches(
+            Some(SyntheticPointerGrab { serial: 35, surface_id: 3 }),
+            35,
+            1,
+            InteractiveRequestKind::PopupGrab,
+        ));
+    }
+
+    #[test]
+    fn non_popup_interactive_request_still_requires_exact_surface_match() {
+        assert!(!synthetic_pointer_grab_matches(
+            Some(SyntheticPointerGrab { serial: 35, surface_id: 3 }),
+            35,
+            1,
+            InteractiveRequestKind::Move,
+        ));
+    }
 }

@@ -244,6 +244,7 @@ fn extract_workspace_visibility_snapshot(main_world: &mut World, wayland_world: 
         bevy_ecs::query::Allow<bevy_ecs::entity_disabling::Disabled>,
     )>();
     let mut popups = main_world.query_filtered::<(
+        bevy_ecs::entity::Entity,
         nekoland_ecs::views::PopupRuntime,
         bevy_ecs::prelude::Has<bevy_ecs::entity_disabling::Disabled>,
     ), (
@@ -283,21 +284,37 @@ fn extract_workspace_visibility_snapshot(main_world: &mut World, wayland_world: 
         })
         .map(|(entity, _, _)| entity)
         .collect::<std::collections::BTreeSet<_>>();
-    let visible_popups = popups
+    let visible_popup_entities = popups
         .iter(main_world)
-        .filter(|(popup, disabled)| {
+        .filter(|(_, popup, disabled)| {
             !disabled
                 && surface_presentation.surfaces.get(&popup.surface_id()).is_some_and(|state| {
                     state.visible
                         && state.role == nekoland_ecs::resources::SurfacePresentationRole::Popup
                 })
         })
-        .map(|(popup, _)| popup.surface_id())
+        .map(|(entity, _, _)| entity)
+        .collect::<std::collections::BTreeSet<_>>();
+    let visible_parent_entities = visible_toplevel_entities
+        .iter()
+        .copied()
+        .chain(visible_popup_entities.iter().copied())
+        .collect::<std::collections::BTreeSet<_>>();
+    let visible_popups = popups
+        .iter(main_world)
+        .filter(|(_, popup, disabled)| {
+            !disabled
+                && surface_presentation.surfaces.get(&popup.surface_id()).is_some_and(|state| {
+                    state.visible
+                        && state.role == nekoland_ecs::resources::SurfacePresentationRole::Popup
+                })
+        })
+        .map(|(_, popup, _)| popup.surface_id())
         .collect::<std::collections::BTreeSet<_>>();
     let hidden_parent_popups = popups
         .iter(main_world)
-        .filter(|(popup, _)| !visible_toplevel_entities.contains(&popup.child_of.parent()))
-        .map(|(popup, _)| popup.surface_id())
+        .filter(|(_, popup, _)| !visible_parent_entities.contains(&popup.child_of.parent()))
+        .map(|(_, popup, _)| popup.surface_id())
         .collect::<std::collections::BTreeSet<_>>();
 
     wayland_world.insert_resource(WorkspaceVisibilitySnapshot {
@@ -412,11 +429,16 @@ fn sync_wayland_feedback_boundary_system(
 #[cfg(test)]
 mod tests {
     use bevy_app::SubApp;
+    use bevy_ecs::hierarchy::ChildOf;
     use bevy_ecs::schedule::ScheduleLabel;
     use bevy_ecs::world::World;
     use nekoland_core::plugin::NekolandAppPlugin;
     use nekoland_core::schedules::{
         ExtractSchedule, PresentSchedule, ProtocolSchedule, install_core_schedules_sub_app,
+    };
+    use nekoland_ecs::components::{
+        BufferState, SurfaceGeometry, WindowMode, WindowRole, WindowViewportVisibility,
+        WlSurfaceHandle, XdgPopup, XdgWindow,
     };
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, ClipboardSelection, ClipboardSelectionState,
@@ -430,12 +452,17 @@ mod tests {
         PlatformSurfaceSnapshot, PlatformSurfaceSnapshotState, PresentAuditElement,
         PresentAuditElementKind, PresentAuditState, PrimarySelection, PrimarySelectionState,
         ProtocolServerState, ScreenshotFrame, SelectionOwner,
-        ShellRenderInput, SurfacePresentationSnapshot, VirtualOutputCaptureState,
-        VirtualOutputElement, VirtualOutputElementKind, VirtualOutputFrame, WaylandCommands,
-        WaylandFeedback, WaylandIngress, XWaylandServerState,
+        ShellRenderInput, SurfacePresentationRole, SurfacePresentationSnapshot,
+        SurfacePresentationState, VirtualOutputCaptureState, VirtualOutputElement,
+        VirtualOutputElementKind, VirtualOutputFrame, WaylandCommands, WaylandFeedback,
+        WaylandIngress, XWaylandServerState,
     };
+    use crate::plugin::feedback::WorkspaceVisibilitySnapshot;
 
-    use super::{WaylandSubAppPlugin, configure_wayland_subapp, sync_wayland_subapp_back};
+    use super::{
+        WaylandSubAppPlugin, configure_wayland_subapp, extract_workspace_visibility_snapshot,
+        sync_wayland_subapp_back,
+    };
 
     #[test]
     fn wayland_subapp_extracts_inputs_from_main_world() {
@@ -832,6 +859,83 @@ mod tests {
             sub_app.world().resource::<PendingProtocolInputEvents>().as_slice(),
             &[backend_event, shell_event],
         );
+    }
+
+    #[test]
+    fn workspace_visibility_does_not_dismiss_nested_visible_popups() {
+        let mut main_world = World::default();
+        let mut wayland_world = World::default();
+
+        let window = main_world
+            .spawn((
+                WlSurfaceHandle { id: 10 },
+                WindowViewportVisibility { visible: true, output: None },
+                WindowRole::default(),
+                WindowMode::default(),
+                XdgWindow::default(),
+            ))
+            .id();
+        let popup = main_world
+            .spawn((
+                WlSurfaceHandle { id: 11 },
+                BufferState { attached: true, scale: 1 },
+                XdgPopup::default(),
+                ChildOf(window),
+            ))
+            .id();
+        main_world.spawn((
+            WlSurfaceHandle { id: 12 },
+            BufferState { attached: true, scale: 1 },
+            XdgPopup::default(),
+            ChildOf(popup),
+        ));
+        main_world.insert_resource(ShellRenderInput {
+            surface_presentation: SurfacePresentationSnapshot {
+                surfaces: std::collections::BTreeMap::from([
+                    (
+                        10,
+                        SurfacePresentationState {
+                            visible: true,
+                            target_output: None,
+                            geometry: SurfaceGeometry::default(),
+                            input_enabled: true,
+                            damage_enabled: true,
+                            role: SurfacePresentationRole::Window,
+                        },
+                    ),
+                    (
+                        11,
+                        SurfacePresentationState {
+                            visible: true,
+                            target_output: None,
+                            geometry: SurfaceGeometry::default(),
+                            input_enabled: true,
+                            damage_enabled: true,
+                            role: SurfacePresentationRole::Popup,
+                        },
+                    ),
+                    (
+                        12,
+                        SurfacePresentationState {
+                            visible: true,
+                            target_output: None,
+                            geometry: SurfaceGeometry::default(),
+                            input_enabled: true,
+                            damage_enabled: true,
+                            role: SurfacePresentationRole::Popup,
+                        },
+                    ),
+                ]),
+            },
+            ..Default::default()
+        });
+
+        extract_workspace_visibility_snapshot(&mut main_world, &mut wayland_world);
+
+        let snapshot = wayland_world.resource::<WorkspaceVisibilitySnapshot>();
+        assert!(snapshot.visible_popups.contains(&11));
+        assert!(snapshot.visible_popups.contains(&12));
+        assert!(!snapshot.hidden_parent_popups.contains(&12));
     }
 
     #[test]
