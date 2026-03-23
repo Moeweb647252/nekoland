@@ -4,8 +4,8 @@ use bevy_ecs::query::Allow;
 use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{WindowLayout, WindowMode, XdgPopup, XdgWindow};
 use nekoland_ecs::resources::{
-    EntityIndex, GlobalPointerPosition, KeyboardFocusState, PendingXdgRequests, WaylandIngress,
-    WindowLifecycleAction, XdgSurfaceRole,
+    EntityIndex, GlobalPointerPosition, KeyboardFocusState, WaylandIngress, WindowLifecycleAction,
+    XdgSurfaceRole,
 };
 use nekoland_ecs::selectors::OutputName;
 use nekoland_ecs::views::{PopupConfigureRuntime, WindowRuntime};
@@ -24,8 +24,8 @@ type XdgPopups<'w, 's> =
 
 #[derive(SystemParam)]
 pub struct ConfigureSequenceParams<'w, 's> {
-    pending_xdg_requests: Option<ResMut<'w, PendingXdgRequests>>,
-    wayland_ingress: Option<Res<'w, WaylandIngress>>,
+    pending_xdg_requests: ResMut<'w, crate::xdg::DeferredXdgRequests>,
+    wayland_ingress: Res<'w, WaylandIngress>,
     entity_index: Res<'w, EntityIndex>,
     pointer: Res<'w, GlobalPointerPosition>,
     active_grab: ResMut<'w, ActiveWindowGrab>,
@@ -34,16 +34,10 @@ pub struct ConfigureSequenceParams<'w, 's> {
     popups: XdgPopups<'w, 's>,
 }
 
-pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>) {
+pub(crate) fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>) {
     let mut deferred = Vec::new();
-    let mut requests = configure
-        .pending_xdg_requests
-        .as_deref_mut()
-        .map(PendingXdgRequests::take)
-        .unwrap_or_default();
-    if let Some(wayland_ingress) = configure.wayland_ingress.as_deref() {
-        requests.extend(wayland_ingress.pending_xdg_requests.iter().cloned());
-    }
+    let mut requests = configure.pending_xdg_requests.take();
+    requests.extend(configure.wayland_ingress.pending_xdg_requests.iter().cloned());
 
     for request in requests {
         match request.action.clone() {
@@ -288,9 +282,7 @@ pub fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>)
         }
     }
 
-    if let Some(mut pending_xdg_requests) = configure.pending_xdg_requests {
-        pending_xdg_requests.replace(deferred);
-    }
+    configure.pending_xdg_requests.replace(deferred);
     tracing::trace!("xdg configure sequencing system tick");
 }
 
@@ -330,21 +322,23 @@ mod tests {
         WindowMode, WindowRestoreSnapshot, WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{
-        EntityIndex, GlobalPointerPosition, KeyboardFocusState, PendingXdgRequests,
+        EntityIndex, GlobalPointerPosition, KeyboardFocusState, WaylandIngress,
         WindowLifecycleAction, WindowLifecycleRequest,
     };
 
     use crate::interaction::ActiveWindowGrab;
+    use crate::xdg::DeferredXdgRequests;
 
     use super::configure_sequence_system;
 
     fn setup_app_with_window() -> (NekolandApp, bevy_ecs::entity::Entity) {
         let mut app = NekolandApp::new("xdg-configure-test");
         app.insert_resource(EntityIndex::default())
-            .insert_resource(PendingXdgRequests::default())
+            .insert_resource(DeferredXdgRequests::default())
             .insert_resource(GlobalPointerPosition::default())
             .insert_resource(ActiveWindowGrab::default())
-            .insert_resource(KeyboardFocusState::default());
+            .insert_resource(KeyboardFocusState::default())
+            .insert_resource(WaylandIngress::default());
         app.inner_mut().add_systems(LayoutSchedule, configure_sequence_system);
 
         let entity = app
@@ -372,7 +366,7 @@ mod tests {
     #[test]
     fn repeated_maximize_restores_original_state() {
         let (mut app, entity) = setup_app_with_window();
-        let mut requests = app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>();
+        let mut requests = app.inner_mut().world_mut().resource_mut::<DeferredXdgRequests>();
         requests.push(WindowLifecycleRequest {
             surface_id: 42,
             action: WindowLifecycleAction::Maximize,
@@ -409,7 +403,7 @@ mod tests {
     fn fullscreen_restore_returns_to_previous_temporary_state() {
         let (mut app, entity) = setup_app_with_window();
         {
-            let mut requests = app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>();
+            let mut requests = app.inner_mut().world_mut().resource_mut::<DeferredXdgRequests>();
             requests.push(WindowLifecycleRequest {
                 surface_id: 42,
                 action: WindowLifecycleAction::Maximize,
@@ -447,7 +441,7 @@ mod tests {
             Some(&WindowFullscreenTarget::default())
         );
 
-        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+        app.inner_mut().world_mut().resource_mut::<DeferredXdgRequests>().push(
             WindowLifecycleRequest { surface_id: 42, action: WindowLifecycleAction::UnMaximize },
         );
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);

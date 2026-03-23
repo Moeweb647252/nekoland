@@ -12,13 +12,12 @@ use nekoland_core::prelude::NekolandApp;
 use nekoland_core::schedules::{ExtractSchedule, InputSchedule, LayoutSchedule};
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    BorderTheme, OutputDevice, OutputProperties, ServerDecoration, SurfaceGeometry,
-    WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
+    BorderTheme, ServerDecoration, SurfaceGeometry, WindowDisplayState, WindowLayout, WindowMode,
+    WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::{
     CommandHistoryState, CompositorClock, GlobalPointerPosition, KeyboardFocusState, ModifierMask,
-    PendingXdgRequests, SurfaceExtent, WindowLifecycleAction, WindowLifecycleRequest,
-    XdgSurfaceRole,
+    SurfaceExtent, WaylandIngress, WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
 };
 use nekoland_input::InputPlugin;
 use nekoland_shell::ShellPlugin;
@@ -150,11 +149,6 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
             panic!("focus state should exist");
         };
         let focused_surface = focus_state.focused_surface;
-        let outputs = world
-            .query::<(&OutputDevice, &OutputProperties)>()
-            .iter(world)
-            .map(|(output, properties)| (output.name.clone(), properties.clone()))
-            .collect::<Vec<_>>();
         let Some(command_history) = world.get_resource::<CommandHistoryState>() else {
             panic!("command history state should exist");
         };
@@ -162,6 +156,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
         let Some(config) = world.get_resource::<CompositorConfig>() else {
             panic!("config should exist");
         };
+        let configured_outputs = config.outputs.clone();
         let viewport_pan_modifiers = config.viewport_pan_modifiers;
         let border_colors = world
             .query::<&BorderTheme>()
@@ -170,12 +165,10 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
             .collect::<Vec<_>>();
 
         assert_eq!(focused_surface, Some(101));
-        assert_eq!(outputs.len(), 1, "initial config should produce exactly one configured output");
-        assert_eq!(outputs[0].0, "eDP-1");
-        assert_eq!(outputs[0].1.width, 1920);
-        assert_eq!(outputs[0].1.height, 1080);
-        assert_eq!(outputs[0].1.refresh_millihz, 60_000);
-        assert_eq!(outputs[0].1.scale, 1);
+        assert_eq!(configured_outputs.len(), 1, "initial config should contain one configured output");
+        assert_eq!(configured_outputs[0].name, "eDP-1");
+        assert_eq!(configured_outputs[0].mode.as_str(), "1920x1080@60");
+        assert_eq!(configured_outputs[0].scale, 1);
         assert_eq!(history_limit, 7);
         assert_eq!(viewport_pan_modifiers, ModifierMask::new(false, true, false, true));
         assert!(
@@ -199,11 +192,6 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
             panic!("focus state should exist");
         };
         let focused_surface = focus_state.focused_surface;
-        let outputs = world
-            .query::<(&OutputDevice, &OutputProperties)>()
-            .iter(world)
-            .map(|(output, properties)| (output.name.clone(), properties.clone()))
-            .collect::<Vec<_>>();
         let Some(command_history) = world.get_resource::<CommandHistoryState>() else {
             panic!("command history state should exist");
         };
@@ -211,6 +199,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
         let Some(config) = world.get_resource::<CompositorConfig>() else {
             panic!("config should exist");
         };
+        let configured_outputs = config.outputs.clone();
         let viewport_pan_modifiers = config.viewport_pan_modifiers;
         let border_colors = world
             .query::<&BorderTheme>()
@@ -219,12 +208,10 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
             .collect::<Vec<_>>();
 
         assert_eq!(focused_surface, Some(101));
-        assert_eq!(outputs.len(), 1, "reloaded config should converge to one configured output");
-        assert_eq!(outputs[0].0, "HDMI-A-1");
-        assert_eq!(outputs[0].1.width, 2560);
-        assert_eq!(outputs[0].1.height, 1440);
-        assert_eq!(outputs[0].1.refresh_millihz, 75_000);
-        assert_eq!(outputs[0].1.scale, 2);
+        assert_eq!(configured_outputs.len(), 1, "reloaded config should converge to one configured output");
+        assert_eq!(configured_outputs[0].name, "HDMI-A-1");
+        assert_eq!(configured_outputs[0].mode.as_str(), "2560x1440@75");
+        assert_eq!(configured_outputs[0].scale, 2);
         assert_eq!(history_limit, 3);
         assert_eq!(viewport_pan_modifiers, ModifierMask::new(true, false, true, false));
         assert!(
@@ -235,8 +222,8 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
 
     app.inner_mut()
         .world_mut()
-        .get_resource_mut::<PendingXdgRequests>()
-        .unwrap_or_else(|| panic!("shell plugin should initialize the XDG request queue"))
+        .resource_mut::<WaylandIngress>()
+        .pending_xdg_requests
         .push(WindowLifecycleRequest {
             surface_id: 303,
             action: WindowLifecycleAction::Committed { role: XdgSurfaceRole::Toplevel, size: None },
@@ -275,19 +262,16 @@ fn tiling_default_layout_splits_new_windows_across_work_area() {
     app.inner_mut().world_mut().run_schedule(InputSchedule);
     app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-    let mut pending = app
-        .inner_mut()
-        .world_mut()
-        .get_resource_mut::<PendingXdgRequests>()
-        .unwrap_or_else(|| panic!("shell plugin should initialize the XDG request queue"));
-    pending.push(WindowLifecycleRequest {
+    app.inner_mut().world_mut().resource_mut::<WaylandIngress>().pending_xdg_requests.push(
+        WindowLifecycleRequest {
         surface_id: 401,
         action: WindowLifecycleAction::Committed {
             role: XdgSurfaceRole::Toplevel,
             size: Some(SurfaceExtent { width: 800, height: 600 }),
         },
     });
-    pending.push(WindowLifecycleRequest {
+    app.inner_mut().world_mut().resource_mut::<WaylandIngress>().pending_xdg_requests.push(
+        WindowLifecycleRequest {
         surface_id: 402,
         action: WindowLifecycleAction::Committed {
             role: XdgSurfaceRole::Toplevel,

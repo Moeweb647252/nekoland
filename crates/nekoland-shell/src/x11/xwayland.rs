@@ -15,14 +15,14 @@ use nekoland_ecs::components::{
 use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
 use nekoland_ecs::resources::{
     EntityIndex, FocusedOutputState, GlobalPointerPosition, KeyboardFocusState,
-    PendingPopupServerRequests, PendingX11Requests, PopupServerAction, PopupServerRequest,
-    PrimaryOutputState, WaylandIngress, X11LifecycleAction, X11WindowGeometry,
+    PendingPopupServerRequests, PopupServerAction, PopupServerRequest, WaylandIngress,
+    X11LifecycleAction, X11WindowGeometry,
 };
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_target;
 
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
-use crate::viewport::preferred_primary_output_state;
+use crate::viewport::preferred_primary_output_id;
 use crate::window_policy::{
     WindowBackgroundState, apply_window_policy, enter_temporary_window_mode, lock_window_policy,
     refresh_window_policy, resolve_background_output_id, restore_window_policy,
@@ -50,16 +50,15 @@ pub struct X11PopupDismissals<'w, 's> {
 
 #[derive(SystemParam)]
 pub struct X11BridgeParams<'w, 's> {
-    pending_x11_requests: Option<ResMut<'w, PendingX11Requests>>,
+    pending_x11_requests: ResMut<'w, crate::x11::DeferredX11Requests>,
     entity_index: Res<'w, EntityIndex>,
     pointer: Res<'w, GlobalPointerPosition>,
     active_grab: ResMut<'w, ActiveWindowGrab>,
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
     _workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
     outputs: Query<'w, 's, (Entity, OutputRuntime)>,
-    wayland_ingress: Option<Res<'w, WaylandIngress>>,
-    primary_output: Option<Res<'w, PrimaryOutputState>>,
-    focused_output: Option<Res<'w, FocusedOutputState>>,
+    wayland_ingress: Res<'w, WaylandIngress>,
+    focused_output: Res<'w, FocusedOutputState>,
     windows: X11Windows<'w, 's>,
     popup_dismissals: X11PopupDismissals<'w, 's>,
     window_created: MessageWriter<'w, WindowCreated>,
@@ -110,7 +109,6 @@ pub fn xwayland_bridge_system(
         _workspaces,
         outputs,
         wayland_ingress,
-        primary_output,
         focused_output,
         mut windows,
         mut popup_dismissals,
@@ -119,21 +117,18 @@ pub fn xwayland_bridge_system(
         mut window_moved,
     } = bridge;
 
-    let primary_output =
-        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
+    let primary_output_id = preferred_primary_output_id(Some(wayland_ingress.as_ref()));
+    let focused_output_id = focused_output.id;
     let active_workspace_entity = focused_or_primary_workspace_runtime_target(
         &outputs,
-        focused_output.as_deref(),
-        primary_output,
+        focused_output_id,
+        primary_output_id,
         &entity_index,
         1,
     );
     let mut deferred = Vec::new();
-    let mut requests =
-        pending_x11_requests.as_deref_mut().map(PendingX11Requests::take).unwrap_or_default();
-    if let Some(wayland_ingress) = wayland_ingress.as_deref() {
-        requests.extend(wayland_ingress.pending_x11_requests.iter().cloned());
-    }
+    let mut requests = pending_x11_requests.take();
+    requests.extend(wayland_ingress.pending_x11_requests.iter().cloned());
 
     for request in requests {
         match request.action.clone() {
@@ -294,9 +289,7 @@ pub fn xwayland_bridge_system(
         }
     }
 
-    if let Some(mut pending_x11_requests) = pending_x11_requests {
-        pending_x11_requests.replace(deferred);
-    }
+    pending_x11_requests.replace(deferred);
 }
 
 fn resolve_x11_window_entity(
@@ -759,17 +752,16 @@ mod tests {
     };
     use nekoland_ecs::events::{PointerButton, WindowClosed, WindowCreated, WindowMoved};
     use nekoland_ecs::resources::{
-        EntityIndex, GlobalPointerPosition, KeyboardFocusState, PrimaryOutputState,
-        WindowStackingState, WorkArea, rebuild_entity_index_system,
-    };
-    use nekoland_ecs::resources::{
-        PendingPopupServerRequests, PendingX11Requests, ResizeEdges, X11LifecycleAction,
-        X11LifecycleRequest, X11WindowGeometry,
+        EntityIndex, FocusedOutputState, GlobalPointerPosition, KeyboardFocusState,
+        PendingPopupServerRequests, ResizeEdges, WaylandIngress,
+        WindowStackingState, WorkArea, X11LifecycleAction, X11LifecycleRequest,
+        X11WindowGeometry, rebuild_entity_index_system,
     };
 
     use crate::interaction::{self, ActiveWindowGrab};
     use crate::layout::fullscreen::fullscreen_layout_system;
     use crate::viewport::window_viewport_projection_system;
+    use crate::x11::DeferredX11Requests;
 
     use super::xwayland_bridge_system;
 
@@ -778,11 +770,13 @@ mod tests {
         app.insert_resource(CompositorConfig::default())
             .insert_resource(EntityIndex::default())
             .insert_resource(GlobalPointerPosition { x: 320.0, y: 180.0 })
+            .insert_resource(FocusedOutputState::default())
             .insert_resource(KeyboardFocusState::default())
             .insert_resource(ActiveWindowGrab::default())
             .insert_resource(WindowStackingState::default())
-            .insert_resource(PendingX11Requests::default())
-            .insert_resource(PendingPopupServerRequests::default());
+            .insert_resource(DeferredX11Requests::default())
+            .insert_resource(PendingPopupServerRequests::default())
+            .insert_resource(WaylandIngress::default());
         app.inner_mut()
             .add_message::<PointerButton>()
             .add_message::<WindowCreated>()
@@ -836,13 +830,14 @@ mod tests {
         app.insert_resource(CompositorConfig::default())
             .insert_resource(EntityIndex::default())
             .insert_resource(GlobalPointerPosition { x: 320.0, y: 180.0 })
+            .insert_resource(FocusedOutputState::default())
             .insert_resource(KeyboardFocusState::default())
             .insert_resource(ActiveWindowGrab::default())
             .insert_resource(WindowStackingState::default())
-            .insert_resource(PendingX11Requests::default())
+            .insert_resource(DeferredX11Requests::default())
             .insert_resource(PendingPopupServerRequests::default())
-            .insert_resource(PrimaryOutputState::default())
-            .insert_resource(WorkArea { x: 0, y: 0, width: 800, height: 600 });
+            .insert_resource(WorkArea { x: 0, y: 0, width: 800, height: 600 })
+            .insert_resource(WaylandIngress::default());
         app.inner_mut()
             .add_message::<PointerButton>()
             .add_message::<WindowCreated>()
@@ -920,7 +915,7 @@ mod tests {
             *app.inner().world().get::<OutputId>(virtual_output).expect("virtual output id");
         let _hdmi_output_id =
             *app.inner().world().get::<OutputId>(hdmi_output).expect("hdmi output id");
-        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id =
+        app.inner_mut().world_mut().resource_mut::<WaylandIngress>().primary_output.id =
             Some(virtual_output_id);
 
         let entity = app
@@ -962,7 +957,7 @@ mod tests {
     #[test]
     fn x11_interactive_move_request_updates_geometry_and_focus() {
         let (mut app, entity) = setup_app_with_window();
-        app.inner_mut().world_mut().resource_mut::<PendingX11Requests>().push(
+        app.inner_mut().world_mut().resource_mut::<DeferredX11Requests>().push(
             X11LifecycleRequest {
                 surface_id: 42,
                 action: X11LifecycleAction::InteractiveMove { button: 1 },
@@ -997,7 +992,7 @@ mod tests {
     #[test]
     fn x11_interactive_resize_request_updates_geometry_and_focus() {
         let (mut app, entity) = setup_app_with_window();
-        app.inner_mut().world_mut().resource_mut::<PendingX11Requests>().push(
+        app.inner_mut().world_mut().resource_mut::<DeferredX11Requests>().push(
             X11LifecycleRequest {
                 surface_id: 42,
                 action: X11LifecycleAction::InteractiveResize {
@@ -1038,11 +1033,13 @@ mod tests {
         app.insert_resource(CompositorConfig::default())
             .insert_resource(EntityIndex::default())
             .insert_resource(GlobalPointerPosition::default())
+            .insert_resource(FocusedOutputState::default())
             .insert_resource(KeyboardFocusState::default())
             .insert_resource(ActiveWindowGrab::default())
             .insert_resource(WindowStackingState::default())
-            .insert_resource(PendingX11Requests::default())
-            .insert_resource(PendingPopupServerRequests::default());
+            .insert_resource(DeferredX11Requests::default())
+            .insert_resource(PendingPopupServerRequests::default())
+            .insert_resource(WaylandIngress::default());
         app.inner_mut()
             .add_message::<PointerButton>()
             .add_message::<WindowCreated>()
@@ -1063,7 +1060,7 @@ mod tests {
             .world_mut()
             .spawn(Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true })
             .id();
-        app.inner_mut().world_mut().resource_mut::<PendingX11Requests>().push(
+        app.inner_mut().world_mut().resource_mut::<DeferredX11Requests>().push(
             X11LifecycleRequest {
                 surface_id: 77,
                 action: X11LifecycleAction::Mapped {
@@ -1112,11 +1109,13 @@ mod tests {
         app.insert_resource(config)
             .insert_resource(EntityIndex::default())
             .insert_resource(GlobalPointerPosition::default())
+            .insert_resource(FocusedOutputState::default())
             .insert_resource(KeyboardFocusState::default())
             .insert_resource(ActiveWindowGrab::default())
             .insert_resource(WindowStackingState::default())
-            .insert_resource(PendingX11Requests::default())
-            .insert_resource(PendingPopupServerRequests::default());
+            .insert_resource(DeferredX11Requests::default())
+            .insert_resource(PendingPopupServerRequests::default())
+            .insert_resource(WaylandIngress::default());
         app.inner_mut()
             .add_message::<PointerButton>()
             .add_message::<WindowCreated>()
@@ -1137,7 +1136,7 @@ mod tests {
             name: "1".to_owned(),
             active: true,
         });
-        app.inner_mut().world_mut().resource_mut::<PendingX11Requests>().push(
+        app.inner_mut().world_mut().resource_mut::<DeferredX11Requests>().push(
             X11LifecycleRequest {
                 surface_id: 88,
                 action: X11LifecycleAction::Mapped {
@@ -1170,7 +1169,7 @@ mod tests {
         let (mut app, entity) = setup_app_with_output_routing();
         app.inner_mut()
             .world_mut()
-            .resource_mut::<PendingX11Requests>()
+            .resource_mut::<DeferredX11Requests>()
             .push(X11LifecycleRequest { surface_id: 42, action: X11LifecycleAction::Maximize });
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
@@ -1202,7 +1201,7 @@ mod tests {
         let (mut app, entity) = setup_app_with_output_routing();
         app.inner_mut()
             .world_mut()
-            .resource_mut::<PendingX11Requests>()
+            .resource_mut::<DeferredX11Requests>()
             .push(X11LifecycleRequest { surface_id: 42, action: X11LifecycleAction::Fullscreen });
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
@@ -1233,7 +1232,7 @@ mod tests {
     fn repeated_x11_maximize_restores_original_state() {
         let (mut app, entity) = setup_app_with_window();
         {
-            let mut requests = app.inner_mut().world_mut().resource_mut::<PendingX11Requests>();
+            let mut requests = app.inner_mut().world_mut().resource_mut::<DeferredX11Requests>();
             requests
                 .push(X11LifecycleRequest { surface_id: 42, action: X11LifecycleAction::Maximize });
             requests

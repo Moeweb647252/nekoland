@@ -93,6 +93,7 @@ fn protocol_root_facade_exports_remain_usable() {
     crate::configure_wayland_subapp(&mut sub_app);
 
     let mut main_world = World::default();
+    main_world.insert_resource(nekoland_ecs::resources::ShellRenderInput::default());
     let mut wayland_world = World::default();
     crate::extract_wayland_subapp_inputs(&mut main_world, &mut wayland_world);
     crate::sync_wayland_subapp_back(&mut main_world, &mut wayland_world, None);

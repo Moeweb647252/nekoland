@@ -6,14 +6,14 @@ use nekoland_ecs::components::{
 };
 use nekoland_ecs::events::{PointerButton, WindowMoved};
 use nekoland_ecs::resources::{
-    EntityIndex, GlobalPointerPosition, KeyboardFocusState, PrimaryOutputState, ResizeEdges,
+    EntityIndex, GlobalPointerPosition, KeyboardFocusState, ResizeEdges,
     UNASSIGNED_WORKSPACE_STACK_ID, WaylandIngress, WindowStackingState,
 };
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 use crate::viewport::{
-    preferred_primary_output_state, project_scene_geometry, resolve_output_state_for_workspace,
+    preferred_primary_output_id, project_scene_geometry, resolve_output_state_for_workspace,
 };
 
 const MIN_WINDOW_SIZE: i32 = 32;
@@ -29,8 +29,7 @@ pub struct WindowGrabParams<'w, 's> {
     active_grab: ResMut<'w, ActiveWindowGrab>,
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
     stacking: ResMut<'w, WindowStackingState>,
-    wayland_ingress: Option<Res<'w, WaylandIngress>>,
-    primary_output: Option<Res<'w, PrimaryOutputState>>,
+    wayland_ingress: Res<'w, WaylandIngress>,
     window_moved: MessageWriter<'w, WindowMoved>,
     windows: GrabWindows<'w, 's>,
     outputs: GrabOutputs<'w, 's>,
@@ -95,12 +94,9 @@ pub fn window_grab_system(
         *window.scene_geometry = next_geometry.clone();
         let workspace_id = window_workspace_runtime_id(window.child_of, &grab.workspaces)
             .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID);
-        let primary_output = preferred_primary_output_state(
-            grab.wayland_ingress.as_deref(),
-            grab.primary_output.as_deref(),
-        );
+        let primary_output_id = preferred_primary_output_id(Some(&grab.wayland_ingress));
         if let Some((_, _, viewport, _)) =
-            resolve_output_state_for_workspace(&grab.outputs, Some(workspace_id), primary_output)
+            resolve_output_state_for_workspace(&grab.outputs, Some(workspace_id), primary_output_id)
         {
             *window.geometry = project_scene_geometry(&next_geometry, viewport);
         } else {

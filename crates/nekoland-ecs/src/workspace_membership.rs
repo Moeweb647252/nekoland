@@ -3,7 +3,7 @@ use bevy_ecs::prelude::{Entity, Query};
 use bevy_ecs::query::QueryFilter;
 
 use crate::components::{OutputId, Workspace};
-use crate::resources::{EntityIndex, FocusedOutputState, PrimaryOutputState};
+use crate::resources::EntityIndex;
 use crate::views::{OutputRuntime, WorkspaceRuntime};
 
 /// Returns the active workspace entity and id, falling back to the lowest workspace id when no
@@ -116,16 +116,16 @@ pub fn output_name_for_output_id(
 
 pub fn focused_or_primary_output_name(
     outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
-    focused_output: Option<&FocusedOutputState>,
-    primary_output: Option<&PrimaryOutputState>,
+    focused_output_id: Option<OutputId>,
+    primary_output_id: Option<OutputId>,
 ) -> Option<String> {
-    if let Some(output_id) = focused_output.and_then(|focused| focused.id)
+    if let Some(output_id) = focused_output_id
         && let Some(output_name) = output_name_for_output_id(output_id, outputs)
     {
         return Some(output_name);
     }
 
-    if let Some(output_id) = primary_output.and_then(|primary| primary.id)
+    if let Some(output_id) = primary_output_id
         && let Some(output_name) = output_name_for_output_id(output_id, outputs)
     {
         return Some(output_name);
@@ -170,12 +170,12 @@ pub fn current_workspace_runtime_target_for_output_id(
 
 pub fn focused_or_primary_workspace_runtime_target(
     outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
-    focused_output: Option<&FocusedOutputState>,
-    primary_output: Option<&PrimaryOutputState>,
+    focused_output_id: Option<OutputId>,
+    primary_output_id: Option<OutputId>,
     entity_index: &EntityIndex,
     fallback_workspace_id: u32,
 ) -> Option<Entity> {
-    if let Some(output_id) = focused_output.and_then(|focused| focused.id) {
+    if let Some(output_id) = focused_output_id {
         return current_workspace_runtime_target_for_output_id(
             output_id,
             outputs,
@@ -184,7 +184,7 @@ pub fn focused_or_primary_workspace_runtime_target(
         );
     }
 
-    if let Some(output_id) = primary_output.and_then(|primary| primary.id) {
+    if let Some(output_id) = primary_output_id {
         return current_workspace_runtime_target_for_output_id(
             output_id,
             outputs,
@@ -193,7 +193,7 @@ pub fn focused_or_primary_workspace_runtime_target(
         );
     }
 
-    focused_or_primary_output_name(outputs, focused_output, primary_output)
+    focused_or_primary_output_name(outputs, focused_output_id, primary_output_id)
         .and_then(|output_name| {
             current_workspace_runtime_target_for_output_name(
                 &output_name,

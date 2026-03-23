@@ -4,8 +4,8 @@ use std::fs;
 use bevy_ecs::prelude::{Res, ResMut, Resource};
 use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::resources::{
-    CursorImageSnapshot, CursorSceneSnapshot, GlobalPointerPosition, RenderItemInstance,
-    RenderRect, RenderSceneRole, ShellRenderInput,
+    CursorImageSnapshot, CursorSceneSnapshot, RenderItemInstance, RenderRect, RenderSceneRole,
+    ShellRenderInput,
 };
 
 use crate::compositor_render::RenderViewSnapshot;
@@ -55,20 +55,11 @@ impl CursorThemeGeometryCache {
 /// Tracks the pointer against the current output layout and produces an output-local cursor scene
 /// snapshot for the scene provider path.
 pub fn cursor_scene_snapshot_system(
-    shell_render_input: Option<Res<'_, ShellRenderInput>>,
-    pointer: Option<Res<'_, GlobalPointerPosition>>,
+    shell_render_input: Res<'_, ShellRenderInput>,
     views: Res<'_, RenderViewSnapshot>,
     mut cursor_scene: ResMut<'_, CursorSceneSnapshot>,
 ) {
-    let Some(pointer) =
-        shell_render_input.as_deref().map(|input| &input.pointer).or(pointer.as_deref())
-    else {
-        cursor_scene.visible = false;
-        cursor_scene.output_id = None;
-        cursor_scene.x = 0.0;
-        cursor_scene.y = 0.0;
-        return;
-    };
+    let pointer = &shell_render_input.pointer;
 
     let next_output = views.views.iter().find(|output| {
         let left = f64::from(output.x);
@@ -104,7 +95,7 @@ pub fn cursor_scene_snapshot_system(
 pub fn emit_cursor_scene_contributions_system(
     config: Option<Res<'_, CompositorConfig>>,
     cursor_scene: Res<'_, CursorSceneSnapshot>,
-    shell_render_input: Option<Res<'_, ShellRenderInput>>,
+    shell_render_input: Res<'_, ShellRenderInput>,
     views: Res<'_, RenderViewSnapshot>,
     mut geometry_cache: ResMut<'_, CursorThemeGeometryCache>,
     mut contributions: ResMut<'_, crate::scene_source::RenderSceneContributionQueue>,
@@ -116,10 +107,6 @@ pub fn emit_cursor_scene_contributions_system(
         return;
     };
     let Some(output) = views.view(output_id) else {
-        return;
-    };
-
-    let Some(shell_render_input) = shell_render_input else {
         return;
     };
 
@@ -243,9 +230,7 @@ mod tests {
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::components::OutputId;
-    use nekoland_ecs::resources::{
-        CursorImageSnapshot, CursorSceneSnapshot, GlobalPointerPosition, ShellRenderInput,
-    };
+    use nekoland_ecs::resources::{CursorImageSnapshot, CursorSceneSnapshot, ShellRenderInput};
 
     use crate::compositor_render::{RenderViewSnapshot, RenderViewState};
     use crate::scene_source::RenderSceneContributionQueue;
@@ -259,7 +244,7 @@ mod tests {
     fn cursor_scene_snapshot_tracks_output_local_position() {
         let mut app = NekolandApp::new("cursor-scene-snapshot-test");
         app.inner_mut()
-            .init_resource::<GlobalPointerPosition>()
+            .init_resource::<ShellRenderInput>()
             .init_resource::<CursorSceneSnapshot>()
             .insert_resource(RenderViewSnapshot {
                 views: vec![RenderViewState {
@@ -274,9 +259,10 @@ mod tests {
             .add_systems(RenderSchedule, cursor_scene_snapshot_system);
 
         {
-            let mut pointer = app.inner_mut().world_mut().resource_mut::<GlobalPointerPosition>();
-            pointer.x = 700.0;
-            pointer.y = 400.0;
+            let mut shell_render_input =
+                app.inner_mut().world_mut().resource_mut::<ShellRenderInput>();
+            shell_render_input.pointer.x = 700.0;
+            shell_render_input.pointer.y = 400.0;
         }
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
@@ -292,15 +278,16 @@ mod tests {
     fn cursor_scene_snapshot_hides_cursor_outside_outputs() {
         let mut app = NekolandApp::new("cursor-scene-hidden-test");
         app.inner_mut()
-            .init_resource::<GlobalPointerPosition>()
+            .init_resource::<ShellRenderInput>()
             .init_resource::<CursorSceneSnapshot>()
             .init_resource::<RenderViewSnapshot>()
             .add_systems(RenderSchedule, cursor_scene_snapshot_system);
 
         {
-            let mut pointer = app.inner_mut().world_mut().resource_mut::<GlobalPointerPosition>();
-            pointer.x = 4000.0;
-            pointer.y = 3000.0;
+            let mut shell_render_input =
+                app.inner_mut().world_mut().resource_mut::<ShellRenderInput>();
+            shell_render_input.pointer.x = 4000.0;
+            shell_render_input.pointer.y = 3000.0;
         }
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);

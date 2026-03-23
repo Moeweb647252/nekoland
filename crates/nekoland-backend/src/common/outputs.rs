@@ -19,7 +19,7 @@ use nekoland_ecs::resources::{
     PendingOutputControl, PendingOutputControls, PendingOutputOverlayControls,
     PendingOutputServerRequests, PlatformOutputBlueprint, PlatformOutputLifecycleChange,
     PlatformOutputLifecycleRecord, PlatformOutputMaterializationPlan, PlatformOutputPropertyUpdate,
-    PrimaryOutputState, WaylandIngress,
+    WaylandIngress,
 };
 use nekoland_ecs::selectors::OutputSelector;
 use nekoland_ecs::views::OutputRuntime;
@@ -208,9 +208,8 @@ pub(crate) struct OutputControlRequestCtx<'w, 's> {
     pending_output_controls: ResMut<'w, PendingOutputControls>,
     pending_output_overlay_controls: ResMut<'w, PendingOutputOverlayControls>,
     pending_output_requests: ResMut<'w, PendingOutputServerRequests>,
-    wayland_ingress: Option<Res<'w, WaylandIngress>>,
-    primary_output: Option<Res<'w, PrimaryOutputState>>,
-    focused_output: Option<Res<'w, FocusedOutputState>>,
+    wayland_ingress: Res<'w, WaylandIngress>,
+    focused_output: Res<'w, FocusedOutputState>,
     entity_index: Res<'w, EntityIndex>,
     remembered_viewports: ResMut<'w, RememberedOutputViewportState>,
     outputs: OutputViewportQuery<'w, 's>,
@@ -290,17 +289,13 @@ pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<
         mut pending_output_overlay_controls,
         mut pending_output_requests,
         wayland_ingress,
-        primary_output,
         focused_output,
         entity_index,
         mut remembered_viewports,
         mut outputs,
         windows,
     } = ctx;
-    let primary_output_id = wayland_ingress
-        .as_deref()
-        .and_then(|wayland_ingress| wayland_ingress.primary_output.id)
-        .or(primary_output.as_deref().and_then(|primary_output| primary_output.id));
+    let primary_output_id = wayland_ingress.primary_output.id;
     let mut deferred = Vec::new();
 
     for control in pending_output_controls.take() {
@@ -328,8 +323,7 @@ pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<
             }
             OutputSelector::Focused => {
                 let Some(output) = focused_output
-                    .as_deref()
-                    .and_then(|focused_output| focused_output.id)
+                    .id
                     .and_then(|output_id| {
                         outputs.iter_mut().find_map(|(candidate_id, device, _, _)| {
                             (*candidate_id == output_id).then(|| device.name.clone())
@@ -514,15 +508,12 @@ pub fn synchronize_backend_outputs_system(
     mut commands: Commands,
     mut output_registry: ResMut<BackendOutputRegistry>,
     mut remembered_viewports: ResMut<RememberedOutputViewportState>,
-    wayland_ingress: Option<ResMut<WaylandIngress>>,
+    mut wayland_ingress: ResMut<WaylandIngress>,
     existing_outputs: Query<(Entity, &OutputId, &OutputDevice, &OutputBackend)>,
     mut output_properties: Query<(&OutputBackend, &mut OutputProperties)>,
     mut output_connected: MessageWriter<OutputConnected>,
     mut output_disconnected: MessageWriter<OutputDisconnected>,
 ) {
-    let Some(mut wayland_ingress) = wayland_ingress else {
-        return;
-    };
     let mut output_materialization = std::mem::take(&mut wayland_ingress.output_materialization);
 
     for (_, output_id, output, _) in &existing_outputs {
@@ -752,23 +743,6 @@ pub fn remember_output_viewports_system(
     }
 }
 
-/// Refresh the public primary-output snapshot from current outputs and config preference order.
-pub fn sync_primary_output_state_system(
-    config: Option<Res<CompositorConfig>>,
-    outputs: Query<OutputRuntime>,
-    mut primary_output: ResMut<PrimaryOutputState>,
-) {
-    let next_primary = select_primary_output_target(config.as_deref(), &outputs);
-    if primary_output.id != next_primary.as_ref().map(|(id, _)| *id) {
-        tracing::trace!(
-            previous = ?primary_output.id,
-            next = ?next_primary.as_ref().map(|(id, _)| *id),
-            "updated primary output"
-        );
-        primary_output.id = next_primary.as_ref().map(|(id, _)| *id);
-    }
-}
-
 pub fn sync_output_snapshot_state_from_present_inputs_system(
     outputs: Res<'_, BackendPresentInputs>,
     mut snapshots: ResMut<'_, OutputSnapshotState>,
@@ -787,89 +761,6 @@ pub fn sync_output_snapshot_state_from_present_inputs_system(
             refresh_millihz: output.properties.refresh_millihz,
         })
         .collect();
-}
-
-pub fn sync_primary_output_state_from_present_inputs_system(
-    config: Option<Res<'_, CompositorConfig>>,
-    snapshots: Res<'_, OutputSnapshotState>,
-    mut primary_output: ResMut<'_, PrimaryOutputState>,
-) {
-    let snapshot_inputs = snapshots
-        .outputs
-        .iter()
-        .map(|output| (output.name.clone(), u64::from(output.width), u64::from(output.height)))
-        .collect::<Vec<_>>();
-    let next_primary_name =
-        select_primary_output_name_from_snapshots(config.as_deref(), &snapshot_inputs);
-    let next_primary = next_primary_name.and_then(|name| {
-        snapshots.outputs.iter().find(|output| output.name == name).map(|output| output.output_id)
-    });
-    if primary_output.id != next_primary {
-        primary_output.id = next_primary;
-    }
-}
-
-pub fn select_primary_output_target(
-    config: Option<&CompositorConfig>,
-    outputs: &Query<OutputRuntime>,
-) -> Option<(OutputId, String)> {
-    let next_name = select_primary_output_name(config, outputs)?;
-    outputs
-        .iter()
-        .find(|output| output.name() == next_name)
-        .map(|output| (output.id(), output.name().to_owned()))
-}
-
-/// Choose the primary output from live ECS outputs.
-pub fn select_primary_output_name(
-    config: Option<&CompositorConfig>,
-    outputs: &Query<OutputRuntime>,
-) -> Option<String> {
-    let output_snapshots = outputs
-        .iter()
-        .map(|output| {
-            (
-                output.name().to_owned(),
-                u64::from(output.properties.width.max(1)),
-                u64::from(output.properties.height.max(1)),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    select_primary_output_name_from_snapshots(config, &output_snapshots)
-}
-
-/// Choose the primary output from plain `(name, width, height)` snapshots.
-///
-/// Preference order is:
-/// 1. First enabled configured output that currently exists
-/// 2. Largest live output by pixel area, then by name for stability
-pub fn select_primary_output_name_from_snapshots(
-    config: Option<&CompositorConfig>,
-    output_snapshots: &[(String, u64, u64)],
-) -> Option<String> {
-    if let Some(config) = config {
-        for configured_output in
-            config.outputs.iter().filter(|configured_output| configured_output.enabled)
-        {
-            if output_snapshots
-                .iter()
-                .any(|(output_name, _, _)| output_name == &configured_output.name)
-            {
-                return Some(configured_output.name.clone());
-            }
-        }
-    }
-
-    output_snapshots
-        .iter()
-        .cloned()
-        .max_by(|(left_name, left_width, left_height), (right_name, right_width, right_height)| {
-            let left_area = left_width.saturating_mul(*left_height);
-            let right_area = right_width.saturating_mul(*right_height);
-            left_area.cmp(&right_area).then_with(|| right_name.cmp(left_name))
-        })
-        .map(|(output_name, _, _)| output_name)
 }
 
 pub fn collect_output_snapshots(
@@ -1005,8 +896,8 @@ mod tests {
             .init_resource::<PendingOutputOverlayControls>()
             .init_resource::<PendingOutputServerRequests>()
             .init_resource::<OutputOverlayState>()
+            .init_resource::<WaylandIngress>()
             .insert_resource(RememberedOutputViewportState::default())
-            .insert_resource(PrimaryOutputState::default())
             .insert_resource(FocusedOutputState::default())
             .insert_resource(EntityIndex::default())
             .add_systems(
@@ -1040,8 +931,9 @@ mod tests {
             .id();
         let output_id =
             *app.inner().world().get::<OutputId>(output).expect("output id should exist");
-        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id = Some(output_id);
         app.inner_mut().world_mut().resource_mut::<FocusedOutputState>().id = Some(output_id);
+        app.inner_mut().world_mut().resource_mut::<WaylandIngress>().primary_output.id =
+            Some(output_id);
 
         app.inner_mut()
             .world_mut()
@@ -1061,6 +953,92 @@ mod tests {
             remembered.viewport_for_output_name("Virtual-1"),
             Some(&OutputViewport { origin_x: 125, origin_y: 160 }),
         );
+    }
+
+    #[test]
+    fn primary_output_controls_prefer_wayland_ingress_over_stale_compat_state() {
+        let mut app = NekolandApp::new("output-primary-control-ingress-test");
+        app.inner_mut()
+            .init_resource::<PendingOutputControls>()
+            .init_resource::<PendingOutputOverlayControls>()
+            .init_resource::<PendingOutputServerRequests>()
+            .init_resource::<OutputOverlayState>()
+            .insert_resource(RememberedOutputViewportState::default())
+            .insert_resource(PrimaryOutputState::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(EntityIndex::default())
+            .insert_resource(WaylandIngress::default())
+            .add_systems(
+                ExtractSchedule,
+                (
+                    apply_output_control_requests_system,
+                    apply_output_overlay_controls_system,
+                    remember_output_viewports_system,
+                )
+                    .chain(),
+            );
+
+        let output_one = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "Virtual".to_owned(),
+                    model: "one".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1280,
+                    height: 720,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                ..Default::default()
+            })
+            .id();
+        let output_two = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-2".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "Virtual".to_owned(),
+                    model: "two".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1920,
+                    height: 1080,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                ..Default::default()
+            })
+            .id();
+        let output_one_id =
+            *app.inner().world().get::<OutputId>(output_one).expect("first output id");
+        let output_two_id =
+            *app.inner().world().get::<OutputId>(output_two).expect("second output id");
+
+        // Keep a stale compat primary-output snapshot on purpose so the selector must ignore it.
+        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id = Some(output_one_id);
+        app.inner_mut().world_mut().resource_mut::<WaylandIngress>().primary_output.id =
+            Some(output_two_id);
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<PendingOutputControls>()
+            .select(OutputSelector::Primary)
+            .move_viewport_to(90, 140);
+
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+
+        let first_viewport =
+            app.inner().world().get::<OutputViewport>(output_one).expect("first viewport");
+        let second_viewport =
+            app.inner().world().get::<OutputViewport>(output_two).expect("second viewport");
+        assert_eq!((first_viewport.origin_x, first_viewport.origin_y), (0, 0));
+        assert_eq!((second_viewport.origin_x, second_viewport.origin_y), (90, 140));
     }
 
     #[test]
@@ -1186,8 +1164,8 @@ mod tests {
             .init_resource::<PendingOutputOverlayControls>()
             .init_resource::<PendingOutputServerRequests>()
             .init_resource::<OutputOverlayState>()
+            .init_resource::<WaylandIngress>()
             .insert_resource(RememberedOutputViewportState::default())
-            .insert_resource(PrimaryOutputState::default())
             .insert_resource(FocusedOutputState::default())
             .insert_resource(EntityIndex::default())
             .add_systems(
@@ -1221,8 +1199,9 @@ mod tests {
             .id();
         let output_id =
             *app.inner().world().get::<OutputId>(output).expect("output id should exist");
-        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id = Some(output_id);
         app.inner_mut().world_mut().resource_mut::<FocusedOutputState>().id = Some(output_id);
+        app.inner_mut().world_mut().resource_mut::<WaylandIngress>().primary_output.id =
+            Some(output_id);
         app.inner_mut().world_mut().spawn(WindowBundle {
             surface: WlSurfaceHandle { id: 77 },
             scene_geometry: WindowSceneGeometry { x: 1400, y: 900, width: 300, height: 200 },
@@ -1254,8 +1233,8 @@ mod tests {
             .init_resource::<PendingOutputOverlayControls>()
             .init_resource::<PendingOutputServerRequests>()
             .init_resource::<OutputOverlayState>()
+            .init_resource::<WaylandIngress>()
             .insert_resource(RememberedOutputViewportState::default())
-            .insert_resource(PrimaryOutputState::default())
             .insert_resource(FocusedOutputState::default())
             .insert_resource(EntityIndex::default())
             .add_systems(

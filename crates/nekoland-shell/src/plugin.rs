@@ -8,11 +8,12 @@ use nekoland_ecs::events::{
 };
 use nekoland_ecs::resources::register_entity_index_hooks;
 use nekoland_ecs::resources::{
-    CommandHistoryState, GlobalPointerPosition, OutputOverlayState, PendingExternalCommandRequests,
-    PendingOutputControls, PendingOutputOverlayControls, PendingOutputServerRequests,
-    PendingPopupServerRequests, PendingWindowControls, PendingWindowServerRequests,
-    PendingWorkspaceControls, PrimaryOutputState, ShellRenderInput, SurfacePresentationSnapshot,
-    WaylandCommands, WaylandFeedback, WaylandIngress, WindowStackingState, WorkArea,
+    CommandHistoryState, FocusedOutputState, GlobalPointerPosition, OutputOverlayState,
+    PendingExternalCommandRequests, PendingOutputControls, PendingOutputOverlayControls,
+    PendingOutputServerRequests, PendingPopupServerRequests, PendingWindowControls,
+    PendingWindowServerRequests, PendingWorkspaceControls, ShellRenderInput,
+    SurfacePresentationSnapshot, WaylandCommands, WaylandFeedback, WaylandIngress,
+    WindowStackingState, WorkArea,
     WorkspaceTilingState,
 };
 
@@ -44,7 +45,13 @@ impl NekolandPlugin for ShellPlugin {
             .init_resource::<OutputOverlayState>()
             .init_resource::<SurfacePresentationSnapshot>()
             .init_resource::<WaylandCommands>()
+            .init_resource::<WaylandIngress>()
+            .init_resource::<WaylandFeedback>()
             .init_resource::<ShellRenderInput>()
+            .init_resource::<FocusedOutputState>()
+            .init_resource::<x11::DeferredX11Requests>()
+            .init_resource::<layer::DeferredLayerRequests>()
+            .init_resource::<xdg::DeferredXdgRequests>()
             .init_resource::<workspace::RememberedOutputWorkspaceState>()
             .init_resource::<CommandHistoryState>()
             .init_resource::<commands::StartupActionState>()
@@ -63,7 +70,6 @@ impl NekolandPlugin for ShellPlugin {
                 // normalized state to derive geometry, focus, and server-side decorations.
                 (
                     (
-                        sync_shell_inputs_from_wayland_ingress_system,
                         commands::startup_action_queue_system,
                         commands::external_command_launch_system,
                         commands::command_history_system,
@@ -103,8 +109,8 @@ impl NekolandPlugin for ShellPlugin {
                         presentation::window_presentation_sync_system,
                         focus::focus_management_system,
                         decorations::server_decoration_system,
-                        sync_shell_render_mailbox_system,
-                        sync_wayland_commands_mailbox_system,
+                        sync_shell_render_boundary_system,
+                        sync_wayland_commands_boundary_system,
                     )
                         .chain(),
                 )
@@ -113,21 +119,7 @@ impl NekolandPlugin for ShellPlugin {
     }
 }
 
-fn sync_shell_inputs_from_wayland_ingress_system(
-    wayland_ingress: Option<Res<'_, WaylandIngress>>,
-    primary_output: Option<ResMut<'_, PrimaryOutputState>>,
-) {
-    let Some(wayland_ingress) = wayland_ingress else {
-        return;
-    };
-    let Some(mut primary_output) = primary_output else {
-        return;
-    };
-
-    *primary_output = wayland_ingress.primary_output.clone();
-}
-
-fn sync_wayland_commands_mailbox_system(
+fn sync_wayland_commands_boundary_system(
     pending_output_controls: Res<'_, PendingOutputControls>,
     pending_output_overlay_controls: Res<'_, PendingOutputOverlayControls>,
     pending_output_server_requests: Res<'_, PendingOutputServerRequests>,
@@ -146,24 +138,20 @@ fn sync_wayland_commands_mailbox_system(
     };
 }
 
-fn sync_shell_render_mailbox_system(
+fn sync_shell_render_boundary_system(
     pointer: Res<'_, GlobalPointerPosition>,
-    wayland_ingress: Option<Res<'_, WaylandIngress>>,
-    wayland_feedback: Option<Res<'_, WaylandFeedback>>,
+    wayland_ingress: Res<'_, WaylandIngress>,
+    wayland_feedback: Res<'_, WaylandFeedback>,
     surface_presentation: Res<'_, SurfacePresentationSnapshot>,
     output_overlays: Res<'_, OutputOverlayState>,
     mut shell_render_input: ResMut<'_, ShellRenderInput>,
 ) {
     *shell_render_input = ShellRenderInput {
         pointer: pointer.clone(),
-        cursor_image: wayland_ingress
-            .map(|wayland_ingress| wayland_ingress.cursor_image.clone())
-            .unwrap_or_default(),
+        cursor_image: wayland_ingress.cursor_image.clone(),
         surface_presentation: surface_presentation.clone(),
         output_overlays: output_overlays.clone(),
-        pending_screenshot_requests: wayland_feedback
-            .map(|wayland_feedback| wayland_feedback.pending_screenshot_requests.clone())
-            .unwrap_or_default(),
+        pending_screenshot_requests: wayland_feedback.pending_screenshot_requests.clone(),
     };
 }
 
@@ -172,44 +160,15 @@ mod tests {
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::{IntoSystem, System};
     use nekoland_ecs::components::OutputId;
-    use nekoland_ecs::prelude::SurfaceId;
     use nekoland_ecs::resources::{
-        CursorImageSnapshot, GlobalPointerPosition, OutputOverlayState, PendingLayerRequests,
-        PendingScreenshotRequests, PendingWindowControls, PendingX11Requests, PendingXdgRequests,
-        PrimaryOutputState, ShellRenderInput, SurfacePresentationSnapshot, WaylandFeedback,
-        WaylandIngress,
+        CursorImageSnapshot, GlobalPointerPosition, OutputOverlayState, PendingScreenshotRequests,
+        ShellRenderInput, SurfacePresentationSnapshot, WaylandFeedback, WaylandIngress,
     };
 
-    use super::{sync_shell_inputs_from_wayland_ingress_system, sync_shell_render_mailbox_system};
+    use super::sync_shell_render_boundary_system;
 
     #[test]
-    fn shell_inputs_sync_primary_output_and_protocol_requests_from_wayland_ingress() {
-        let mut world = World::default();
-        world.insert_resource(WaylandIngress {
-            primary_output: PrimaryOutputState { id: Some(OutputId(9)) },
-            pending_window_controls: {
-                let mut controls = PendingWindowControls::default();
-                controls.surface(SurfaceId(42)).focus();
-                controls
-            },
-            ..WaylandIngress::default()
-        });
-        world.init_resource::<PrimaryOutputState>();
-        world.init_resource::<PendingWindowControls>();
-
-        let mut system = IntoSystem::into_system(sync_shell_inputs_from_wayland_ingress_system);
-        system.initialize(&mut world);
-        let _ = system.run((), &mut world);
-
-        assert_eq!(world.resource::<PrimaryOutputState>().id, Some(OutputId(9)));
-        assert!(world.resource::<PendingWindowControls>().is_empty());
-        assert!(world.get_resource::<PendingXdgRequests>().is_none());
-        assert!(world.get_resource::<PendingX11Requests>().is_none());
-        assert!(world.get_resource::<PendingLayerRequests>().is_none());
-    }
-
-    #[test]
-    fn shell_render_mailbox_captures_shell_owned_snapshots() {
+    fn shell_render_boundary_captures_shell_owned_snapshots() {
         let mut world = World::default();
         world.insert_resource(GlobalPointerPosition { x: 12.0, y: 34.0 });
         world.insert_resource(WaylandIngress {
@@ -226,18 +185,18 @@ mod tests {
         });
         world.init_resource::<ShellRenderInput>();
 
-        let mut system = IntoSystem::into_system(sync_shell_render_mailbox_system);
+        let mut system = IntoSystem::into_system(sync_shell_render_boundary_system);
         system.initialize(&mut world);
         let _ = system.run((), &mut world);
 
-        let mailbox = world.resource::<ShellRenderInput>();
-        assert_eq!(mailbox.pointer.x, 12.0);
-        assert_eq!(mailbox.pointer.y, 34.0);
+        let boundary = world.resource::<ShellRenderInput>();
+        assert_eq!(boundary.pointer.x, 12.0);
+        assert_eq!(boundary.pointer.y, 34.0);
         assert_eq!(
-            mailbox.cursor_image,
+            boundary.cursor_image,
             CursorImageSnapshot::Named { icon_name: "default".to_owned() }
         );
-        assert_eq!(mailbox.pending_screenshot_requests.requests.len(), 1);
-        assert_eq!(mailbox.pending_screenshot_requests.requests[0].output_id, OutputId(7));
+        assert_eq!(boundary.pending_screenshot_requests.requests.len(), 1);
+        assert_eq!(boundary.pending_screenshot_requests.requests[0].output_id, OutputId(7));
     }
 }

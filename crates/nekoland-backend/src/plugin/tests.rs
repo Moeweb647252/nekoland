@@ -7,7 +7,8 @@ use bevy_ecs::world::World;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule, install_core_schedules};
 use nekoland_ecs::bundles::OutputBundle;
 use nekoland_ecs::components::{
-    OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry, WlSurfaceHandle,
+    OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry,
+    WindowViewportVisibility, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::{
     BackendInputAction, BackendInputEvent, CompiledOutputFrames, CompletedScreenshotFrames,
@@ -18,8 +19,8 @@ use nekoland_ecs::resources::{
     PresentSurfaceSnapshotState, RenderItemId, RenderItemIdentity, RenderItemInstance,
     RenderMaterialFrameState, RenderPassGraph, RenderPassId, RenderPassNode, RenderPlan,
     RenderPlanItem, RenderProcessPlan, RenderRect, RenderSceneRole, RenderSourceId, RenderTargetId,
-    RenderTargetKind, SurfacePresentationSnapshot, SurfacePresentationState, SurfaceRenderItem,
-    VirtualOutputCaptureState, WaylandFeedback, WaylandIngress,
+    RenderTargetKind, ShellRenderInput, SurfacePresentationSnapshot, SurfacePresentationState,
+    SurfaceRenderItem, VirtualOutputCaptureState, WaylandFeedback, WaylandIngress,
 };
 use nekoland_protocol::ProtocolSeatDispatchSystems;
 
@@ -47,12 +48,51 @@ fn identity(id: u64) -> RenderItemIdentity {
 #[test]
 fn backend_root_facade_exports_remain_usable() {
     let mut main_world = World::default();
+    main_world.insert_resource(ShellRenderInput::default());
     let mut wayland_world = World::default();
 
     crate::extract_backend_wayland_subapp_inputs(&mut main_world, &mut wayland_world);
 
     let _plugin = crate::BackendPlugin;
     let _subapp_plugin = crate::BackendWaylandSubAppPlugin;
+}
+
+#[test]
+fn backend_extract_requires_shell_render_boundary_for_present_surface_snapshots() {
+    let mut main_world = World::default();
+    main_world.insert_resource(ShellRenderInput::default());
+    let output = main_world
+        .spawn(OutputBundle {
+            output: OutputDevice {
+                name: "Virtual-1".to_owned(),
+                kind: OutputKind::Virtual,
+                make: "Virtual".to_owned(),
+                model: "test".to_owned(),
+            },
+            properties: OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+            ..Default::default()
+        })
+        .id();
+    let output_id = *main_world.get::<OutputId>(output).expect("output id");
+    main_world.spawn((
+        WlSurfaceHandle { id: 77 },
+        SurfaceGeometry { x: 40, y: 30, width: 400, height: 300 },
+        WindowViewportVisibility { visible: true, output: Some(output_id) },
+        XdgWindow::default(),
+    ));
+
+    let mut wayland_world = World::default();
+    crate::extract_backend_wayland_subapp_inputs(&mut main_world, &mut wayland_world);
+
+    assert!(
+        wayland_world.resource::<PresentSurfaceSnapshotState>().surfaces.is_empty(),
+        "present surfaces should come from ShellRenderInput rather than reconstructed live state",
+    );
 }
 
 #[derive(Debug, Default, Resource)]
@@ -182,7 +222,7 @@ fn backend_wayland_cleanup_clears_frame_local_runtime_queues() {
 }
 
 #[test]
-fn backend_normalize_mirrors_backend_input_events_into_platform_input_mailbox() {
+fn backend_normalize_mirrors_backend_input_events_into_platform_input_queue() {
     let mut app = App::new();
     install_core_schedules(&mut app);
     app.init_resource::<PendingBackendInputEvents>()
@@ -250,6 +290,7 @@ fn backend_present_system_populates_multi_output_present_audit() {
         .init_resource::<VirtualOutputCaptureState>()
         .init_resource::<BackendPresentInputs>()
         .init_resource::<PresentSurfaceSnapshotState>()
+        .init_resource::<ShellRenderInput>()
         .init_resource::<PendingScreenshotRequests>()
         .init_resource::<CompletedScreenshotFrames>()
         .init_resource::<RenderMaterialFrameState>()
@@ -297,42 +338,45 @@ fn backend_present_system_populates_multi_output_present_audit() {
         .id();
     let hdmi_id = app.world().get::<OutputId>(hdmi).copied().expect("hdmi output id");
     let dp_id = app.world().get::<OutputId>(dp).copied().expect("dp output id");
-    app.world_mut().insert_resource(SurfacePresentationSnapshot {
-        surfaces: std::collections::BTreeMap::from([
-            (
-                11,
-                SurfacePresentationState {
-                    visible: true,
-                    target_output: Some(hdmi_id),
-                    geometry: SurfaceGeometry { x: 10, y: 20, width: 300, height: 200 },
-                    input_enabled: true,
-                    damage_enabled: true,
-                    role: nekoland_ecs::resources::SurfacePresentationRole::Window,
-                },
-            ),
-            (
-                22,
-                SurfacePresentationState {
-                    visible: true,
-                    target_output: Some(dp_id),
-                    geometry: SurfaceGeometry { x: 40, y: 50, width: 320, height: 240 },
-                    input_enabled: true,
-                    damage_enabled: true,
-                    role: nekoland_ecs::resources::SurfacePresentationRole::Window,
-                },
-            ),
-            (
-                33,
-                SurfacePresentationState {
-                    visible: true,
-                    target_output: None,
-                    geometry: SurfaceGeometry { x: 70, y: 80, width: 128, height: 96 },
-                    input_enabled: true,
-                    damage_enabled: true,
-                    role: nekoland_ecs::resources::SurfacePresentationRole::Layer,
-                },
-            ),
-        ]),
+    app.world_mut().insert_resource(ShellRenderInput {
+        surface_presentation: SurfacePresentationSnapshot {
+            surfaces: std::collections::BTreeMap::from([
+                (
+                    11,
+                    SurfacePresentationState {
+                        visible: true,
+                        target_output: Some(hdmi_id),
+                        geometry: SurfaceGeometry { x: 10, y: 20, width: 300, height: 200 },
+                        input_enabled: true,
+                        damage_enabled: true,
+                        role: nekoland_ecs::resources::SurfacePresentationRole::Window,
+                    },
+                ),
+                (
+                    22,
+                    SurfacePresentationState {
+                        visible: true,
+                        target_output: Some(dp_id),
+                        geometry: SurfaceGeometry { x: 40, y: 50, width: 320, height: 240 },
+                        input_enabled: true,
+                        damage_enabled: true,
+                        role: nekoland_ecs::resources::SurfacePresentationRole::Window,
+                    },
+                ),
+                (
+                    33,
+                    SurfacePresentationState {
+                        visible: true,
+                        target_output: None,
+                        geometry: SurfaceGeometry { x: 70, y: 80, width: 128, height: 96 },
+                        input_enabled: true,
+                        damage_enabled: true,
+                        role: nekoland_ecs::resources::SurfacePresentationRole::Layer,
+                    },
+                ),
+            ]),
+        },
+        ..Default::default()
     });
 
     app.world_mut().spawn((

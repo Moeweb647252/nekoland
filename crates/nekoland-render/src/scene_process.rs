@@ -4,8 +4,8 @@ use bevy_ecs::prelude::{Query, Res, ResMut, Resource, With};
 use bevy_ecs::world::World;
 use nekoland_ecs::components::{LayerShellSurface, XdgPopup, XdgWindow};
 use nekoland_ecs::resources::{
-    CompositorSceneState, OutputSnapshotState, RenderRect, ShellRenderInput,
-    SurfacePresentationRole, SurfacePresentationSnapshot, WaylandIngress,
+    CompositorSceneState, RenderRect, ShellRenderInput, SurfacePresentationRole,
+    SurfacePresentationSnapshot, WaylandIngress,
 };
 
 use crate::animation::{
@@ -96,24 +96,19 @@ pub fn surface_scene_process_snapshot_system(
     windows: SurfaceAnimationQuery<'_, '_>,
     popups: PopupAnimationQuery<'_, '_>,
     layers: LayerAnimationQuery<'_, '_>,
-    wayland_ingress: Option<Res<'_, WaylandIngress>>,
-    output_snapshots: Option<Res<'_, OutputSnapshotState>>,
-    shell_render_input: Option<Res<'_, ShellRenderInput>>,
+    wayland_ingress: Res<'_, WaylandIngress>,
+    shell_render_input: Res<'_, ShellRenderInput>,
     timelines: Res<'_, AnimationTimelineStore>,
     mut appearance: ResMut<'_, AppearanceSnapshot>,
     mut projection: ResMut<'_, ProjectionSnapshot>,
 ) {
     let live_outputs = wayland_ingress
-        .as_deref()
-        .map(|ingress| &ingress.output_snapshots)
-        .or(output_snapshots.as_deref())
-        .as_deref()
-        .map(|snapshots| {
-            snapshots.outputs.iter().map(|output| output.output_id).collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let surface_presentation =
-        shell_render_input.as_deref().map(|mailbox| &mailbox.surface_presentation);
+        .output_snapshots
+        .outputs
+        .iter()
+        .map(|output| output.output_id)
+        .collect::<Vec<_>>();
+    let surface_presentation = &shell_render_input.surface_presentation;
 
     for (surface, animation) in windows.iter() {
         snapshot_surface_process_entry(
@@ -164,7 +159,7 @@ fn snapshot_surface_process_entry(
     animation: &nekoland_ecs::components::WindowAnimation,
     expected_role: SurfacePresentationRole,
     live_outputs: &[nekoland_ecs::components::OutputId],
-    surface_presentation: Option<&SurfacePresentationSnapshot>,
+    surface_presentation: &SurfacePresentationSnapshot,
     timelines: &AnimationTimelineStore,
     appearance: &mut AppearanceSnapshot,
     projection: &mut ProjectionSnapshot,
@@ -187,7 +182,8 @@ fn snapshot_surface_process_entry(
     }
 
     let target_outputs = surface_presentation
-        .and_then(|snapshot| snapshot.surfaces.get(&surface_id))
+        .surfaces
+        .get(&surface_id)
         .filter(|state| state.visible && state.role == expected_role)
         .map(|state| {
             if let Some(target_output) = state.target_output {
@@ -260,16 +256,14 @@ pub fn extract_scene_process_snapshots(main_world: &mut World, render_world: &mu
     };
 
     let live_outputs = main_world
-        .get_resource::<WaylandIngress>()
-        .map(|ingress| ingress.output_snapshots.clone())
-        .map(|snapshots| {
-            snapshots.outputs.iter().map(|output| output.output_id).collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let surface_presentation = main_world
-        .get_resource::<ShellRenderInput>()
-        .map(|mailbox| mailbox.surface_presentation.clone());
-    let surface_presentation = surface_presentation.as_ref();
+        .resource::<WaylandIngress>()
+        .output_snapshots
+        .outputs
+        .iter()
+        .map(|output| output.output_id)
+        .collect::<Vec<_>>();
+    let shell_render_input = main_world.resource::<ShellRenderInput>().clone();
+    let surface_presentation = &shell_render_input.surface_presentation;
 
     let mut windows = main_world.query_filtered::<(
         &'static nekoland_ecs::components::WlSurfaceHandle,
@@ -492,8 +486,8 @@ mod tests {
     use nekoland_ecs::components::{OutputId, WlSurfaceHandle, XdgWindow};
     use nekoland_ecs::resources::{
         CompositorClock, CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState,
-        OutputCompositorScene, OutputGeometrySnapshot, OutputSnapshotState, RenderItemInstance,
-        RenderRect, RenderSceneRole, ShellRenderInput, SurfacePresentationRole,
+        OutputCompositorScene, OutputGeometrySnapshot, RenderItemInstance, RenderRect,
+        RenderSceneRole, ShellRenderInput, SurfacePresentationRole, WaylandIngress,
         SurfacePresentationState,
     };
 
@@ -517,17 +511,20 @@ mod tests {
             .init_resource::<AnimationTimelineStore>()
             .init_resource::<AppearanceSnapshot>()
             .init_resource::<ProjectionSnapshot>()
-            .insert_resource(OutputSnapshotState {
-                outputs: vec![OutputGeometrySnapshot {
-                    output_id: OutputId(3),
-                    name: "Virtual-1".to_owned(),
-                    x: 0,
-                    y: 0,
-                    width: 1280,
-                    height: 720,
-                    scale: 1,
-                    refresh_millihz: 60_000,
-                }],
+            .insert_resource(WaylandIngress {
+                output_snapshots: nekoland_ecs::resources::OutputSnapshotState {
+                    outputs: vec![OutputGeometrySnapshot {
+                        output_id: OutputId(3),
+                        name: "Virtual-1".to_owned(),
+                        x: 0,
+                        y: 0,
+                        width: 1280,
+                        height: 720,
+                        scale: 1,
+                        refresh_millihz: 60_000,
+                    }],
+                },
+                ..WaylandIngress::default()
             })
             .init_resource::<ShellRenderInput>()
             .add_systems(

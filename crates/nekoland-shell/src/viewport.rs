@@ -5,7 +5,7 @@ use nekoland_ecs::components::{
     OutputId, OutputProperties, OutputViewport, OutputWorkArea, SurfaceGeometry,
     WindowFullscreenTarget, WindowMode, WindowSceneGeometry, XdgWindow,
 };
-use nekoland_ecs::resources::{PrimaryOutputState, WaylandIngress};
+use nekoland_ecs::resources::WaylandIngress;
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
@@ -72,19 +72,16 @@ pub(crate) fn center_viewport_on_scene_geometry(
     viewport.origin_y = target_y.saturating_sub(half_height);
 }
 
-pub(crate) fn preferred_primary_output_state<'a>(
-    wayland_ingress: Option<&'a WaylandIngress>,
-    primary_output: Option<&'a PrimaryOutputState>,
-) -> Option<&'a PrimaryOutputState> {
-    wayland_ingress.map(|ingress| &ingress.primary_output).or(primary_output)
+pub(crate) fn preferred_primary_output_id(wayland_ingress: Option<&WaylandIngress>) -> Option<OutputId> {
+    wayland_ingress.and_then(|ingress| ingress.primary_output.id)
 }
 
 #[allow(dead_code)]
 pub(crate) fn resolve_active_output_state<'w, 's>(
     outputs: &'w Query<'w, 's, OutputRuntime>,
-    primary_output: Option<&PrimaryOutputState>,
+    primary_output_id: Option<OutputId>,
 ) -> Option<(&'w OutputProperties, &'w OutputViewport)> {
-    if let Some(primary_output_id) = primary_output.and_then(|primary| primary.id)
+    if let Some(primary_output_id) = primary_output_id
         && let Some(output) = outputs.iter().find(|output| output.id() == primary_output_id)
     {
         return Some((output.properties, output.viewport));
@@ -96,7 +93,7 @@ pub(crate) fn resolve_active_output_state<'w, 's>(
 pub(crate) fn resolve_output_state_for_workspace<'w, 's>(
     outputs: &'w Query<'w, 's, (Entity, OutputRuntime)>,
     workspace_id: Option<u32>,
-    primary_output: Option<&PrimaryOutputState>,
+    primary_output_id: Option<OutputId>,
 ) -> Option<(OutputId, &'w OutputProperties, &'w OutputViewport, &'w OutputWorkArea)> {
     if let Some(workspace_id) = workspace_id {
         if let Some((_, output)) = outputs.iter().find(|(_, output)| {
@@ -111,7 +108,7 @@ pub(crate) fn resolve_output_state_for_workspace<'w, 's>(
         return None;
     }
 
-    if let Some(primary_output_id) = primary_output.and_then(|primary| primary.id)
+    if let Some(primary_output_id) = primary_output_id
         && let Some((_, output)) =
             outputs.iter().find(|(_, output)| output.id() == primary_output_id)
     {
@@ -138,7 +135,7 @@ pub(crate) fn resolve_output_state_for_window<'w, 's>(
     outputs: &'w Query<'w, 's, (Entity, OutputRuntime)>,
     workspace_id: Option<u32>,
     fullscreen_target: Option<&WindowFullscreenTarget>,
-    primary_output: Option<&PrimaryOutputState>,
+    primary_output_id: Option<OutputId>,
 ) -> Option<(OutputId, &'w OutputProperties, &'w OutputViewport, &'w OutputWorkArea)> {
     if let Some(output_name) = fullscreen_target
         .and_then(|target| target.output.as_ref())
@@ -149,18 +146,16 @@ pub(crate) fn resolve_output_state_for_window<'w, 's>(
         return Some((output_id, output, viewport, work_area));
     }
 
-    resolve_output_state_for_workspace(outputs, workspace_id, primary_output)
+    resolve_output_state_for_workspace(outputs, workspace_id, primary_output_id)
 }
 
 pub fn window_viewport_projection_system(
     outputs: Query<(Entity, OutputRuntime)>,
-    wayland_ingress: Option<Res<WaylandIngress>>,
-    primary_output: Option<Res<PrimaryOutputState>>,
+    wayland_ingress: Res<WaylandIngress>,
     workspaces: Query<(Entity, WorkspaceRuntime), Allow<Disabled>>,
     mut windows: Query<WindowRuntime, (With<XdgWindow>, Allow<Disabled>)>,
 ) {
-    let primary_output =
-        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
+    let primary_output_id = preferred_primary_output_id(Some(&wayland_ingress));
     for mut window in &mut windows {
         if let Some(background) = window.background.as_ref() {
             let Some((_, output)) =
@@ -187,10 +182,10 @@ pub fn window_viewport_projection_system(
                 &outputs,
                 workspace_id,
                 Some(window.fullscreen_target.as_ref()),
-                primary_output,
+                primary_output_id,
             )
         } else {
-            resolve_output_state_for_workspace(&outputs, workspace_id, primary_output)
+            resolve_output_state_for_workspace(&outputs, workspace_id, primary_output_id)
         };
         let Some((output_id, output, viewport, _)) = output_state else {
             *window.viewport_visibility =
@@ -245,7 +240,9 @@ mod tests {
     #[test]
     fn viewport_projection_moves_visible_window_into_output_local_coordinates() {
         let mut app = NekolandApp::new("viewport-projection-test");
-        app.inner_mut().add_systems(LayoutSchedule, window_viewport_projection_system);
+        app.inner_mut()
+            .insert_resource(WaylandIngress::default())
+            .add_systems(LayoutSchedule, window_viewport_projection_system);
 
         app.inner_mut().world_mut().spawn(OutputBundle {
             output: OutputDevice {
@@ -358,6 +355,7 @@ mod tests {
             *app.inner().world().get::<OutputId>(output_one).expect("first output id");
         let output_two_id =
             *app.inner().world().get::<OutputId>(output_two).expect("second output id");
+        // Keep a stale compat resource on purpose so this test proves ingress wins over it.
         app.inner_mut().world_mut().insert_resource(PrimaryOutputState { id: Some(output_one_id) });
         app.inner_mut().world_mut().insert_resource(WaylandIngress {
             primary_output: PrimaryOutputState { id: Some(output_two_id) },
@@ -398,7 +396,9 @@ mod tests {
     #[test]
     fn viewport_projection_hides_windows_from_workspaces_not_shown_on_any_output() {
         let mut app = NekolandApp::new("viewport-projection-hidden-workspace-test");
-        app.inner_mut().add_systems(LayoutSchedule, window_viewport_projection_system);
+        app.inner_mut()
+            .insert_resource(WaylandIngress::default())
+            .add_systems(LayoutSchedule, window_viewport_projection_system);
 
         let workspace = app
             .inner_mut()
@@ -458,7 +458,9 @@ mod tests {
     #[test]
     fn background_windows_hide_when_their_output_disappears() {
         let mut app = NekolandApp::new("viewport-projection-missing-background-output-test");
-        app.inner_mut().add_systems(LayoutSchedule, window_viewport_projection_system);
+        app.inner_mut()
+            .insert_resource(WaylandIngress::default())
+            .add_systems(LayoutSchedule, window_viewport_projection_system);
 
         let output = app
             .inner_mut()

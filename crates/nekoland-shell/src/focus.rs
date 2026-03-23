@@ -31,7 +31,7 @@ type FocusWorkspaces<'w, 's> = Query<'w, 's, (Entity, WorkspaceRuntime)>;
 pub struct FocusManagementParams<'w, 's> {
     active_grab: Option<Res<'w, ActiveWindowGrab>>,
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
-    wayland_ingress: Option<Res<'w, WaylandIngress>>,
+    wayland_ingress: Res<'w, WaylandIngress>,
     stacking: Res<'w, WindowStackingState>,
     viewport_pan: Option<Res<'w, ViewportPointerPanState>>,
     windows: FocusWindows<'w, 's>,
@@ -48,7 +48,7 @@ pub fn pointer_button_focus_system(
     mut keyboard_focus: ResMut<KeyboardFocusState>,
     mut stacking: ResMut<WindowStackingState>,
     windows: Query<WindowFocusRuntime, With<XdgWindow>>,
-    wayland_ingress: Option<Res<WaylandIngress>>,
+    wayland_ingress: Res<WaylandIngress>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
 ) {
     if !pointer_buttons.read().any(|event| event.pressed) {
@@ -56,9 +56,7 @@ pub fn pointer_button_focus_system(
     }
 
     let visible_windows = visible_window_geometries(&windows, &workspaces);
-    let output_context = wayland_ingress
-        .as_deref()
-        .and_then(|ingress| pointer_output_context(&pointer, &ingress.output_snapshots));
+    let output_context = pointer_output_context(&pointer, &wayland_ingress.output_snapshots);
     let ordered_surfaces = stacking.ordered_surfaces(
         visible_windows
             .iter()
@@ -94,15 +92,20 @@ pub fn focus_management_system(
     mut focus: FocusManagementParams<'_, '_>,
 ) {
     let visible_windows = visible_window_geometries(&focus.windows, &focus.workspaces);
-    let output_context = focus
-        .wayland_ingress
-        .as_deref()
-        .and_then(|ingress| pointer_output_context(&pointer, &ingress.output_snapshots));
+    let output_context = pointer_output_context(&pointer, &focus.wayland_ingress.output_snapshots);
     let visible_surfaces = focus.stacking.ordered_surfaces(
         visible_windows
             .iter()
             .map(|(surface_id, (_, workspace_id, _, _))| (*workspace_id, *surface_id)),
     );
+
+    if visible_surfaces.is_empty() {
+        tracing::trace!(
+            focused_surface = ?focus.keyboard_focus.focused_surface,
+            "focus management skipped because no visible surfaces were derived"
+        );
+        return;
+    }
 
     if let Some(grabbed_surface) =
         focus.active_grab.and_then(|grab| grab.state.as_ref().map(|state| state.surface_id))
@@ -228,7 +231,7 @@ mod tests {
     use nekoland_ecs::events::PointerButton;
     use nekoland_ecs::resources::{
         GlobalPointerPosition, KeyboardFocusState, UNASSIGNED_WORKSPACE_STACK_ID,
-        ViewportPointerPanState, WindowStackingState,
+        ViewportPointerPanState, WaylandIngress, WindowStackingState,
     };
 
     use super::{focus_management_system, pointer_button_focus_system};
@@ -237,6 +240,7 @@ mod tests {
     fn clicking_visible_lower_window_raises_and_focuses_it() {
         let mut app = NekolandApp::new("focus-click-stack-test");
         app.inner_mut()
+            .insert_resource(WaylandIngress::default())
             .insert_resource(GlobalPointerPosition { x: 10.0, y: 10.0 })
             .insert_resource(KeyboardFocusState::default())
             .insert_resource(WindowStackingState {
@@ -278,6 +282,7 @@ mod tests {
         let mut app = NekolandApp::new("focus-fallback-stack-test");
         let config = CompositorConfig { focus_follows_mouse: false, ..CompositorConfig::default() };
         app.inner_mut()
+            .insert_resource(WaylandIngress::default())
             .insert_resource(config)
             .insert_resource(GlobalPointerPosition::default())
             .insert_resource(KeyboardFocusState::default())
@@ -310,6 +315,7 @@ mod tests {
     fn clicking_overlapping_windows_focuses_frontmost_window() {
         let mut app = NekolandApp::new("focus-click-overlap-test");
         app.inner_mut()
+            .insert_resource(WaylandIngress::default())
             .insert_resource(GlobalPointerPosition { x: 60.0, y: 60.0 })
             .insert_resource(KeyboardFocusState::default())
             .insert_resource(WindowStackingState {
@@ -347,6 +353,7 @@ mod tests {
     fn focus_follows_mouse_ignores_floating_windows() {
         let mut app = NekolandApp::new("focus-hover-floating-test");
         app.inner_mut()
+            .insert_resource(WaylandIngress::default())
             .insert_resource(CompositorConfig::default())
             .insert_resource(GlobalPointerPosition { x: 10.0, y: 10.0 })
             .insert_resource(KeyboardFocusState { focused_surface: Some(22) })
@@ -381,6 +388,7 @@ mod tests {
     fn focus_follows_mouse_targets_tiled_windows() {
         let mut app = NekolandApp::new("focus-hover-tiled-test");
         app.inner_mut()
+            .insert_resource(WaylandIngress::default())
             .insert_resource(CompositorConfig::default())
             .insert_resource(GlobalPointerPosition { x: 10.0, y: 10.0 })
             .insert_resource(KeyboardFocusState { focused_surface: Some(22) })
@@ -415,6 +423,7 @@ mod tests {
     fn focus_follows_mouse_prefers_frontmost_overlapping_tiled_window() {
         let mut app = NekolandApp::new("focus-hover-overlap-test");
         app.inner_mut()
+            .insert_resource(WaylandIngress::default())
             .insert_resource(CompositorConfig::default())
             .insert_resource(GlobalPointerPosition { x: 60.0, y: 60.0 })
             .insert_resource(KeyboardFocusState::default())
@@ -449,6 +458,7 @@ mod tests {
     fn viewport_pointer_pan_blocks_hover_focus_changes() {
         let mut app = NekolandApp::new("focus-hover-viewport-pan-test");
         app.inner_mut()
+            .insert_resource(WaylandIngress::default())
             .insert_resource(CompositorConfig::default())
             .insert_resource(GlobalPointerPosition { x: 10.0, y: 10.0 })
             .insert_resource(KeyboardFocusState { focused_surface: Some(22) })

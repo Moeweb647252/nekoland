@@ -65,7 +65,7 @@ pub struct FrameCompositionInputs<'w, 's> {
     popups: Query<'w, 's, PopupRenderRuntime, With<XdgPopup>>,
     stacking: Res<'w, WindowStackingState>,
     workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
-    shell_render_input: Option<Res<'w, ShellRenderInput>>,
+    shell_render_input: Res<'w, ShellRenderInput>,
     appearance: Option<Res<'w, AppearanceSnapshot>>,
     projection: Option<Res<'w, ProjectionSnapshot>>,
     scene_contributions: ResMut<'w, RenderSceneContributionQueue>,
@@ -95,7 +95,7 @@ pub struct DesktopSurfaceOrderInputs<'w, 's> {
     popups: Query<'w, 's, PopupRenderRuntime, With<XdgPopup>>,
     stacking: Res<'w, WindowStackingState>,
     workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
-    shell_render_input: Option<Res<'w, ShellRenderInput>>,
+    shell_render_input: Res<'w, ShellRenderInput>,
     ordered_surfaces: ResMut<'w, DesktopSurfaceOrderSnapshot>,
 }
 
@@ -117,8 +117,7 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
         projection,
         mut scene_contributions,
     } = composition;
-    let surface_presentation =
-        shell_render_input.as_deref().map(|mailbox| &mailbox.surface_presentation);
+    let surface_presentation = Some(&shell_render_input.surface_presentation);
     let appearance = appearance.as_deref();
     let projection = projection.as_deref();
     let live_outputs = outputs.iter().map(|output| output.id()).collect::<Vec<_>>();
@@ -373,8 +372,7 @@ pub fn snapshot_desktop_surface_order_system(inputs: DesktopSurfaceOrderInputs<'
         shell_render_input,
         mut ordered_surfaces,
     } = inputs;
-    let surface_presentation =
-        shell_render_input.as_deref().map(|mailbox| &mailbox.surface_presentation);
+    let surface_presentation = Some(&shell_render_input.surface_presentation);
     let live_outputs = outputs.iter().map(|output| output.id()).collect::<Vec<_>>();
     let mut ordered = live_outputs
         .iter()
@@ -535,13 +533,12 @@ pub fn snapshot_desktop_surface_order_system(inputs: DesktopSurfaceOrderInputs<'
 pub fn emit_desktop_scene_contributions_from_snapshot_system(
     views: Res<'_, RenderViewSnapshot>,
     ordered_surfaces: Res<'_, DesktopSurfaceOrderSnapshot>,
-    shell_render_input: Option<Res<'_, ShellRenderInput>>,
+    shell_render_input: Res<'_, ShellRenderInput>,
     appearance: Option<Res<'_, AppearanceSnapshot>>,
     projection: Option<Res<'_, ProjectionSnapshot>>,
     mut scene_contributions: ResMut<'_, RenderSceneContributionQueue>,
 ) {
-    let surface_presentation =
-        shell_render_input.as_deref().map(|mailbox| &mailbox.surface_presentation);
+    let surface_presentation = Some(&shell_render_input.surface_presentation);
     let appearance = appearance.as_deref();
     let projection = projection.as_deref();
     let mut contributions = views
@@ -610,7 +607,8 @@ mod tests {
         OutputOverlayId, OutputOverlaySpec, OutputOverlayState, RenderColor, RenderItemIdentity,
         RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
         RenderSourceId, ShellRenderInput, SurfacePresentationRole, SurfacePresentationSnapshot,
-        SurfacePresentationState, UNASSIGNED_WORKSPACE_STACK_ID, WindowStackingState,
+        SurfacePresentationState, UNASSIGNED_WORKSPACE_STACK_ID, WaylandIngress,
+        WindowStackingState,
     };
 
     use crate::animation::{
@@ -629,6 +627,7 @@ mod tests {
             .init_resource::<ProjectionSnapshot>()
             .init_resource::<CompositorSceneState>()
             .init_resource::<ShellRenderInput>()
+            .init_resource::<WaylandIngress>()
             .init_resource::<OutputOverlayState>()
             .init_resource::<crate::output_overlay::OutputOverlaySceneSyncState>()
             .init_resource::<RenderSceneContributionQueue>()
@@ -683,6 +682,20 @@ mod tests {
             .world()
             .get::<nekoland_ecs::components::OutputId>(output)
             .copied()
+            .map(|output_id| {
+                app.inner_mut().world_mut().resource_mut::<WaylandIngress>().output_snapshots.outputs =
+                    vec![nekoland_ecs::resources::OutputGeometrySnapshot {
+                        output_id,
+                        name: "Virtual-1".to_owned(),
+                        x: 0,
+                        y: 0,
+                        width: 1280,
+                        height: 720,
+                        scale: 1,
+                        refresh_millihz: 60_000,
+                    }];
+                output_id
+            })
             .expect("output id should exist")
     }
 

@@ -40,7 +40,7 @@ impl ChildCommandEnvironment {
 #[derive(SystemParam)]
 pub struct StartupActionDispatch<'w, 's> {
     config: Res<'w, CompositorConfig>,
-    wayland_ingress: Option<Res<'w, WaylandIngress>>,
+    wayland_ingress: Res<'w, WaylandIngress>,
     startup_actions: ResMut<'w, StartupActionState>,
     pending_input_events: ResMut<'w, PendingInputEvents>,
     pending_external_commands: ResMut<'w, PendingExternalCommandRequests>,
@@ -79,7 +79,7 @@ impl<'a, 'ops> ActionDispatchContext<'a, 'ops> {
 /// Attempts to launch queued external commands and records the result as both ECS messages and
 /// human-readable input-log entries.
 pub fn external_command_launch_system(
-    wayland_ingress: Option<Res<WaylandIngress>>,
+    wayland_ingress: Res<WaylandIngress>,
     mut pending_external_commands: ResMut<PendingExternalCommandRequests>,
     mut pending_input_events: ResMut<PendingInputEvents>,
     mut launched_events: MessageWriter<ExternalCommandLaunched>,
@@ -94,7 +94,7 @@ pub fn external_command_launch_system(
                 continue;
             };
 
-            let child_environment = nested_wayland_env(wayland_ingress.as_deref());
+            let child_environment = nested_wayland_env(Some(&wayland_ingress));
             let mut command = Command::new(program);
             command.args(args);
             child_environment.apply_to(&mut command);
@@ -170,9 +170,6 @@ pub fn startup_action_queue_system(startup: StartupActionDispatch<'_, '_>) {
         return;
     }
 
-    let Some(wayland_ingress) = wayland_ingress else {
-        return;
-    };
     let protocol_server = &wayland_ingress.protocol_server;
     let Some(socket_name) = protocol_server.socket_name.as_deref() else {
         return;

@@ -39,11 +39,13 @@ fn render_root_facade_exports_remain_usable() {
 }
 
 #[test]
-fn render_subapp_extract_syncs_shell_owned_inputs_from_shell_render_mailbox() {
+fn render_subapp_extract_syncs_shell_owned_inputs_from_shell_render_boundary() {
     let mut main_world = bevy_ecs::world::World::default();
+    main_world.insert_resource(nekoland_ecs::resources::WindowStackingState::default());
     let mut pending_screenshot_requests =
         nekoland_ecs::resources::PendingScreenshotRequests::default();
     let request_id = pending_screenshot_requests.request_output(OutputId(3));
+    main_world.insert_resource(WaylandIngress::default());
     main_world.insert_resource(ShellRenderInput {
         pointer: GlobalPointerPosition { x: 33.0, y: 44.0 },
         cursor_image: CursorImageSnapshot::Named { icon_name: "default".to_owned() },
@@ -88,7 +90,7 @@ fn render_subapp_extract_syncs_shell_owned_inputs_from_shell_render_mailbox() {
 }
 
 #[test]
-fn render_subapp_extract_builds_view_and_surface_snapshots_from_mailboxes() {
+fn render_subapp_extract_builds_view_and_surface_snapshots_from_boundaries() {
     let mut main_world = bevy_ecs::world::World::default();
     main_world.insert_resource(nekoland_ecs::resources::WindowStackingState {
         workspaces: std::collections::BTreeMap::from([(
@@ -181,8 +183,9 @@ fn render_subapp_extract_builds_view_and_surface_snapshots_from_mailboxes() {
 }
 
 #[test]
-fn render_subapp_extract_builds_scene_process_snapshots_from_mailboxes() {
+fn render_subapp_extract_builds_scene_process_snapshots_from_boundaries() {
     let mut main_world = bevy_ecs::world::World::default();
+    main_world.insert_resource(nekoland_ecs::resources::WindowStackingState::default());
     main_world.insert_resource(CompositorClock { frame: 1, uptime_millis: 50 });
     main_world.insert_resource(AnimationTimelineStore::default());
     main_world.insert_resource(WaylandIngress {
@@ -382,7 +385,7 @@ fn compiled_output_frames_include_per_output_frames() {
 }
 
 #[test]
-fn stable_ids_flow_from_platform_mailboxes_into_compiled_output_frames() {
+fn stable_ids_flow_from_platform_boundaries_into_compiled_output_frames() {
     let output_id = OutputId(3);
     let surface_id = 13_u64;
 

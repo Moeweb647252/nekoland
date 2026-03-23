@@ -30,32 +30,25 @@ pub(super) fn extract_render_subapp_inputs(main_world: &mut World, render_world:
 }
 
 fn sync_render_platform_inputs_from_wayland_ingress(main_world: &World, render_world: &mut World) {
-    let Some(wayland_ingress) = main_world.get_resource::<WaylandIngress>() else {
-        return;
-    };
-
+    let wayland_ingress = main_world.resource::<WaylandIngress>();
     render_world.insert_resource(wayland_ingress.surface_snapshots.clone());
 }
 
 fn extract_render_view_snapshot(main_world: &mut World, render_world: &mut World) {
     let views = main_world
-        .get_resource::<WaylandIngress>()
-        .map(|ingress| {
-            ingress
-                .output_snapshots
-                .outputs
-                .iter()
-                .map(|output| compositor_render::RenderViewState {
-                    output_id: output.output_id,
-                    x: output.x,
-                    y: output.y,
-                    width: output.width,
-                    height: output.height,
-                    scale: output.scale,
-                })
-                .collect::<Vec<_>>()
+        .resource::<WaylandIngress>()
+        .output_snapshots
+        .outputs
+        .iter()
+        .map(|output| compositor_render::RenderViewState {
+            output_id: output.output_id,
+            x: output.x,
+            y: output.y,
+            width: output.width,
+            height: output.height,
+            scale: output.scale,
         })
-        .unwrap_or_default();
+        .collect::<Vec<_>>();
     render_world.insert_resource(compositor_render::RenderViewSnapshot { views });
 }
 
@@ -76,25 +69,16 @@ fn extract_desktop_surface_order_snapshot(main_world: &mut World, render_world: 
     let mut workspaces =
         main_world.query::<(bevy_ecs::entity::Entity, nekoland_ecs::views::WorkspaceRuntime)>();
 
-    let stacking = main_world
-        .get_resource::<nekoland_ecs::resources::WindowStackingState>()
-        .cloned()
-        .unwrap_or_default();
-    let surface_presentation = main_world
-        .get_resource::<ShellRenderInput>()
-        .map(|mailbox| mailbox.surface_presentation.clone());
-    let surface_presentation = surface_presentation.as_ref();
+    let stacking = main_world.resource::<nekoland_ecs::resources::WindowStackingState>().clone();
+    let shell_render_input = main_world.resource::<ShellRenderInput>().clone();
+    let surface_presentation = &shell_render_input.surface_presentation;
     let live_outputs = main_world
-        .get_resource::<WaylandIngress>()
-        .map(|ingress| {
-            ingress
-                .output_snapshots
-                .outputs
-                .iter()
-                .map(|output| output.output_id)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+        .resource::<WaylandIngress>()
+        .output_snapshots
+        .outputs
+        .iter()
+        .map(|output| output.output_id)
+        .collect::<Vec<_>>();
     let workspace_ids_by_entity = workspaces
         .iter(main_world)
         .map(|(entity, workspace)| (entity, workspace.id().0))
@@ -109,8 +93,7 @@ fn extract_desktop_surface_order_snapshot(main_world: &mut World, render_world: 
     let background_windows = windows
         .iter(main_world)
         .filter_map(|(_, window)| {
-            let state = surface_presentation
-                .and_then(|snapshot| snapshot.surfaces.get(&window.surface_id()));
+            let state = surface_presentation.surfaces.get(&window.surface_id());
             let visible = state.map_or_else(
                 || {
                     nekoland_ecs::presentation_logic::output_background_window_visible(
@@ -150,8 +133,7 @@ fn extract_desktop_surface_order_snapshot(main_world: &mut World, render_world: 
     let visible_windows = windows
         .iter(main_world)
         .filter_map(|(entity, window)| {
-            let state = surface_presentation
-                .and_then(|snapshot| snapshot.surfaces.get(&window.surface_id()));
+            let state = surface_presentation.surfaces.get(&window.surface_id());
             let visible = state.map_or_else(
                 || {
                     nekoland_ecs::presentation_logic::managed_window_visible(
@@ -186,7 +168,8 @@ fn extract_desktop_surface_order_snapshot(main_world: &mut World, render_world: 
         .iter(main_world)
         .filter(|layer| {
             surface_presentation
-                .and_then(|snapshot| snapshot.surfaces.get(&layer.surface_id()))
+                .surfaces
+                .get(&layer.surface_id())
                 .map_or_else(
                     || {
                         layer.buffer.attached
@@ -209,7 +192,8 @@ fn extract_desktop_surface_order_snapshot(main_world: &mut World, render_world: 
         .iter(main_world)
         .filter(|popup| {
             surface_presentation
-                .and_then(|snapshot| snapshot.surfaces.get(&popup.surface_id()))
+                .surfaces
+                .get(&popup.surface_id())
                 .map_or_else(
                     || {
                         nekoland_ecs::presentation_logic::popup_visible(
@@ -229,7 +213,8 @@ fn extract_desktop_surface_order_snapshot(main_world: &mut World, render_world: 
         .iter(main_world)
         .filter(|layer| {
             surface_presentation
-                .and_then(|snapshot| snapshot.surfaces.get(&layer.surface_id()))
+                .surfaces
+                .get(&layer.surface_id())
                 .map_or_else(
                     || {
                         layer.buffer.attached
@@ -258,9 +243,7 @@ fn extract_desktop_surface_order_snapshot(main_world: &mut World, render_world: 
         .collect::<Vec<_>>();
 
     for surface_id in elements {
-        let Some(state) =
-            surface_presentation.and_then(|snapshot| snapshot.surfaces.get(&surface_id))
-        else {
+        let Some(state) = surface_presentation.surfaces.get(&surface_id) else {
             continue;
         };
         if !state.visible {
@@ -284,38 +267,30 @@ fn extract_desktop_surface_order_snapshot(main_world: &mut World, render_world: 
 
 fn extract_surface_content_versions_snapshot(main_world: &mut World, render_world: &mut World) {
     let versions = main_world
-        .get_resource::<WaylandIngress>()
-        .map(|ingress| ingress.surface_snapshots.clone())
-        .map(|surfaces| {
-            surfaces
-                .surfaces
-                .iter()
-                .map(|(surface_id, surface)| (*surface_id, surface.content_version))
-                .collect()
-        })
-        .unwrap_or_default();
+        .resource::<WaylandIngress>()
+        .surface_snapshots
+        .surfaces
+        .iter()
+        .map(|(surface_id, surface)| (*surface_id, surface.content_version))
+        .collect();
     render_world.insert_resource(SurfaceContentVersionSnapshot { versions });
 }
 
 fn extract_surface_buffer_attachment_snapshot(main_world: &mut World, render_world: &mut World) {
     let snapshot = main_world
-        .get_resource::<WaylandIngress>()
-        .map(|ingress| ingress.surface_snapshots.clone())
-        .map(|surfaces| {
-            surfaces
-                .surfaces
-                .iter()
-                .map(|(surface_id, surface)| {
-                    (
-                        *surface_id,
-                        SurfaceBufferAttachmentState {
-                            attached: surface.attached,
-                            scale: surface.scale,
-                        },
-                    )
-                })
-                .collect()
+        .resource::<WaylandIngress>()
+        .surface_snapshots
+        .surfaces
+        .iter()
+        .map(|(surface_id, surface)| {
+            (
+                *surface_id,
+                SurfaceBufferAttachmentState {
+                    attached: surface.attached,
+                    scale: surface.scale,
+                },
+            )
         })
-        .unwrap_or_default();
+        .collect();
     render_world.insert_resource(SurfaceBufferAttachmentSnapshot { surfaces: snapshot });
 }

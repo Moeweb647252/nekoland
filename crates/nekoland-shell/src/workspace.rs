@@ -10,8 +10,7 @@ use nekoland_ecs::components::{
     XdgWindow,
 };
 use nekoland_ecs::resources::{
-    FocusedOutputState, PendingWorkspaceControls, PrimaryOutputState, WaylandIngress,
-    WorkspaceControl,
+    FocusedOutputState, PendingWorkspaceControls, WaylandIngress, WorkspaceControl,
 };
 use nekoland_ecs::selectors::{WorkspaceLookup, WorkspaceName, WorkspaceSelector};
 use nekoland_ecs::views::{OutputRuntime, WorkspaceRuntime};
@@ -67,9 +66,8 @@ type WorkspaceOutputRouteChanges<'w, 's> = Query<
 #[derive(SystemParam)]
 pub struct WorkspaceCommandParams<'w, 's> {
     pending_workspace_controls: ResMut<'w, PendingWorkspaceControls>,
-    wayland_ingress: Option<Res<'w, WaylandIngress>>,
-    primary_output: Option<Res<'w, PrimaryOutputState>>,
-    focused_output: Option<Res<'w, FocusedOutputState>>,
+    wayland_ingress: Res<'w, WaylandIngress>,
+    focused_output: Res<'w, FocusedOutputState>,
     workspaces: Query<'w, 's, (Entity, WorkspaceRuntime), Allow<Disabled>>,
     outputs: WorkspaceOutputs<'w, 's>,
     windows: WorkspaceWindows<'w, 's>,
@@ -82,9 +80,8 @@ pub(crate) struct WorkspaceReconciliationState<'w, 's> {
     active_workspaces: ActiveWorkspaceEntities<'w, 's>,
     workspace_additions: WorkspaceAdditions<'w, 's>,
     output_route_changes: WorkspaceOutputRouteChanges<'w, 's>,
-    wayland_ingress: Option<Res<'w, WaylandIngress>>,
-    primary_output: Option<Res<'w, PrimaryOutputState>>,
-    focused_output: Option<Res<'w, FocusedOutputState>>,
+    wayland_ingress: Res<'w, WaylandIngress>,
+    focused_output: Res<'w, FocusedOutputState>,
     removed_workspaces: RemovedComponents<'w, 's, Workspace>,
     removed_outputs: RemovedComponents<'w, 's, OutputDevice>,
     removed_output_routes: RemovedComponents<'w, 's, OutputCurrentWorkspace>,
@@ -120,7 +117,6 @@ pub(crate) fn workspace_reconciliation_needed(state: WorkspaceReconciliationStat
         workspace_additions,
         output_route_changes,
         wayland_ingress,
-        primary_output,
         focused_output,
         removed_workspaces,
         removed_outputs,
@@ -140,9 +136,8 @@ pub(crate) fn workspace_reconciliation_needed(state: WorkspaceReconciliationStat
         || !removed_workspaces.is_empty()
         || !removed_outputs.is_empty()
         || !removed_output_routes.is_empty()
-        || wayland_ingress.as_ref().is_some_and(|wayland_ingress| wayland_ingress.is_changed())
-        || primary_output.as_ref().is_some_and(|primary_output| primary_output.is_changed())
-        || focused_output.as_ref().is_some_and(|focused_output| focused_output.is_changed())
+        || wayland_ingress.is_changed()
+        || focused_output.is_changed()
 }
 
 /// Applies create/switch/destroy requests and keeps child window relationships in sync when a
@@ -170,10 +165,9 @@ pub fn workspace_command_system(
             )
         })
         .collect::<Vec<_>>();
-    let primary_output = crate::viewport::preferred_primary_output_state(
-        workspace_commands.wayland_ingress.as_deref(),
-        workspace_commands.primary_output.as_deref(),
-    );
+    let primary_output_id =
+        crate::viewport::preferred_primary_output_id(Some(&workspace_commands.wayland_ingress));
+    let focused_output_id = workspace_commands.focused_output.id;
 
     for control in workspace_commands.pending_workspace_controls.take() {
         match control {
@@ -211,8 +205,8 @@ pub fn workspace_command_system(
 
                 if let Some(target_output_entity) = resolve_workspace_control_output_entity(
                     &output_snapshot,
-                    workspace_commands.focused_output.as_deref(),
-                    primary_output,
+                    focused_output_id,
+                    primary_output_id,
                 ) {
                     commands
                         .entity(target_output_entity)
@@ -386,18 +380,18 @@ pub fn remember_output_workspace_routes_system(
 /// systems can ignore inactive workspaces without filtering every query manually.
 pub fn sync_active_workspace_marker_system(
     mut commands: Commands,
-    wayland_ingress: Option<Res<WaylandIngress>>,
-    primary_output: Option<Res<PrimaryOutputState>>,
-    focused_output: Option<Res<FocusedOutputState>>,
+    wayland_ingress: Res<WaylandIngress>,
+    focused_output: Res<FocusedOutputState>,
     outputs: Query<OutputRuntime>,
     mut workspaces: Query<(Entity, WorkspaceRuntime, Has<ActiveWorkspace>), Allow<Disabled>>,
 ) {
-    let primary_output = crate::viewport::preferred_primary_output_state(
-        wayland_ingress.as_deref(),
-        primary_output.as_deref(),
+    let primary_output_id = crate::viewport::preferred_primary_output_id(Some(&wayland_ingress));
+    let focused_output_id = focused_output.id;
+    let active_workspace_id = resolve_preferred_workspace_id(
+        &outputs,
+        focused_output_id,
+        primary_output_id,
     );
-    let active_workspace_id =
-        resolve_preferred_workspace_id(&outputs, focused_output.as_deref(), primary_output);
     let active_workspace = active_workspace_id
         .and_then(|active_workspace_id| {
             workspaces
@@ -519,17 +513,17 @@ fn create_workspace_identity(
 
 fn resolve_workspace_control_output_entity(
     outputs: &[(Entity, OutputId, String, Option<u32>)],
-    focused_output: Option<&FocusedOutputState>,
-    primary_output: Option<&PrimaryOutputState>,
+    focused_output_id: Option<OutputId>,
+    primary_output: Option<OutputId>,
 ) -> Option<Entity> {
-    if let Some(output_id) = focused_output.and_then(|focused_output| focused_output.id)
+    if let Some(output_id) = focused_output_id
         && let Some((entity, _, _, _)) =
             outputs.iter().find(|(_, candidate_id, _, _)| *candidate_id == output_id)
     {
         return Some(*entity);
     }
 
-    if let Some(output_id) = primary_output.and_then(|primary_output| primary_output.id)
+    if let Some(output_id) = primary_output
         && let Some((entity, _, _, _)) =
             outputs.iter().find(|(_, candidate_id, _, _)| *candidate_id == output_id)
     {
@@ -541,10 +535,10 @@ fn resolve_workspace_control_output_entity(
 
 fn resolve_preferred_workspace_id(
     outputs: &Query<OutputRuntime>,
-    focused_output: Option<&FocusedOutputState>,
-    primary_output: Option<&PrimaryOutputState>,
+    focused_output_id: Option<OutputId>,
+    primary_output: Option<OutputId>,
 ) -> Option<u32> {
-    if let Some(output_id) = focused_output.and_then(|focused_output| focused_output.id)
+    if let Some(output_id) = focused_output_id
         && let Some(workspace_id) =
             outputs.iter().find(|output| output.id() == output_id).and_then(|output| {
                 output
@@ -556,7 +550,7 @@ fn resolve_preferred_workspace_id(
         return Some(workspace_id);
     }
 
-    if let Some(output_id) = primary_output.and_then(|primary_output| primary_output.id)
+    if let Some(output_id) = primary_output
         && let Some(workspace_id) =
             outputs.iter().find(|output| output.id() == output_id).and_then(|output| {
                 output
@@ -610,7 +604,9 @@ mod tests {
     fn destroying_workspace_reparents_windows_to_fallback_workspace() {
         let mut app = NekolandApp::new("workspace-command-test");
         app.insert_resource(EntityIndex::default())
-            .insert_resource(PendingWorkspaceControls::default());
+            .insert_resource(PendingWorkspaceControls::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(WaylandIngress::default());
         app.inner_mut().add_systems(LayoutSchedule, workspace_command_system);
 
         let fallback_workspace = app
@@ -735,7 +731,10 @@ mod tests {
     #[test]
     fn sync_active_workspace_marker_tracks_current_active_workspace() {
         let mut app = NekolandApp::new("workspace-active-marker-test");
-        app.inner_mut().add_systems(LayoutSchedule, sync_active_workspace_marker_system);
+        app.inner_mut()
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(WaylandIngress::default())
+            .add_systems(LayoutSchedule, sync_active_workspace_marker_system);
 
         let active_workspace = app
             .inner_mut()
@@ -758,7 +757,10 @@ mod tests {
     #[test]
     fn sync_active_workspace_marker_clears_stale_active_flag_on_disabled_workspace() {
         let mut app = NekolandApp::new("workspace-active-disabled-test");
-        app.inner_mut().add_systems(LayoutSchedule, sync_active_workspace_marker_system);
+        app.inner_mut()
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(WaylandIngress::default())
+            .add_systems(LayoutSchedule, sync_active_workspace_marker_system);
 
         let stale_active_workspace = app
             .inner_mut()
@@ -813,7 +815,7 @@ mod tests {
         let mut app = NekolandApp::new("workspace-reconciliation-condition-test");
         app.insert_resource(PendingWorkspaceControls::default())
             .insert_resource(FocusedOutputState::default())
-            .insert_resource(PrimaryOutputState::default())
+            .insert_resource(WaylandIngress::default())
             .insert_resource(WorkspaceReconciliationAudit::default());
         app.inner_mut().add_systems(
             LayoutSchedule,
@@ -849,7 +851,6 @@ mod tests {
         let output_id =
             *app.inner().world().get::<OutputId>(output).expect("output id should exist");
         app.inner_mut().world_mut().resource_mut::<FocusedOutputState>().id = Some(output_id);
-        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id = Some(output_id);
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
@@ -944,7 +945,7 @@ mod tests {
             .insert_resource(RememberedOutputWorkspaceState::default())
             .insert_resource(PendingWorkspaceControls::default())
             .insert_resource(FocusedOutputState::default())
-            .insert_resource(PrimaryOutputState::default())
+            .insert_resource(WaylandIngress::default())
             .inner_mut()
             .add_systems(
                 LayoutSchedule,
@@ -1010,7 +1011,7 @@ mod tests {
                 OutputCurrentWorkspace { workspace: WorkspaceId(2) },
             ))
             .id();
-        let virtual_output_id = *app
+        let _virtual_output_id = *app
             .inner()
             .world()
             .get::<OutputId>(virtual_output)
@@ -1018,8 +1019,6 @@ mod tests {
         let hdmi_output_id =
             *app.inner().world().get::<OutputId>(hdmi_output).expect("hdmi output id should exist");
         app.inner_mut().world_mut().resource_mut::<FocusedOutputState>().id = Some(hdmi_output_id);
-        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id =
-            Some(virtual_output_id);
 
         app.inner_mut()
             .world_mut()
@@ -1118,6 +1117,7 @@ mod tests {
             .expect("virtual output id should exist");
         let hdmi_output_id =
             *app.inner().world().get::<OutputId>(hdmi_output).expect("hdmi output id should exist");
+        // Keep the stale compat primary-output resource on purpose so boundary routing must win.
         app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id =
             Some(virtual_output_id);
         app.inner_mut().world_mut().insert_resource(WaylandIngress {

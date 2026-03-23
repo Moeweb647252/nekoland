@@ -19,7 +19,7 @@ const ROLE_ORDER: [RenderSceneRole; 4] = [
 pub fn build_render_phase_plan_system(
     render_plan: Res<'_, RenderPlan>,
     material_requests: Res<'_, RenderMaterialRequestQueue>,
-    shell_render_input: Option<Res<'_, ShellRenderInput>>,
+    shell_render_input: Res<'_, ShellRenderInput>,
     mut phase_plan: ResMut<'_, RenderPhasePlan>,
 ) {
     let mut outputs = BTreeMap::new();
@@ -57,13 +57,12 @@ pub fn build_render_phase_plan_system(
             })
             .collect::<Vec<_>>();
 
-        let readback = shell_render_input
-            .as_deref()
-            .map(|mailbox| mailbox.pending_screenshot_requests.requests_for_output(*output_id))
-            .filter(|requests| !requests.is_empty())
-            .map(|requests| ReadbackPhaseItem {
-                request_ids: requests.into_iter().map(|request| request.id).collect(),
-            });
+        let readback =
+            Some(shell_render_input.pending_screenshot_requests.requests_for_output(*output_id))
+                .filter(|requests| !requests.is_empty())
+                .map(|requests| ReadbackPhaseItem {
+                    request_ids: requests.into_iter().map(|request| request.id).collect(),
+                });
 
         outputs.insert(*output_id, OutputPhasePlan { scene_passes, post_process_passes, readback });
     }

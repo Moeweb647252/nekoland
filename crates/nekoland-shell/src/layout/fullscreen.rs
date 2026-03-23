@@ -2,12 +2,12 @@ use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::{Query, Res, With};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{WindowMode, XdgWindow};
-use nekoland_ecs::resources::{PrimaryOutputState, WaylandIngress, WorkArea};
+use nekoland_ecs::resources::{WaylandIngress, WorkArea};
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 use crate::viewport::{
-    preferred_primary_output_state, resolve_output_state_for_window,
+    preferred_primary_output_id, resolve_output_state_for_window,
     resolve_output_state_for_workspace,
 };
 
@@ -19,12 +19,10 @@ pub fn fullscreen_layout_system(
     outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
     mut windows: Query<WindowRuntime, With<XdgWindow>>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime), Allow<Disabled>>,
-    wayland_ingress: Option<Res<WaylandIngress>>,
-    primary_output: Option<Res<PrimaryOutputState>>,
+    wayland_ingress: Res<WaylandIngress>,
     work_area: Res<WorkArea>,
 ) {
-    let primary_output =
-        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
+    let primary_output_id = preferred_primary_output_id(Some(&wayland_ingress));
     for mut window in &mut windows {
         if !window.role.is_managed() {
             continue;
@@ -36,7 +34,7 @@ pub fn fullscreen_layout_system(
                     &outputs,
                     workspace_id,
                     Some(window.fullscreen_target.as_ref()),
-                    primary_output,
+                    primary_output_id,
                 ) else {
                     continue;
                 };
@@ -47,7 +45,7 @@ pub fn fullscreen_layout_system(
             }
             WindowMode::Maximized => {
                 let output_state =
-                    resolve_output_state_for_workspace(&outputs, workspace_id, primary_output);
+                    resolve_output_state_for_workspace(&outputs, workspace_id, primary_output_id);
                 let window_work_area =
                     output_state.as_ref().map_or(*work_area, |(_, _, _, work_area)| WorkArea {
                         x: work_area.x,
@@ -81,7 +79,7 @@ mod tests {
         OutputWorkArea, SurfaceGeometry, WindowFullscreenTarget, WindowLayout, WindowMode,
         WindowSceneGeometry, WlSurfaceHandle, Workspace, WorkspaceId, XdgWindow,
     };
-    use nekoland_ecs::resources::{PrimaryOutputState, WorkArea};
+    use nekoland_ecs::resources::{WaylandIngress, WorkArea};
     use nekoland_ecs::selectors::OutputName;
 
     use crate::viewport::window_viewport_projection_system;
@@ -91,12 +89,8 @@ mod tests {
     #[test]
     fn fullscreen_layout_prefers_named_target_output_over_workspace_output() {
         let mut app = NekolandApp::new("fullscreen-target-output-test");
-        app.insert_resource(PrimaryOutputState::default()).insert_resource(WorkArea {
-            x: 0,
-            y: 0,
-            width: 800,
-            height: 600,
-        });
+        app.insert_resource(WaylandIngress::default())
+            .insert_resource(WorkArea { x: 0, y: 0, width: 800, height: 600 });
         app.inner_mut().add_systems(
             LayoutSchedule,
             (fullscreen_layout_system, window_viewport_projection_system).chain(),
@@ -171,7 +165,7 @@ mod tests {
             .world()
             .get::<nekoland_ecs::components::OutputId>(hdmi_output)
             .expect("hdmi output id");
-        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id =
+        app.inner_mut().world_mut().resource_mut::<WaylandIngress>().primary_output.id =
             Some(virtual_output_id);
 
         let window_entity = app

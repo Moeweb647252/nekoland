@@ -71,13 +71,12 @@ pub fn build_render_target_allocation_plan_system(
 
 pub fn build_surface_texture_bridge_plan_system(
     render_plan: Res<'_, RenderPlan>,
-    shell_render_input: Option<Res<'_, ShellRenderInput>>,
+    shell_render_input: Res<'_, ShellRenderInput>,
     buffer_state: Res<'_, SurfaceBufferAttachmentSnapshot>,
     surface_snapshots: Option<Res<'_, PlatformSurfaceSnapshotState>>,
     mut bridge: ResMut<'_, SurfaceTextureBridgePlan>,
 ) {
-    let surface_presentation =
-        shell_render_input.as_deref().map(|mailbox| &mailbox.surface_presentation);
+    let surface_presentation = Some(&shell_render_input.surface_presentation);
     let surface_snapshots = surface_snapshots.as_deref();
     let mut surfaces = BTreeMap::<u64, SurfaceTextureImportDescriptor>::new();
 
@@ -517,6 +516,27 @@ mod tests {
                 },
             )]),
         });
+        world.insert_resource(ShellRenderInput {
+            surface_presentation: nekoland_ecs::resources::SurfacePresentationSnapshot {
+                surfaces: BTreeMap::from([(
+                    11,
+                    nekoland_ecs::resources::SurfacePresentationState {
+                        visible: true,
+                        target_output: Some(OutputId(2)),
+                        geometry: nekoland_ecs::components::SurfaceGeometry {
+                            x: 0,
+                            y: 0,
+                            width: 50,
+                            height: 50,
+                        },
+                        input_enabled: true,
+                        damage_enabled: true,
+                        role: nekoland_ecs::resources::SurfacePresentationRole::Window,
+                    },
+                )]),
+            },
+            ..Default::default()
+        });
         world.init_resource::<SurfaceTextureBridgePlan>();
 
         let mut system = IntoSystem::into_system(build_surface_texture_bridge_plan_system);
@@ -652,6 +672,27 @@ mod tests {
                     content_version: 5,
                 },
             )]),
+        });
+        world.insert_resource(ShellRenderInput {
+            surface_presentation: nekoland_ecs::resources::SurfacePresentationSnapshot {
+                surfaces: BTreeMap::from([(
+                    11,
+                    nekoland_ecs::resources::SurfacePresentationState {
+                        visible: true,
+                        target_output: Some(OutputId(7)),
+                        geometry: nekoland_ecs::components::SurfaceGeometry {
+                            x: 0,
+                            y: 0,
+                            width: 100,
+                            height: 100,
+                        },
+                        input_enabled: true,
+                        damage_enabled: true,
+                        role: nekoland_ecs::resources::SurfacePresentationRole::Window,
+                    },
+                )]),
+            },
+            ..Default::default()
         });
         world.init_resource::<SurfaceTextureBridgePlan>();
 

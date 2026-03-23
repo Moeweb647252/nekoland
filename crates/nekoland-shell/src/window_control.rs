@@ -7,15 +7,14 @@ use nekoland_ecs::components::{WindowLayout, WindowMode, WindowPosition, WindowS
 use nekoland_ecs::events::WindowMoved;
 use nekoland_ecs::resources::{
     EntityIndex, KeyboardFocusState, PendingWindowControls, PendingWindowServerRequests,
-    PrimaryOutputState, UNASSIGNED_WORKSPACE_STACK_ID, UNASSIGNED_WORKSPACE_TILING_ID,
-    WaylandIngress, WindowServerAction, WindowServerRequest, WindowStackingState,
-    WorkspaceTilingState,
+    UNASSIGNED_WORKSPACE_STACK_ID, UNASSIGNED_WORKSPACE_TILING_ID, WaylandIngress,
+    WindowServerAction, WindowServerRequest, WindowStackingState, WorkspaceTilingState,
 };
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 use crate::viewport::{
-    preferred_primary_output_state, project_scene_geometry, resolve_output_state_for_workspace,
+    preferred_primary_output_id, project_scene_geometry, resolve_output_state_for_workspace,
 };
 use crate::window_policy::{
     WindowBackgroundState, lock_window_policy, resolve_background_output_id,
@@ -35,7 +34,6 @@ pub struct WindowControlParams<'w, 's> {
     stacking: ResMut<'w, WindowStackingState>,
     tiling: ResMut<'w, WorkspaceTilingState>,
     wayland_ingress: Option<bevy_ecs::prelude::Res<'w, WaylandIngress>>,
-    primary_output: Option<bevy_ecs::prelude::Res<'w, PrimaryOutputState>>,
     window_moved: MessageWriter<'w, WindowMoved>,
     windows: ControlledWindows<'w, 's>,
     outputs: ControlOutputs<'w, 's>,
@@ -60,10 +58,7 @@ pub fn window_control_request_system(
         }
     }
 
-    let primary_output = preferred_primary_output_state(
-        controls.wayland_ingress.as_deref(),
-        controls.primary_output.as_deref(),
-    );
+    let primary_output_id = preferred_primary_output_id(controls.wayland_ingress.as_deref());
     let mut deferred = Vec::new();
     let mut queued_controls = controls.pending_window_controls.take();
     if let Some(wayland_ingress) = controls.wayland_ingress.as_deref() {
@@ -84,7 +79,7 @@ pub fn window_control_request_system(
         let output_state = resolve_output_state_for_workspace(
             &controls.outputs,
             Some(workspace_id),
-            primary_output,
+            primary_output_id,
         );
         let is_background = window.role.is_output_background();
 
@@ -289,6 +284,7 @@ mod tests {
             .init_resource::<EntityIndex>()
             .init_resource::<WindowStackingState>()
             .init_resource::<WorkspaceTilingState>()
+            .insert_resource(WaylandIngress::default())
             .insert_resource(WorkArea { x: 0, y: 0, width: 1280, height: 720 })
             .add_message::<WindowMoved>()
             .add_systems(
@@ -430,6 +426,7 @@ mod tests {
             .init_resource::<EntityIndex>()
             .init_resource::<WindowStackingState>()
             .init_resource::<WorkspaceTilingState>()
+            .insert_resource(WaylandIngress::default())
             .insert_resource(WorkArea { x: 0, y: 0, width: 1200, height: 800 })
             .add_message::<WindowMoved>()
             .add_systems(

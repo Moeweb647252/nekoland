@@ -5,14 +5,13 @@ use bevy_ecs::prelude::{Query, Res, ResMut, With};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{WindowLayout, XdgWindow};
 use nekoland_ecs::resources::{
-    PrimaryOutputState, UNASSIGNED_WORKSPACE_TILING_ID, WaylandIngress, WorkArea,
-    WorkspaceTilingState,
+    UNASSIGNED_WORKSPACE_TILING_ID, WaylandIngress, WorkArea, WorkspaceTilingState,
 };
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 use crate::viewport::{
-    preferred_primary_output_state, project_scene_geometry, resolve_output_state_for_workspace,
+    preferred_primary_output_id, project_scene_geometry, resolve_output_state_for_workspace,
 };
 
 /// Tiling layout strategy backed by a workspace-scoped binary tile tree.
@@ -29,12 +28,10 @@ pub fn tiling_layout_system(
     mut windows: Query<WindowRuntime, (With<XdgWindow>, Allow<Disabled>)>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime), Allow<Disabled>>,
     outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
-    wayland_ingress: Option<Res<WaylandIngress>>,
-    primary_output: Option<Res<PrimaryOutputState>>,
+    wayland_ingress: Res<WaylandIngress>,
     work_area: Res<WorkArea>,
 ) {
-    let primary_output =
-        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
+    let primary_output_id = preferred_primary_output_id(Some(&wayland_ingress));
     let tiled_surfaces = windows
         .iter()
         .filter(|window| window.role.is_managed() && matches!(*window.layout, WindowLayout::Tiled))
@@ -55,7 +52,7 @@ pub fn tiling_layout_system(
     let mut arranged = BTreeMap::new();
     for (workspace_id, tree) in &tiling.workspaces {
         let workspace_area =
-            resolve_output_state_for_workspace(&outputs, Some(*workspace_id), primary_output)
+            resolve_output_state_for_workspace(&outputs, Some(*workspace_id), primary_output_id)
                 .map(|(_, _, _, work_area)| WorkArea {
                     x: work_area.x,
                     y: work_area.y,
@@ -80,7 +77,7 @@ pub fn tiling_layout_system(
         let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces)
             .unwrap_or(UNASSIGNED_WORKSPACE_TILING_ID);
         if let Some((_, _, viewport, _)) =
-            resolve_output_state_for_workspace(&outputs, Some(workspace_id), primary_output)
+            resolve_output_state_for_workspace(&outputs, Some(workspace_id), primary_output_id)
         {
             *window.geometry = project_scene_geometry(&window.scene_geometry, viewport);
         } else {
@@ -100,14 +97,15 @@ mod tests {
         BufferState, SurfaceGeometry, WindowLayout, WindowMode, WlSurfaceHandle, Workspace,
         WorkspaceId, XdgWindow,
     };
-    use nekoland_ecs::resources::{WorkArea, WorkspaceTilingState};
+    use nekoland_ecs::resources::{WaylandIngress, WorkArea, WorkspaceTilingState};
 
     use super::tiling_layout_system;
 
     #[test]
     fn tiling_layout_splits_two_windows_into_columns() {
         let mut app = NekolandApp::new("tiling-layout-test");
-        app.insert_resource(WorkArea { x: 0, y: 0, width: 1280, height: 720 })
+        app.insert_resource(WaylandIngress::default())
+            .insert_resource(WorkArea { x: 0, y: 0, width: 1280, height: 720 })
             .insert_resource(WorkspaceTilingState::default())
             .inner_mut()
             .add_systems(LayoutSchedule, tiling_layout_system);
@@ -174,7 +172,8 @@ mod tests {
     #[test]
     fn tiling_layout_keeps_workspace_trees_separate() {
         let mut app = NekolandApp::new("tiling-workspace-test");
-        app.insert_resource(WorkArea { x: 0, y: 0, width: 900, height: 600 })
+        app.insert_resource(WaylandIngress::default())
+            .insert_resource(WorkArea { x: 0, y: 0, width: 900, height: 600 })
             .insert_resource(WorkspaceTilingState::default())
             .inner_mut()
             .add_systems(LayoutSchedule, tiling_layout_system);

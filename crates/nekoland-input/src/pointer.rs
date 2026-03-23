@@ -2,6 +2,7 @@ use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::{Local, Res, ResMut};
 use bevy_ecs::system::SystemParam;
 use nekoland_config::resources::CompositorConfig;
+use nekoland_ecs::components::OutputId;
 use nekoland_ecs::events::{PointerButton, PointerMotion};
 use nekoland_ecs::resources::{
     FocusedOutputState, GlobalPointerPosition, InputEventRecord, KeyShortcut, OutputSnapshotState,
@@ -34,7 +35,7 @@ pub(crate) struct ViewportPointerPanParams<'w, 's> {
 /// Consumes pointer-related backend input records into raw pointer state, pointer deltas, and
 /// higher-level button messages.
 pub fn pointer_input_system(
-    wayland_ingress: Option<Res<'_, WaylandIngress>>,
+    wayland_ingress: Res<'_, WaylandIngress>,
     pointer: Res<GlobalPointerPosition>,
     mut physical_pointer: ResMut<PhysicalPointerPosition>,
     mut pointer_delta: ResMut<PointerDelta>,
@@ -43,9 +44,6 @@ pub fn pointer_input_system(
 ) {
     pointer_delta.dx = 0.0;
     pointer_delta.dy = 0.0;
-    let Some(wayland_ingress) = wayland_ingress else {
-        return;
-    };
 
     for event in wayland_ingress.platform_input_events.iter() {
         match &event.action {
@@ -124,8 +122,8 @@ pub fn pointer_input_system(
 /// the compositor.
 pub fn cursor_motion_system(
     mut pointer: ResMut<GlobalPointerPosition>,
-    focused_output: Option<Res<FocusedOutputState>>,
-    wayland_ingress: Option<Res<WaylandIngress>>,
+    focused_output: Res<FocusedOutputState>,
+    wayland_ingress: Res<WaylandIngress>,
     mut pointer_delta: ResMut<PointerDelta>,
     mut motion_events: MessageWriter<PointerMotion>,
 ) {
@@ -135,17 +133,12 @@ pub fn cursor_motion_system(
 
     let next_x = pointer.x + pointer_delta.dx;
     let next_y = pointer.y + pointer_delta.dy;
-    let (clamped_x, clamped_y) = wayland_ingress
-        .as_deref()
-        .map(|ingress| &ingress.output_snapshots)
-        .and_then(|outputs| {
-            clamp_pointer_to_active_output(
-                (next_x, next_y),
-                &pointer,
-                focused_output.as_deref(),
-                outputs,
-            )
-        })
+    let (clamped_x, clamped_y) = clamp_pointer_to_active_output(
+        (next_x, next_y),
+        &pointer,
+        focused_output.id,
+        &wayland_ingress.output_snapshots,
+    )
         .unwrap_or((next_x, next_y));
 
     pointer.x = clamped_x;
@@ -158,20 +151,18 @@ pub fn cursor_motion_system(
 pub fn focused_output_tracking_system(
     pointer: Res<GlobalPointerPosition>,
     mut focused_output: ResMut<FocusedOutputState>,
-    wayland_ingress: Option<Res<WaylandIngress>>,
+    wayland_ingress: Res<WaylandIngress>,
 ) {
-    let Some(outputs) = wayland_ingress.as_deref().map(|ingress| &ingress.output_snapshots) else {
-        return;
-    };
-
-    let next_output = outputs
+    let next_output = wayland_ingress
+        .output_snapshots
         .outputs
         .iter()
         .find(|output| output.contains_point(pointer.x, pointer.y))
         .map(|output| Some(output.output_id))
         .or_else(|| {
             focused_output.id.and_then(|current| {
-                outputs
+                wayland_ingress
+                    .output_snapshots
                     .outputs
                     .iter()
                     .find(|output| output.output_id == current)
@@ -188,14 +179,12 @@ pub fn focused_output_tracking_system(
 fn clamp_pointer_to_active_output(
     next_pointer: (f64, f64),
     current_pointer: &GlobalPointerPosition,
-    focused_output: Option<&FocusedOutputState>,
+    focused_output_id: Option<OutputId>,
     outputs: &OutputSnapshotState,
 ) -> Option<(f64, f64)> {
-    let output = focused_output
-        .and_then(|focused_output| {
-            focused_output.id.and_then(|output_id| {
-                outputs.outputs.iter().find(|output| output.output_id == output_id)
-            })
+    let output = focused_output_id
+        .and_then(|output_id| {
+            outputs.outputs.iter().find(|output| output.output_id == output_id)
         })
         .or_else(|| {
             outputs.outputs.iter().find(|output| {
@@ -320,6 +309,7 @@ mod tests {
         world.init_resource::<ViewportPointerPanState>();
         world.init_resource::<Messages<PointerMotion>>();
         world.insert_resource(FocusedOutputState { id: Some(OutputId(7)) });
+        world.insert_resource(WaylandIngress::default());
 
         {
             let mut pressed_keys = world.resource_mut::<PressedKeys>();
@@ -372,6 +362,7 @@ mod tests {
         world.init_resource::<PendingInputEvents>();
         world.init_resource::<ViewportPointerPanState>();
         world.insert_resource(FocusedOutputState { id: Some(OutputId(7)) });
+        world.insert_resource(WaylandIngress::default());
 
         {
             let mut pressed_keys = world.resource_mut::<PressedKeys>();
@@ -414,6 +405,8 @@ mod tests {
         let mut world = World::default();
         world.insert_resource(GlobalPointerPosition { x: 20.0, y: 10.0 });
         world.insert_resource(PointerDelta { dx: 4.0, dy: 7.0 });
+        world.insert_resource(FocusedOutputState::default());
+        world.insert_resource(WaylandIngress::default());
         world.init_resource::<Messages<PointerMotion>>();
 
         let Ok(()) = world.run_system_once(cursor_motion_system) else {
@@ -504,6 +497,7 @@ mod tests {
         world.insert_resource(GlobalPointerPosition { x: 20.0, y: 10.0 });
         world.insert_resource(PhysicalPointerPosition::default());
         world.insert_resource(PointerDelta::default());
+        world.insert_resource(FocusedOutputState::default());
         world.init_resource::<PendingInputEvents>();
         world.init_resource::<Messages<PointerButton>>();
         world.init_resource::<Messages<PointerMotion>>();
@@ -569,6 +563,7 @@ mod tests {
             needs_resync: true,
         });
         world.insert_resource(PointerDelta { dx: 9.0, dy: -4.0 });
+        world.insert_resource(FocusedOutputState::default());
         world.init_resource::<PendingInputEvents>();
         world.init_resource::<Messages<PointerButton>>();
         world.insert_resource(WaylandIngress {

@@ -36,7 +36,7 @@ pub(crate) fn damage_tracking_system(
     render_graph: Res<'_, RenderPassGraph>,
     materials: Res<'_, RenderMaterialFrameState>,
     surface_versions: Res<'_, SurfaceContentVersionSnapshot>,
-    shell_render_input: Option<Res<'_, ShellRenderInput>>,
+    shell_render_input: Res<'_, ShellRenderInput>,
     mut damage_state: ResMut<'_, DamageState>,
     mut output_damage_regions: ResMut<'_, OutputDamageRegions>,
     mut tracker_state: Local<'_, DamageTrackerState>,
@@ -52,8 +52,7 @@ pub(crate) fn damage_tracking_system(
         .iter()
         .map(|(surface_id, version)| (*surface_id, *version))
         .collect::<HashMap<_, _>>();
-    let surface_presentation =
-        shell_render_input.as_deref().map(|mailbox| &mailbox.surface_presentation);
+    let surface_presentation = Some(&shell_render_input.surface_presentation);
 
     for output_id in &live_output_ids {
         let Some(output_plan) = render_plan.outputs.get(output_id) else {

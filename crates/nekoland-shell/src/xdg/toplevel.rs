@@ -15,9 +15,9 @@ use nekoland_ecs::components::{
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
-    EntityIndex, FocusedOutputState, PendingPopupServerRequests, PendingXdgRequests,
-    PopupServerAction, PopupServerRequest, PrimaryOutputState, SurfaceExtent, WaylandIngress,
-    WindowLifecycleAction, WindowLifecycleRequest, WorkArea, XdgSurfaceRole,
+    EntityIndex, FocusedOutputState, PendingPopupServerRequests, PopupServerAction,
+    PopupServerRequest, SurfaceExtent, WaylandIngress, WindowLifecycleAction,
+    WindowLifecycleRequest, WorkArea, XdgSurfaceRole,
 };
 use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::{
@@ -27,7 +27,7 @@ use nekoland_ecs::workspace_membership::{
 use crate::layout::floating::{
     centre_x, centre_y, placement_work_area, should_auto_place_floating_window,
 };
-use crate::viewport::{preferred_primary_output_state, resolve_output_state_for_workspace};
+use crate::viewport::{preferred_primary_output_id, resolve_output_state_for_workspace};
 use crate::window_policy::{
     WindowBackgroundState, refresh_window_policy, resolve_background_output_id,
     sync_window_background_role,
@@ -46,14 +46,13 @@ type ToplevelWindows<'w, 's> =
 
 #[derive(SystemParam)]
 pub struct ToplevelLifecycleParams<'w, 's> {
-    pending_xdg_requests: Option<ResMut<'w, PendingXdgRequests>>,
+    pending_xdg_requests: ResMut<'w, crate::xdg::DeferredXdgRequests>,
     pending_popup_requests: ResMut<'w, PendingPopupServerRequests>,
     entity_index: Res<'w, EntityIndex>,
     existing_surfaces: ToplevelSurfaces<'w, 's>,
     outputs: ToplevelOutputs<'w, 's>,
-    wayland_ingress: Option<Res<'w, WaylandIngress>>,
-    primary_output: Option<Res<'w, PrimaryOutputState>>,
-    focused_output: Option<Res<'w, FocusedOutputState>>,
+    wayland_ingress: Res<'w, WaylandIngress>,
+    focused_output: Res<'w, FocusedOutputState>,
     windows: ToplevelWindows<'w, 's>,
     popups: ToplevelPopups<'w, 's>,
     workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
@@ -65,7 +64,7 @@ pub struct ToplevelLifecycleParams<'w, 's> {
 ///
 /// Requests that arrive before the corresponding entity exists are deferred and retried on later
 /// ticks instead of being dropped.
-pub fn toplevel_lifecycle_system(
+pub(crate) fn toplevel_lifecycle_system(
     mut commands: Commands,
     config: Res<CompositorConfig>,
     work_area: Res<WorkArea>,
@@ -78,7 +77,6 @@ pub fn toplevel_lifecycle_system(
         existing_surfaces,
         outputs,
         wayland_ingress,
-        primary_output,
         focused_output,
         mut windows,
         popups,
@@ -90,13 +88,10 @@ pub fn toplevel_lifecycle_system(
     let mut known_surfaces =
         existing_surfaces.iter().map(|surface| surface.id).collect::<BTreeSet<_>>();
     let mut deferred = Vec::new();
-    let primary_output =
-        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
-    let mut requests =
-        pending_xdg_requests.as_deref_mut().map(PendingXdgRequests::take).unwrap_or_default();
-    if let Some(wayland_ingress) = wayland_ingress.as_deref() {
-        requests.extend(wayland_ingress.pending_xdg_requests.iter().cloned());
-    }
+    let primary_output_id = preferred_primary_output_id(Some(wayland_ingress.as_ref()));
+    let focused_output_id = focused_output.id;
+    let mut requests = pending_xdg_requests.take();
+    requests.extend(wayland_ingress.pending_xdg_requests.iter().cloned());
 
     for request in requests {
         match request.action.clone() {
@@ -105,8 +100,8 @@ pub fn toplevel_lifecycle_system(
             {
                 let workspace_entity = focused_or_primary_workspace_runtime_target(
                     &outputs,
-                    focused_output.as_deref(),
-                    primary_output,
+                    focused_output_id,
+                    primary_output_id,
                     &entity_index,
                     1,
                 );
@@ -224,12 +219,8 @@ pub fn toplevel_lifecycle_system(
                     {
                         let workspace_id =
                             window_workspace_runtime_id(window.child_of, &workspaces);
-                        let placement_area = placement_area_for_workspace(
-                            &outputs,
-                            workspace_id,
-                            primary_output,
-                            &work_area,
-                        );
+                let placement_area =
+                    placement_area_for_workspace(&outputs, workspace_id, primary_output_id, &work_area);
                         restored.geometry.x = centre_x(&placement_area, 0, restored.geometry.width);
                         restored.geometry.y =
                             centre_y(&placement_area, 0, restored.geometry.height);
@@ -345,18 +336,16 @@ pub fn toplevel_lifecycle_system(
         }
     }
 
-    if let Some(mut pending_xdg_requests) = pending_xdg_requests {
-        pending_xdg_requests.replace(deferred);
-    }
+    pending_xdg_requests.replace(deferred);
 }
 
 fn placement_area_for_workspace(
     outputs: &Query<(Entity, OutputRuntime)>,
     workspace_id: Option<u32>,
-    primary_output: Option<&PrimaryOutputState>,
+    primary_output_id: Option<nekoland_ecs::components::OutputId>,
     work_area: &WorkArea,
 ) -> WorkArea {
-    resolve_output_state_for_workspace(outputs, workspace_id, primary_output).map_or(
+    resolve_output_state_for_workspace(outputs, workspace_id, primary_output_id).map_or(
         *work_area,
         |(_, output, _, output_work_area)| {
             placement_work_area(
@@ -505,10 +494,12 @@ mod tests {
     };
     use nekoland_ecs::events::{WindowClosed, WindowCreated};
     use nekoland_ecs::resources::{
-        EntityIndex, PendingPopupServerRequests, PendingXdgRequests, PopupServerAction,
-        PrimaryOutputState, SurfaceExtent, WindowLifecycleAction, WindowLifecycleRequest, WorkArea,
-        XdgSurfaceRole, rebuild_entity_index_system,
+        EntityIndex, FocusedOutputState, PendingPopupServerRequests, PopupServerAction,
+        SurfaceExtent, WaylandIngress, WindowLifecycleAction,
+        WindowLifecycleRequest, WorkArea, XdgSurfaceRole, rebuild_entity_index_system,
     };
+
+    use crate::xdg::DeferredXdgRequests;
 
     use super::toplevel_lifecycle_system;
 
@@ -517,9 +508,11 @@ mod tests {
         let mut app = NekolandApp::new("toplevel-lifecycle-test");
         app.insert_resource(CompositorConfig::default())
             .insert_resource(WorkArea::default())
-            .insert_resource(PendingXdgRequests::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(DeferredXdgRequests::default())
             .insert_resource(PendingPopupServerRequests::default())
-            .insert_resource(EntityIndex::default());
+            .insert_resource(EntityIndex::default())
+            .insert_resource(WaylandIngress::default());
         app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_systems(
             LayoutSchedule,
             (rebuild_entity_index_system, toplevel_lifecycle_system).chain(),
@@ -530,7 +523,7 @@ mod tests {
             .world_mut()
             .spawn(Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true })
             .id();
-        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+        app.inner_mut().world_mut().resource_mut::<DeferredXdgRequests>().push(
             WindowLifecycleRequest {
                 surface_id: 21,
                 action: WindowLifecycleAction::Committed {
@@ -565,9 +558,11 @@ mod tests {
         let mut app = NekolandApp::new("toplevel-lifecycle-test");
         app.insert_resource(CompositorConfig::default())
             .insert_resource(WorkArea::default())
-            .insert_resource(PendingXdgRequests::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(DeferredXdgRequests::default())
             .insert_resource(PendingPopupServerRequests::default())
-            .insert_resource(EntityIndex::default());
+            .insert_resource(EntityIndex::default())
+            .insert_resource(WaylandIngress::default());
         app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_systems(
             LayoutSchedule,
             (rebuild_entity_index_system, toplevel_lifecycle_system).chain(),
@@ -610,7 +605,7 @@ mod tests {
             ChildOf(parent),
         ));
 
-        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+        app.inner_mut().world_mut().resource_mut::<DeferredXdgRequests>().push(
             WindowLifecycleRequest {
                 surface_id: 11,
                 action: WindowLifecycleAction::Destroyed { role: XdgSurfaceRole::Toplevel },
@@ -630,10 +625,11 @@ mod tests {
         let mut app = NekolandApp::new("toplevel-restore-placement-test");
         app.insert_resource(CompositorConfig::default())
             .insert_resource(WorkArea { x: 0, y: 0, width: 640, height: 480 })
-            .insert_resource(PrimaryOutputState::default())
-            .insert_resource(PendingXdgRequests::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(DeferredXdgRequests::default())
             .insert_resource(PendingPopupServerRequests::default())
-            .insert_resource(EntityIndex::default());
+            .insert_resource(EntityIndex::default())
+            .insert_resource(WaylandIngress::default());
         app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_systems(
             LayoutSchedule,
             (rebuild_entity_index_system, toplevel_lifecycle_system).chain(),
@@ -696,7 +692,7 @@ mod tests {
             .world()
             .get::<nekoland_ecs::components::OutputId>(virtual_output)
             .expect("virtual output id");
-        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id =
+        app.inner_mut().world_mut().resource_mut::<WaylandIngress>().primary_output.id =
             Some(virtual_output_id);
         let window_entity = app
             .inner_mut()
@@ -729,7 +725,7 @@ mod tests {
             ))
             .id();
 
-        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+        app.inner_mut().world_mut().resource_mut::<DeferredXdgRequests>().push(
             WindowLifecycleRequest {
                 surface_id: 51,
                 action: WindowLifecycleAction::Committed {
@@ -769,9 +765,11 @@ mod tests {
         });
         app.insert_resource(config)
             .insert_resource(WorkArea::default())
-            .insert_resource(PendingXdgRequests::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(DeferredXdgRequests::default())
             .insert_resource(PendingPopupServerRequests::default())
-            .insert_resource(EntityIndex::default());
+            .insert_resource(EntityIndex::default())
+            .insert_resource(WaylandIngress::default());
         app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_systems(
             LayoutSchedule,
             (rebuild_entity_index_system, toplevel_lifecycle_system).chain(),
@@ -782,7 +780,7 @@ mod tests {
             name: "1".to_owned(),
             active: true,
         });
-        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+        app.inner_mut().world_mut().resource_mut::<DeferredXdgRequests>().push(
             WindowLifecycleRequest {
                 surface_id: 21,
                 action: WindowLifecycleAction::Committed {
@@ -793,7 +791,7 @@ mod tests {
         );
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
+        app.inner_mut().world_mut().resource_mut::<DeferredXdgRequests>().push(
             WindowLifecycleRequest {
                 surface_id: 21,
                 action: WindowLifecycleAction::MetadataChanged {

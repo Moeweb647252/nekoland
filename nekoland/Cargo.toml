@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-bevy_ecs.workspace = true
+bevy_ecs = { workspace = true, features = ["debug"] }
 nekoland-backend = { path = "../crates/nekoland-backend" }
 nekoland-config = { path = "../crates/nekoland-config" }
 nekoland-core = { path = "../crates/nekoland-core" }

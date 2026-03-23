@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use bevy_ecs::prelude::{Res, ResMut, Resource};
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
-    CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, OutputOverlayState,
-    RenderItemInstance, RenderSceneRole, ShellRenderInput,
+    CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, RenderItemInstance,
+    RenderSceneRole, ShellRenderInput,
 };
 
 /// Render-local bookkeeping for overlay-owned compositor-scene entries from the previous frame.
@@ -15,41 +15,35 @@ pub struct OutputOverlaySceneSyncState {
 
 /// Synchronizes user-controlled output overlays into the formal compositor scene provider state.
 pub fn sync_output_overlay_scene_state_system(
-    shell_render_input: Option<Res<'_, ShellRenderInput>>,
-    overlay_state: Option<Res<'_, OutputOverlayState>>,
+    shell_render_input: Res<'_, ShellRenderInput>,
     mut compositor_scene: ResMut<'_, CompositorSceneState>,
     mut sync_state: ResMut<'_, OutputOverlaySceneSyncState>,
 ) {
     let mut current_entries = BTreeMap::<OutputId, BTreeSet<CompositorSceneEntryId>>::new();
-    let overlay_state = shell_render_input
-        .as_deref()
-        .map(|input| &input.output_overlays)
-        .or(overlay_state.as_deref());
+    let overlay_state = &shell_render_input.output_overlays;
 
-    if let Some(overlay_state) = overlay_state {
-        for (output_id, overlays) in &overlay_state.outputs {
-            let output_scene = compositor_scene.outputs.entry(*output_id).or_default();
-            let mut touched = false;
-            for (_, overlay) in overlays.iter_sorted() {
-                current_entries.entry(*output_id).or_default().insert(overlay.entry_id);
-                output_scene.insert(
-                    overlay.entry_id,
-                    CompositorSceneEntry::solid_rect(
-                        overlay.color,
-                        RenderItemInstance {
-                            rect: overlay.rect,
-                            opacity: overlay.opacity,
-                            clip_rect: overlay.clip_rect,
-                            z_index: overlay.z_index,
-                            scene_role: RenderSceneRole::Overlay,
-                        },
-                    ),
-                );
-                touched = true;
-            }
-            if touched {
-                output_scene.sort_by_z_index();
-            }
+    for (output_id, overlays) in &overlay_state.outputs {
+        let output_scene = compositor_scene.outputs.entry(*output_id).or_default();
+        let mut touched = false;
+        for (_, overlay) in overlays.iter_sorted() {
+            current_entries.entry(*output_id).or_default().insert(overlay.entry_id);
+            output_scene.insert(
+                overlay.entry_id,
+                CompositorSceneEntry::solid_rect(
+                    overlay.color,
+                    RenderItemInstance {
+                        rect: overlay.rect,
+                        opacity: overlay.opacity,
+                        clip_rect: overlay.clip_rect,
+                        z_index: overlay.z_index,
+                        scene_role: RenderSceneRole::Overlay,
+                    },
+                ),
+            );
+            touched = true;
+        }
+        if touched {
+            output_scene.sort_by_z_index();
         }
     }
 
@@ -88,8 +82,8 @@ mod tests {
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::components::OutputId;
     use nekoland_ecs::resources::{
-        CompositorSceneState, OutputOverlayId, OutputOverlaySpec, OutputOverlayState, RenderColor,
-        RenderRect,
+        CompositorSceneState, OutputOverlayId, OutputOverlaySpec, RenderColor, RenderRect,
+        ShellRenderInput,
     };
 
     use super::{OutputOverlaySceneSyncState, sync_output_overlay_scene_state_system};
@@ -98,14 +92,15 @@ mod tests {
     fn overlay_state_syncs_into_compositor_scene_and_preserves_entry_ids() {
         let mut app = NekolandApp::new("overlay-sync-test");
         app.inner_mut()
-            .init_resource::<OutputOverlayState>()
+            .init_resource::<ShellRenderInput>()
             .init_resource::<CompositorSceneState>()
             .init_resource::<OutputOverlaySceneSyncState>()
             .add_systems(RenderSchedule, sync_output_overlay_scene_state_system);
 
         let first_entry_id = {
-            let mut overlays = app.inner_mut().world_mut().resource_mut::<OutputOverlayState>();
-            overlays.upsert(
+            let mut shell_render_input =
+                app.inner_mut().world_mut().resource_mut::<ShellRenderInput>();
+            shell_render_input.output_overlays.upsert(
                 OutputId(7),
                 OutputOverlaySpec {
                     overlay_id: OutputOverlayId::from("debug"),
@@ -123,8 +118,9 @@ mod tests {
         assert_eq!(scene.ordered_items, vec![first_entry_id]);
 
         {
-            let mut overlays = app.inner_mut().world_mut().resource_mut::<OutputOverlayState>();
-            overlays.upsert(
+            let mut shell_render_input =
+                app.inner_mut().world_mut().resource_mut::<ShellRenderInput>();
+            shell_render_input.output_overlays.upsert(
                 OutputId(7),
                 OutputOverlaySpec {
                     overlay_id: OutputOverlayId::from("debug"),
@@ -147,12 +143,12 @@ mod tests {
     fn removing_overlay_state_removes_compositor_scene_entry() {
         let mut app = NekolandApp::new("overlay-sync-remove-test");
         app.inner_mut()
-            .init_resource::<OutputOverlayState>()
+            .init_resource::<ShellRenderInput>()
             .init_resource::<CompositorSceneState>()
             .init_resource::<OutputOverlaySceneSyncState>()
             .add_systems(RenderSchedule, sync_output_overlay_scene_state_system);
 
-        app.inner_mut().world_mut().resource_mut::<OutputOverlayState>().upsert(
+        app.inner_mut().world_mut().resource_mut::<ShellRenderInput>().output_overlays.upsert(
             OutputId(3),
             OutputOverlaySpec {
                 overlay_id: OutputOverlayId::from("debug"),
@@ -167,7 +163,8 @@ mod tests {
 
         app.inner_mut()
             .world_mut()
-            .resource_mut::<OutputOverlayState>()
+            .resource_mut::<ShellRenderInput>()
+            .output_overlays
             .remove(OutputId(3), &OutputOverlayId::from("debug"));
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 

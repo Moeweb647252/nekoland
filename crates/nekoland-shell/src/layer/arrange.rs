@@ -8,10 +8,7 @@ use nekoland_ecs::components::{
     BufferState, DesiredOutputName, LayerAnchor, LayerOnOutput, LayerShellSurface, OutputDevice,
     SurfaceContentVersion, SurfaceGeometry, WlSurfaceHandle,
 };
-use nekoland_ecs::resources::{
-    EntityIndex, LayerLifecycleAction, PendingLayerRequests, PrimaryOutputState, WaylandIngress,
-    WorkArea,
-};
+use nekoland_ecs::resources::{EntityIndex, LayerLifecycleAction, WaylandIngress, WorkArea};
 use nekoland_ecs::views::{LayerOutputBindingRuntime, OutputRuntime};
 
 type LayerLifecycleSurfaces<'w, 's> = Query<
@@ -66,10 +63,10 @@ type WorkAreaLayers<'w, 's> = Query<
 
 /// Materializes layer-shell lifecycle requests into ECS entities and keeps the authoritative layer
 /// geometry/buffer attachment state updated from protocol commits.
-pub fn layer_lifecycle_system(
+pub(crate) fn layer_lifecycle_system(
     mut commands: Commands,
-    wayland_ingress: Option<Res<WaylandIngress>>,
-    mut pending_layer_requests: Option<ResMut<PendingLayerRequests>>,
+    wayland_ingress: Res<WaylandIngress>,
+    mut pending_layer_requests: ResMut<crate::layer::DeferredLayerRequests>,
     entity_index: bevy_ecs::prelude::Res<EntityIndex>,
     existing_layers: Query<&WlSurfaceHandle, With<LayerShellSurface>>,
     mut layers: LayerLifecycleSurfaces<'_, '_>,
@@ -77,11 +74,8 @@ pub fn layer_lifecycle_system(
     let mut known_surface_ids =
         existing_layers.iter().map(|surface| surface.id).collect::<BTreeSet<_>>();
     let mut deferred = Vec::new();
-    let mut requests =
-        pending_layer_requests.as_deref_mut().map(PendingLayerRequests::take).unwrap_or_default();
-    if let Some(wayland_ingress) = wayland_ingress.as_deref() {
-        requests.extend(wayland_ingress.pending_layer_requests.iter().cloned());
-    }
+    let mut requests = pending_layer_requests.take();
+    requests.extend(wayland_ingress.pending_layer_requests.iter().cloned());
 
     for request in requests {
         match request.action {
@@ -168,9 +162,7 @@ pub fn layer_lifecycle_system(
         }
     }
 
-    if let Some(mut pending_layer_requests) = pending_layer_requests {
-        pending_layer_requests.replace(deferred);
-    }
+    pending_layer_requests.replace(deferred);
 }
 
 /// Keeps each layer surface attached to the output entity named in its protocol state.
@@ -228,8 +220,7 @@ fn resolve_output_entity(
 
 /// Computes layer surface rectangles from anchors, desired size, margins, and bound output size.
 pub fn layer_arrangement_system(
-    wayland_ingress: Option<Res<WaylandIngress>>,
-    primary_output: Option<bevy_ecs::prelude::Res<PrimaryOutputState>>,
+    wayland_ingress: Res<WaylandIngress>,
     outputs: LayerOutputs<'_, '_>,
     mut layers: ArrangedLayers<'_, '_>,
 ) {
@@ -239,12 +230,12 @@ pub fn layer_arrangement_system(
             (entity, output.properties.width.max(1) as i32, output.properties.height.max(1) as i32)
         })
         .collect::<Vec<_>>();
-    let primary_output = crate::viewport::preferred_primary_output_state(
-        wayland_ingress.as_deref(),
-        primary_output.as_deref(),
-    );
-    let Some(primary_output) =
-        primary_output_from_state_or_sizes(primary_output, &output_sizes, &outputs)
+    let primary_output_id = crate::viewport::preferred_primary_output_id(Some(&wayland_ingress));
+    let Some(primary_output) = primary_output_from_state_or_sizes(
+        primary_output_id,
+        &output_sizes,
+        &outputs,
+    )
     else {
         return;
     };
@@ -316,8 +307,7 @@ pub fn layer_arrangement_system(
 /// Derives the layout work area by subtracting exclusive-zone layers anchored to the primary
 /// output from the full output rectangle.
 pub fn work_area_system(
-    wayland_ingress: Option<Res<WaylandIngress>>,
-    primary_output: Option<bevy_ecs::prelude::Res<PrimaryOutputState>>,
+    wayland_ingress: Res<WaylandIngress>,
     mut outputs: LayerOutputs<'_, '_>,
     layers: WorkAreaLayers<'_, '_>,
     mut work_area: ResMut<WorkArea>,
@@ -328,12 +318,12 @@ pub fn work_area_system(
             (entity, output.properties.width.max(1) as i32, output.properties.height.max(1) as i32)
         })
         .collect::<Vec<_>>();
-    let primary_output = crate::viewport::preferred_primary_output_state(
-        wayland_ingress.as_deref(),
-        primary_output.as_deref(),
-    );
-    let Some((primary_output, output_width, output_height)) =
-        primary_output_from_state_or_sizes(primary_output, &output_sizes, &outputs)
+    let primary_output_id = crate::viewport::preferred_primary_output_id(Some(&wayland_ingress));
+    let Some((primary_output, output_width, output_height)) = primary_output_from_state_or_sizes(
+        primary_output_id,
+        &output_sizes,
+        &outputs,
+    )
     else {
         return;
     };
@@ -465,13 +455,11 @@ fn primary_output_from_sizes(output_sizes: &[(Entity, i32, i32)]) -> Option<(Ent
 }
 
 fn primary_output_from_state_or_sizes(
-    primary_output_state: Option<&PrimaryOutputState>,
+    primary_output_id: Option<nekoland_ecs::components::OutputId>,
     output_sizes: &[(Entity, i32, i32)],
     outputs: &LayerOutputs<'_, '_>,
 ) -> Option<(Entity, i32, i32)> {
-    let Some(primary_output_id) =
-        primary_output_state.and_then(|primary_output_state| primary_output_state.id)
-    else {
+    let Some(primary_output_id) = primary_output_id else {
         return primary_output_from_sizes(output_sizes);
     };
 
@@ -497,9 +485,11 @@ mod tests {
         WlSurfaceHandle,
     };
     use nekoland_ecs::resources::{
-        LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec, PendingLayerRequests,
-        PrimaryOutputState, WorkArea, register_entity_index_hooks,
+        LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec, PrimaryOutputState,
+        WaylandIngress, WorkArea, register_entity_index_hooks,
     };
+
+    use crate::layer::DeferredLayerRequests;
 
     use super::{
         layer_arrangement_system, layer_lifecycle_system,
@@ -510,7 +500,7 @@ mod tests {
     #[test]
     fn layer_creation_inserts_output_relationship_when_output_exists() {
         let mut app = NekolandApp::new("layer-output-relationship-test");
-        app.insert_resource(PendingLayerRequests::default());
+        app.insert_resource(DeferredLayerRequests::default()).insert_resource(WaylandIngress::default());
         register_entity_index_hooks(app.inner_mut().world_mut());
         app.inner_mut().add_systems(
             LayoutSchedule,
@@ -542,7 +532,7 @@ mod tests {
             })
             .id();
 
-        app.inner_mut().world_mut().resource_mut::<PendingLayerRequests>().push(
+        app.inner_mut().world_mut().resource_mut::<DeferredLayerRequests>().push(
             LayerLifecycleRequest {
                 surface_id: 91,
                 action: LayerLifecycleAction::Created {
@@ -580,6 +570,7 @@ mod tests {
     #[test]
     fn layer_arrangement_uses_target_output_dimensions() {
         let mut app = NekolandApp::new("layer-arrangement-output-target-test");
+        app.insert_resource(WaylandIngress::default());
         app.inner_mut().add_systems(LayoutSchedule, layer_arrangement_system);
 
         app.inner_mut().world_mut().spawn(OutputBundle {
@@ -650,7 +641,7 @@ mod tests {
     #[test]
     fn work_area_ignores_layers_targeting_non_primary_outputs() {
         let mut app = NekolandApp::new("layer-work-area-output-target-test");
-        app.insert_resource(WorkArea::default());
+        app.insert_resource(WaylandIngress::default()).insert_resource(WorkArea::default());
         app.inner_mut().add_systems(LayoutSchedule, work_area_system);
 
         app.inner_mut().world_mut().spawn(OutputBundle {
@@ -719,6 +710,7 @@ mod tests {
     #[test]
     fn detached_named_layer_does_not_fall_back_to_primary_output() {
         let mut app = NekolandApp::new("layer-detached-output-test");
+        app.insert_resource(WaylandIngress::default());
         app.inner_mut().add_systems(LayoutSchedule, layer_arrangement_system);
 
         app.inner_mut().world_mut().spawn(OutputBundle {
@@ -770,7 +762,7 @@ mod tests {
     #[test]
     fn detached_named_layer_does_not_shrink_work_area() {
         let mut app = NekolandApp::new("layer-detached-work-area-test");
-        app.insert_resource(WorkArea::default());
+        app.insert_resource(WaylandIngress::default()).insert_resource(WorkArea::default());
         app.inner_mut().add_systems(LayoutSchedule, work_area_system);
 
         app.inner_mut().world_mut().spawn(OutputBundle {
@@ -817,9 +809,9 @@ mod tests {
     }
 
     #[test]
-    fn explicit_primary_output_state_overrides_largest_output_fallback() {
+    fn wayland_ingress_primary_output_overrides_largest_output_fallback() {
         let mut app = NekolandApp::new("layer-primary-output-state-test");
-        app.insert_resource(PrimaryOutputState::default());
+        app.insert_resource(WaylandIngress::default());
         app.insert_resource(WorkArea::default());
         app.inner_mut()
             .add_systems(LayoutSchedule, (layer_arrangement_system, work_area_system).chain());
@@ -863,7 +855,10 @@ mod tests {
             .world()
             .get::<nekoland_ecs::components::OutputId>(hdmi_output)
             .expect("hdmi output id");
-        app.inner_mut().world_mut().resource_mut::<PrimaryOutputState>().id = Some(hdmi_output_id);
+        app.inner_mut().world_mut().insert_resource(WaylandIngress {
+            primary_output: PrimaryOutputState { id: Some(hdmi_output_id) },
+            ..WaylandIngress::default()
+        });
         let layer = app
             .inner_mut()
             .world_mut()
@@ -900,6 +895,7 @@ mod tests {
     #[test]
     fn explicit_layer_height_overrides_oversized_committed_geometry() {
         let mut app = NekolandApp::new("layer-explicit-height-test");
+        app.insert_resource(WaylandIngress::default());
         app.inner_mut().add_systems(LayoutSchedule, layer_arrangement_system);
 
         app.inner_mut().world_mut().spawn(OutputBundle {
@@ -951,6 +947,7 @@ mod tests {
     #[test]
     fn sync_layer_output_relationships_insert_when_output_appears_late() {
         let mut app = NekolandApp::new("layer-output-sync-insert-test");
+        app.insert_resource(WaylandIngress::default());
         register_entity_index_hooks(app.inner_mut().world_mut());
         app.inner_mut().add_systems(
             LayoutSchedule,
@@ -1011,6 +1008,7 @@ mod tests {
     #[test]
     fn sync_layer_output_relationships_remove_when_output_disappears() {
         let mut app = NekolandApp::new("layer-output-sync-remove-test");
+        app.insert_resource(WaylandIngress::default());
         register_entity_index_hooks(app.inner_mut().world_mut());
         app.inner_mut().add_systems(
             LayoutSchedule,

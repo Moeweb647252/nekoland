@@ -5,13 +5,13 @@ use nekoland_ecs::components::{
     OutputProperties, OutputViewport, SurfaceGeometry, WindowLayout, WindowMode, WindowPlacement,
     WindowPosition, WindowSceneGeometry, XdgWindow,
 };
-use nekoland_ecs::resources::{PrimaryOutputState, WaylandIngress, WorkArea};
+use nekoland_ecs::resources::{WaylandIngress, WorkArea};
 use nekoland_ecs::views::WorkspaceRuntime;
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 use crate::viewport::{
-    initialize_scene_geometry_from_surface, preferred_primary_output_state, project_scene_geometry,
+    initialize_scene_geometry_from_surface, preferred_primary_output_id, project_scene_geometry,
     resolve_output_state_for_workspace,
 };
 
@@ -34,16 +34,14 @@ pub fn floating_layout_system(
     mut previous_work_area: Local<Option<WorkArea>>,
     mut windows: Query<WindowRuntime, With<XdgWindow>>,
     outputs: Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
-    wayland_ingress: Option<Res<WaylandIngress>>,
-    primary_output: Option<Res<PrimaryOutputState>>,
+    wayland_ingress: Res<WaylandIngress>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime), Allow<Disabled>>,
     work_area: Res<WorkArea>,
 ) {
-    let primary_output =
-        preferred_primary_output_state(wayland_ingress.as_deref(), primary_output.as_deref());
+    let primary_output_id = preferred_primary_output_id(Some(&wayland_ingress));
     let placement_area = placement_work_area(
         &work_area,
-        resolve_output_state_for_workspace(&outputs, None, primary_output)
+        resolve_output_state_for_workspace(&outputs, None, primary_output_id)
             .map(|(_, output, _, _)| output),
     );
     let work_area_changed =
@@ -71,7 +69,7 @@ pub fn floating_layout_system(
         }
         let workspace_id = window_workspace_runtime_id(window.child_of, &workspaces);
         let output_state =
-            resolve_output_state_for_workspace(&outputs, workspace_id, primary_output);
+            resolve_output_state_for_workspace(&outputs, workspace_id, primary_output_id);
         let window_work_area =
             output_state.as_ref().map_or(placement_area, |(_, output, _, work_area)| {
                 placement_work_area(
@@ -205,7 +203,7 @@ mod tests {
         BufferState, FloatingPosition, SurfaceGeometry, WindowLayout, WindowMode, WindowPlacement,
         WindowPosition, WindowSize, WlSurfaceHandle,
     };
-    use nekoland_ecs::resources::WorkArea;
+    use nekoland_ecs::resources::{WaylandIngress, WorkArea};
 
     use super::{centre_x, centre_y, floating_layout_system};
 
@@ -234,7 +232,8 @@ mod tests {
     #[test]
     fn floating_layout_clamps_window_size_to_work_area() {
         let mut app = NekolandApp::new("floating-layout-clamp-test");
-        app.insert_resource(WorkArea { x: 0, y: 0, width: 1280, height: 720 })
+        app.insert_resource(WaylandIngress::default())
+            .insert_resource(WorkArea { x: 0, y: 0, width: 1280, height: 720 })
             .inner_mut()
             .add_systems(LayoutSchedule, floating_layout_system);
 
@@ -291,7 +290,8 @@ mod tests {
     #[test]
     fn floating_layout_recenters_unpositioned_windows_when_work_area_changes() {
         let mut app = NekolandApp::new("floating-layout-work-area-test");
-        app.insert_resource(WorkArea { x: 0, y: 0, width: 1024, height: 768 })
+        app.insert_resource(WaylandIngress::default())
+            .insert_resource(WorkArea { x: 0, y: 0, width: 1024, height: 768 })
             .inner_mut()
             .add_systems(LayoutSchedule, floating_layout_system);
 
@@ -326,7 +326,8 @@ mod tests {
     #[test]
     fn explicit_placement_applies_even_before_buffer_attach() {
         let mut app = NekolandApp::new("floating-layout-explicit-placement-test");
-        app.insert_resource(WorkArea { x: 0, y: 0, width: 1024, height: 768 })
+        app.insert_resource(WaylandIngress::default())
+            .insert_resource(WorkArea { x: 0, y: 0, width: 1024, height: 768 })
             .inner_mut()
             .add_systems(LayoutSchedule, floating_layout_system);
 
@@ -360,7 +361,8 @@ mod tests {
         placement: WindowPlacement,
     ) -> SurfaceGeometry {
         let mut app = NekolandApp::new("floating-layout-test");
-        app.insert_resource(work_area())
+        app.insert_resource(WaylandIngress::default())
+            .insert_resource(work_area())
             .inner_mut()
             .add_systems(LayoutSchedule, floating_layout_system);
 

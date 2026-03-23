@@ -9,9 +9,9 @@ use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule, ProtocolSchedule};
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::resources::{
-    BackendOutputRegistry, CompiledOutputFrames, CompletedScreenshotFrames,
+    BackendOutputRegistry, CompiledOutputFrames, CompletedScreenshotFrames, FocusedOutputState,
     PendingBackendInputEvents, PendingProtocolInputEvents, PendingScreenshotRequests,
-    PlatformImportDiagnosticsState, PresentAuditState, PresentSurfaceSnapshotState,
+    PlatformImportDiagnosticsState, PresentAuditState, PresentSurfaceSnapshotState, ShellRenderInput,
     VirtualOutputCaptureState,
 };
 use nekoland_ecs::views::{BackendPresentSurfaceRuntime, OutputRuntime};
@@ -25,7 +25,6 @@ use crate::common::outputs::{
     apply_output_server_requests_system, remember_output_viewports_system,
     sync_configured_outputs_system, sync_output_layout_state_system,
     sync_output_snapshot_state_from_present_inputs_system,
-    sync_primary_output_state_from_present_inputs_system,
 };
 use crate::common::presentation::apply_output_presentation_events_system;
 use crate::components::OutputBackend;
@@ -71,6 +70,7 @@ impl NekolandPlugin for BackendPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(BackendOutputRegistry::default())
             .insert_resource(RememberedOutputViewportState::default())
+            .init_resource::<FocusedOutputState>()
             .init_resource::<PendingOutputPresentationEvents>()
             .add_message::<OutputConnected>()
             .add_message::<OutputDisconnected>()
@@ -106,6 +106,7 @@ impl NekolandPlugin for BackendWaylandSubAppPlugin {
             .init_resource::<PendingOutputPresentationEvents>()
             .init_resource::<PresentAuditState>()
             .init_resource::<PresentSurfaceSnapshotState>()
+            .init_resource::<ShellRenderInput>()
             .init_resource::<PendingScreenshotRequests>()
             .init_resource::<CompletedScreenshotFrames>()
             .init_resource::<VirtualOutputCaptureState>()
@@ -122,7 +123,6 @@ impl NekolandPlugin for BackendWaylandSubAppPlugin {
                 (
                     normalize::sync_platform_input_events_from_backend_inputs_system,
                     sync_output_snapshot_state_from_present_inputs_system,
-                    sync_primary_output_state_from_present_inputs_system,
                 )
                     .chain()
                     .in_set(WaylandNormalizeSystems),
