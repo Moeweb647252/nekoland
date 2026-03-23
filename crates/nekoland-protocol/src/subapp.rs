@@ -19,20 +19,21 @@ use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule, ProtocolSchedule};
 use nekoland_ecs::resources::{
     ClipboardSelectionState, CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock,
-    CursorImageSnapshot, DragAndDropState, FramePacingState, GlobalPointerPosition,
-    KeyboardFocusState, OutputPresentationState, OutputSnapshotState, PendingLayerRequests,
-    PendingOutputControls, PendingOutputEvents, PendingOutputOverlayControls,
-    PendingOutputServerRequests, PendingPlatformInputEvents, PendingPopupServerRequests,
-    PendingProtocolInputEvents, PendingWindowControls, PendingWindowServerRequests,
-    PendingX11Requests, PendingXdgRequests, PlatformSurfaceSnapshotState, PresentAuditState,
-    PrimaryOutputState, PrimarySelectionState, ProtocolServerState, RenderPlan, ShellRenderInput,
-    SurfaceContentVersionSnapshot, SurfacePresentationSnapshot, VirtualOutputCaptureState,
-    WaylandCommands, WaylandFeedback, WaylandIngress, XWaylandServerState,
+    CursorImageSnapshot, DragAndDropState, FramePacingState, KeyboardFocusState,
+    OutputPresentationState, OutputSnapshotState, PendingLayerRequests, PendingOutputControls,
+    PendingOutputEvents, PendingOutputOverlayControls, PendingOutputServerRequests,
+    PendingPlatformInputEvents, PendingPopupServerRequests, PendingProtocolInputEvents,
+    PendingWindowControls, PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests,
+    PlatformSurfaceSnapshotState, PresentAuditState, PrimarySelectionState,
+    ProtocolServerState, RenderPlan, ShellRenderInput, SurfaceContentVersionSnapshot,
+    VirtualOutputCaptureState, WaylandCommands, WaylandFeedback, WaylandIngress,
+    XWaylandServerState,
 };
 
 /// Entrypoint for the dedicated wayland subapp boundary.
 ///
-/// The subapp owns platform-facing mailbox production plus the extracted protocol/backend runtime
+/// The subapp owns platform-facing boundary resource production plus the extracted
+/// protocol/backend runtime
 /// schedules that need non-send state, while a smaller set of ECS reconciliation systems still
 /// remains in the main world until bootstrap, poll, and output discovery are fully migrated.
 #[derive(Debug, Default, Clone, Copy)]
@@ -48,7 +49,6 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             .init_resource::<CompiledOutputFrames>()
             .init_resource::<ProtocolServerState>()
             .init_resource::<XWaylandServerState>()
-            .init_resource::<PrimaryOutputState>()
             .init_resource::<CursorImageSnapshot>()
             .init_resource::<CompositorClock>()
             .init_resource::<KeyboardFocusState>()
@@ -122,7 +122,7 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             )
             .add_systems(
                 ProtocolSchedule,
-                sync_wayland_ingress_mailbox_system.in_set(WaylandFeedbackSystems),
+                sync_wayland_ingress_boundary_system.in_set(WaylandFeedbackSystems),
             )
             .add_systems(
                 PresentSchedule,
@@ -133,13 +133,13 @@ impl NekolandPlugin for WaylandSubAppPlugin {
                     server::sync_foreign_toplevel_list_system.in_set(WaylandPresentSystems),
                     feedback::sync_workspace_visibility_system.in_set(WaylandPresentSystems),
                     feedback::dispatch_surface_frame_callbacks_system.in_set(WaylandPresentSystems),
-                    sync_wayland_feedback_mailbox_system.in_set(WaylandFeedbackSystems),
+                    sync_wayland_feedback_boundary_system.in_set(WaylandFeedbackSystems),
                 )
                     .chain(),
             )
             .add_systems(
                 PresentSchedule,
-                clear_wayland_commands_mailbox_system.in_set(WaylandCleanupSystems),
+                clear_wayland_commands_boundary_system.in_set(WaylandCleanupSystems),
             );
     }
 }
@@ -152,13 +152,9 @@ pub fn extract_wayland_subapp_inputs(main_world: &mut World, wayland_world: &mut
     clone_resource_into::<WaylandCommands>(main_world, wayland_world);
     clone_resource_into::<CompiledOutputFrames>(main_world, wayland_world);
     clone_default_resource_into::<CompositorClock>(main_world, wayland_world);
-    if let Some(shell_render_input) = main_world.get_resource::<ShellRenderInput>() {
-        wayland_world.insert_resource(shell_render_input.pointer.clone());
-        wayland_world.insert_resource(shell_render_input.surface_presentation.clone());
-    } else {
-        wayland_world.insert_resource(GlobalPointerPosition::default());
-        wayland_world.insert_resource(SurfacePresentationSnapshot::default());
-    }
+    let shell_render_input = main_world.resource::<ShellRenderInput>().clone();
+    wayland_world.insert_resource(shell_render_input.pointer.clone());
+    wayland_world.insert_resource(shell_render_input.surface_presentation.clone());
     clone_resource_into::<KeyboardFocusState>(main_world, wayland_world);
     clone_resource_into::<CompositorConfig>(main_world, wayland_world);
     clone_resource_into::<KeyboardLayoutState>(main_world, wayland_world);
@@ -236,6 +232,7 @@ fn extract_foreign_toplevel_snapshot(main_world: &mut World, wayland_world: &mut
 }
 
 fn extract_workspace_visibility_snapshot(main_world: &mut World, wayland_world: &mut World) {
+    let shell_render_input = main_world.resource::<ShellRenderInput>().clone();
     let mut workspaces =
         main_world.query::<(bevy_ecs::entity::Entity, nekoland_ecs::views::WorkspaceRuntime)>();
     let mut windows = main_world.query_filtered::<(
@@ -253,11 +250,7 @@ fn extract_workspace_visibility_snapshot(main_world: &mut World, wayland_world: 
         bevy_ecs::query::With<nekoland_ecs::components::XdgPopup>,
         bevy_ecs::query::Allow<bevy_ecs::entity_disabling::Disabled>,
     )>();
-    let surface_presentation = main_world
-        .get_resource::<ShellRenderInput>()
-        .map(|mailbox| mailbox.surface_presentation.clone())
-        .unwrap_or_default();
-    let surface_presentation = Some(&surface_presentation);
+    let surface_presentation = shell_render_input.surface_presentation;
     let active_workspace = workspaces
         .iter(main_world)
         .find(|(_, workspace)| workspace.is_active())
@@ -272,22 +265,10 @@ fn extract_workspace_visibility_snapshot(main_world: &mut World, wayland_world: 
         .iter(main_world)
         .filter(|(_, window, disabled)| {
             !disabled
-                && surface_presentation.map_or_else(
-                    || {
-                        nekoland_ecs::presentation_logic::managed_window_visible(
-                            *window.mode,
-                            window.viewport_visibility.visible,
-                            *window.role,
-                        )
-                    },
-                    |snapshot| {
-                        snapshot.surfaces.get(&window.surface_id()).is_some_and(|state| {
-                            state.visible
-                                && state.role
-                                    == nekoland_ecs::resources::SurfacePresentationRole::Window
-                        })
-                    },
-                )
+                && surface_presentation.surfaces.get(&window.surface_id()).is_some_and(|state| {
+                    state.visible
+                        && state.role == nekoland_ecs::resources::SurfacePresentationRole::Window
+                })
         })
         .map(|(_, window, _)| window.surface_id())
         .collect::<std::collections::BTreeSet<_>>();
@@ -295,22 +276,10 @@ fn extract_workspace_visibility_snapshot(main_world: &mut World, wayland_world: 
         .iter(main_world)
         .filter(|(_, window, disabled)| {
             !disabled
-                && surface_presentation.map_or_else(
-                    || {
-                        nekoland_ecs::presentation_logic::managed_window_visible(
-                            *window.mode,
-                            window.viewport_visibility.visible,
-                            *window.role,
-                        )
-                    },
-                    |snapshot| {
-                        snapshot.surfaces.get(&window.surface_id()).is_some_and(|state| {
-                            state.visible
-                                && state.role
-                                    == nekoland_ecs::resources::SurfacePresentationRole::Window
-                        })
-                    },
-                )
+                && surface_presentation.surfaces.get(&window.surface_id()).is_some_and(|state| {
+                    state.visible
+                        && state.role == nekoland_ecs::resources::SurfacePresentationRole::Window
+                })
         })
         .map(|(entity, _, _)| entity)
         .collect::<std::collections::BTreeSet<_>>();
@@ -318,21 +287,10 @@ fn extract_workspace_visibility_snapshot(main_world: &mut World, wayland_world: 
         .iter(main_world)
         .filter(|(popup, disabled)| {
             !disabled
-                && surface_presentation.map_or_else(
-                    || {
-                        nekoland_ecs::presentation_logic::popup_visible(
-                            popup.buffer.attached,
-                            visible_toplevel_entities.contains(&popup.child_of.parent()),
-                        )
-                    },
-                    |snapshot| {
-                        snapshot.surfaces.get(&popup.surface_id()).is_some_and(|state| {
-                            state.visible
-                                && state.role
-                                    == nekoland_ecs::resources::SurfacePresentationRole::Popup
-                        })
-                    },
-                )
+                && surface_presentation.surfaces.get(&popup.surface_id()).is_some_and(|state| {
+                    state.visible
+                        && state.role == nekoland_ecs::resources::SurfacePresentationRole::Popup
+                })
         })
         .map(|(popup, _)| popup.surface_id())
         .collect::<std::collections::BTreeSet<_>>();
@@ -362,11 +320,10 @@ fn extract_surface_content_versions_snapshot(main_world: &mut World, wayland_wor
     wayland_world.insert_resource(SurfaceContentVersionSnapshot { versions });
 }
 
-fn sync_wayland_ingress_mailbox_system(
+fn sync_wayland_ingress_boundary_system(
     protocol_server: Res<'_, ProtocolServerState>,
     xwayland_server: Res<'_, XWaylandServerState>,
     dmabuf_support: Option<Res<'_, ProtocolDmabufSupport>>,
-    primary_output: Res<'_, PrimaryOutputState>,
     cursor_image: Res<'_, CursorImageSnapshot>,
     platform_input_events: Res<'_, PendingPlatformInputEvents>,
     output_snapshots: Res<'_, OutputSnapshotState>,
@@ -379,10 +336,11 @@ fn sync_wayland_ingress_mailbox_system(
     mut wayland_ingress: ResMut<'_, WaylandIngress>,
 ) {
     let output_materialization = wayland_ingress.output_materialization.clone();
+    let primary_output = wayland_ingress.primary_output.clone();
     *wayland_ingress = WaylandIngress {
         protocol_server: protocol_server.clone(),
         xwayland_server: xwayland_server.clone(),
-        primary_output: primary_output.clone(),
+        primary_output,
         cursor_image: cursor_image.clone(),
         platform_input_events: platform_input_events.clone(),
         output_snapshots: output_snapshots.clone(),
@@ -416,16 +374,18 @@ fn ingest_protocol_wayland_commands_system(
     mut pending_window_requests: ResMut<'_, PendingWindowServerRequests>,
     mut pending_popup_requests: ResMut<'_, PendingPopupServerRequests>,
 ) {
-    *pending_protocol_inputs = wayland_commands.pending_protocol_input_events.clone();
+    pending_protocol_inputs.extend(
+        wayland_commands.pending_protocol_input_events.as_slice().iter().cloned(),
+    );
     *pending_window_requests = wayland_commands.pending_window_server_requests.clone();
     *pending_popup_requests = wayland_commands.pending_popup_server_requests.clone();
 }
 
-fn clear_wayland_commands_mailbox_system(mut wayland_commands: ResMut<'_, WaylandCommands>) {
+fn clear_wayland_commands_boundary_system(mut wayland_commands: ResMut<'_, WaylandCommands>) {
     *wayland_commands = WaylandCommands::default();
 }
 
-fn sync_wayland_feedback_mailbox_system(
+fn sync_wayland_feedback_boundary_system(
     clipboard_selection: Res<'_, ClipboardSelectionState>,
     drag_and_drop: Res<'_, DragAndDropState>,
     primary_selection: Res<'_, PrimarySelectionState>,
@@ -461,17 +421,18 @@ mod tests {
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, ClipboardSelection, ClipboardSelectionState,
         CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock, CursorImageSnapshot,
-        DragAndDropDrop, DragAndDropSession, DragAndDropState, OutputGeometrySnapshot,
-        OutputPresentationState, OutputPresentationTimeline, OutputSnapshotState,
-        PendingLayerRequests, PendingOutputControls, PendingOutputEvents,
+        DragAndDropDrop, DragAndDropSession, DragAndDropState, GlobalPointerPosition,
+        OutputGeometrySnapshot, OutputPresentationState, OutputPresentationTimeline,
+        OutputSnapshotState, PendingLayerRequests, PendingOutputControls, PendingOutputEvents,
         PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
         PendingProtocolInputEvents, PendingScreenshotRequests, PendingWindowControls,
         PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests, PlatformSurfaceKind,
         PlatformSurfaceSnapshot, PlatformSurfaceSnapshotState, PresentAuditElement,
-        PresentAuditElementKind, PresentAuditState, PrimaryOutputState, PrimarySelection,
-        PrimarySelectionState, ProtocolServerState, ScreenshotFrame, SelectionOwner,
-        VirtualOutputCaptureState, VirtualOutputElement, VirtualOutputElementKind,
-        VirtualOutputFrame, WaylandCommands, WaylandFeedback, WaylandIngress, XWaylandServerState,
+        PresentAuditElementKind, PresentAuditState, PrimarySelection, PrimarySelectionState,
+        ProtocolServerState, ScreenshotFrame, SelectionOwner,
+        ShellRenderInput, SurfacePresentationSnapshot, VirtualOutputCaptureState,
+        VirtualOutputElement, VirtualOutputElementKind, VirtualOutputFrame, WaylandCommands,
+        WaylandFeedback, WaylandIngress, XWaylandServerState,
     };
 
     use super::{WaylandSubAppPlugin, configure_wayland_subapp, sync_wayland_subapp_back};
@@ -484,6 +445,7 @@ mod tests {
             ..Default::default()
         });
         main_world.insert_resource(CompiledOutputFrames::default());
+        main_world.insert_resource(ShellRenderInput::default());
         main_world.init_resource::<CompletedScreenshotFrames>();
 
         let mut sub_app = SubApp::new();
@@ -491,6 +453,16 @@ mod tests {
         sub_app.add_plugins(NekolandAppPlugin::new(WaylandSubAppPlugin));
         configure_wayland_subapp(&mut sub_app);
         sub_app.extract(&mut main_world);
+        assert_eq!(
+            sub_app.world().get_resource::<GlobalPointerPosition>(),
+            Some(&GlobalPointerPosition::default()),
+            "wayland extract should mirror the shell boundary pointer resource",
+        );
+        assert_eq!(
+            sub_app.world().get_resource::<SurfacePresentationSnapshot>(),
+            Some(&SurfacePresentationSnapshot::default()),
+            "wayland extract should mirror the shell boundary presentation snapshot",
+        );
         sub_app.world_mut().insert_resource(ProtocolServerState {
             socket_name: Some("wayland-1".to_owned()),
             ..Default::default()
@@ -500,9 +472,10 @@ mod tests {
             ready: true,
             ..Default::default()
         });
-        sub_app.world_mut().insert_resource(PrimaryOutputState {
-            id: Some(nekoland_ecs::components::OutputId(7)),
-        });
+        sub_app.world_mut().resource_mut::<WaylandIngress>().primary_output =
+            nekoland_ecs::resources::PrimaryOutputState {
+                id: Some(nekoland_ecs::components::OutputId(7)),
+            };
         sub_app
             .world_mut()
             .insert_resource(CursorImageSnapshot::Named { icon_name: "default".to_owned() });
@@ -765,6 +738,7 @@ mod tests {
     #[test]
     fn wayland_subapp_fans_out_wayland_commands_to_platform_pending_queues() {
         let mut main_world = World::default();
+        main_world.insert_resource(ShellRenderInput::default());
         let pending_output_controls = PendingOutputControls::default();
         let mut pending_output_overlay_controls = PendingOutputOverlayControls::default();
         pending_output_overlay_controls
@@ -822,9 +796,49 @@ mod tests {
     }
 
     #[test]
+    fn wayland_subapp_keeps_backend_protocol_inputs_when_applying_wayland_commands() {
+        let mut main_world = World::default();
+        main_world.insert_resource(ShellRenderInput::default());
+
+        let backend_event = BackendInputEvent {
+            device: "backend-seat".to_owned(),
+            action: BackendInputAction::PointerMoved { x: 32.0, y: 48.0 },
+        };
+        let shell_event = BackendInputEvent {
+            device: "shell-seat".to_owned(),
+            action: BackendInputAction::PointerButton { button_code: 0x110, pressed: true },
+        };
+
+        main_world.insert_resource(WaylandCommands {
+            pending_protocol_input_events: PendingProtocolInputEvents::from_items(vec![
+                shell_event.clone(),
+            ]),
+            ..Default::default()
+        });
+
+        let mut sub_app = SubApp::new();
+        install_core_schedules_sub_app(&mut sub_app);
+        sub_app.add_plugins(NekolandAppPlugin::new(WaylandSubAppPlugin));
+        configure_wayland_subapp(&mut sub_app);
+        sub_app.extract(&mut main_world);
+        sub_app
+            .world_mut()
+            .resource_mut::<PendingProtocolInputEvents>()
+            .push(backend_event.clone());
+
+        sub_app.world_mut().run_schedule(ExtractSchedule);
+
+        assert_eq!(
+            sub_app.world().resource::<PendingProtocolInputEvents>().as_slice(),
+            &[backend_event, shell_event],
+        );
+    }
+
+    #[test]
     fn wayland_subapp_extract_phase_advances_and_syncs_compositor_clock() {
         let mut main_world = World::default();
         main_world.insert_resource(CompositorClock::default());
+        main_world.insert_resource(ShellRenderInput::default());
 
         let mut sub_app = SubApp::new();
         install_core_schedules_sub_app(&mut sub_app);
@@ -846,6 +860,7 @@ mod tests {
     fn wayland_subapp_extract_keeps_compositor_clock_subapp_owned_after_bootstrap() {
         let mut main_world = World::default();
         main_world.insert_resource(CompositorClock::default());
+        main_world.insert_resource(ShellRenderInput::default());
 
         let mut sub_app = SubApp::new();
         install_core_schedules_sub_app(&mut sub_app);
@@ -877,6 +892,7 @@ mod tests {
     #[test]
     fn wayland_subapp_builds_feedback_from_present_phase_state() {
         let mut main_world = World::default();
+        main_world.insert_resource(ShellRenderInput::default());
 
         let mut sub_app = SubApp::new();
         install_core_schedules_sub_app(&mut sub_app);
