@@ -1,7 +1,6 @@
 //! Input decoding, gesture/keybinding dispatch, and seat bookkeeping.
 
 pub mod gestures;
-pub mod keybindings;
 pub mod keyboard;
 pub mod plugin;
 pub mod pointer;
