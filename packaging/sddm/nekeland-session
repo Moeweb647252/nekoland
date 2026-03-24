@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=nekoland
+export XDG_SESSION_DESKTOP=nekoland
+export DESKTOP_SESSION=nekoland
+export NEKOLAND_BACKEND="${NEKOLAND_BACKEND:-drm}"
+
+find_nekoland_bin() {
+    if [[ -n "${NEKOLAND_BIN:-}" ]]; then
+        printf '%s\n' "${NEKOLAND_BIN}"
+        return 0
+    fi
+
+    if command -v nekoland >/dev/null 2>&1; then
+        command -v nekoland
+        return 0
+    fi
+
+    local candidate
+    for candidate in /usr/local/bin/nekoland /usr/bin/nekoland; do
+        if [[ -x "${candidate}" ]]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+find_nekoland_config() {
+    if [[ -n "${NEKOLAND_CONFIG:-}" ]]; then
+        printf '%s\n' "${NEKOLAND_CONFIG}"
+        return 0
+    fi
+
+    local xdg_config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
+    local candidate
+    for candidate in \
+        "${xdg_config_home}/nekoland/config.toml" \
+        "${xdg_config_home}/nekoland/default.toml" \
+        /etc/nekoland/config.toml \
+        /etc/nekoland/default.toml \
+        /usr/local/share/nekoland/config/default.toml \
+        /usr/share/nekoland/config/default.toml
+    do
+        if [[ -f "${candidate}" ]]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+if ! NEKOLAND_BIN_PATH="$(find_nekoland_bin)"; then
+    echo "nekeland-session: could not find the nekoland binary" >&2
+    exit 127
+fi
+
+if NEKOLAND_CONFIG_PATH="$(find_nekoland_config)"; then
+    export NEKOLAND_CONFIG="${NEKOLAND_CONFIG_PATH}"
+fi
+
+# Avoid leaking the greeter's display environment into the compositor process.
+unset DISPLAY
+unset WAYLAND_DISPLAY
+unset WAYLAND_SOCKET
+unset DESKTOP_STARTUP_ID
+unset XDG_ACTIVATION_TOKEN
+
+if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] || ! command -v dbus-run-session >/dev/null 2>&1; then
+    exec "${NEKOLAND_BIN_PATH}" "$@"
+fi
+
+exec dbus-run-session -- "${NEKOLAND_BIN_PATH}" "$@"
