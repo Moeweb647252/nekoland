@@ -10,9 +10,9 @@ use nekoland_config::resources::{CompositorConfig, WindowRuleContext};
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, PendingInteractiveResize, ServerDecoration, SurfaceContentVersion,
-    SurfaceGeometry, Window, WindowAnimation, WindowFullscreenTarget, WindowLayout,
-    WindowManagementHints, WindowMode, WindowPlacement, WindowPolicyState, WindowPosition,
-    WindowRole, WindowSceneGeometry, WindowSize, WlSurfaceHandle, XdgPopup,
+    SurfaceGeometry, Window, WindowAnimation, WindowCommittedSize, WindowFullscreenTarget,
+    WindowLayout, WindowManagementHints, WindowMode, WindowPlacement, WindowPolicyState,
+    WindowPosition, WindowRole, WindowSceneGeometry, WindowSize, WlSurfaceHandle, XdgPopup,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
 use nekoland_ecs::resources::{
@@ -267,13 +267,17 @@ fn upsert_window(
             window.geometry.y = geometry.y.clamp(i32::MIN as isize, i32::MAX as isize) as i32;
             window.geometry.width = geometry.width.max(1);
             window.geometry.height = geometry.height.max(1);
+            window.committed_size.width = geometry.width.max(1);
+            window.committed_size.height = geometry.height.max(1);
             *window.scene_geometry = WindowSceneGeometry {
                 x: geometry.x,
                 y: geometry.y,
                 width: geometry.width.max(1),
                 height: geometry.height.max(1),
             };
-            if matches!(*window.layout, WindowLayout::Floating) && *window.mode == WindowMode::Normal
+            if matches!(*window.layout, WindowLayout::Floating)
+                && *window.mode == WindowMode::Normal
+                && !window.management_hints.client_driven_resize
             {
                 window.placement.set_explicit_position(WindowPosition {
                     x: geometry.x,
@@ -301,7 +305,9 @@ fn upsert_window(
     }
 
     let mut placement = WindowPlacement::default();
-    if hints.prefer_floating || matches!(policy.layout, WindowLayout::Floating) {
+    if (hints.prefer_floating || matches!(policy.layout, WindowLayout::Floating))
+        && !hints.client_driven_resize
+    {
         placement.set_explicit_position(WindowPosition { x: geometry.x, y: geometry.y });
         placement.floating_size =
             Some(WindowSize { width: geometry.width.max(1), height: geometry.height.max(1) });
@@ -339,6 +345,10 @@ fn upsert_window(
                     color: config.border_color.clone(),
                 },
                 animation: WindowAnimation::default(),
+            },
+            WindowCommittedSize {
+                width: geometry.width.max(1),
+                height: geometry.height.max(1),
             },
             WindowPolicyState { applied: policy, locked: false },
             placement,
@@ -409,6 +419,8 @@ fn apply_committed_window_state(
     ) {
         let committed_width = size.width.max(1);
         let committed_height = size.height.max(1);
+        window.committed_size.width = committed_width;
+        window.committed_size.height = committed_height;
         if window.management_hints.client_driven_resize {
             let pending_resize_state = window.pending_resize.as_ref().map(|pending_resize| {
                 (
@@ -753,9 +765,9 @@ mod tests {
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::WindowBundle;
     use nekoland_ecs::components::{
-        BufferState, PendingInteractiveResize, Window, WindowLayout, WindowManagementHints,
-        WindowMode, WindowPlacement, WindowPosition, WindowSceneGeometry, WindowSize,
-        WlSurfaceHandle, Workspace, WorkspaceId,
+        BufferState, PendingInteractiveResize, Window, WindowCommittedSize, WindowLayout,
+        WindowManagementHints, WindowMode, WindowPlacement, WindowPosition, WindowSceneGeometry,
+        WindowSize, WlSurfaceHandle, Workspace, WorkspaceId,
     };
     use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
     use nekoland_ecs::resources::{
@@ -812,8 +824,15 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner_mut().world_mut();
-        let mut windows = world.query::<(&WlSurfaceHandle, &Window, &WindowManagementHints)>();
-        let Some((surface, window, hints)) = windows.iter(world).find(|(surface, _, _)| surface.id == 41) else {
+        let mut windows = world.query::<(
+            &WlSurfaceHandle,
+            &Window,
+            &WindowManagementHints,
+            &WindowPlacement,
+        )>();
+        let Some((surface, window, hints, placement)) =
+            windows.iter(world).find(|(surface, _, _, _)| surface.id == 41)
+        else {
             panic!("window should be created");
         };
         assert_eq!(window.title, "Firefox");
@@ -821,6 +840,7 @@ mod tests {
         assert!(hints.client_driven_resize);
         assert!(!hints.helper_surface);
         assert_eq!(surface.id, 41);
+        assert_eq!(placement, &WindowPlacement::default());
     }
 
     #[test]
@@ -868,6 +888,7 @@ mod tests {
                     border_theme: Default::default(),
                     animation: Default::default(),
                 },
+                WindowCommittedSize { width: 800, height: 600 },
                 PendingInteractiveResize {
                     requested_geometry: WindowSceneGeometry { x: 10, y: 120, width: 800, height: 500 },
                     inflight_geometry: Some(WindowSceneGeometry {

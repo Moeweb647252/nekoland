@@ -244,25 +244,21 @@ pub(crate) fn pointer_focus_target(
                 if !state.visible || !state.input_enabled {
                     continue;
                 }
-                let Some(bounds) =
-                    global_surface_bounds_for_item(*placement_x, *placement_y, item.instance)
-                else {
-                    continue;
-                };
-                if !bounds.contains(pointer_x, pointer_y) {
-                    continue;
-                }
                 let surface_origin = super::Point::<f64, super::Logical>::from((
                     f64::from(*placement_x + item.instance.rect.x),
                     f64::from(*placement_y + item.instance.rect.y),
                 ));
-                if server.is_some_and(|server| {
-                    !server.pointer_focus_candidate_accepts(
+                let accepted = if let Some(server) = server {
+                    server.pointer_focus_candidate_accepts(
                         item.surface_id,
                         location,
                         surface_origin,
                     )
-                }) {
+                } else {
+                    global_surface_bounds_for_item(*placement_x, *placement_y, item.instance)
+                        .is_some_and(|bounds| bounds.contains(pointer_x, pointer_y))
+                };
+                if !accepted {
                     continue;
                 }
                 return Some(PointerSurfaceFocus { surface_id: item.surface_id, surface_origin });
@@ -280,22 +276,17 @@ pub(crate) fn pointer_focus_target(
             let nekoland_ecs::resources::RenderPlanItem::Surface(item) = item else {
                 continue;
             };
-            let Some(bounds) =
-                global_surface_bounds_for_item(*placement_x, *placement_y, item.instance)
-            else {
-                continue;
-            };
-            if !bounds.contains(pointer_x, pointer_y) {
-                continue;
-            }
-
             let surface_origin = super::Point::<f64, super::Logical>::from((
                 f64::from(*placement_x + item.instance.rect.x),
                 f64::from(*placement_y + item.instance.rect.y),
             ));
-            if server.is_some_and(|server| {
-                !server.pointer_focus_candidate_accepts(item.surface_id, location, surface_origin)
-            }) {
+            let accepted = if let Some(server) = server {
+                server.pointer_focus_candidate_accepts(item.surface_id, location, surface_origin)
+            } else {
+                global_surface_bounds_for_item(*placement_x, *placement_y, item.instance)
+                    .is_some_and(|bounds| bounds.contains(pointer_x, pointer_y))
+            };
+            if !accepted {
                 continue;
             }
             return Some(PointerSurfaceFocus { surface_id: item.surface_id, surface_origin });

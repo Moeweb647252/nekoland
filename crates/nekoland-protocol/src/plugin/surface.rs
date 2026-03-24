@@ -288,14 +288,12 @@ pub(crate) fn surface_identity(surface: &super::WlSurface, next_surface_id: &mut
 pub(crate) fn committed_surface_extent(
     surface: &super::WlSurface,
 ) -> Option<nekoland_ecs::resources::SurfaceExtent> {
-    super::with_renderer_surface_state(surface, |state| {
-        state.surface_size().or_else(|| state.buffer_size())
-    })
-    .flatten()
-    .and_then(|size| {
-        let width = u32::try_from(size.w).ok()?.max(1);
-        let height = u32::try_from(size.h).ok()?.max(1);
-        Some(nekoland_ecs::resources::SurfaceExtent { width, height })
+    xdg_window_geometry_extent(surface).or_else(|| {
+        super::with_renderer_surface_state(surface, |state| {
+            state.surface_size().or_else(|| state.buffer_size())
+        })
+        .flatten()
+        .and_then(surface_extent_from_logical_size)
     })
 }
 
@@ -312,6 +310,27 @@ fn surface_extent_from_logical_size(
 ) -> Option<nekoland_ecs::resources::SurfaceExtent> {
     let width = u32::try_from(size.w).ok()?.max(1);
     let height = u32::try_from(size.h).ok()?.max(1);
+    Some(nekoland_ecs::resources::SurfaceExtent { width, height })
+}
+
+fn xdg_window_geometry_extent(
+    surface: &super::WlSurface,
+) -> Option<nekoland_ecs::resources::SurfaceExtent> {
+    let geometry = super::compositor::with_states(surface, |states| {
+        states
+            .cached_state
+            .get::<smithay::wayland::shell::xdg::SurfaceCachedState>()
+            .current()
+            .geometry
+    });
+    geometry.and_then(xdg_window_geometry_to_extent)
+}
+
+fn xdg_window_geometry_to_extent(
+    geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+) -> Option<nekoland_ecs::resources::SurfaceExtent> {
+    let width = u32::try_from(geometry.size.w).ok()?.max(1);
+    let height = u32::try_from(geometry.size.h).ok()?.max(1);
     Some(nekoland_ecs::resources::SurfaceExtent { width, height })
 }
 
@@ -551,6 +570,22 @@ impl smithay::wayland::compositor::CompositorHandler for super::server::Protocol
             }
         }
         self.queue_event(crate::ProtocolEvent::SurfaceDestroyed { surface_id, role });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::utils::Rectangle;
+
+    use super::xdg_window_geometry_to_extent;
+
+    #[test]
+    fn xdg_window_geometry_extent_uses_client_window_geometry_size() {
+        let geometry = Rectangle::new((12, 24).into(), (801, 602).into());
+        assert_eq!(
+            xdg_window_geometry_to_extent(geometry),
+            Some(nekoland_ecs::resources::SurfaceExtent { width: 801, height: 602 })
+        );
     }
 }
 

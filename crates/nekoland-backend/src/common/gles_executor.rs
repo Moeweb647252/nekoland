@@ -444,11 +444,13 @@ fn build_scene_pass_elements(
                 let Some(surface) = surface_registry.surface(item.surface_id) else {
                     continue;
                 };
+                let surface_origin =
+                    surface_tree_origin(item.x, item.y, item.surface_kind, surface);
                 elements.extend(
                     render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
                         renderer,
                         surface,
-                        (item.x, item.y),
+                        surface_origin,
                         output_scale as f64,
                         item.opacity,
                         Kind::Unspecified,
@@ -539,6 +541,40 @@ fn build_scene_pass_elements(
     }
 
     ScenePassBuilt { elements, backdrop_regions }
+}
+
+fn surface_tree_origin(
+    x: i32,
+    y: i32,
+    surface_kind: nekoland_ecs::resources::PlatformSurfaceKind,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) -> (i32, i32) {
+    let Some(offset) = xdg_window_geometry_offset(surface_kind, surface) else {
+        return (x, y);
+    };
+    (x.saturating_sub(offset.x), y.saturating_sub(offset.y))
+}
+
+fn xdg_window_geometry_offset(
+    surface_kind: nekoland_ecs::resources::PlatformSurfaceKind,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) -> Option<smithay::utils::Point<i32, smithay::utils::Logical>> {
+    match surface_kind {
+        nekoland_ecs::resources::PlatformSurfaceKind::Toplevel
+        | nekoland_ecs::resources::PlatformSurfaceKind::Popup => {}
+        nekoland_ecs::resources::PlatformSurfaceKind::Layer
+        | nekoland_ecs::resources::PlatformSurfaceKind::Cursor
+        | nekoland_ecs::resources::PlatformSurfaceKind::Unknown => return None,
+    }
+
+    smithay::wayland::compositor::with_states(surface, |states| {
+        states
+            .cached_state
+            .get::<smithay::wayland::shell::xdg::SurfaceCachedState>()
+            .current()
+            .geometry
+            .map(|geometry| geometry.loc)
+    })
 }
 
 fn scene_pass_item_ids_in_presentation_order(
@@ -1035,6 +1071,47 @@ mod tests {
             scene_pass_item_ids_in_presentation_order(&item_ids).copied().collect::<Vec<_>>(),
             vec![RenderItemId(33), RenderItemId(22), RenderItemId(11)]
         );
+    }
+
+    #[test]
+    fn surface_tree_origin_subtracts_xdg_window_geometry_offset() {
+        let origin = surface_tree_origin_with_geometry(
+            100,
+            200,
+            nekoland_ecs::resources::PlatformSurfaceKind::Toplevel,
+            Some((12, 34).into()),
+        );
+        assert_eq!(origin, (88, 166));
+    }
+
+    #[test]
+    fn surface_tree_origin_leaves_non_xdg_surfaces_unchanged() {
+        let origin = surface_tree_origin_with_geometry(
+            100,
+            200,
+            nekoland_ecs::resources::PlatformSurfaceKind::Layer,
+            Some((12, 34).into()),
+        );
+        assert_eq!(origin, (100, 200));
+    }
+
+    fn surface_tree_origin_with_geometry(
+        x: i32,
+        y: i32,
+        surface_kind: nekoland_ecs::resources::PlatformSurfaceKind,
+        geometry_loc: Option<smithay::utils::Point<i32, smithay::utils::Logical>>,
+    ) -> (i32, i32) {
+        let candidate = match surface_kind {
+            nekoland_ecs::resources::PlatformSurfaceKind::Toplevel
+            | nekoland_ecs::resources::PlatformSurfaceKind::Popup => geometry_loc,
+            nekoland_ecs::resources::PlatformSurfaceKind::Layer
+            | nekoland_ecs::resources::PlatformSurfaceKind::Cursor
+            | nekoland_ecs::resources::PlatformSurfaceKind::Unknown => None,
+        };
+        let Some(offset) = candidate else {
+            return (x, y);
+        };
+        (x.saturating_sub(offset.x), y.saturating_sub(offset.y))
     }
 
     #[test]

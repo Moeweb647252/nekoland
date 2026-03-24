@@ -12,6 +12,7 @@ use crate::selectors::OutputName;
     crate::components::SurfaceGeometry,
     crate::components::BufferState,
     crate::components::SurfaceContentVersion,
+    WindowCommittedSize,
     WindowSceneGeometry,
     WindowManagementHints,
     WindowViewportVisibility,
@@ -79,6 +80,13 @@ impl Default for WindowManagementHints {
 pub struct WindowSceneGeometry {
     pub x: WorkspaceCoord,
     pub y: WorkspaceCoord,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Last logical size the client committed for this window surface.
+#[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowCommittedSize {
     pub width: u32,
     pub height: u32,
 }

@@ -1352,10 +1352,12 @@ impl SmithayProtocolRuntime {
 
         let focus = focus.and_then(|focus| {
             let root_surface = self.surface_for_id(focus.surface_id)?;
+            let surface_origin =
+                adjusted_surface_tree_origin(&root_surface, focus.surface_origin);
             smithay::desktop::utils::under_from_surface_tree(
                 &root_surface,
                 location,
-                focus.surface_origin.to_i32_round(),
+                surface_origin,
                 smithay::desktop::WindowSurfaceType::ALL,
             )
             .map(|(surface, origin)| (surface, origin.to_f64()))
@@ -1718,11 +1720,12 @@ impl SmithayProtocolRuntime {
         let Some(root_surface) = self.surface_for_id(surface_id) else {
             return false;
         };
+        let surface_origin = adjusted_surface_tree_origin(&root_surface, surface_origin);
 
         smithay::desktop::utils::under_from_surface_tree(
             &root_surface,
             location,
-            surface_origin.to_i32_round(),
+            surface_origin,
             smithay::desktop::WindowSurfaceType::ALL,
         )
         .is_some()
@@ -1890,11 +1893,49 @@ pub(crate) fn remember_protocol_error(
     *slot = Some(error);
 }
 
+fn adjusted_surface_tree_origin(
+    surface: &WlSurface,
+    surface_origin: Point<f64, Logical>,
+) -> Point<i32, Logical> {
+    let origin = surface_origin.to_i32_round();
+    let offset = smithay::wayland::compositor::with_states(surface, |states| {
+        states
+            .cached_state
+            .get::<smithay::wayland::shell::xdg::SurfaceCachedState>()
+            .current()
+            .geometry
+            .map(|geometry| geometry.loc)
+    })
+    .unwrap_or_default();
+    adjusted_surface_tree_origin_from_offset(origin, offset)
+}
+
+fn adjusted_surface_tree_origin_from_offset(
+    origin: Point<i32, Logical>,
+    offset: Point<i32, Logical>,
+) -> Point<i32, Logical> {
+    origin - offset
+}
+
 #[cfg(test)]
 mod tests {
+    use smithay::utils::Point;
+
+    use super::adjusted_surface_tree_origin_from_offset;
     use super::synthetic_pointer_grab_matches;
     use super::SyntheticPointerGrab;
     use crate::plugin::surface::InteractiveRequestKind;
+
+    #[test]
+    fn pointer_focus_origin_subtracts_xdg_window_geometry_offset() {
+        assert_eq!(
+            adjusted_surface_tree_origin_from_offset(
+                Point::<i32, smithay::utils::Logical>::from((100, 200)),
+                Point::<i32, smithay::utils::Logical>::from((12, 18)),
+            ),
+            Point::<i32, smithay::utils::Logical>::from((88, 182))
+        );
+    }
 
     #[test]
     fn popup_grab_accepts_matching_press_serial_even_after_pointer_grab_ends() {

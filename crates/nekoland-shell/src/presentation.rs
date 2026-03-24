@@ -101,7 +101,17 @@ fn desired_presentation_state(
             resizing: false,
         })
     } else if window.management_hints.client_driven_resize {
-        None
+        (window.committed_size.width > 0
+            && window.committed_size.height > 0
+            && (window.committed_size.width != window.scene_geometry.width
+                || window.committed_size.height != window.scene_geometry.height))
+            .then(|| WindowPresentationState::Sync {
+                geometry: window.geometry.clone(),
+                scene_geometry: Some(window.scene_geometry.clone()),
+                fullscreen: false,
+                maximized: false,
+                resizing: false,
+            })
     } else {
         Some(WindowPresentationState::Sync {
             geometry: window.geometry.clone(),
@@ -134,9 +144,9 @@ mod tests {
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::{WindowBundle, X11WindowBundle};
     use nekoland_ecs::components::{
-        OutputBackgroundWindow, OutputId, PendingInteractiveResize, WindowLayout,
-        WindowRestoreState, WindowRole, WindowPlacement, WindowSceneGeometry, WindowSize,
-        WlSurfaceHandle, X11Window,
+        OutputBackgroundWindow, OutputId, PendingInteractiveResize, WindowCommittedSize,
+        WindowLayout, WindowPlacement, WindowRestoreState, WindowRole, WindowSceneGeometry,
+        WindowSize, WlSurfaceHandle, X11Window,
     };
     use nekoland_ecs::resources::{PendingWindowServerRequests, WindowServerAction};
 
@@ -439,6 +449,70 @@ mod tests {
                 assert_eq!(
                     *scene_geometry,
                     Some(WindowSceneGeometry { x: 4000, y: 5000, width: 1440, height: 900 })
+                );
+                assert!(!fullscreen);
+                assert!(!maximized);
+                assert!(!resizing);
+            }
+            action => panic!("unexpected action: {action:?}"),
+        }
+    }
+
+    #[test]
+    fn client_driven_xdg_windows_sync_when_scene_size_differs_from_committed_size() {
+        let mut app = NekolandApp::new("window-presentation-xdg-initial-fit-test");
+        app.inner_mut()
+            .init_resource::<PendingWindowServerRequests>()
+            .add_systems(LayoutSchedule, window_presentation_sync_system);
+
+        app.inner_mut().world_mut().spawn((
+            WindowBundle {
+                surface: WlSurfaceHandle { id: 56 },
+                geometry: nekoland_ecs::components::SurfaceGeometry {
+                    x: 50,
+                    y: 60,
+                    width: 1280,
+                    height: 720,
+                },
+                scene_geometry: WindowSceneGeometry { x: 4000, y: 5000, width: 1280, height: 720 },
+                layout: WindowLayout::Floating,
+                mode: nekoland_ecs::components::WindowMode::Normal,
+                ..Default::default()
+            },
+            WindowCommittedSize { width: 1600, height: 900 },
+            WindowPlacement {
+                floating_position: Some(
+                    nekoland_ecs::components::FloatingPosition::Auto(
+                        nekoland_ecs::components::WindowPosition { x: 4000, y: 5000 },
+                    ),
+                ),
+                ..WindowPlacement::default()
+            },
+        ));
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let requests = app
+            .inner()
+            .world()
+            .resource::<PendingWindowServerRequests>()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(requests.len(), 1);
+        match &requests[0].action {
+            WindowServerAction::SyncPresentation {
+                geometry,
+                scene_geometry,
+                fullscreen,
+                maximized,
+                resizing,
+            } => {
+                assert_eq!(geometry.width, 1280);
+                assert_eq!(geometry.height, 720);
+                assert_eq!(
+                    *scene_geometry,
+                    Some(WindowSceneGeometry { x: 4000, y: 5000, width: 1280, height: 720 })
                 );
                 assert!(!fullscreen);
                 assert!(!maximized);

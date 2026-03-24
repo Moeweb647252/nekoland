@@ -98,12 +98,18 @@ pub fn floating_layout_system(
             window.scene_geometry.height = size.height.max(MIN_FLOATING_WINDOW_SIZE);
         }
 
-        let max_width = window_work_area.width.max(MIN_FLOATING_WINDOW_SIZE);
-        let max_height = window_work_area.height.max(MIN_FLOATING_WINDOW_SIZE);
-        window.scene_geometry.width =
-            window.scene_geometry.width.clamp(MIN_FLOATING_WINDOW_SIZE, max_width);
-        window.scene_geometry.height =
-            window.scene_geometry.height.clamp(MIN_FLOATING_WINDOW_SIZE, max_height);
+        if window.management_hints.client_driven_resize && has_explicit_placement {
+            window.scene_geometry.width = window.scene_geometry.width.max(MIN_FLOATING_WINDOW_SIZE);
+            window.scene_geometry.height =
+                window.scene_geometry.height.max(MIN_FLOATING_WINDOW_SIZE);
+        } else {
+            let max_width = window_work_area.width.max(MIN_FLOATING_WINDOW_SIZE);
+            let max_height = window_work_area.height.max(MIN_FLOATING_WINDOW_SIZE);
+            window.scene_geometry.width =
+                window.scene_geometry.width.clamp(MIN_FLOATING_WINDOW_SIZE, max_width);
+            window.scene_geometry.height =
+                window.scene_geometry.height.clamp(MIN_FLOATING_WINDOW_SIZE, max_height);
+        }
 
         if should_reposition_floating_window(
             &window.placement,
@@ -200,8 +206,8 @@ mod tests {
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::WindowBundle;
     use nekoland_ecs::components::{
-        BufferState, FloatingPosition, SurfaceGeometry, WindowLayout, WindowMode, WindowPlacement,
-        WindowPosition, WindowSize, WlSurfaceHandle,
+        BufferState, FloatingPosition, SurfaceGeometry, WindowLayout, WindowManagementHints,
+        WindowMode, WindowPlacement, WindowPosition, WindowSize, WlSurfaceHandle,
     };
     use nekoland_ecs::resources::{WaylandIngress, WorkArea};
 
@@ -230,8 +236,8 @@ mod tests {
     }
 
     #[test]
-    fn floating_layout_clamps_window_size_to_work_area() {
-        let mut app = NekolandApp::new("floating-layout-clamp-test");
+    fn compositor_managed_floating_layout_clamps_window_size_to_work_area() {
+        let mut app = NekolandApp::new("floating-layout-compositor-clamp-test");
         app.insert_resource(WaylandIngress::default())
             .insert_resource(WorkArea { x: 0, y: 0, width: 1280, height: 720 })
             .inner_mut()
@@ -242,6 +248,37 @@ mod tests {
             .world_mut()
             .spawn(WindowBundle {
                 surface: WlSurfaceHandle { id: 99 },
+                geometry: SurfaceGeometry { x: 0, y: 0, width: 3000, height: 2000 },
+                buffer: BufferState { attached: true, scale: 1 },
+                management_hints: WindowManagementHints::x11(false, false, false, None),
+                layout: WindowLayout::Floating,
+                mode: WindowMode::Normal,
+                ..Default::default()
+            })
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let Some(geometry) = app.inner().world().get::<SurfaceGeometry>(window) else {
+            panic!("window geometry");
+        };
+        assert_eq!(geometry.width, 1280);
+        assert_eq!(geometry.height, 720);
+    }
+
+    #[test]
+    fn native_wayland_initial_floating_layout_clamps_unplaced_size_to_work_area() {
+        let mut app = NekolandApp::new("floating-layout-native-wayland-initial-fit-test");
+        app.insert_resource(WaylandIngress::default())
+            .insert_resource(WorkArea { x: 0, y: 0, width: 1280, height: 720 })
+            .inner_mut()
+            .add_systems(LayoutSchedule, floating_layout_system);
+
+        let window = app
+            .inner_mut()
+            .world_mut()
+            .spawn(WindowBundle {
+                surface: WlSurfaceHandle { id: 100 },
                 geometry: SurfaceGeometry { x: 0, y: 0, width: 3000, height: 2000 },
                 buffer: BufferState { attached: true, scale: 1 },
                 layout: WindowLayout::Floating,
@@ -257,6 +294,42 @@ mod tests {
         };
         assert_eq!(geometry.width, 1280);
         assert_eq!(geometry.height, 720);
+    }
+
+    #[test]
+    fn native_wayland_explicitly_sized_windows_can_exceed_work_area() {
+        let mut app = NekolandApp::new("floating-layout-native-wayland-explicit-size-test");
+        app.insert_resource(WaylandIngress::default())
+            .insert_resource(WorkArea { x: 0, y: 0, width: 1280, height: 720 })
+            .inner_mut()
+            .add_systems(LayoutSchedule, floating_layout_system);
+
+        let window = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                WindowBundle {
+                    surface: WlSurfaceHandle { id: 101 },
+                    geometry: SurfaceGeometry { x: 0, y: 0, width: 3000, height: 2000 },
+                    buffer: BufferState { attached: true, scale: 1 },
+                    layout: WindowLayout::Floating,
+                    mode: WindowMode::Normal,
+                    ..Default::default()
+                },
+                WindowPlacement {
+                    floating_position: Some(FloatingPosition::Explicit(WindowPosition { x: 0, y: 0 })),
+                    floating_size: Some(WindowSize { width: 3000, height: 2000 }),
+                },
+            ))
+            .id();
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let Some(geometry) = app.inner().world().get::<SurfaceGeometry>(window) else {
+            panic!("window geometry");
+        };
+        assert_eq!(geometry.width, 3000);
+        assert_eq!(geometry.height, 2000);
     }
 
     #[test]

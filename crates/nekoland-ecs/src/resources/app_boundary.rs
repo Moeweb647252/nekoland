@@ -20,6 +20,7 @@ pub struct WaylandIngress {
     pub protocol_server: ProtocolServerState,
     pub xwayland_server: XWaylandServerState,
     pub primary_output: PrimaryOutputState,
+    pub pointer_focus_surface: Option<u64>,
     pub seat_registry: SeatRegistry,
     pub cursor_image: CursorImageSnapshot,
     pub platform_input_events: PendingPlatformInputEvents,

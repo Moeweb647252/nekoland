@@ -7,8 +7,9 @@ use crate::plugin::{
     xwayland,
 };
 use bevy_app::{App, SubApp};
-use bevy_ecs::prelude::{Res, ResMut, Resource};
+use bevy_ecs::prelude::{NonSendMut, Res, ResMut, Resource};
 use bevy_ecs::schedule::{InternedScheduleLabel, IntoScheduleConfigs, ScheduleLabel};
+use bevy_ecs::system::SystemParam;
 use bevy_ecs::world::World;
 use nekoland_config::resources::{CompositorConfig, KeyboardLayoutState};
 use nekoland_core::app::{
@@ -347,45 +348,68 @@ fn extract_surface_content_versions_snapshot(main_world: &mut World, wayland_wor
     wayland_world.insert_resource(SurfaceContentVersionSnapshot { versions });
 }
 
-fn sync_wayland_ingress_boundary_system(
-    protocol_server: Res<'_, ProtocolServerState>,
-    xwayland_server: Res<'_, XWaylandServerState>,
-    dmabuf_support: Option<Res<'_, ProtocolDmabufSupport>>,
-    seat_registry: Res<'_, SeatRegistry>,
-    cursor_image: Res<'_, CursorImageSnapshot>,
-    mut platform_input_events: ResMut<'_, PendingPlatformInputEvents>,
-    output_snapshots: Res<'_, OutputSnapshotState>,
-    surface_snapshots: Res<'_, PlatformSurfaceSnapshotState>,
-    mut pending_window_events: ResMut<'_, PendingWindowEvents>,
-    mut pending_xdg_requests: ResMut<'_, PendingXdgRequests>,
-    mut pending_layer_requests: ResMut<'_, PendingLayerRequests>,
-    mut pending_x11_requests: ResMut<'_, PendingX11Requests>,
-    mut pending_window_controls: ResMut<'_, PendingWindowControls>,
-    mut pending_output_events: ResMut<'_, PendingOutputEvents>,
-    mut wayland_ingress: ResMut<'_, WaylandIngress>,
-) {
-    let output_materialization = wayland_ingress.output_materialization.clone();
-    let primary_output = wayland_ingress.primary_output.clone();
+#[derive(SystemParam)]
+struct WaylandIngressSyncParams<'w> {
+    protocol_server: Res<'w, ProtocolServerState>,
+    xwayland_server: Res<'w, XWaylandServerState>,
+    dmabuf_support: Option<Res<'w, ProtocolDmabufSupport>>,
+    pointer: Res<'w, GlobalPointerPosition>,
+    render_plan: Res<'w, RenderPlan>,
+    surface_presentation: Res<'w, nekoland_ecs::resources::SurfacePresentationSnapshot>,
+    server: Option<NonSendMut<'w, server::SmithayProtocolServer>>,
+    seat_registry: Res<'w, SeatRegistry>,
+    cursor_image: Res<'w, CursorImageSnapshot>,
+    platform_input_events: ResMut<'w, PendingPlatformInputEvents>,
+    output_snapshots: Res<'w, OutputSnapshotState>,
+    surface_snapshots: Res<'w, PlatformSurfaceSnapshotState>,
+    pending_window_events: ResMut<'w, PendingWindowEvents>,
+    pending_xdg_requests: ResMut<'w, PendingXdgRequests>,
+    pending_layer_requests: ResMut<'w, PendingLayerRequests>,
+    pending_x11_requests: ResMut<'w, PendingX11Requests>,
+    pending_window_controls: ResMut<'w, PendingWindowControls>,
+    pending_output_events: ResMut<'w, PendingOutputEvents>,
+    wayland_ingress: ResMut<'w, WaylandIngress>,
+}
+
+fn sync_wayland_ingress_boundary_system(mut params: WaylandIngressSyncParams<'_>) {
+    let output_materialization = params.wayland_ingress.output_materialization.clone();
+    let primary_output = params.wayland_ingress.primary_output.clone();
+    let pointer_focus_surface = seat::pointer_focus_target(
+        params.pointer.x,
+        params.pointer.y,
+        params.server.as_deref(),
+        (params.pointer.x, params.pointer.y).into(),
+        &seat::PointerFocusInputs {
+            render_plan: Some(&params.render_plan),
+            surface_presentation: Some(&params.surface_presentation),
+            output_snapshots: Some(&params.output_snapshots),
+        },
+    )
+    .map(|focus| focus.surface_id);
     let mut pending_window_controls_boundary = PendingWindowControls::default();
-    pending_window_controls_boundary.replace(pending_window_controls.take());
-    *wayland_ingress = WaylandIngress {
-        protocol_server: protocol_server.clone(),
-        xwayland_server: xwayland_server.clone(),
+    pending_window_controls_boundary.replace(params.pending_window_controls.take());
+    *params.wayland_ingress = WaylandIngress {
+        protocol_server: params.protocol_server.clone(),
+        xwayland_server: params.xwayland_server.clone(),
         primary_output,
-        seat_registry: seat_registry.clone(),
-        cursor_image: cursor_image.clone(),
-        platform_input_events: PendingPlatformInputEvents::from_items(platform_input_events.take()),
-        output_snapshots: output_snapshots.clone(),
-        surface_snapshots: surface_snapshots.clone(),
-        pending_window_events: PendingWindowEvents::from_items(pending_window_events.take()),
-        pending_xdg_requests: PendingXdgRequests::from_items(pending_xdg_requests.take()),
-        pending_layer_requests: PendingLayerRequests::from_items(pending_layer_requests.take()),
-        pending_x11_requests: PendingX11Requests::from_items(pending_x11_requests.take()),
+        pointer_focus_surface,
+        seat_registry: params.seat_registry.clone(),
+        cursor_image: params.cursor_image.clone(),
+        platform_input_events: PendingPlatformInputEvents::from_items(params.platform_input_events.take()),
+        output_snapshots: params.output_snapshots.clone(),
+        surface_snapshots: params.surface_snapshots.clone(),
+        pending_window_events: PendingWindowEvents::from_items(params.pending_window_events.take()),
+        pending_xdg_requests: PendingXdgRequests::from_items(params.pending_xdg_requests.take()),
+        pending_layer_requests: PendingLayerRequests::from_items(params.pending_layer_requests.take()),
+        pending_x11_requests: PendingX11Requests::from_items(params.pending_x11_requests.take()),
         pending_window_controls: pending_window_controls_boundary,
-        pending_output_events: PendingOutputEvents::from_items(pending_output_events.take()),
+        pending_output_events: PendingOutputEvents::from_items(params.pending_output_events.take()),
         output_materialization,
         import_capabilities: nekoland_ecs::resources::PlatformImportCapabilities {
-            dmabuf_importable: dmabuf_support.as_deref().is_some_and(|support| support.importable),
+            dmabuf_importable: params
+                .dmabuf_support
+                .as_deref()
+                .is_some_and(|support| support.importable),
         },
     };
 }

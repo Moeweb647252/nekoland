@@ -5,9 +5,9 @@ use crate::components::{
     BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow,
     OutputCurrentWorkspace, OutputDevice, OutputId, OutputPlacement, OutputProperties,
     OutputViewport, OutputWorkArea, PendingInteractiveResize, PopupGrab, SurfaceContentVersion,
-    SurfaceGeometry, Window, WindowFullscreenTarget, WindowLayout, WindowManagementHints,
-    WindowMode, WindowPlacement, WindowPolicyState, WindowRestoreSnapshot, WindowRole,
-    WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle, Workspace, X11Window,
+    SurfaceGeometry, Window, WindowCommittedSize, WindowFullscreenTarget, WindowLayout,
+    WindowManagementHints, WindowMode, WindowPlacement, WindowPolicyState, WindowRestoreSnapshot,
+    WindowRole, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle, Workspace, X11Window,
     XdgPopup,
 };
 
@@ -57,6 +57,7 @@ pub struct WindowRuntime {
     pub window: &'static mut Window,
     pub geometry: &'static mut SurfaceGeometry,
     pub scene_geometry: &'static mut WindowSceneGeometry,
+    pub committed_size: &'static mut WindowCommittedSize,
     pub content_version: &'static mut SurfaceContentVersion,
     pub viewport_visibility: &'static mut WindowViewportVisibility,
     pub management_hints: &'static mut WindowManagementHints,

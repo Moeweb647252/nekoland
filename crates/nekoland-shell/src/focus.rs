@@ -62,20 +62,25 @@ pub fn pointer_button_focus_system(
             .iter()
             .map(|(surface_id, (_, workspace_id, _, _))| (*workspace_id, *surface_id)),
     );
-    let focused_surface = ordered_surfaces.iter().rev().find_map(|surface_id| {
-        visible_windows
-            .get(surface_id)
-            .filter(|(geometry, _, output_name, _)| {
-                output_context.as_ref().map_or_else(
-                    || pointer_in_geometry(pointer.x, pointer.y, geometry),
-                    |(pointer_output, local_x, local_y)| {
-                        output_name == &Some(*pointer_output)
-                            && pointer_in_geometry(*local_x, *local_y, geometry)
-                    },
-                )
+    let focused_surface = wayland_ingress
+        .pointer_focus_surface
+        .filter(|surface_id| visible_windows.contains_key(surface_id))
+        .or_else(|| {
+            ordered_surfaces.iter().rev().find_map(|surface_id| {
+                visible_windows
+                    .get(surface_id)
+                    .filter(|(geometry, _, output_name, _)| {
+                        output_context.as_ref().map_or_else(
+                            || pointer_in_geometry(pointer.x, pointer.y, geometry),
+                            |(pointer_output, local_x, local_y)| {
+                                output_name == &Some(*pointer_output)
+                                    && pointer_in_geometry(*local_x, *local_y, geometry)
+                            },
+                        )
+                    })
+                    .map(|_| *surface_id)
             })
-            .map(|_| *surface_id)
-    });
+        });
 
     if let Some(surface_id) = focused_surface {
         keyboard_focus.focused_surface = Some(surface_id);
@@ -336,6 +341,47 @@ mod tests {
         app.inner_mut().world_mut().spawn(WindowBundle {
             surface: WlSurfaceHandle { id: 22 },
             geometry: SurfaceGeometry { x: 40, y: 40, width: 120, height: 120 },
+            layout: WindowLayout::Floating,
+            ..Default::default()
+        });
+        app.inner_mut()
+            .world_mut()
+            .write_message(PointerButton { button_code: 0x110, pressed: true });
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let focus = app.inner().world().resource::<KeyboardFocusState>();
+        assert_eq!(focus.focused_surface, Some(22));
+    }
+
+    #[test]
+    fn clicking_uses_wayland_pointer_focus_surface_when_available() {
+        let mut app = NekolandApp::new("focus-click-wayland-pointer-focus-test");
+        app.inner_mut()
+            .insert_resource(WaylandIngress {
+                pointer_focus_surface: Some(22),
+                ..WaylandIngress::default()
+            })
+            .insert_resource(GlobalPointerPosition { x: 130.0, y: 10.0 })
+            .insert_resource(KeyboardFocusState::default())
+            .insert_resource(WindowStackingState {
+                workspaces: std::collections::BTreeMap::from([(
+                    UNASSIGNED_WORKSPACE_STACK_ID,
+                    vec![11, 22],
+                )]),
+            })
+            .add_message::<PointerButton>()
+            .add_systems(LayoutSchedule, pointer_button_focus_system);
+
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 11 },
+            geometry: SurfaceGeometry { x: 120, y: 0, width: 120, height: 120 },
+            layout: WindowLayout::Floating,
+            ..Default::default()
+        });
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 22 },
+            geometry: SurfaceGeometry { x: 0, y: 0, width: 100, height: 100 },
             layout: WindowLayout::Floating,
             ..Default::default()
         });
