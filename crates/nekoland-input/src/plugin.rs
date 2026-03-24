@@ -7,7 +7,7 @@ use nekoland_ecs::resources::{
     FocusedOutputState, GlobalPointerPosition, KeyboardFocusState, ModifierState,
     PendingExternalCommandRequests, PendingInputEvents, PendingOutputControls,
     PendingWindowControls, PendingWorkspaceControls, PhysicalPointerPosition, PointerDelta,
-    PressedKeys, ViewportPointerPanState, WaylandIngress,
+    PressedKeys, SeatRegistry, ViewportPointerPanState, WaylandIngress,
 };
 
 use crate::{gestures, keybindings, keyboard, pointer, seat_manager, touch};
@@ -33,7 +33,7 @@ impl NekolandPlugin for InputPlugin {
             .init_resource::<PendingWindowControls>()
             .init_resource::<PendingWorkspaceControls>()
             .init_resource::<keybindings::CompiledKeybindings>()
-            .init_resource::<seat_manager::SeatManager>()
+            .init_resource::<SeatRegistry>()
             .add_message::<KeyPress>()
             .add_message::<PointerButton>()
             .add_message::<PointerMotion>()

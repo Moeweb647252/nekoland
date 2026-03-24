@@ -25,7 +25,8 @@ use nekoland_ecs::resources::{
     ExternalCommandRequest, KeyboardFocusState, OutputOverlayId, PendingExternalCommandRequests,
     PendingOutputControls, PendingPopupServerRequests, PendingWindowControls,
     PendingWorkspaceControls, PopupServerAction, PopupServerRequest, PresentAuditElementKind,
-    RenderColor, RenderPlan, RenderPlanItem, RenderRect, WaylandFeedback,
+    RenderColor, RenderPlan, RenderPlanItem, RenderRect, SeatRegistry, WaylandFeedback,
+    WaylandIngress,
 };
 use nekoland_ecs::selectors::{
     OutputName, SurfaceId, WorkspaceLookup, WorkspaceName, WorkspaceSelector,
@@ -48,7 +49,7 @@ use crate::subscribe::{
 };
 use crate::{IpcCommand, IpcReply, IpcRequest};
 use nekoland_ecs::components::{
-    WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgPopup,
+    SeatId, WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgPopup,
 };
 use nekoland_ecs::views::{
     OutputRuntime, PopupSnapshotRuntime, WindowSnapshotRuntime, WorkspaceRuntime,
@@ -153,6 +154,7 @@ pub(crate) struct IpcQuerySnapshotInputs<'w, 's> {
     command_history: Res<'w, CommandHistoryState>,
     config: Res<'w, CompositorConfig>,
     keyboard_layout_state: Res<'w, KeyboardLayoutState>,
+    wayland_ingress: Option<Res<'w, WaylandIngress>>,
     wayland_feedback: Option<Res<'w, WaylandFeedback>>,
     config_source: Option<Res<'w, LoadedConfigSource>>,
     entity_index: Option<Res<'w, EntityIndex>>,
@@ -562,6 +564,7 @@ pub(crate) fn refresh_query_cache_system(
         command_history,
         config,
         keyboard_layout_state,
+        wayland_ingress,
         wayland_feedback,
         config_source,
         entity_index,
@@ -753,9 +756,18 @@ pub(crate) fn refresh_query_cache_system(
             output: workspace_output_names.get(id).cloned(),
         })
         .collect();
+    let seat_registry = wayland_ingress
+        .as_deref()
+        .map(|ingress| ingress.seat_registry.clone())
+        .unwrap_or_default();
+    let primary_seat_id = seat_registry.primary_seat_id();
+    let primary_seat_name = seat_name(&seat_registry, primary_seat_id)
+        .unwrap_or_default()
+        .to_owned();
     query_cache.outputs = output_snapshots;
     query_cache.keyboard_layouts = KeyboardLayoutsSnapshot {
-        seat_name: keyboard_layout_state.seat_name().to_owned(),
+        seat_id: primary_seat_id,
+        seat_name: primary_seat_name,
         active_index: keyboard_layout_state.active_index(),
         active_name: keyboard_layout_state.active_name().to_owned(),
         layouts: keyboard_layout_state
@@ -830,10 +842,11 @@ pub(crate) fn refresh_query_cache_system(
         .unwrap_or_default();
 
     query_cache.clipboard = ClipboardSnapshot {
+        seat_id: clipboard_selection.selection.as_ref().map(|selection| selection.seat_id),
         seat_name: clipboard_selection
             .selection
             .as_ref()
-            .map(|selection| selection.seat_name.clone()),
+            .and_then(|selection| seat_name(&seat_registry, selection.seat_id).map(str::to_owned)),
         mime_types: clipboard_selection
             .selection
             .as_ref()
@@ -850,10 +863,11 @@ pub(crate) fn refresh_query_cache_system(
             .unwrap_or_default(),
     };
     query_cache.primary_selection = PrimarySelectionSnapshot {
+        seat_id: primary_selection.selection.as_ref().map(|selection| selection.seat_id),
         seat_name: primary_selection
             .selection
             .as_ref()
-            .map(|selection| selection.seat_name.clone()),
+            .and_then(|selection| seat_name(&seat_registry, selection.seat_id).map(str::to_owned)),
         mime_types: primary_selection
             .selection
             .as_ref()
@@ -915,6 +929,10 @@ pub(crate) fn refresh_query_cache_system(
         popups,
         render_order,
     };
+}
+
+fn seat_name(seat_registry: &SeatRegistry, seat_id: SeatId) -> Option<&str> {
+    seat_registry.seat_name(seat_id)
 }
 
 fn selection_owner_snapshot(owner: SelectionOwner) -> SelectionOwnerSnapshot {

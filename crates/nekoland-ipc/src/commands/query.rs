@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use nekoland_config::resources::ConfiguredAction;
-use nekoland_ecs::components::OutputKind;
+use nekoland_ecs::components::{OutputKind, SeatId};
 use serde::{Deserialize, Serialize};
 
 /// Read-only IPC queries exposed by `nekoland-msg query ...`.
@@ -71,6 +71,7 @@ pub struct KeyboardLayoutEntrySnapshot {
 /// Runtime keyboard-layout state for the compositor seat.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KeyboardLayoutsSnapshot {
+    pub seat_id: SeatId,
     pub seat_name: String,
     pub active_index: usize,
     pub active_name: String,
@@ -183,6 +184,7 @@ pub struct ConfigSnapshot {
 /// Clipboard state exported through IPC.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClipboardSnapshot {
+    pub seat_id: Option<SeatId>,
     pub seat_name: Option<String>,
     pub mime_types: Vec<String>,
     pub owner: Option<SelectionOwnerSnapshot>,
@@ -192,6 +194,7 @@ pub struct ClipboardSnapshot {
 /// Primary-selection state exported through IPC.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PrimarySelectionSnapshot {
+    pub seat_id: Option<SeatId>,
     pub seat_name: Option<String>,
     pub mime_types: Vec<String>,
     pub owner: Option<SelectionOwnerSnapshot>,

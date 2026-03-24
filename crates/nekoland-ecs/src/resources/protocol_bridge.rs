@@ -3,6 +3,7 @@ use std::fmt;
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
+use crate::components::SeatId;
 use crate::components::{LayerAnchor, LayerLevel, LayerMargins, X11WindowType};
 use crate::kinds::{
     BackendEvent, CompositorRequest, FrameQueue, ProtocolEvent, ProtocolEventQueue,
@@ -88,8 +89,8 @@ pub enum WindowLifecycleAction {
     ConfigureRequested { role: XdgSurfaceRole },
     AckConfigure { role: XdgSurfaceRole, serial: u32 },
     MetadataChanged { title: Option<String>, app_id: Option<String> },
-    InteractiveMove { seat_name: String, serial: u32 },
-    InteractiveResize { seat_name: String, serial: u32, edges: ResizeEdges },
+    InteractiveMove { seat_id: SeatId, serial: u32 },
+    InteractiveResize { seat_id: SeatId, serial: u32, edges: ResizeEdges },
     Maximize,
     UnMaximize,
     Fullscreen { output_name: Option<String> },
@@ -97,7 +98,7 @@ pub enum WindowLifecycleAction {
     Minimize,
     PopupCreated { parent_surface_id: Option<u64>, placement: PopupPlacement },
     PopupRepositioned { placement: PopupPlacement },
-    PopupGrab { seat_name: String, serial: u32 },
+    PopupGrab { seat_id: SeatId, serial: u32 },
     Destroyed { role: XdgSurfaceRole },
 }
 

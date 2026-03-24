@@ -181,11 +181,16 @@ fn ipc_reports_clipboard_query_and_subscription_updates() {
     let Ok(event_snapshot) = serde_json::from_value::<ClipboardSnapshot>(payload) else {
         panic!("clipboard_changed payload should decode");
     };
+    assert_eq!(
+        event_snapshot.seat_id,
+        Some(nekoland_ecs::components::SeatId::PRIMARY)
+    );
     assert_eq!(event_snapshot.seat_name.as_deref(), Some("seat-0"));
     assert_eq!(event_snapshot.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
     assert_eq!(event_snapshot.owner, Some(SelectionOwnerSnapshot::Compositor));
     assert_eq!(event_snapshot.persisted_mime_types, vec![TEST_MIME_TYPE.to_owned()]);
 
+    assert_eq!(snapshot.seat_id, Some(nekoland_ecs::components::SeatId::PRIMARY));
     assert_eq!(snapshot.seat_name.as_deref(), Some("seat-0"));
     assert_eq!(snapshot.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
     assert_eq!(snapshot.owner, Some(SelectionOwnerSnapshot::Compositor));

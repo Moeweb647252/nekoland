@@ -25,15 +25,16 @@ pub mod xdg_shell;
 
 use bevy_ecs::prelude::Resource;
 use nekoland_core::bridge::{EventBridge, WaylandBridge};
-use nekoland_ecs::components::{LayerAnchor, LayerLevel, LayerMargins, X11WindowType};
+use nekoland_ecs::components::{LayerAnchor, LayerLevel, LayerMargins, SeatId, X11WindowType};
 use nekoland_ecs::kinds::ProtocolEvent as ProtocolEventKind;
 use nekoland_ecs::resources::{
     ClipboardSelection, ClipboardSelectionState, DragAndDropDrop, DragAndDropSession,
     DragAndDropState, LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec,
     OutputEventRecord, PendingLayerRequests, PendingOutputEvents, PendingWindowControls,
     PendingX11Requests, PendingXdgRequests, PopupPlacement, PrimarySelection,
-    PrimarySelectionState, ResizeEdges, SelectionOwner, SurfaceExtent, WindowLifecycleAction,
-    WindowLifecycleRequest, X11LifecycleAction, X11LifecycleRequest, X11WindowGeometry,
+    PrimarySelectionState, ResizeEdges, SeatRegistry, SelectionOwner, SurfaceExtent,
+    WindowLifecycleAction, WindowLifecycleRequest, X11LifecycleAction, X11LifecycleRequest,
+    X11WindowGeometry,
     XdgSurfaceRole,
 };
 use nekoland_ecs::selectors::SurfaceId;
@@ -264,7 +265,7 @@ mod tests {
 
     use nekoland_ecs::resources::{
         ClipboardSelectionState, DragAndDropState, PendingLayerRequests, PendingOutputEvents,
-        PendingX11Requests, PendingXdgRequests, PrimarySelectionState,
+        PendingX11Requests, PendingXdgRequests, PrimarySelectionState, SeatRegistry,
     };
 
     use super::{ProtocolEvent, ProtocolFlushTargets, ProtocolState, supported_protocols};
@@ -288,6 +289,7 @@ mod tests {
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_x11_requests = PendingX11Requests::default();
         let mut pending_output_events = PendingOutputEvents::default();
+        let mut seat_registry = SeatRegistry::default();
         let mut clipboard_selection = ClipboardSelectionState::default();
         let mut drag_and_drop = DragAndDropState::default();
         let mut primary_selection = PrimarySelectionState::default();
@@ -298,6 +300,7 @@ mod tests {
             pending_window_controls: &mut pending_window_controls,
             pending_x11_requests: &mut pending_x11_requests,
             pending_output_events: &mut pending_output_events,
+            seat_registry: &mut seat_registry,
             clipboard_selection: &mut clipboard_selection,
             drag_and_drop: &mut drag_and_drop,
             primary_selection: &mut primary_selection,
@@ -345,6 +348,7 @@ impl ProtocolState {
         let clipboard_selection = &mut *targets.clipboard_selection;
         let drag_and_drop = &mut *targets.drag_and_drop;
         let primary_selection = &mut *targets.primary_selection;
+        let seat_registry = &mut *targets.seat_registry;
         for event in self.bridge.drain() {
             match event {
                 ProtocolEvent::SurfaceCommitted { surface_id, role, size } => {
@@ -372,16 +376,18 @@ impl ProtocolState {
                     });
                 }
                 ProtocolEvent::MoveRequested { surface_id, seat_name, serial } => {
+                    let seat_id = seat_id_for_wayland_name(seat_registry, seat_name);
                     pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
-                        action: WindowLifecycleAction::InteractiveMove { seat_name, serial },
+                        action: WindowLifecycleAction::InteractiveMove { seat_id, serial },
                     });
                 }
                 ProtocolEvent::ResizeRequested { surface_id, seat_name, serial, edges } => {
+                    let seat_id = seat_id_for_wayland_name(seat_registry, seat_name);
                     pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
                         action: WindowLifecycleAction::InteractiveResize {
-                            seat_name,
+                            seat_id,
                             serial,
                             edges,
                         },
@@ -436,9 +442,10 @@ impl ProtocolState {
                     });
                 }
                 ProtocolEvent::PopupGrabRequested { surface_id, seat_name, serial } => {
+                    let seat_id = seat_id_for_wayland_name(seat_registry, seat_name);
                     pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
-                        action: WindowLifecycleAction::PopupGrab { seat_name, serial },
+                        action: WindowLifecycleAction::PopupGrab { seat_id, serial },
                     });
                 }
                 ProtocolEvent::SurfaceDestroyed { surface_id, role } => {
@@ -612,11 +619,12 @@ impl ProtocolState {
                         .push(OutputEventRecord { output_name, change: "announced".to_owned() });
                 }
                 ProtocolEvent::ClipboardSelectionChanged { seat_name, mime_types } => {
+                    let seat_id = seat_id_for_wayland_name(seat_registry, seat_name);
                     clipboard_selection.selection = if mime_types.is_empty() {
                         None
                     } else {
                         Some(ClipboardSelection {
-                            seat_name,
+                            seat_id,
                             mime_types,
                             owner: SelectionOwner::Client,
                             persisted_mime_types: Vec::new(),
@@ -629,8 +637,9 @@ impl ProtocolState {
                     icon_surface_id,
                     mime_types,
                 } => {
+                    let seat_id = seat_id_for_wayland_name(seat_registry, seat_name);
                     drag_and_drop.active_session = Some(DragAndDropSession {
-                        seat_name,
+                        seat_id,
                         source_surface_id,
                         icon_surface_id,
                         mime_types,
@@ -640,6 +649,7 @@ impl ProtocolState {
                     drag_and_drop.last_drop = None;
                 }
                 ProtocolEvent::DragDropped { seat_name, target_surface_id, validated } => {
+                    let seat_id = seat_id_for_wayland_name(seat_registry, seat_name);
                     let source_surface_id = drag_and_drop
                         .active_session
                         .as_ref()
@@ -650,7 +660,7 @@ impl ProtocolState {
                         .map(|session| session.mime_types.clone())
                         .unwrap_or_default();
                     drag_and_drop.last_drop = Some(DragAndDropDrop {
-                        seat_name,
+                        seat_id,
                         source_surface_id,
                         target_surface_id,
                         validated,
@@ -659,15 +669,17 @@ impl ProtocolState {
                     drag_and_drop.active_session = None;
                 }
                 ProtocolEvent::DragAccepted { seat_name, mime_type } => {
+                    let seat_id = seat_id_for_wayland_name(seat_registry, seat_name);
                     if let Some(session) = drag_and_drop.active_session.as_mut()
-                        && session.seat_name == seat_name
+                        && session.seat_id == seat_id
                     {
                         session.accepted_mime_type = mime_type;
                     }
                 }
                 ProtocolEvent::DragActionSelected { seat_name, action } => {
+                    let seat_id = seat_id_for_wayland_name(seat_registry, seat_name);
                     if let Some(session) = drag_and_drop.active_session.as_mut()
-                        && session.seat_name == seat_name
+                        && session.seat_id == seat_id
                     {
                         session.chosen_action = Some(action);
                     }
@@ -679,11 +691,12 @@ impl ProtocolState {
                     }
                 }
                 ProtocolEvent::PrimarySelectionChanged { seat_name, mime_types } => {
+                    let seat_id = seat_id_for_wayland_name(seat_registry, seat_name);
                     primary_selection.selection = if mime_types.is_empty() {
                         None
                     } else {
                         Some(PrimarySelection {
-                            seat_name,
+                            seat_id,
                             mime_types,
                             owner: SelectionOwner::Client,
                             persisted_mime_types: Vec::new(),
@@ -725,9 +738,14 @@ pub struct ProtocolFlushTargets<'a> {
     pub pending_window_controls: &'a mut PendingWindowControls,
     pub pending_x11_requests: &'a mut PendingX11Requests,
     pub pending_output_events: &'a mut PendingOutputEvents,
+    pub seat_registry: &'a mut SeatRegistry,
     pub clipboard_selection: &'a mut ClipboardSelectionState,
     pub drag_and_drop: &'a mut DragAndDropState,
     pub primary_selection: &'a mut PrimarySelectionState,
+}
+
+fn seat_id_for_wayland_name(seat_registry: &mut SeatRegistry, seat_name: String) -> SeatId {
+    seat_registry.ensure_wayland_name(seat_name)
 }
 
 impl WaylandBridge for ProtocolState {

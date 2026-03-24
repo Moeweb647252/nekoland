@@ -474,18 +474,18 @@ fn _trace_unhandled_request(request: &WindowLifecycleRequest) {
                 "deferred xdg metadata change"
             );
         }
-        WindowLifecycleAction::InteractiveMove { seat_name, serial } => {
+        WindowLifecycleAction::InteractiveMove { seat_id, serial } => {
             tracing::trace!(
                 surface_id = request.surface_id,
-                seat_name,
+                seat_id = seat_id.0,
                 serial,
                 "deferred interactive move request"
             );
         }
-        WindowLifecycleAction::InteractiveResize { seat_name, serial, edges } => {
+        WindowLifecycleAction::InteractiveResize { seat_id, serial, edges } => {
             tracing::trace!(
                 surface_id = request.surface_id,
-                seat_name,
+                seat_id = seat_id.0,
                 serial,
                 %edges,
                 "deferred interactive resize request"
@@ -525,10 +525,10 @@ fn _trace_unhandled_request(request: &WindowLifecycleRequest) {
                 "deferred popup reposition request"
             );
         }
-        WindowLifecycleAction::PopupGrab { seat_name, serial } => {
+        WindowLifecycleAction::PopupGrab { seat_id, serial } => {
             tracing::trace!(
                 surface_id = request.surface_id,
-                seat_name,
+                seat_id = seat_id.0,
                 serial,
                 "deferred popup grab request"
             );

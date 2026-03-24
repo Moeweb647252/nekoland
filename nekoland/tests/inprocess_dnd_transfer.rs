@@ -225,7 +225,7 @@ fn drag_and_drop_roundtrips_between_two_real_clients() {
     let Some(drop) = dnd_state.last_drop else {
         panic!("drag-and-drop state should record the completed drop");
     };
-    assert_eq!(drop.seat_name, "seat-0");
+    assert_eq!(drop.seat_id, nekoland_ecs::components::SeatId::PRIMARY);
     assert!(drop.validated, "drop should be negotiated and accepted");
     assert_eq!(drop.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
     assert!(drop.source_surface_id.is_some(), "drop should record the source surface");

@@ -1,6 +1,8 @@
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
+use crate::components::SeatId;
+
 /// Normalized owner label for clipboard-like selections.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -13,7 +15,7 @@ pub enum SelectionOwner {
 /// Clipboard selection snapshot stored in ECS.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClipboardSelection {
-    pub seat_name: String,
+    pub seat_id: SeatId,
     pub mime_types: Vec<String>,
     pub owner: SelectionOwner,
     pub persisted_mime_types: Vec<String>,
@@ -28,7 +30,7 @@ pub struct ClipboardSelectionState {
 /// Primary-selection snapshot stored in ECS.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PrimarySelection {
-    pub seat_name: String,
+    pub seat_id: SeatId,
     pub mime_types: Vec<String>,
     pub owner: SelectionOwner,
     pub persisted_mime_types: Vec<String>,
@@ -50,7 +52,7 @@ pub struct DragAndDropState {
 /// Active drag session metadata.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DragAndDropSession {
-    pub seat_name: String,
+    pub seat_id: SeatId,
     pub source_surface_id: Option<u64>,
     pub icon_surface_id: Option<u64>,
     pub mime_types: Vec<String>,
@@ -61,7 +63,7 @@ pub struct DragAndDropSession {
 /// Most recently observed drop result.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DragAndDropDrop {
-    pub seat_name: String,
+    pub seat_id: SeatId,
     pub source_surface_id: Option<u64>,
     pub target_surface_id: Option<u64>,
     pub validated: bool,

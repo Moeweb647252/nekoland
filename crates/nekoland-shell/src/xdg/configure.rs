@@ -83,7 +83,7 @@ pub(crate) fn configure_sequence_system(mut configure: ConfigureSequenceParams<'
 
                 popup.popup.configure_serial = Some(serial);
             }
-            WindowLifecycleAction::InteractiveMove { seat_name, serial } => {
+            WindowLifecycleAction::InteractiveMove { seat_id, serial } => {
                 let Some(entity) = resolve_xdg_window_entity(
                     request.surface_id,
                     &configure.entity_index,
@@ -113,14 +113,14 @@ pub(crate) fn configure_sequence_system(mut configure: ConfigureSequenceParams<'
                 );
                 tracing::trace!(
                     surface_id = window.surface_id(),
-                    seat_name,
+                    seat_id = seat_id.0,
                     serial,
                     x = window.geometry.x,
                     y = window.geometry.y,
                     "started interactive move grab"
                 );
             }
-            WindowLifecycleAction::InteractiveResize { seat_name, serial, edges } => {
+            WindowLifecycleAction::InteractiveResize { seat_id, serial, edges } => {
                 let Some(entity) = resolve_xdg_window_entity(
                     request.surface_id,
                     &configure.entity_index,
@@ -150,7 +150,7 @@ pub(crate) fn configure_sequence_system(mut configure: ConfigureSequenceParams<'
                 );
                 tracing::trace!(
                     surface_id = window.surface_id(),
-                    seat_name,
+                    seat_id = seat_id.0,
                     serial,
                     %edges,
                     width = window.geometry.width,
