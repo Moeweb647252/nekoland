@@ -128,7 +128,7 @@ fn clipboard_selection_roundtrips_between_two_real_clients() {
     let Some(selection) = selection_state.selection else {
         panic!("clipboard selection should remain tracked after the transfer");
     };
-    assert_eq!(selection.seat_name, "seat-0");
+    assert_eq!(selection.seat_id, nekoland_ecs::components::SeatId::PRIMARY);
     assert_eq!(selection.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
     assert_eq!(selection.owner, SelectionOwner::Compositor);
     assert_eq!(selection.persisted_mime_types, vec![TEST_MIME_TYPE.to_owned()]);
@@ -153,7 +153,7 @@ fn clipboard_selection_persists_after_source_client_exits() {
     let Some(selection) = selection_state.selection else {
         panic!("clipboard selection should remain tracked after the source exits");
     };
-    assert_eq!(selection.seat_name, "seat-0");
+    assert_eq!(selection.seat_id, nekoland_ecs::components::SeatId::PRIMARY);
     assert_eq!(selection.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
     assert_eq!(selection.owner, SelectionOwner::Compositor);
     assert_eq!(selection.persisted_mime_types, vec![TEST_MIME_TYPE.to_owned()]);

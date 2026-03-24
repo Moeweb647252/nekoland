@@ -99,7 +99,7 @@ fn primary_selection_reaches_ecs_state() {
     let Some(selection) = selection_state.selection else {
         panic!("primary selection should be tracked after the client sets it");
     };
-    assert_eq!(selection.seat_name, "seat-0");
+    assert_eq!(selection.seat_id, nekoland_ecs::components::SeatId::PRIMARY);
     assert_eq!(selection.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
 }
 

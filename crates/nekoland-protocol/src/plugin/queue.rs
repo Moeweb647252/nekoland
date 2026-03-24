@@ -10,6 +10,8 @@ pub(crate) struct FlushProtocolQueueParams<'w> {
         bevy_ecs::prelude::ResMut<'w, nekoland_ecs::resources::PendingWindowControls>,
     pub(crate) pending_output_events:
         bevy_ecs::prelude::ResMut<'w, nekoland_ecs::resources::PendingOutputEvents>,
+    pub(crate) seat_registry:
+        bevy_ecs::prelude::ResMut<'w, nekoland_ecs::resources::SeatRegistry>,
     pub(crate) clipboard_selection:
         bevy_ecs::prelude::ResMut<'w, nekoland_ecs::resources::ClipboardSelectionState>,
     pub(crate) drag_and_drop:
@@ -28,6 +30,7 @@ pub(crate) fn flush_protocol_queue_system(
         pending_layer_requests: &mut params.pending_layer_requests,
         pending_window_controls: &mut params.pending_window_controls,
         pending_output_events: &mut params.pending_output_events,
+        seat_registry: &mut params.seat_registry,
         clipboard_selection: &mut params.clipboard_selection,
         drag_and_drop: &mut params.drag_and_drop,
         primary_selection: &mut params.primary_selection,

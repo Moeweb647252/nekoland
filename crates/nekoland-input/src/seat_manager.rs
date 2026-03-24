@@ -1,20 +1,11 @@
-use bevy_ecs::prelude::{ResMut, Resource};
+use bevy_ecs::prelude::ResMut;
 
-/// Minimal seat registry used by the current input pipeline.
-///
-/// The model is intentionally lightweight for now: one or more seat names are enough to keep the
-/// rest of the compositor plumbing alive until richer seat state is introduced.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
-pub struct SeatManager {
-    pub seats: Vec<String>,
-}
+/// Ensures the shared seat registry always exposes a primary seat entry.
+pub fn seat_management_system(mut seat_registry: ResMut<nekoland_ecs::resources::SeatRegistry>) {
+    seat_registry.ensure_wayland_name(nekoland_ecs::resources::DEFAULT_WAYLAND_SEAT_NAME);
 
-/// Ensures there is always at least one default seat available for subsystems that assume a seat
-/// exists even before real backend device discovery becomes richer.
-pub fn seat_management_system(mut seat_manager: ResMut<SeatManager>) {
-    if seat_manager.seats.is_empty() {
-        seat_manager.seats.push("seat0".to_owned());
-    }
-
-    tracing::trace!(seats = seat_manager.seats.len(), "seat management system tick");
+    tracing::trace!(
+        primary_seat_id = seat_registry.primary_seat_id().0,
+        "seat management system tick"
+    );
 }

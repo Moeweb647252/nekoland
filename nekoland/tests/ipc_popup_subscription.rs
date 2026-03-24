@@ -187,7 +187,11 @@ fn seed_popup_tree(world: &mut bevy_ecs::world::World) {
             placement_height: 120,
         },
         SurfaceGeometry { x: 24, y: 48, width: 220, height: 120 },
-        PopupGrab { active: false, seat_name: "seat-0".to_owned(), serial: None },
+        PopupGrab {
+            active: false,
+            seat_id: nekoland_ecs::components::SeatId::PRIMARY,
+            serial: None,
+        },
         ChildOf(parent),
     ));
 }

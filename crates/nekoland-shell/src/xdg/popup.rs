@@ -181,7 +181,7 @@ pub fn popup_management_system(
             WindowLifecycleAction::ConfigureRequested { role: XdgSurfaceRole::Popup } => {
                 tracing::trace!(surface_id = request.surface_id, "popup configure requested");
             }
-            WindowLifecycleAction::PopupGrab { seat_name, serial } => {
+            WindowLifecycleAction::PopupGrab { seat_id, serial } => {
                 let mut popup = entity_index
                     .entity_for_surface(request.surface_id)
                     .and_then(|entity| popups.get_mut(entity).ok());
@@ -196,7 +196,7 @@ pub fn popup_management_system(
 
                 popup.grab_serial = Some(serial);
                 grab.active = true;
-                grab.seat_name = seat_name.clone();
+                grab.seat_id = seat_id;
                 grab.serial = Some(serial);
             }
             WindowLifecycleAction::Destroyed { role: XdgSurfaceRole::Popup } => {

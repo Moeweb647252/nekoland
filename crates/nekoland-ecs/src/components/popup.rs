@@ -1,6 +1,8 @@
 use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 
+use crate::components::SeatId;
+
 /// Stored protocol state for an XDG popup surface.
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[require(
@@ -24,7 +26,7 @@ pub struct XdgPopup {
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PopupGrab {
     pub active: bool,
-    pub seat_name: String,
+    pub seat_id: SeatId,
     pub serial: Option<u32>,
 }
 

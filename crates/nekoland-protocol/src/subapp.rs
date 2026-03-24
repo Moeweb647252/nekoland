@@ -26,6 +26,7 @@ use nekoland_ecs::resources::{
     PendingPlatformInputEvents, PendingPopupServerRequests, PendingProtocolInputEvents,
     PendingWindowControls, PendingWindowEvents, PendingWindowServerRequests, PendingX11Requests,
     PendingXdgRequests, PlatformSurfaceSnapshotState, PresentAuditState, PrimarySelectionState,
+    SeatRegistry,
     ProtocolServerState, RenderPlan, ShellRenderInput, SurfaceContentVersionSnapshot,
     VirtualOutputCaptureState, WaylandCommands, WaylandFeedback, WaylandIngress, XWaylandServerState,
 };
@@ -72,6 +73,7 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             .init_resource::<PendingOutputServerRequests>()
             .init_resource::<PendingWindowServerRequests>()
             .init_resource::<PendingPopupServerRequests>()
+            .init_resource::<SeatRegistry>()
             .init_resource::<ClipboardSelectionState>()
             .init_resource::<DragAndDropState>()
             .init_resource::<PrimarySelectionState>()
@@ -157,6 +159,7 @@ pub fn extract_wayland_subapp_inputs(main_world: &mut World, wayland_world: &mut
     let shell_render_input = main_world.resource::<ShellRenderInput>().clone();
     wayland_world.insert_resource(shell_render_input.surface_presentation.clone());
     clone_resource_into::<KeyboardFocusState>(main_world, wayland_world);
+    clone_default_resource_into::<SeatRegistry>(main_world, wayland_world);
     clone_resource_into::<CompositorConfig>(main_world, wayland_world);
     clone_resource_into::<KeyboardLayoutState>(main_world, wayland_world);
     clone_resource_into::<FramePacingState>(main_world, wayland_world);
@@ -348,6 +351,7 @@ fn sync_wayland_ingress_boundary_system(
     protocol_server: Res<'_, ProtocolServerState>,
     xwayland_server: Res<'_, XWaylandServerState>,
     dmabuf_support: Option<Res<'_, ProtocolDmabufSupport>>,
+    seat_registry: Res<'_, SeatRegistry>,
     cursor_image: Res<'_, CursorImageSnapshot>,
     mut platform_input_events: ResMut<'_, PendingPlatformInputEvents>,
     output_snapshots: Res<'_, OutputSnapshotState>,
@@ -368,6 +372,7 @@ fn sync_wayland_ingress_boundary_system(
         protocol_server: protocol_server.clone(),
         xwayland_server: xwayland_server.clone(),
         primary_output,
+        seat_registry: seat_registry.clone(),
         cursor_image: cursor_image.clone(),
         platform_input_events: PendingPlatformInputEvents::from_items(platform_input_events.take()),
         output_snapshots: output_snapshots.clone(),
@@ -449,7 +454,7 @@ mod tests {
         ExtractSchedule, PresentSchedule, ProtocolSchedule, install_core_schedules_sub_app,
     };
     use nekoland_ecs::components::{
-        BufferState, SurfaceGeometry, WindowMode, WindowRole, WindowViewportVisibility,
+        BufferState, SeatId, SurfaceGeometry, WindowMode, WindowRole, WindowViewportVisibility,
         WlSurfaceHandle, XdgPopup, XdgWindow,
     };
     use nekoland_ecs::resources::{
@@ -678,7 +683,7 @@ mod tests {
         pending_xdg_requests.push(nekoland_ecs::resources::WindowLifecycleRequest {
             surface_id: 11,
             action: nekoland_ecs::resources::WindowLifecycleAction::InteractiveMove {
-                seat_name: "seat-0".to_owned(),
+                seat_id: SeatId::PRIMARY,
                 serial: 9,
             },
         });
@@ -799,7 +804,7 @@ mod tests {
         wayland_world.insert_resource(WaylandFeedback {
             clipboard_selection: ClipboardSelectionState {
                 selection: Some(ClipboardSelection {
-                    seat_name: "seat-0".to_owned(),
+                    seat_id: SeatId::PRIMARY,
                     mime_types: vec!["text/plain".to_owned()],
                     owner: SelectionOwner::Client,
                     persisted_mime_types: vec!["text/plain".to_owned()],
@@ -807,7 +812,7 @@ mod tests {
             },
             drag_and_drop: DragAndDropState {
                 active_session: Some(DragAndDropSession {
-                    seat_name: "seat-0".to_owned(),
+                    seat_id: SeatId::PRIMARY,
                     source_surface_id: Some(99),
                     icon_surface_id: None,
                     mime_types: vec!["text/plain".to_owned()],
@@ -815,7 +820,7 @@ mod tests {
                     chosen_action: Some("copy".to_owned()),
                 }),
                 last_drop: Some(DragAndDropDrop {
-                    seat_name: "seat-0".to_owned(),
+                    seat_id: SeatId::PRIMARY,
                     source_surface_id: Some(99),
                     target_surface_id: Some(100),
                     validated: true,
@@ -824,7 +829,7 @@ mod tests {
             },
             primary_selection: PrimarySelectionState {
                 selection: Some(PrimarySelection {
-                    seat_name: "seat-0".to_owned(),
+                    seat_id: SeatId::PRIMARY,
                     mime_types: vec!["text/plain".to_owned()],
                     owner: SelectionOwner::Compositor,
                     persisted_mime_types: vec![],

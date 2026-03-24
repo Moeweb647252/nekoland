@@ -503,7 +503,7 @@ fn popup_grab_request_marks_popup_active_and_tracks_serial() {
     assert_eq!(popup_configure_serial, summary.popup_configure_serial);
     assert_eq!(popup_parent, window_surface_id);
     assert!(grab.active, "popup grab should become active after popup.grab");
-    assert_eq!(grab.seat_name, "seat-0");
+    assert_eq!(grab.seat_id, nekoland_ecs::components::SeatId::PRIMARY);
     assert_eq!(grab.serial, summary.interactive_request_serial);
 }
 

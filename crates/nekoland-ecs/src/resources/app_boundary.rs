@@ -10,8 +10,8 @@ use crate::resources::{
     PendingWindowEvents, PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests,
     PlatformBackendState, PlatformImportCapabilities, PlatformImportDiagnosticsState,
     PlatformOutputMaterializationPlan, PlatformSurfaceSnapshotState, PresentAuditState,
-    PrimaryOutputState, PrimarySelectionState, ProtocolServerState, SurfacePresentationSnapshot,
-    VirtualOutputCaptureState, XWaylandServerState,
+    PrimaryOutputState, PrimarySelectionState, ProtocolServerState, SeatRegistry,
+    SurfacePresentationSnapshot, VirtualOutputCaptureState, XWaylandServerState,
 };
 
 /// Platform-to-shell boundary resource carrying normalized platform/runtime snapshots.
@@ -20,6 +20,7 @@ pub struct WaylandIngress {
     pub protocol_server: ProtocolServerState,
     pub xwayland_server: XWaylandServerState,
     pub primary_output: PrimaryOutputState,
+    pub seat_registry: SeatRegistry,
     pub cursor_image: CursorImageSnapshot,
     pub platform_input_events: PendingPlatformInputEvents,
     pub output_snapshots: OutputSnapshotState,
