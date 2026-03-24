@@ -62,15 +62,8 @@ app_id = "ffplay"
 background = "eDP-1"
 
 [keybinds.bindings]
-# External commands use argv arrays.
-"Super+Return" = { exec = ["foot"] }
-"Super+Space" = { exec = ["fuzzel"] }
-
 # Modifier-only binding: hold these keys and move the pointer to pan the focused output viewport.
 "Super+Alt" = { viewport_pan_mode = true }
-
-# Window actions target the focused window.
-"Super+Q" = { close = true }
 
 # Workspace actions are runtime-only and can be addressed by id or name.
 # "Super+1" = { workspace = 1 }
