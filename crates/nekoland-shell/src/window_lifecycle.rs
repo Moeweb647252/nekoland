@@ -160,6 +160,7 @@ pub(crate) fn window_lifecycle_system(
                     &entity_index,
                     &mut windows,
                     &popups,
+                    &mut keyboard_focus,
                     &mut pending_popup_requests,
                     &mut commands,
                     &mut window_closed,
@@ -234,7 +235,7 @@ fn upsert_window(
 
         window.window.title = resolved_title.clone();
         window.window.app_id = resolved_app_id.clone();
-        *window.management_hints = hints;
+        *window.management_hints = hints.clone();
         if let Some(buffer) = window.buffer.as_mut() {
             buffer.attached = attached;
         }
@@ -275,14 +276,18 @@ fn upsert_window(
             };
             if matches!(*window.layout, WindowLayout::Floating) && *window.mode == WindowMode::Normal
             {
-                window.placement.set_explicit_position(WindowPosition {
-                    x: geometry.x,
-                    y: geometry.y,
-                });
-                window.placement.floating_size = Some(WindowSize {
-                    width: geometry.width.max(1),
-                    height: geometry.height.max(1),
-                });
+                if should_use_explicit_floating_position(&geometry, &hints) {
+                    window.placement.set_explicit_position(WindowPosition {
+                        x: geometry.x,
+                        y: geometry.y,
+                    });
+                    window.placement.floating_size = Some(WindowSize {
+                        width: geometry.width.max(1),
+                        height: geometry.height.max(1),
+                    });
+                } else if !window.has_explicit_placement() {
+                    *window.placement = WindowPlacement::default();
+                }
             }
         }
 
@@ -302,9 +307,11 @@ fn upsert_window(
 
     let mut placement = WindowPlacement::default();
     if hints.prefer_floating || matches!(policy.layout, WindowLayout::Floating) {
-        placement.set_explicit_position(WindowPosition { x: geometry.x, y: geometry.y });
-        placement.floating_size =
-            Some(WindowSize { width: geometry.width.max(1), height: geometry.height.max(1) });
+        if should_use_explicit_floating_position(&geometry, &hints) {
+            placement.set_explicit_position(WindowPosition { x: geometry.x, y: geometry.y });
+            placement.floating_size =
+                Some(WindowSize { width: geometry.width.max(1), height: geometry.height.max(1) });
+        }
     }
 
     let window_entity = commands
@@ -577,6 +584,9 @@ fn apply_window_manager_request(
         }
         WindowManagerRequest::Minimize => {
             *window.mode = WindowMode::Hidden;
+            if keyboard_focus.focused_surface == Some(surface_id) {
+                keyboard_focus.focused_surface = None;
+            }
         }
     }
 
@@ -588,6 +598,7 @@ fn destroy_window(
     entity_index: &EntityIndex,
     windows: &mut LifecycleWindows<'_, '_>,
     popups: &LifecyclePopups<'_, '_>,
+    keyboard_focus: &mut KeyboardFocusState,
     pending_popup_requests: &mut PendingPopupServerRequests,
     commands: &mut Commands,
     window_closed: &mut MessageWriter<WindowClosed>,
@@ -597,6 +608,9 @@ fn destroy_window(
     };
 
     enqueue_popup_dismissals(surface_id, entity_index, popups, pending_popup_requests);
+    if keyboard_focus.focused_surface == Some(surface_id) {
+        keyboard_focus.focused_surface = None;
+    }
     commands.entity(entity).despawn();
     window_closed.write(WindowClosed { surface_id });
 }
@@ -661,6 +675,13 @@ fn window_rule_context<'a>(
         helper_surface: hints.helper_surface,
         prefer_floating: hints.prefer_floating,
     }
+}
+
+fn should_use_explicit_floating_position(
+    geometry: &WindowSceneGeometry,
+    hints: &WindowManagementHints,
+) -> bool {
+    !hints.client_driven_resize || geometry.x != 0 || geometry.y != 0
 }
 
 fn anchored_resize_commit_geometry(

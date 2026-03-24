@@ -21,8 +21,9 @@ use nekoland_ecs::components::{
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
-    BackendInputAction, BackendInputEvent, FramePacingState, GlobalPointerPosition,
-    KeyboardFocusState, RenderPlan, RenderPlanItem, WaylandCommands, WorkArea,
+    BackendInputAction, BackendInputEvent, CompiledOutputFrames, FramePacingState,
+    GlobalPointerPosition, KeyboardFocusState, RenderPlan, RenderPlanItem, WaylandCommands,
+    WorkArea,
 };
 use nekoland_ecs::resources::{
     PendingPopupServerRequests, PendingWindowServerRequests, PopupServerAction, PopupServerRequest,
@@ -48,7 +49,7 @@ use wayland_protocols::xdg::shell::client::{
 mod common;
 
 const INTERACTIVE_INPUT_PUMP_FRAMES: u8 = 8;
-const CLIENT_LINGER_AFTER_COMPLETION: Duration = Duration::from_millis(400);
+const CLIENT_LINGER_AFTER_COMPLETION: Duration = Duration::from_secs(1);
 const SCENARIO_CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Enumerates the scenario variants exercised by this test module.
@@ -163,7 +164,11 @@ struct InteractiveSeatInputPump {
 }
 
 fn render_plan_surface_ids(world: &mut bevy_ecs::world::World) -> Vec<u64> {
-    let Some(render_plan) = world.get_resource::<RenderPlan>() else {
+    let render_plan = if let Some(compiled) = world.get_resource::<CompiledOutputFrames>() {
+        &compiled.render_plan
+    } else if let Some(render_plan) = world.get_resource::<RenderPlan>() {
+        render_plan
+    } else {
         panic!("render plan should be initialized");
     };
     render_plan
@@ -1289,7 +1294,12 @@ fn run_scenario_client(
 }
 
 /// Inject synthetic pointer and focus events for scenarios that need a valid
-/// interactive serial or a small move/resize gesture.
+/// interactive serial or a small move gesture.
+///
+/// Protocol-side seat dispatch consumes queued input one frame after the main-world
+/// `GlobalPointerPosition` update from this helper, so interactive button presses
+/// must keep the following frame's pointer location on the same surface to produce
+/// a valid implicit-grab serial.
 fn pump_interactive_seat_input(
     mut pump: ResMut<InteractiveSeatInputPump>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
@@ -1327,19 +1337,18 @@ fn pump_interactive_seat_input(
     ];
 
     let (x, y, pressed) = if matches!(pump.scenario, WindowScenario::MoveResize) {
+        let start_x =
+            f64::from(geometry.x) + 24.0_f64.min(f64::from(geometry.width.saturating_sub(1)));
+        let start_y =
+            f64::from(geometry.y) + 28.0_f64.min(f64::from(geometry.height.saturating_sub(1)));
+        let drag_x = f64::from(geometry.x) + f64::from(geometry.width) + 48.0;
+        let drag_y = f64::from(geometry.y) + f64::from(geometry.height) + 40.0;
         match pump.tick {
-            0 => (f64::from(geometry.x) + 8.0, f64::from(geometry.y) + 8.0, Some(true)),
-            1 => (f64::from(geometry.x) + 72.0, f64::from(geometry.y) + 56.0, Some(false)),
-            2 => (
-                f64::from(geometry.x) + f64::from(geometry.width.saturating_sub(1)),
-                f64::from(geometry.y) + f64::from(geometry.height.saturating_sub(1)),
-                Some(true),
-            ),
-            3 => (
-                f64::from(geometry.x) + f64::from(geometry.width) + 48.0,
-                f64::from(geometry.y) + f64::from(geometry.height) + 40.0,
-                Some(false),
-            ),
+            0 => (start_x, start_y, Some(true)),
+            1 => (start_x, start_y, None),
+            2 => (drag_x, drag_y, None),
+            3 => (drag_x, drag_y, Some(false)),
+            4 => (drag_x, drag_y, None),
             _ => {
                 pump.remaining_frames = 0;
                 return;
