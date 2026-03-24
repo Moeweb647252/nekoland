@@ -1,3 +1,5 @@
+//! Backend plugin wiring for main-world reconciliation and Wayland-subapp runtime execution.
+
 use bevy_app::App;
 use bevy_ecs::prelude::{Entity, Query, Resource};
 use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
@@ -39,12 +41,15 @@ pub mod normalize;
 pub mod present;
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Main-world plugin that owns backend-facing output reconciliation resources.
 pub struct BackendPlugin;
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Wayland-subapp plugin that runs backend extraction, apply, and present phases.
 pub struct BackendWaylandSubAppPlugin;
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Present-phase set reserved for backend submission work.
 pub struct BackendPresentSystems;
 
 type BackendOutputQuery<'w, 's> =
@@ -57,10 +62,12 @@ pub struct BackendPresentInputs {
 }
 
 impl BackendPresentInputs {
+    /// Builds backend present inputs from the provided output snapshots.
     pub fn from_outputs(outputs: Vec<crate::traits::OutputSnapshot>) -> Self {
         Self { outputs }
     }
 
+    /// Returns the normalized output snapshots currently visible to backend runtimes.
     pub fn outputs(&self) -> &[crate::traits::OutputSnapshot] {
         &self.outputs
     }

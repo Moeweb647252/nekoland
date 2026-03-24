@@ -1,3 +1,5 @@
+//! IPC plugin wiring for the Unix-socket server, query cache, and subscription dispatch.
+
 use bevy_app::App;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use nekoland_config::resources::KeyboardLayoutState;
@@ -11,6 +13,7 @@ use nekoland_ecs::resources::{
 use crate::{server, subscribe};
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Main-world plugin that serves the IPC control plane and subscription stream.
 pub struct IpcPlugin;
 
 impl NekolandPlugin for IpcPlugin {

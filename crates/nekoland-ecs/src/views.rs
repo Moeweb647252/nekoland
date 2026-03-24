@@ -1,3 +1,5 @@
+//! QueryData views that bundle commonly co-accessed ECS state into reusable runtime projections.
+
 use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::query::QueryData;
 
@@ -20,6 +22,7 @@ pub struct SurfaceRuntime {
 }
 
 impl<'w, 's> SurfaceRuntimeItem<'w, 's> {
+    /// Returns the stable compositor surface id for this runtime view.
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }
@@ -41,6 +44,7 @@ pub struct WindowFocusRuntime {
 }
 
 impl<'w, 's> WindowFocusRuntimeItem<'w, 's> {
+    /// Returns the stable compositor surface id for this runtime view.
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }
@@ -76,20 +80,24 @@ pub struct WindowRuntime {
 }
 
 impl<'w, 's> WindowRuntimeItem<'w, 's> {
+    /// Returns the stable compositor surface id for this runtime view.
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }
 
+    /// Returns whether this window already carries explicit floating placement intent.
     pub fn has_explicit_placement(&self) -> bool {
         self.placement.has_explicit_placement()
     }
 }
 
 impl<'w, 's> WindowRuntimeReadOnlyItem<'w, 's> {
+    /// Returns the stable compositor surface id for this runtime view.
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }
 
+    /// Returns whether this window already carries explicit floating placement intent.
     pub fn has_explicit_placement(&self) -> bool {
         self.placement.has_explicit_placement()
     }
@@ -107,6 +115,7 @@ pub struct WindowVisibilityRuntime {
 }
 
 impl<'w, 's> WindowVisibilityRuntimeItem<'w, 's> {
+    /// Returns the stable compositor surface id for this runtime view.
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }
@@ -121,6 +130,7 @@ pub struct PopupRuntime {
 }
 
 impl<'w, 's> PopupRuntimeItem<'w, 's> {
+    /// Returns the stable compositor surface id for this runtime view.
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }
@@ -145,6 +155,7 @@ pub struct WindowSnapshotRuntime {
 }
 
 impl<'w, 's> WindowSnapshotRuntimeItem<'w, 's> {
+    /// Returns the stable compositor surface id for this runtime view.
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }
@@ -163,6 +174,7 @@ pub struct PopupSnapshotRuntime {
 }
 
 impl<'w, 's> PopupSnapshotRuntimeItem<'w, 's> {
+    /// Returns the stable compositor surface id for this runtime view.
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }
@@ -180,6 +192,7 @@ pub struct WindowRenderRuntime {
 }
 
 impl<'w, 's> WindowRenderRuntimeItem<'w, 's> {
+    /// Returns the stable compositor surface id for this runtime view.
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }
@@ -194,6 +207,7 @@ pub struct PopupRenderRuntime {
 }
 
 impl<'w, 's> PopupRenderRuntimeItem<'w, 's> {
+    /// Returns the stable compositor surface id for this runtime view.
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }
@@ -209,6 +223,7 @@ pub struct LayerRenderRuntime {
 }
 
 impl<'w, 's> LayerRenderRuntimeItem<'w, 's> {
+    /// Returns the stable compositor surface id for this runtime view.
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }
@@ -237,6 +252,7 @@ pub struct BackendPresentSurfaceRuntime {
 }
 
 impl<'w, 's> BackendPresentSurfaceRuntimeItem<'w, 's> {
+    /// Returns the stable compositor surface id for this runtime view.
     pub fn surface_id(&self) -> u64 {
         self.surface.id
     }
@@ -250,28 +266,34 @@ pub struct WorkspaceRuntime {
 }
 
 impl<'w, 's> WorkspaceRuntimeItem<'w, 's> {
+    /// Returns the workspace id carried by this runtime view.
     pub fn id(&self) -> crate::components::WorkspaceId {
         self.workspace.id
     }
 
+    /// Returns the user-visible workspace name.
     pub fn name(&self) -> &str {
         &self.workspace.name
     }
 
+    /// Returns whether this workspace is currently active.
     pub fn is_active(&self) -> bool {
         self.workspace.active
     }
 }
 
 impl<'w, 's> WorkspaceRuntimeReadOnlyItem<'w, 's> {
+    /// Returns the workspace id carried by this runtime view.
     pub fn id(&self) -> crate::components::WorkspaceId {
         self.workspace.id
     }
 
+    /// Returns the user-visible workspace name.
     pub fn name(&self) -> &str {
         &self.workspace.name
     }
 
+    /// Returns whether this workspace is currently active.
     pub fn is_active(&self) -> bool {
         self.workspace.active
     }
@@ -291,20 +313,24 @@ pub struct OutputRuntime {
 }
 
 impl<'w, 's> OutputRuntimeItem<'w, 's> {
+    /// Returns the stable output id carried by this runtime view.
     pub fn id(&self) -> OutputId {
         *self.output_id
     }
 
+    /// Returns the user-visible output name.
     pub fn name(&self) -> &str {
         &self.device.name
     }
 }
 
 impl<'w, 's> OutputRuntimeReadOnlyItem<'w, 's> {
+    /// Returns the stable output id carried by this runtime view.
     pub fn id(&self) -> OutputId {
         *self.output_id
     }
 
+    /// Returns the user-visible output name.
     pub fn name(&self) -> &str {
         &self.device.name
     }

@@ -1,3 +1,8 @@
+//! Desktop scene extraction and render-plan assembly.
+//!
+//! This module converts shell-owned visibility and ordering state into output-local render scene
+//! contributions, then assembles those contributions into stable render-plan items.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::hierarchy::ChildOf;

@@ -1,3 +1,5 @@
+//! Wayland sub-app wiring and boundary synchronization.
+
 use crate::plugin::feedback::WorkspaceVisibilitySnapshot;
 use crate::plugin::server::{
     ForeignToplevelSnapshot, ForeignToplevelSnapshotState, ProtocolDmabufSupport,
@@ -152,6 +154,7 @@ pub fn configure_wayland_subapp(sub_app: &mut SubApp) {
     sub_app.set_extract(extract_wayland_subapp_inputs);
 }
 
+/// Extracts main-world boundary resources needed by the Wayland sub-app for the current frame.
 pub fn extract_wayland_subapp_inputs(main_world: &mut World, wayland_world: &mut World) {
     clone_resource_into::<WaylandCommands>(main_world, wayland_world);
     clone_resource_into::<CompiledOutputFrames>(main_world, wayland_world);
@@ -174,6 +177,7 @@ pub fn extract_wayland_subapp_inputs(main_world: &mut World, wayland_world: &mut
     extract_workspace_visibility_snapshot(main_world, wayland_world);
 }
 
+/// Mirrors platform-owned boundary resources from the Wayland sub-app back into the main world.
 pub fn sync_wayland_subapp_back(
     main_world: &mut World,
     wayland_world: &mut World,

@@ -50,15 +50,18 @@ pub struct WaylandCalloopRuntime {
 }
 
 impl WaylandCalloopRuntime {
+    /// Wraps the live calloop event loop installed for the Wayland sub-app.
     pub fn new(event_loop: calloop::EventLoop<'static, ()>) -> Self {
         Self { event_loop }
     }
 
+    /// Dispatches the event loop once with the provided timeout.
     pub fn dispatch(&mut self, timeout: Duration) -> Result<(), calloop::Error> {
         self.event_loop.dispatch(timeout, &mut ())
     }
 }
 
+/// Extract-phase system that polls the live Wayland calloop runtime.
 pub fn dispatch_wayland_calloop_system(
     runtime: Option<NonSendMut<'_, WaylandCalloopRuntime>>,
     settings: Option<Res<'_, RunLoopSettings>>,
@@ -73,6 +76,7 @@ pub fn dispatch_wayland_calloop_system(
     runtime.dispatch(timeout).map_err(|error| NekolandError::Runtime(error.to_string()).into())
 }
 
+/// Ensures the appropriate world owns a [`CalloopSourceRegistry`] and passes it to the caller.
 pub fn with_wayland_calloop_registry<R>(
     app: &mut App,
     f: impl FnOnce(&mut CalloopSourceRegistry) -> R,

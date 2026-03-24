@@ -1,3 +1,10 @@
+//! Normalized runtime configuration consumed directly by the compositor's shell and backend code.
+//!
+//! This module is intentionally data-heavy. Public types describe the stable runtime shape after
+//! disk schema normalization, so type-level documentation is preferred over repetitive field-level
+//! comments for obvious scalar data.
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 use std::fmt;
 

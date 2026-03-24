@@ -1,3 +1,8 @@
+//! Surface registry synchronization and platform-surface snapshot extraction.
+//!
+//! The render and backend layers never touch live Smithay surfaces directly. They consume the
+//! normalized snapshot types assembled here from the protocol-owned surface registry.
+
 use smithay::backend::allocator::Buffer;
 
 #[derive(Debug, Clone)]

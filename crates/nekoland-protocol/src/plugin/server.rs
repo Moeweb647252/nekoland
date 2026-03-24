@@ -1,3 +1,9 @@
+//! Smithay protocol server runtime, cursor state, and callback collection.
+//!
+//! This module owns the live Wayland server objects that must stay inside the Wayland sub-app.
+//! Shell and render code only observe the snapshots that are mirrored out through boundary
+//! resources.
+
 use super::*;
 use bevy_ecs::change_detection::DetectChanges;
 use nekoland_core::bridge::WaylandBridge;

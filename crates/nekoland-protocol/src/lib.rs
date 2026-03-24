@@ -45,9 +45,12 @@ use nekoland_ecs::selectors::SurfaceId;
 use serde::{Deserialize, Serialize};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
+/// Protocol server and XWayland runtime snapshots mirrored out of the Wayland sub-app.
 pub use nekoland_ecs::resources::{ProtocolServerState, XWaylandServerState};
+/// Cursor, dma-buf, and protocol plugin entrypoints exposed to the rest of the workspace.
 pub use plugin::server::{ProtocolCursorImage, ProtocolCursorState, ProtocolDmabufSupport};
 pub use plugin::{ProtocolPlugin, ProtocolSeatDispatchSystems};
+/// Wayland sub-app entrypoints used by the root compositor runner.
 pub use subapp::{
     WaylandSubAppPlugin, configure_wayland_subapp, extract_wayland_subapp_inputs,
     sync_wayland_subapp_back,

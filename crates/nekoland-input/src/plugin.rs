@@ -13,6 +13,7 @@ use nekoland_ecs::resources::{
 use crate::{gestures, keybindings, keyboard, pointer, seat_manager, touch};
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Main-world plugin that turns normalized platform input into shell-facing actions and messages.
 pub struct InputPlugin;
 
 impl NekolandPlugin for InputPlugin {

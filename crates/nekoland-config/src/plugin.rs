@@ -13,29 +13,38 @@ use nekoland_core::plugin::NekolandPlugin;
 /// Tracks where the active config came from and what happened during hot reload attempts.
 #[derive(Debug, Clone, Resource)]
 pub struct LoadedConfigSource {
+    /// Path the compositor attempted to load as its active config source.
     pub path: PathBuf,
+    /// Whether the current config was successfully loaded from disk instead of built-in defaults.
     pub loaded_from_disk: bool,
+    /// Last file modification time observed by the hot-reload watcher.
     pub last_observed_modified: Option<SystemTime>,
+    /// Number of successful disk reloads since startup.
     pub successful_reloads: u64,
+    /// Most recent reload failure preserved for IPC and diagnostics.
     pub last_reload_error: Option<String>,
 }
 
 /// External request flag used to force one config reload on the next extract tick.
 #[derive(Debug, Clone, Default, Resource)]
 pub struct ConfigReloadRequest {
+    /// When set, the next extract tick forces a config reload attempt.
     pub requested: bool,
 }
 
+/// Plugin that loads compositor config, normalizes it, and wires hot reload into `ExtractSchedule`.
 #[derive(Debug, Clone)]
 pub struct ConfigPlugin {
     path: PathBuf,
 }
 
 impl ConfigPlugin {
+    /// Creates a config plugin that reads from the provided path.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
 
+    /// Returns the configured disk path used by this plugin.
     pub fn path(&self) -> &Path {
         &self.path
     }

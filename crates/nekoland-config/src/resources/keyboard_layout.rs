@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::resources::ConfiguredKeyboardLayout;
 
+/// Default seat name used by compositor-owned keyboard-layout state snapshots.
 pub const DEFAULT_KEYBOARD_SEAT_NAME: &str = "seat-0";
 
 /// Runtime keyboard-layout state for the compositor seat.
@@ -24,24 +25,29 @@ impl Default for KeyboardLayoutState {
 }
 
 impl KeyboardLayoutState {
+    /// Returns the logical seat name associated with this layout state.
     pub fn seat_name(&self) -> &str {
         &self.seat_name
     }
 
+    /// Returns the normalized list of configured keyboard layouts.
     pub fn layouts(&self) -> &[ConfiguredKeyboardLayout] {
         &self.layouts
     }
 
+    /// Returns the currently active layout index after bounds normalization.
     pub fn active_index(&self) -> usize {
         self.normalized_active_index()
     }
 
+    /// Builds runtime keyboard-layout state from normalized config data.
     pub fn from_config(layouts: &[ConfiguredKeyboardLayout], current_name: &str) -> Self {
         let mut state = Self::default();
         state.apply_layouts(layouts, Some(current_name), None);
         state
     }
 
+    /// Returns the active keyboard-layout entry.
     pub fn active_layout(&self) -> &ConfiguredKeyboardLayout {
         debug_assert!(
             !self.layouts.is_empty(),
@@ -50,10 +56,12 @@ impl KeyboardLayoutState {
         &self.layouts[self.normalized_active_index()]
     }
 
+    /// Returns the active keyboard-layout name.
     pub fn active_name(&self) -> &str {
         self.active_layout().name.as_str()
     }
 
+    /// Replaces the configured layout list while preserving the preferred active layout when possible.
     pub fn apply_layouts(
         &mut self,
         layouts: &[ConfiguredKeyboardLayout],
@@ -71,6 +79,7 @@ impl KeyboardLayoutState {
             .unwrap_or(0);
     }
 
+    /// Activates the next configured layout, wrapping around at the end of the list.
     pub fn activate_next(&mut self) -> bool {
         if self.layouts.is_empty() {
             return false;
@@ -80,6 +89,7 @@ impl KeyboardLayoutState {
         self.activate_index(next_index)
     }
 
+    /// Activates the previous configured layout, wrapping around at the start of the list.
     pub fn activate_prev(&mut self) -> bool {
         if self.layouts.is_empty() {
             return false;
@@ -91,6 +101,7 @@ impl KeyboardLayoutState {
         self.activate_index(prev_index)
     }
 
+    /// Activates the layout at the provided index when it exists and is not already active.
     pub fn activate_index(&mut self, index: usize) -> bool {
         if index >= self.layouts.len() || self.active_index == index {
             return false;
@@ -100,6 +111,7 @@ impl KeyboardLayoutState {
         true
     }
 
+    /// Activates the layout with the provided name when present.
     pub fn activate_name(&mut self, name: &str) -> bool {
         let Some(index) = self.index_for_name(Some(name)) else {
             return false;
@@ -107,6 +119,7 @@ impl KeyboardLayoutState {
         self.activate_index(index)
     }
 
+    /// Returns whether a layout with the provided name exists.
     pub fn contains_name(&self, name: &str) -> bool {
         self.index_for_name(Some(name)).is_some()
     }

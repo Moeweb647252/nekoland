@@ -14,6 +14,7 @@ impl<E> Default for EventBridge<E> {
 }
 
 impl<E> EventBridge<E> {
+    /// Pushes one event onto the bridge in arrival order.
     pub fn push(&mut self, event: E) {
         self.queue.push_back(event);
     }
@@ -24,6 +25,7 @@ impl<E> EventBridge<E> {
         self.queue.drain(..)
     }
 
+    /// Returns whether the bridge currently holds any queued events.
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
@@ -32,7 +34,9 @@ impl<E> EventBridge<E> {
 /// Implemented by protocol adapters that enqueue events into the shared bridge instead of
 /// touching ECS resources from Smithay callbacks directly.
 pub trait WaylandBridge {
+    /// Event type pushed through the bridge.
     type Event;
 
+    /// Queues one callback-driven event for later scheduled processing.
     fn queue_event(&mut self, event: Self::Event);
 }

@@ -1,3 +1,8 @@
+//! Window lifecycle reconciliation from protocol events into authoritative shell entities.
+//!
+//! This module is where native XDG and XWayland windows are materialized, refreshed, deferred, and
+//! destroyed in the shell world.
+
 use std::collections::BTreeSet;
 
 use bevy_ecs::entity_disabling::Disabled;

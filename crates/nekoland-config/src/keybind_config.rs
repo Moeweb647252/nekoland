@@ -1,3 +1,6 @@
+//! Keybinding schema wrappers used by the on-disk config format.
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use crate::resources::ConfiguredAction;

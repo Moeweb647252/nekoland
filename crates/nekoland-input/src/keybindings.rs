@@ -73,6 +73,7 @@ struct CommandKeybinding {
     argv: Vec<String>,
 }
 
+/// Rebuilds the compiled keybinding tables when the config's binding map changes.
 pub fn reload_keybindings_system(
     config: Res<CompositorConfig>,
     mut compiled: ResMut<CompiledKeybindings>,
@@ -108,6 +109,7 @@ pub fn reload_keybindings_system(
     }
 }
 
+/// Applies focused-window actions whose shortcuts were pressed this frame.
 pub fn window_keybinding_system(
     pressed_keys: Res<PressedKeys>,
     bindings: Res<CompiledKeybindings>,
@@ -227,6 +229,7 @@ pub fn window_keybinding_system(
     }
 }
 
+/// Applies workspace-management actions whose shortcuts were pressed this frame.
 pub fn workspace_keybinding_system(
     pressed_keys: Res<PressedKeys>,
     bindings: Res<CompiledKeybindings>,
@@ -267,6 +270,7 @@ pub fn workspace_keybinding_system(
     }
 }
 
+/// Applies output and viewport actions whose shortcuts were pressed this frame.
 pub fn output_keybinding_system(
     pressed_keys: Res<PressedKeys>,
     bindings: Res<CompiledKeybindings>,
@@ -341,6 +345,7 @@ pub fn output_keybinding_system(
     }
 }
 
+/// Queues external command launches whose shortcuts were pressed this frame.
 pub fn command_keybinding_system(
     pressed_keys: Res<PressedKeys>,
     bindings: Res<CompiledKeybindings>,

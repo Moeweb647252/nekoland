@@ -1,3 +1,8 @@
+//! Workspace creation, switching, destruction, and output/workspace routing.
+//!
+//! The shell keeps workspaces authoritative and derives output routing from shell policy plus the
+//! latest platform-facing output snapshot state.
+
 use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::hierarchy::{ChildOf, Children};

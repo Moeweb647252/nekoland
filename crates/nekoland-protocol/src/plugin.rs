@@ -4,13 +4,21 @@
 //! plugin entrypoint, schedule wiring, and delegate macros that still need a shared
 //! `ProtocolRuntimeState` path.
 
+/// Bootstrap of the Smithay server runtime and calloop sources.
 pub mod bootstrap;
+/// Feedback helpers for frame callbacks, presentation timing, and workspace visibility.
 pub mod feedback;
+/// Flushes queued protocol events into typed ECS resources.
 pub mod queue;
+/// Seat-input dispatch and pointer/keyboard focus synchronization.
 pub mod seat;
+/// Clipboard and primary-selection persistence helpers.
 pub mod selection;
+/// Smithay protocol server state, cursor state, and callback collection.
 pub mod server;
+/// Surface registry and platform-surface snapshot extraction.
 pub mod surface;
+/// XWayland runtime dispatch and protocol-side request handling.
 pub mod xwayland;
 
 pub use server::{ProtocolCursorImage, ProtocolCursorState, ProtocolDmabufSupport};
@@ -104,6 +112,7 @@ pub struct ProtocolPlugin;
 pub struct ProtocolSeatDispatchSystems;
 
 impl NekolandPlugin for ProtocolPlugin {
+    /// Seeds protocol bootstrap config and public protocol registry state.
     fn build(&self, app: &mut App) {
         let state = ProtocolState::default();
         let registry = ProtocolRegistry { globals: state.supported_globals() };

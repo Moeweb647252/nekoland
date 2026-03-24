@@ -1,3 +1,8 @@
+//! Extraction bridge from the main shell world into the render sub-app.
+//!
+//! The render sub-app only sees immutable snapshots. This module is responsible for cloning the
+//! shell-owned inputs and deriving render-world snapshots that avoid cross-world `Entity` access.
+
 use bevy_ecs::world::World;
 use nekoland_ecs::resources::{
     CompositorClock, CompositorSceneState, OutputDamageRegions, ShellRenderInput,

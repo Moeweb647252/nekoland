@@ -1,3 +1,5 @@
+//! Shell plugin wiring and shell-owned boundary synchronization.
+
 use bevy_app::App;
 use bevy_ecs::prelude::{Res, ResMut};
 use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -25,6 +27,7 @@ use crate::{
 };
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Main-world plugin that owns shell policy and synchronizes shell-facing boundary resources.
 pub struct ShellPlugin;
 
 impl NekolandPlugin for ShellPlugin {
@@ -121,6 +124,7 @@ impl NekolandPlugin for ShellPlugin {
     }
 }
 
+/// Mirrors shell-owned protocol/backend requests into the one-way `WaylandCommands` boundary.
 fn sync_wayland_commands_boundary_system(
     pending_output_controls: Res<'_, PendingOutputControls>,
     pending_output_overlay_controls: Res<'_, PendingOutputOverlayControls>,
@@ -142,6 +146,7 @@ fn sync_wayland_commands_boundary_system(
     };
 }
 
+/// Mirrors shell-owned presentation state into the render-facing boundary snapshot.
 fn sync_shell_render_boundary_system(
     pointer: Res<'_, GlobalPointerPosition>,
     wayland_ingress: Res<'_, WaylandIngress>,
