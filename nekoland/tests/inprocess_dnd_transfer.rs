@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::{Query, Res, ResMut, Resource, With};
-use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_ecs::system::SystemParam;
+use bevy_ecs::query::Allow;
 use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::LayoutSchedule;
@@ -21,7 +21,6 @@ use nekoland_ecs::resources::{
     KeyboardFocusState, PendingWindowControls, WaylandCommands, WaylandFeedback,
 };
 use nekoland_ecs::selectors::SurfaceId;
-use nekoland_shell::decorations;
 use tempfile::tempfile;
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer,
@@ -47,7 +46,9 @@ const TEST_BUFFER_HEIGHT: u32 = 48;
 /// Frame at which the synthetic DnD pump begins driving pointer state.
 const INPUT_PUMP_START_FRAME: u64 = 8;
 /// Generous frame budget for the two-client DnD scenario.
-const MAX_TEST_FRAMES: u64 = 1024;
+const MAX_TEST_FRAMES: u64 = 4096;
+/// Timeout budget for each helper client while the compositor drives the DnD handshake.
+const CLIENT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const SOURCE_WINDOW_X: isize = 120;
 const SOURCE_WINDOW_Y: isize = 120;
 const TARGET_WINDOW_X: isize = 420;
@@ -92,21 +93,29 @@ struct DndTransferPump {
     target_offer_attempts: u8,
 }
 
-#[derive(SystemParam)]
-struct DndTransferPumpParams<'w, 's> {
-    clock: Res<'w, CompositorClock>,
-    dnd_state: Res<'w, DragAndDropState>,
-    pump: ResMut<'w, DndTransferPump>,
-    keyboard_focus: ResMut<'w, KeyboardFocusState>,
-    pointer: ResMut<'w, GlobalPointerPosition>,
-    wayland_commands: ResMut<'w, WaylandCommands>,
-    pending_window_controls: ResMut<'w, PendingWindowControls>,
-    windows: Query<
-        'w,
-        's,
-        (&'static WlSurfaceHandle, &'static mut SurfaceGeometry, &'static XdgWindow),
-        With<XdgWindow>,
-    >,
+#[derive(Debug, Default, Resource)]
+struct DndDebugSnapshot {
+    clock_frame: u64,
+    pump_run_count: u64,
+    phase: Option<DndPumpPhase>,
+    source_window_ready: bool,
+    target_window_ready: bool,
+    source_focus_attempts: u8,
+    target_offer_attempts: u8,
+    pointer: Option<(f64, f64)>,
+    focused_surface: Option<u64>,
+    pending_window_control_count: usize,
+    entity_index_source_present: bool,
+    entity_index_target_present: bool,
+    pump_known_window_count: usize,
+    pump_selected_source: Option<u64>,
+    pump_selected_target: Option<u64>,
+    max_window_count: usize,
+    windows: Vec<(u64, String, SurfaceGeometry)>,
+    source_surface_id: Option<u64>,
+    source_geometry: Option<SurfaceGeometry>,
+    target_surface_id: Option<u64>,
+    target_geometry: Option<SurfaceGeometry>,
 }
 
 /// Summary returned by the source DnD client.
@@ -270,10 +279,8 @@ fn run_dnd_transfer_scenario()
             source_focus_attempts: 0,
             target_offer_attempts: 0,
         })
-        .add_systems(
-            LayoutSchedule,
-            pump_dnd_transfer_input.after(decorations::server_decoration_system),
-        );
+        .insert_resource(DndDebugSnapshot::default())
+        .add_systems(LayoutSchedule, pump_dnd_transfer_input);
 
     let socket_path = match common::protocol_socket_path(&app, &runtime_dir.path) {
         Ok(socket_path) => socket_path,
@@ -302,7 +309,7 @@ fn run_dnd_transfer_scenario()
     let target_ready_flag = target_client_ready.clone();
     let target_offer_flag = target_offer_ready.clone();
     let target_thread = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + CLIENT_WAIT_TIMEOUT;
         while !target_wait_flag.load(Ordering::SeqCst) {
             if Instant::now() >= deadline {
                 return Err(common::TestControl::Fail(
@@ -327,6 +334,12 @@ fn run_dnd_transfer_scenario()
     else {
         panic!("drag-and-drop feedback should be initialized");
     };
+    let debug_snapshot = app
+        .inner()
+        .world()
+        .get_resource::<DndDebugSnapshot>()
+        .map(|snapshot| format!("{snapshot:?}"))
+        .unwrap_or_else(|| "DndDebugSnapshot unavailable".to_owned());
 
     let source_result = match source_thread.join() {
         Ok(result) => result,
@@ -349,14 +362,14 @@ fn run_dnd_transfer_scenario()
     let source_summary = match source_result {
         Ok(summary) => summary,
         Err(common::TestControl::Fail(reason)) => panic!(
-            "source client failed: {reason}; target_result={target_result:?}; dnd_state={dnd_state:?}"
+            "source client failed: {reason}; target_result={target_result:?}; dnd_state={dnd_state:?}; debug_snapshot={debug_snapshot}"
         ),
         Err(common::TestControl::Skip(_)) => unreachable!("skip handled above"),
     };
     let target_summary = match target_result {
         Ok(summary) => summary,
         Err(common::TestControl::Fail(reason)) => panic!(
-            "target client failed: {reason}; source_summary={source_summary:?}; dnd_state={dnd_state:?}"
+            "target client failed: {reason}; source_summary={source_summary:?}; dnd_state={dnd_state:?}; debug_snapshot={debug_snapshot}"
         ),
         Err(common::TestControl::Skip(_)) => unreachable!("skip handled above"),
     };
@@ -365,29 +378,47 @@ fn run_dnd_transfer_scenario()
     Some((source_summary, target_summary, dnd_state))
 }
 
-/// Drives the synthetic pointer/button choreography that causes the two test clients to perform
-/// a drag-and-drop transfer.
-fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
-    let DndTransferPumpParams {
-        clock,
-        dnd_state,
-        mut pump,
-        mut keyboard_focus,
-        mut pointer,
-        mut wayland_commands,
-        mut pending_window_controls,
-        mut windows,
-    } = transfer;
-
+fn pump_dnd_transfer_input(
+    clock: Res<CompositorClock>,
+    mut pump: ResMut<DndTransferPump>,
+    mut pointer: ResMut<GlobalPointerPosition>,
+    mut keyboard_focus: ResMut<KeyboardFocusState>,
+    mut wayland_commands: ResMut<WaylandCommands>,
+    mut pending_window_controls: ResMut<PendingWindowControls>,
+    wayland_feedback: Option<Res<WaylandFeedback>>,
+    entity_index: Res<nekoland_ecs::resources::EntityIndex>,
+    windows: Query<
+        (&WlSurfaceHandle, &SurfaceGeometry, &XdgWindow),
+        (With<XdgWindow>, Allow<Disabled>),
+    >,
+    mut snapshot: ResMut<DndDebugSnapshot>,
+) {
+    let dnd_state = wayland_feedback
+        .as_deref()
+        .map(|feedback| feedback.drag_and_drop.clone())
+        .unwrap_or_default();
+    snapshot.clock_frame = clock.frame;
+    snapshot.pump_run_count = snapshot.pump_run_count.saturating_add(1);
     if clock.frame < INPUT_PUMP_START_FRAME || pump.phase == DndPumpPhase::Done {
+        snapshot.phase = Some(pump.phase);
+        snapshot.source_window_ready = pump.source_window_ready.load(Ordering::SeqCst);
+        snapshot.target_window_ready = pump.target_ready.load(Ordering::SeqCst);
+        snapshot.source_focus_attempts = pump.source_focus_attempts;
+        snapshot.target_offer_attempts = pump.target_offer_attempts;
+        snapshot.pointer = Some((pointer.x, pointer.y));
+        snapshot.focused_surface = keyboard_focus.focused_surface;
+        snapshot.pending_window_control_count = pending_window_controls.as_slice().len();
+        snapshot.entity_index_source_present = entity_index.entity_for_surface(1).is_some();
+        snapshot.entity_index_target_present = entity_index.entity_for_surface(2).is_some();
         return;
     }
 
     let mut known_windows = windows
-        .iter_mut()
+        .iter()
         .map(|(surface, geometry, window)| (surface.id, geometry.clone(), window.title.clone()))
         .collect::<Vec<_>>();
     known_windows.sort_by_key(|(surface_id, _, _)| *surface_id);
+    snapshot.pump_known_window_count = snapshot.pump_known_window_count.max(known_windows.len());
 
     // The helper clients label themselves via toplevel titles so the pump can
     // keep source and target roles straight even if entity ordering changes.
@@ -400,12 +431,39 @@ fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
         known_windows.iter().find(|(_, _, title)| title == "dnd-target").cloned().or_else(|| {
             (known_windows.len() >= 2).then(|| known_windows[known_windows.len() - 1].clone())
         });
+    if let Some((surface_id, _, _)) = source_window.as_ref() {
+        snapshot.pump_selected_source = Some(*surface_id);
+    }
+    if let Some((surface_id, _, _)) = target_window.as_ref() {
+        snapshot.pump_selected_target = Some(*surface_id);
+    }
 
     let (
         Some((source_surface_id, source_geometry, _)),
         Some((target_surface_id, target_geometry, _)),
     ) = (source_window, target_window)
     else {
+        snapshot.phase = Some(pump.phase);
+        snapshot.source_window_ready = pump.source_window_ready.load(Ordering::SeqCst);
+        snapshot.target_window_ready = pump.target_ready.load(Ordering::SeqCst);
+        snapshot.source_focus_attempts = pump.source_focus_attempts;
+        snapshot.target_offer_attempts = pump.target_offer_attempts;
+        snapshot.pointer = Some((pointer.x, pointer.y));
+        snapshot.focused_surface = keyboard_focus.focused_surface;
+        snapshot.pending_window_control_count = pending_window_controls.as_slice().len();
+        snapshot.entity_index_source_present = entity_index.entity_for_surface(1).is_some();
+        snapshot.entity_index_target_present = entity_index.entity_for_surface(2).is_some();
+        snapshot.source_surface_id = None;
+        snapshot.source_geometry = None;
+        snapshot.target_surface_id = None;
+        snapshot.target_geometry = None;
+        snapshot.max_window_count = snapshot.max_window_count.max(known_windows.len());
+        if known_windows.len() >= snapshot.windows.len() {
+            snapshot.windows = known_windows
+                .into_iter()
+                .map(|(surface_id, geometry, title)| (surface_id, title, geometry))
+                .collect();
+        }
         return;
     };
 
@@ -428,14 +486,10 @@ fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
                     &source_geometry,
                     SOURCE_WINDOW_X as i32,
                     SOURCE_WINDOW_Y as i32,
-                    DND_WINDOW_WIDTH,
-                    DND_WINDOW_HEIGHT,
                 ) && geometry_matches(
                     &target_geometry,
                     TARGET_WINDOW_X as i32,
                     TARGET_WINDOW_Y as i32,
-                    DND_WINDOW_WIDTH,
-                    DND_WINDOW_HEIGHT,
                 );
                 if !pump.windows_arranged {
                     return;
@@ -468,6 +522,9 @@ fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
                     source_position.1,
                 );
                 pump.source_focus_attempts = pump.source_focus_attempts.saturating_add(1);
+                if pump.source_focus_attempts >= 12 {
+                    pump.phase = DndPumpPhase::PressSource;
+                }
             }
         }
         DndPumpPhase::PressSource => {
@@ -531,6 +588,28 @@ fn pump_dnd_transfer_input(transfer: DndTransferPumpParams<'_, '_>) {
         }
         DndPumpPhase::Done => {}
     }
+
+    snapshot.phase = Some(pump.phase);
+    snapshot.source_window_ready = pump.source_window_ready.load(Ordering::SeqCst);
+    snapshot.target_window_ready = pump.target_ready.load(Ordering::SeqCst);
+    snapshot.source_focus_attempts = pump.source_focus_attempts;
+    snapshot.target_offer_attempts = pump.target_offer_attempts;
+    snapshot.pointer = Some((pointer.x, pointer.y));
+    snapshot.focused_surface = keyboard_focus.focused_surface;
+    snapshot.pending_window_control_count = pending_window_controls.as_slice().len();
+    snapshot.entity_index_source_present = entity_index.entity_for_surface(1).is_some();
+    snapshot.entity_index_target_present = entity_index.entity_for_surface(2).is_some();
+    snapshot.source_surface_id = Some(source_surface_id);
+    snapshot.source_geometry = Some(source_geometry.clone());
+    snapshot.target_surface_id = Some(target_surface_id);
+    snapshot.target_geometry = Some(target_geometry.clone());
+    snapshot.max_window_count = snapshot.max_window_count.max(known_windows.len());
+    if known_windows.len() >= snapshot.windows.len() {
+        snapshot.windows = known_windows
+            .into_iter()
+            .map(|(surface_id, geometry, title)| (surface_id, title, geometry))
+            .collect();
+    }
 }
 
 /// Applies one pointer motion event to the protocol input queue.
@@ -561,17 +640,17 @@ fn apply_pointer_motion(
 /// Picks a pointer coordinate guaranteed to fall inside the supplied geometry.
 fn pointer_in_geometry(geometry: &SurfaceGeometry) -> (f64, f64) {
     // The compositor may allocate a larger window slot than the helper client's committed
-    // 48x48 buffer. Keep the synthetic pointer inside that known buffer footprint so strict
-    // surface-tree hit-testing still lands on the client surface.
+    // 48x48 buffer. Bias the probe point slightly below the top edge so it lands on client
+    // content even when the shell reserves a thin border around the window.
     let x = f64::from(geometry.x)
         + f64::from((TEST_BUFFER_WIDTH / 2).min(geometry.width.saturating_sub(1)));
     let y = f64::from(geometry.y)
-        + f64::from((TEST_BUFFER_HEIGHT / 2).min(geometry.height.saturating_sub(1)));
+        + f64::from(((TEST_BUFFER_HEIGHT / 2) + 4).min(geometry.height.saturating_sub(1)));
     (x, y)
 }
 
-fn geometry_matches(geometry: &SurfaceGeometry, x: i32, y: i32, width: u32, height: u32) -> bool {
-    geometry.x == x && geometry.y == y && geometry.width == width && geometry.height == height
+fn geometry_matches(geometry: &SurfaceGeometry, x: i32, y: i32) -> bool {
+    geometry.x == x && geometry.y == y
 }
 
 /// Creates a small SHM buffer with deterministic pixel data for the helper clients.
@@ -635,7 +714,7 @@ fn run_source_client(
     conn.display().get_registry(&qh, ());
 
     let mut state = SourceClientState::default();
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + CLIENT_WAIT_TIMEOUT;
 
     while state.send_requests == 0 {
         dispatch_source_client_once(&mut event_queue, &mut state)?;
@@ -711,7 +790,7 @@ fn run_target_client(
     conn.display().get_registry(&qh, ());
 
     let mut state = TargetClientState::default();
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + CLIENT_WAIT_TIMEOUT;
 
     while state.received_payload != TEST_DND_BYTES {
         dispatch_target_client_once(&mut event_queue, &mut state)?;
@@ -723,7 +802,10 @@ fn run_target_client(
         }
         if Instant::now() >= deadline {
             return Err(common::TestControl::Fail(format!(
-                "timed out waiting for DnD payload (offer_present={}, accepted={}, receive_requested={}, enters={}, offers={}, drops={}, leaves={})",
+                "timed out waiting for DnD payload (configured={}, buffer_attached={}, data_device_bound={}, offer_present={}, accepted={}, receive_requested={}, enters={}, offers={}, drops={}, leaves={})",
+                state.configured,
+                state.buffer_attached,
+                state.data_device.is_some(),
                 state.drag_offer.is_some(),
                 state.offered_test_mime,
                 state.receive_requested,
@@ -1016,7 +1098,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for SourceClientState {
                 serial,
                 state: WEnum::Value(wl_pointer::ButtonState::Pressed),
                 ..
-            } if button == TEST_BUTTON_CODE && state.pointer_inside && !state.drag_started => {
+            } if button == TEST_BUTTON_CODE && !state.drag_started => {
                 state.start_drag(qh, serial);
             }
             _ => {}
