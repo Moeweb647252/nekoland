@@ -15,7 +15,6 @@ pub mod window_control;
 mod window_lifecycle;
 mod window_policy;
 pub mod workspace;
-pub mod x11;
 pub mod xdg;
 
 pub use plugin::ShellPlugin;

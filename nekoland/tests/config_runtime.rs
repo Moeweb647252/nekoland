@@ -12,12 +12,12 @@ use nekoland_core::prelude::NekolandApp;
 use nekoland_core::schedules::{ExtractSchedule, InputSchedule, LayoutSchedule};
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    BorderTheme, ServerDecoration, SurfaceGeometry, WindowDisplayState, WindowLayout, WindowMode,
-    WlSurfaceHandle, XdgWindow,
+    BorderTheme, ServerDecoration, SurfaceGeometry, WindowDisplayState, WindowLayout,
+    WindowManagementHints, WindowMode, WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::{
     CommandHistoryState, CompositorClock, GlobalPointerPosition, KeyboardFocusState, ModifierMask,
-    SurfaceExtent, WaylandIngress, WindowLifecycleAction, WindowLifecycleRequest, XdgSurfaceRole,
+    WaylandIngress, WindowEvent, WindowEventRequest,
 };
 use nekoland_input::InputPlugin;
 use nekoland_shell::ShellPlugin;
@@ -115,7 +115,6 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
             window: XdgWindow {
                 app_id: "org.nekoland.config".to_owned(),
                 title: "Primary".to_owned(),
-                last_acked_configure: None,
             },
             layout: WindowLayout::Tiled,
             mode: WindowMode::Normal,
@@ -129,7 +128,6 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
             window: XdgWindow {
                 app_id: "org.nekoland.config".to_owned(),
                 title: "Secondary".to_owned(),
-                last_acked_configure: None,
             },
             layout: WindowLayout::Tiled,
             mode: WindowMode::Normal,
@@ -223,10 +221,21 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
     app.inner_mut()
         .world_mut()
         .resource_mut::<WaylandIngress>()
-        .pending_xdg_requests
-        .push(WindowLifecycleRequest {
+        .pending_window_events
+        .push(WindowEventRequest {
             surface_id: 303,
-            action: WindowLifecycleAction::Committed { role: XdgSurfaceRole::Toplevel, size: None },
+            action: WindowEvent::Upsert {
+                title: Some("Reloaded".to_owned()),
+                app_id: Some("org.nekoland.config".to_owned()),
+                hints: WindowManagementHints::native_wayland(),
+                scene_geometry: Some(WindowSceneGeometry {
+                    x: 0,
+                    y: 0,
+                    width: 960,
+                    height: 720,
+                }),
+                attached: false,
+            },
         });
     app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
@@ -262,20 +271,36 @@ fn tiling_default_layout_splits_new_windows_across_work_area() {
     app.inner_mut().world_mut().run_schedule(InputSchedule);
     app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-    app.inner_mut().world_mut().resource_mut::<WaylandIngress>().pending_xdg_requests.push(
-        WindowLifecycleRequest {
+    app.inner_mut().world_mut().resource_mut::<WaylandIngress>().pending_window_events.push(
+        WindowEventRequest {
         surface_id: 401,
-        action: WindowLifecycleAction::Committed {
-            role: XdgSurfaceRole::Toplevel,
-            size: Some(SurfaceExtent { width: 800, height: 600 }),
+        action: WindowEvent::Upsert {
+            title: Some("Window 401".to_owned()),
+            app_id: Some("org.nekoland.config".to_owned()),
+            hints: WindowManagementHints::native_wayland(),
+            scene_geometry: Some(WindowSceneGeometry {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 600,
+            }),
+            attached: true,
         },
     });
-    app.inner_mut().world_mut().resource_mut::<WaylandIngress>().pending_xdg_requests.push(
-        WindowLifecycleRequest {
+    app.inner_mut().world_mut().resource_mut::<WaylandIngress>().pending_window_events.push(
+        WindowEventRequest {
         surface_id: 402,
-        action: WindowLifecycleAction::Committed {
-            role: XdgSurfaceRole::Toplevel,
-            size: Some(SurfaceExtent { width: 800, height: 600 }),
+        action: WindowEvent::Upsert {
+            title: Some("Window 402".to_owned()),
+            app_id: Some("org.nekoland.config".to_owned()),
+            hints: WindowManagementHints::native_wayland(),
+            scene_geometry: Some(WindowSceneGeometry {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 600,
+            }),
+            attached: true,
         },
     });
     app.inner_mut().world_mut().run_schedule(LayoutSchedule);

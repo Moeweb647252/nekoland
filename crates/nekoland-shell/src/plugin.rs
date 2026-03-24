@@ -20,8 +20,7 @@ use nekoland_ecs::resources::{
 use crate::{
     commands, decorations, focus,
     interaction::{self, ActiveWindowGrab},
-    layer, layout, presentation, surface_presentation, viewport, window_control, workspace, x11,
-    xdg,
+    layer, layout, presentation, surface_presentation, viewport, window_control, workspace, xdg,
     window_lifecycle,
 };
 
@@ -50,9 +49,9 @@ impl NekolandPlugin for ShellPlugin {
             .init_resource::<WaylandFeedback>()
             .init_resource::<ShellRenderInput>()
             .init_resource::<FocusedOutputState>()
-            .init_resource::<x11::DeferredX11Requests>()
             .init_resource::<layer::DeferredLayerRequests>()
             .init_resource::<xdg::DeferredXdgRequests>()
+            .init_resource::<xdg::popup::DeferredPopupEvents>()
             .init_resource::<window_lifecycle::DeferredWindowEvents>()
             .init_resource::<workspace::RememberedOutputWorkspaceState>()
             .init_resource::<CommandHistoryState>()

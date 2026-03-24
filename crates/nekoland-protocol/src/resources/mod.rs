@@ -7,11 +7,12 @@ pub use dnd::*;
 pub use nekoland_ecs::resources::{
     InputEventRecord, LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec,
     OutputEventRecord, PendingInputEvents, PendingLayerRequests, PendingOutputEvents,
-    PendingPopupServerRequests, PendingWindowEvents, PendingWindowServerRequests,
-    PendingX11Requests, PendingXdgRequests, PopupPlacement, PopupServerAction,
-    PopupServerRequest, ProtocolServerState, ResizeEdges, SurfaceExtent, WindowEvent,
-    WindowEventRequest, WindowLifecycleAction, WindowLifecycleRequest, WindowManagerRequest,
-    WindowServerAction, WindowServerRequest, X11LifecycleAction, X11LifecycleRequest,
-    X11WindowGeometry, XWaylandServerState, XdgSurfaceRole,
+    PendingPopupEvents, PendingPopupServerRequests, PendingWindowEvents,
+    PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests, PopupEvent,
+    PopupEventRequest, PopupPlacement, PopupServerAction, PopupServerRequest, ProtocolServerState,
+    ResizeEdges, SurfaceExtent, WindowEvent, WindowEventRequest, WindowLifecycleAction,
+    WindowLifecycleRequest, WindowManagerRequest, WindowServerAction, WindowServerRequest,
+    X11LifecycleAction, X11LifecycleRequest, X11WindowGeometry, XWaylandServerState,
+    XdgSurfaceRole,
 };
 pub use output_presentation::*;

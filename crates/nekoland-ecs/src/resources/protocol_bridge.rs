@@ -37,6 +37,39 @@ pub struct PopupPlacement {
     pub reposition_token: Option<u32>,
 }
 
+/// Popup lifecycle actions buffered between platform callbacks and shell systems.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PopupEvent {
+    Created {
+        parent_surface_id: u64,
+        placement: PopupPlacement,
+    },
+    Repositioned {
+        placement: PopupPlacement,
+    },
+    Committed {
+        size: Option<SurfaceExtent>,
+        attached: bool,
+    },
+    Grab {
+        seat_id: SeatId,
+        serial: u32,
+    },
+    Closed,
+}
+
+/// One queued popup event targeted at a surface id.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PopupEventRequest {
+    pub surface_id: u64,
+    pub action: PopupEvent,
+}
+
+impl ProtocolEvent for PopupEventRequest {}
+
+/// Platform-to-shell queue for popup lifecycle events.
+pub type PendingPopupEvents = ProtocolEventQueue<PopupEventRequest>;
+
 /// Normalized interactive resize edge selection shared across platform and shell layers.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
 use nekoland_ecs::components::{
     BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, SurfaceGeometry,
-    Window, WlSurfaceHandle, XdgPopup,
+    PopupSurface, Window, WlSurfaceHandle,
 };
 use nekoland_ecs::presentation_logic::{
     layer_visible, managed_window_visible, output_background_window_visible, popup_visible,
@@ -34,7 +34,7 @@ pub fn surface_presentation_snapshot_system(
     wayland_ingress: Option<Res<WaylandIngress>>,
     primary_output: Option<Res<PrimaryOutputState>>,
     windows: Query<(Entity, WindowSnapshotRuntime), With<Window>>,
-    popups: Query<(Entity, PopupSnapshotRuntime), With<XdgPopup>>,
+    popups: Query<(Entity, PopupSnapshotRuntime), With<PopupSurface>>,
     layers: LayerPresentationQuery<'_, '_>,
     mut snapshot: ResMut<SurfacePresentationSnapshot>,
 ) {
@@ -183,7 +183,7 @@ mod tests {
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
         BufferState, OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry,
-        WlSurfaceHandle, XdgPopup,
+        PopupSurface, WlSurfaceHandle,
     };
     use nekoland_ecs::resources::{
         OutputGeometrySnapshot, OutputSnapshotState, SurfacePresentationSnapshot, WaylandIngress,
@@ -243,7 +243,7 @@ mod tests {
                 WlSurfaceHandle { id: 11 },
                 SurfaceGeometry { x: 40, y: 50, width: 160, height: 90 },
                 BufferState { attached: true, scale: 1 },
-                XdgPopup::default(),
+                PopupSurface::default(),
                 ChildOf(window),
             ))
             .id();
@@ -251,7 +251,7 @@ mod tests {
             WlSurfaceHandle { id: 12 },
             SurfaceGeometry { x: 60, y: 70, width: 120, height: 60 },
             BufferState { attached: true, scale: 1 },
-            XdgPopup::default(),
+            PopupSurface::default(),
             ChildOf(popup),
         ));
 

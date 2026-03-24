@@ -64,7 +64,7 @@ fn extract_desktop_surface_order_snapshot(main_world: &mut World, render_world: 
     );
     let mut popups = main_world.query_filtered::<
         nekoland_ecs::views::PopupRenderRuntime,
-        bevy_ecs::query::With<nekoland_ecs::components::XdgPopup>,
+        bevy_ecs::query::With<nekoland_ecs::components::PopupSurface>,
     >();
     let mut workspaces =
         main_world.query::<(bevy_ecs::entity::Entity, nekoland_ecs::views::WorkspaceRuntime)>();

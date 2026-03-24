@@ -146,7 +146,6 @@ fn seed_window(world: &mut bevy_ecs::world::World) {
         window: XdgWindow {
             app_id: "org.nekoland.window-subscription".to_owned(),
             title: "Subscription Window".to_owned(),
-            last_acked_configure: None,
         },
         layout: WindowLayout::Tiled,
         mode: WindowMode::Normal,

@@ -356,7 +356,7 @@ mod tests {
     use nekoland_ecs::components::{
         BufferState, DesiredOutputName, LayerShellSurface, OutputDevice, OutputId, OutputKind,
         OutputProperties, SurfaceContentVersion, SurfaceGeometry, WindowViewportVisibility,
-        WlSurfaceHandle, XdgPopup, XdgWindow,
+        PopupSurface, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{
         CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, CursorRenderItem,
@@ -499,7 +499,7 @@ mod tests {
         });
         app.inner_mut().world_mut().spawn((
             WlSurfaceHandle { id: 3 },
-            XdgPopup::default(),
+            PopupSurface::default(),
             BufferState { attached: true, scale: 1 },
             SurfaceGeometry { x: 5, y: 7, width: 30, height: 20 },
             bevy_ecs::hierarchy::ChildOf(secondary_window),

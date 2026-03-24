@@ -2,6 +2,8 @@
 pub(crate) struct FlushProtocolQueueParams<'w> {
     pub(crate) pending_xdg_requests:
         bevy_ecs::prelude::ResMut<'w, nekoland_ecs::resources::PendingXdgRequests>,
+    pub(crate) pending_popup_events:
+        bevy_ecs::prelude::ResMut<'w, nekoland_ecs::resources::PendingPopupEvents>,
     pub(crate) pending_window_events:
         bevy_ecs::prelude::ResMut<'w, nekoland_ecs::resources::PendingWindowEvents>,
     pub(crate) pending_layer_requests:
@@ -26,6 +28,7 @@ pub(crate) fn flush_protocol_queue_system(
 ) {
     let mut targets = crate::ProtocolFlushTargets {
         pending_xdg_requests: &mut params.pending_xdg_requests,
+        pending_popup_events: &mut params.pending_popup_events,
         pending_window_events: &mut params.pending_window_events,
         pending_layer_requests: &mut params.pending_layer_requests,
         pending_window_controls: &mut params.pending_window_controls,

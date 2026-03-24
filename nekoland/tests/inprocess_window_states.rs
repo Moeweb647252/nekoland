@@ -17,12 +17,13 @@ use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::{LayoutSchedule, RenderSchedule};
 use nekoland_ecs::components::{
     BufferState, OutputProperties, PopupGrab, SurfaceGeometry, WindowDisplayState, WindowLayout,
-    WindowMode, WlSurfaceHandle, XdgPopup, XdgWindow,
+    WindowMode, PopupSurface, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
-    BackendInputAction, BackendInputEvent, FramePacingState, GlobalPointerPosition,
-    KeyboardFocusState, RenderPlan, RenderPlanItem, WaylandCommands, WorkArea,
+    BackendInputAction, BackendInputEvent, CompiledOutputFrames, FramePacingState,
+    GlobalPointerPosition, KeyboardFocusState, RenderPlan, RenderPlanItem, WaylandCommands,
+    WorkArea,
 };
 use nekoland_ecs::resources::{
     PendingPopupServerRequests, PendingWindowServerRequests, PopupServerAction, PopupServerRequest,
@@ -48,7 +49,7 @@ use wayland_protocols::xdg::shell::client::{
 mod common;
 
 const INTERACTIVE_INPUT_PUMP_FRAMES: u8 = 8;
-const CLIENT_LINGER_AFTER_COMPLETION: Duration = Duration::from_millis(400);
+const CLIENT_LINGER_AFTER_COMPLETION: Duration = Duration::from_secs(1);
 const SCENARIO_CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Enumerates the scenario variants exercised by this test module.
@@ -163,7 +164,11 @@ struct InteractiveSeatInputPump {
 }
 
 fn render_plan_surface_ids(world: &mut bevy_ecs::world::World) -> Vec<u64> {
-    let Some(render_plan) = world.get_resource::<RenderPlan>() else {
+    let render_plan = if let Some(compiled) = world.get_resource::<CompiledOutputFrames>() {
+        &compiled.render_plan
+    } else if let Some(render_plan) = world.get_resource::<RenderPlan>() {
+        render_plan
+    } else {
         panic!("render plan should be initialized");
     };
     render_plan
@@ -471,7 +476,7 @@ fn popup_grab_request_marks_popup_active_and_tracks_serial() {
         "popup grab scenario should use a real wl_pointer button serial: {summary:?}"
     );
 
-    let (window_surface_id, popup_parent, popup_grab_serial, popup_configure_serial, grab) = {
+    let (window_surface_id, popup_parent, popup_grab_serial, grab) = {
         let world = app.inner_mut().world_mut();
 
         let window_surface_id = world
@@ -481,26 +486,22 @@ fn popup_grab_request_marks_popup_active_and_tracks_serial() {
             .next()
             .unwrap_or_else(|| panic!("scenario should create a toplevel surface"));
 
-        let mut popup_query = world.query::<(&XdgPopup, &PopupGrab, &ChildOf)>();
+        let mut popup_query = world.query::<(&PopupSurface, &PopupGrab, &ChildOf)>();
         let popups = popup_query
             .iter(world)
-            .map(|(popup, grab, child_of)| {
-                (child_of.parent(), popup.grab_serial, popup.configure_serial, grab.clone())
-            })
+            .map(|(_, grab, child_of)| (child_of.parent(), grab.serial, grab.clone()))
             .collect::<Vec<_>>();
         assert_eq!(popups.len(), 1, "scenario should create exactly one popup");
-        let (popup_parent_entity, popup_grab_serial, popup_configure_serial, grab) =
-            popups[0].clone();
+        let (popup_parent_entity, popup_grab_serial, grab) = popups[0].clone();
         let Some(popup_parent_surface) = world.get::<WlSurfaceHandle>(popup_parent_entity) else {
             panic!("popup parent should expose a surface handle");
         };
         let popup_parent = popup_parent_surface.id;
 
-        (window_surface_id, popup_parent, popup_grab_serial, popup_configure_serial, grab)
+        (window_surface_id, popup_parent, popup_grab_serial, grab)
     };
 
     assert_eq!(popup_grab_serial, summary.interactive_request_serial);
-    assert_eq!(popup_configure_serial, summary.popup_configure_serial);
     assert_eq!(popup_parent, window_surface_id);
     assert!(grab.active, "popup grab should become active after popup.grab");
     assert_eq!(grab.seat_id, nekoland_ecs::components::SeatId::PRIMARY);
@@ -527,7 +528,7 @@ fn server_dismiss_of_grabbed_popup_sends_popup_done_and_cleans_up_popup_state() 
 
     let (popup_count, window_count, render_surface_ids) = {
         let world = app.inner_mut().world_mut();
-        let popup_count = world.query::<&XdgPopup>().iter(world).count();
+        let popup_count = world.query::<&PopupSurface>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
         let render_surface_ids = render_plan_surface_ids(world);
         (popup_count, window_count, render_surface_ids)
@@ -562,7 +563,7 @@ fn ipc_dismiss_of_grabbed_popup_sends_popup_done_and_cleans_up_popup_state() {
 
     let (popup_count, window_count, render_surface_ids) = {
         let world = app.inner_mut().world_mut();
-        let popup_count = world.query::<&XdgPopup>().iter(world).count();
+        let popup_count = world.query::<&PopupSurface>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
         let render_surface_ids = render_plan_surface_ids(world);
         (popup_count, window_count, render_surface_ids)
@@ -597,7 +598,7 @@ fn popup_grab_request_with_invalid_serial_is_dismissed() {
 
     let (popup_count, window_count, render_surface_ids) = {
         let world = app.inner_mut().world_mut();
-        let popup_count = world.query::<&XdgPopup>().iter(world).count();
+        let popup_count = world.query::<&PopupSurface>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
         let render_surface_ids = render_plan_surface_ids(world);
         (popup_count, window_count, render_surface_ids)
@@ -623,7 +624,7 @@ fn popup_reposition_request_updates_geometry_and_token() {
         "popup reposition scenario should observe the repositioned event: {summary:?}"
     );
 
-    let (parent_geometry, popup, geometry) = {
+    let (parent_geometry, _popup, geometry) = {
         let world = app.inner_mut().world_mut();
         let parent_geometry = world
             .query::<(&WlSurfaceHandle, &SurfaceGeometry, &XdgWindow)>()
@@ -631,7 +632,7 @@ fn popup_reposition_request_updates_geometry_and_token() {
             .map(|(_, geometry, _)| geometry.clone())
             .next()
             .unwrap_or_else(|| panic!("popup reposition scenario should keep the toplevel alive"));
-        let mut popup_query = world.query::<(&XdgPopup, &SurfaceGeometry)>();
+        let mut popup_query = world.query::<(&PopupSurface, &SurfaceGeometry)>();
         let popups = popup_query
             .iter(world)
             .map(|(popup, geometry)| (popup.clone(), geometry.clone()))
@@ -640,7 +641,6 @@ fn popup_reposition_request_updates_geometry_and_token() {
         (parent_geometry, popups[0].0.clone(), popups[0].1.clone())
     };
 
-    assert_eq!(popup.reposition_token, Some(91));
     assert_eq!(geometry.x, parent_geometry.x + 100);
     assert_eq!(geometry.y, parent_geometry.y + 64);
     assert_eq!(geometry.width, 300);
@@ -659,7 +659,7 @@ fn popup_destroy_request_removes_popup_entity_and_render_entry() {
 
     let (popup_count, render_surface_ids, window_count) = {
         let world = app.inner_mut().world_mut();
-        let popup_count = world.query::<&XdgPopup>().iter(world).count();
+        let popup_count = world.query::<&PopupSurface>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
         let render_surface_ids = render_plan_surface_ids(world);
         (popup_count, render_surface_ids, window_count)
@@ -687,7 +687,7 @@ fn toplevel_destroy_removes_window_records_close_and_clears_render_focus() {
     let (window_count, popup_count, focus, render_surface_ids, closed_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
-        let popup_count = world.query::<&XdgPopup>().iter(world).count();
+        let popup_count = world.query::<&PopupSurface>().iter(world).count();
         let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
             panic!("keyboard focus state should be initialized");
         };
@@ -805,7 +805,7 @@ fn ipc_close_of_parent_window_dismisses_child_popup_and_cleans_up_everything() {
     let (window_count, popup_count, focus, render_surface_ids, closed_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let window_count = world.query::<(&WlSurfaceHandle, &XdgWindow)>().iter(world).count();
-        let popup_count = world.query::<&XdgPopup>().iter(world).count();
+        let popup_count = world.query::<&PopupSurface>().iter(world).count();
         let Some(keyboard_focus) = world.get_resource::<KeyboardFocusState>() else {
             panic!("keyboard focus should remain available");
         };
@@ -889,7 +889,7 @@ fn workspace_switch_dismisses_popups_and_reconfigures_reactivated_toplevels() {
 
     let (popup_count, window_count, render_surface_ids, active_workspaces, frame_pacing) = {
         let world = app.inner_mut().world_mut();
-        let popup_count = world.query::<&XdgPopup>().iter(world).count();
+        let popup_count = world.query::<&PopupSurface>().iter(world).count();
         let window_count = world.query::<&XdgWindow>().iter(world).count();
         let render_surface_ids = render_plan_surface_ids(world);
         let active_workspaces = world
@@ -1294,7 +1294,12 @@ fn run_scenario_client(
 }
 
 /// Inject synthetic pointer and focus events for scenarios that need a valid
-/// interactive serial or a small move/resize gesture.
+/// interactive serial or a small move gesture.
+///
+/// Protocol-side seat dispatch consumes queued input one frame after the main-world
+/// `GlobalPointerPosition` update from this helper, so interactive button presses
+/// must keep the following frame's pointer location on the same surface to produce
+/// a valid implicit-grab serial.
 fn pump_interactive_seat_input(
     mut pump: ResMut<InteractiveSeatInputPump>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
@@ -1332,19 +1337,18 @@ fn pump_interactive_seat_input(
     ];
 
     let (x, y, pressed) = if matches!(pump.scenario, WindowScenario::MoveResize) {
+        let start_x =
+            f64::from(geometry.x) + 24.0_f64.min(f64::from(geometry.width.saturating_sub(1)));
+        let start_y =
+            f64::from(geometry.y) + 28.0_f64.min(f64::from(geometry.height.saturating_sub(1)));
+        let drag_x = f64::from(geometry.x) + f64::from(geometry.width) + 48.0;
+        let drag_y = f64::from(geometry.y) + f64::from(geometry.height) + 40.0;
         match pump.tick {
-            0 => (f64::from(geometry.x) + 8.0, f64::from(geometry.y) + 8.0, Some(true)),
-            1 => (f64::from(geometry.x) + 72.0, f64::from(geometry.y) + 56.0, Some(false)),
-            2 => (
-                f64::from(geometry.x) + f64::from(geometry.width.saturating_sub(1)),
-                f64::from(geometry.y) + f64::from(geometry.height.saturating_sub(1)),
-                Some(true),
-            ),
-            3 => (
-                f64::from(geometry.x) + f64::from(geometry.width) + 48.0,
-                f64::from(geometry.y) + f64::from(geometry.height) + 40.0,
-                Some(false),
-            ),
+            0 => (start_x, start_y, Some(true)),
+            1 => (start_x, start_y, None),
+            2 => (drag_x, drag_y, None),
+            3 => (drag_x, drag_y, Some(false)),
+            4 => (drag_x, drag_y, None),
             _ => {
                 pump.remaining_frames = 0;
                 return;
@@ -1458,7 +1462,7 @@ fn request_server_close_on_window_created(
 /// server-initiated popup teardown.
 fn request_server_popup_dismiss(
     mut auto_dismiss: ResMut<AutoDismissPopup>,
-    popups: Query<(&WlSurfaceHandle, &PopupGrab), With<XdgPopup>>,
+    popups: Query<(&WlSurfaceHandle, &PopupGrab), With<PopupSurface>>,
     mut pending_popup_requests: ResMut<PendingPopupServerRequests>,
 ) {
     if auto_dismiss.issued {

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::SeatId;
 
-/// Stored protocol state for an XDG popup surface.
+/// Shell-facing popup state shared by Wayland and XWayland popup surfaces.
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[require(
     crate::components::SurfaceGeometry,
@@ -12,14 +12,11 @@ use crate::components::SeatId;
     PopupGrab,
     crate::components::WindowAnimation
 )]
-pub struct XdgPopup {
-    pub configure_serial: Option<u32>,
-    pub grab_serial: Option<u32>,
-    pub reposition_token: Option<u32>,
-    pub placement_x: i32,
-    pub placement_y: i32,
-    pub placement_width: u32,
-    pub placement_height: u32,
+pub struct PopupSurface {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Tracks whether a popup currently owns an explicit popup grab.
@@ -34,13 +31,13 @@ pub struct PopupGrab {
 mod tests {
     use bevy_ecs::world::World;
 
-    use super::{PopupGrab, XdgPopup};
+    use super::{PopupGrab, PopupSurface};
     use crate::components::{BufferState, SurfaceGeometry, WindowAnimation};
 
     #[test]
-    fn xdg_popup_requires_surface_runtime_components() {
+    fn popup_surface_requires_surface_runtime_components() {
         let mut world = World::new();
-        let entity = world.spawn(XdgPopup::default()).id();
+        let entity = world.spawn(PopupSurface::default()).id();
 
         assert!(world.get::<SurfaceGeometry>(entity).is_some());
         assert!(world.get::<BufferState>(entity).is_some());

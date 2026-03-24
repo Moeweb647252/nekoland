@@ -14,7 +14,7 @@ use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::LayoutSchedule;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    PopupGrab, SurfaceGeometry, WindowLayout, WindowMode, WlSurfaceHandle, XdgPopup, XdgWindow,
+    PopupGrab, PopupSurface, SurfaceGeometry, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::CompositorClock;
 use nekoland_ipc::{
@@ -167,7 +167,6 @@ fn seed_popup_tree(world: &mut bevy_ecs::world::World) {
             window: XdgWindow {
                 app_id: "org.nekoland.popup-subscription".to_owned(),
                 title: "Popup Parent".to_owned(),
-                last_acked_configure: None,
             },
             layout: WindowLayout::Tiled,
             mode: WindowMode::Normal,
@@ -177,15 +176,7 @@ fn seed_popup_tree(world: &mut bevy_ecs::world::World) {
 
     world.spawn((
         WlSurfaceHandle { id: POPUP_SURFACE_ID },
-        XdgPopup {
-            configure_serial: Some(1),
-            grab_serial: None,
-            reposition_token: None,
-            placement_x: 24,
-            placement_y: 48,
-            placement_width: 220,
-            placement_height: 120,
-        },
+        PopupSurface { x: 24, y: 48, width: 220, height: 120 },
         SurfaceGeometry { x: 24, y: 48, width: 220, height: 120 },
         PopupGrab {
             active: false,
@@ -206,8 +197,8 @@ fn apply_popup_mutation_system(
     clock: Res<CompositorClock>,
     mut plan: ResMut<PopupMutationPlan>,
     mut popups: Query<
-        (&WlSurfaceHandle, &mut SurfaceGeometry, &mut XdgPopup, &mut PopupGrab),
-        With<XdgPopup>,
+        (&WlSurfaceHandle, &mut SurfaceGeometry, &mut PopupSurface, &mut PopupGrab),
+        With<PopupSurface>,
     >,
 ) {
     if plan.applied || clock.frame < 2 || !plan.ready.load(Ordering::SeqCst) {
@@ -220,10 +211,10 @@ fn apply_popup_mutation_system(
         return;
     };
 
-    popup.placement_x = plan.target_x;
-    popup.placement_y = plan.target_y;
-    popup.placement_width = plan.target_width;
-    popup.placement_height = plan.target_height;
+    popup.x = plan.target_x;
+    popup.y = plan.target_y;
+    popup.width = plan.target_width;
+    popup.height = plan.target_height;
     geometry.x = plan.target_x;
     geometry.y = plan.target_y;
     geometry.width = plan.target_width;

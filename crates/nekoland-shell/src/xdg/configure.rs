@@ -2,13 +2,13 @@ use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
 use bevy_ecs::query::Allow;
 use bevy_ecs::system::SystemParam;
-use nekoland_ecs::components::{WindowLayout, WindowMode, XdgPopup, XdgWindow};
+use nekoland_ecs::components::{WindowLayout, WindowMode, XdgWindow};
 use nekoland_ecs::resources::{
     EntityIndex, GlobalPointerPosition, KeyboardFocusState, WaylandIngress, WindowLifecycleAction,
     XdgSurfaceRole,
 };
 use nekoland_ecs::selectors::OutputName;
-use nekoland_ecs::views::{PopupConfigureRuntime, WindowRuntime};
+use nekoland_ecs::views::WindowRuntime;
 
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
 use crate::window_policy::{enter_temporary_window_mode, lock_window_policy, restore_window_state};
@@ -19,8 +19,6 @@ use crate::window_policy::{enter_temporary_window_mode, lock_window_policy, rest
 /// transitions are projected into the ECS window model.
 type XdgWindows<'w, 's> =
     Query<'w, 's, (Entity, WindowRuntime), (With<XdgWindow>, Allow<Disabled>)>;
-type XdgPopups<'w, 's> =
-    Query<'w, 's, (Entity, PopupConfigureRuntime), (With<XdgPopup>, Allow<Disabled>)>;
 
 #[derive(SystemParam)]
 pub struct ConfigureSequenceParams<'w, 's> {
@@ -31,7 +29,6 @@ pub struct ConfigureSequenceParams<'w, 's> {
     active_grab: ResMut<'w, ActiveWindowGrab>,
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
     windows: XdgWindows<'w, 's>,
-    popups: XdgPopups<'w, 's>,
 }
 
 pub(crate) fn configure_sequence_system(mut configure: ConfigureSequenceParams<'_, '_>) {
@@ -45,22 +42,7 @@ pub(crate) fn configure_sequence_system(mut configure: ConfigureSequenceParams<'
                 tracing::trace!(surface_id = request.surface_id, "toplevel configure requested");
             }
             WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Toplevel, .. } => {}
-            WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Popup, serial } => {
-                let Some(entity) = resolve_xdg_popup_entity(
-                    request.surface_id,
-                    &configure.entity_index,
-                    &mut configure.popups,
-                ) else {
-                    deferred.push(request);
-                    continue;
-                };
-                let Ok((_, mut popup)) = configure.popups.get_mut(entity) else {
-                    deferred.push(request);
-                    continue;
-                };
-
-                popup.popup.configure_serial = Some(serial);
-            }
+            WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Popup, .. } => {}
             WindowLifecycleAction::InteractiveMove { seat_id, serial } => {
                 let Some(entity) = resolve_xdg_window_entity(
                     request.surface_id,
@@ -273,19 +255,6 @@ fn resolve_xdg_window_entity(
         windows
             .iter_mut()
             .find(|(_, window)| window.surface_id() == surface_id)
-            .map(|(entity, _)| entity)
-    })
-}
-
-fn resolve_xdg_popup_entity(
-    surface_id: u64,
-    entity_index: &EntityIndex,
-    popups: &mut XdgPopups<'_, '_>,
-) -> Option<Entity> {
-    entity_index.entity_for_surface(surface_id).or_else(|| {
-        popups
-            .iter_mut()
-            .find(|(_, popup)| popup.surface_id() == surface_id)
             .map(|(entity, _)| entity)
     })
 }

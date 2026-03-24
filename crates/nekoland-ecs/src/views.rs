@@ -7,8 +7,8 @@ use crate::components::{
     OutputViewport, OutputWorkArea, PendingInteractiveResize, PopupGrab, SurfaceContentVersion,
     SurfaceGeometry, Window, WindowCommittedSize, WindowFullscreenTarget, WindowLayout,
     WindowManagementHints, WindowMode, WindowPlacement, WindowPolicyState, WindowRestoreSnapshot,
-    WindowRole, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle, Workspace, X11Window,
-    XdgPopup,
+    WindowRole, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle, Workspace,
+    X11Window, PopupSurface,
 };
 
 /// Common read-only runtime view over one surface-backed entity with committed geometry.
@@ -126,21 +126,6 @@ impl<'w, 's> PopupRuntimeItem<'w, 's> {
     }
 }
 
-/// Mutable popup view used when protocol configure/grab state needs to be updated.
-#[derive(QueryData)]
-#[query_data(mutable)]
-pub struct PopupConfigureRuntime {
-    pub surface: &'static WlSurfaceHandle,
-    pub popup: &'static mut XdgPopup,
-    pub grab: Option<&'static mut PopupGrab>,
-}
-
-impl<'w, 's> PopupConfigureRuntimeItem<'w, 's> {
-    pub fn surface_id(&self) -> u64 {
-        self.surface.id
-    }
-}
-
 /// Read-only view for window snapshots exported to IPC or other introspection paths.
 #[derive(QueryData)]
 pub struct WindowSnapshotRuntime {
@@ -173,6 +158,7 @@ pub struct PopupSnapshotRuntime {
     pub geometry: &'static SurfaceGeometry,
     pub buffer: &'static BufferState,
     pub content_version: &'static SurfaceContentVersion,
+    pub popup: &'static PopupSurface,
     pub grab: Option<&'static PopupGrab>,
 }
 
@@ -241,7 +227,7 @@ pub struct BackendPresentSurfaceRuntime {
     pub surface: &'static WlSurfaceHandle,
     pub geometry: &'static SurfaceGeometry,
     pub window: Option<&'static Window>,
-    pub popup: Option<&'static XdgPopup>,
+    pub popup: Option<&'static PopupSurface>,
     pub layer: Option<&'static LayerShellSurface>,
     pub viewport_visibility: Option<&'static WindowViewportVisibility>,
     pub background: Option<&'static OutputBackgroundWindow>,

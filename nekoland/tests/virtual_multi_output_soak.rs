@@ -136,7 +136,6 @@ fn seed_floating_window(world: &mut bevy_ecs::world::World) {
         window: XdgWindow {
             app_id: "org.nekoland.virtual-soak".to_owned(),
             title: "Virtual Soak Window".to_owned(),
-            last_acked_configure: None,
         },
         layout: WindowLayout::Floating,
         mode: WindowMode::Normal,

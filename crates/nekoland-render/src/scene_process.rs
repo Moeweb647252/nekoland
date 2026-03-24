@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::prelude::{Query, Res, ResMut, Resource, With};
 use bevy_ecs::world::World;
-use nekoland_ecs::components::{LayerShellSurface, XdgPopup, XdgWindow};
+use nekoland_ecs::components::{LayerShellSurface, PopupSurface, XdgWindow};
 use nekoland_ecs::resources::{
     CompositorSceneState, RenderRect, ShellRenderInput, SurfacePresentationRole,
     SurfacePresentationSnapshot, WaylandIngress,
@@ -64,7 +64,7 @@ type PopupAnimationQuery<'w, 's> = Query<
         &'static nekoland_ecs::components::WlSurfaceHandle,
         &'static nekoland_ecs::components::WindowAnimation,
     ),
-    With<XdgPopup>,
+    With<PopupSurface>,
 >;
 type LayerAnimationQuery<'w, 's> = Query<
     'w,
@@ -272,7 +272,7 @@ pub fn extract_scene_process_snapshots(main_world: &mut World, render_world: &mu
     let mut popups = main_world.query_filtered::<(
         &'static nekoland_ecs::components::WlSurfaceHandle,
         &'static nekoland_ecs::components::WindowAnimation,
-    ), With<XdgPopup>>();
+    ), With<PopupSurface>>();
     let mut layers = main_world.query_filtered::<(
         &'static nekoland_ecs::components::WlSurfaceHandle,
         &'static nekoland_ecs::components::WindowAnimation,

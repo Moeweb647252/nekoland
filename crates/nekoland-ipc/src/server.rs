@@ -49,7 +49,7 @@ use crate::subscribe::{
 };
 use crate::{IpcCommand, IpcReply, IpcRequest};
 use nekoland_ecs::components::{
-    SeatId, WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgPopup,
+    PopupSurface, SeatId, WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle,
 };
 use nekoland_ecs::views::{
     OutputRuntime, PopupSnapshotRuntime, WindowSnapshotRuntime, WorkspaceRuntime,
@@ -110,7 +110,8 @@ enum RequestDisposition {
 
 type IpcWorkspaceQuery<'w, 's> = Query<'w, 's, (Entity, WorkspaceRuntime), Allow<Disabled>>;
 type IpcWindowQuery<'w, 's> = Query<'w, 's, WindowSnapshotRuntime, Allow<Disabled>>;
-type IpcPopupQuery<'w, 's> = Query<'w, 's, PopupSnapshotRuntime, (With<XdgPopup>, Allow<Disabled>)>;
+type IpcPopupQuery<'w, 's> =
+    Query<'w, 's, PopupSnapshotRuntime, (With<PopupSurface>, Allow<Disabled>)>;
 type IpcSurfaceQuery<'w, 's> = Query<'w, 's, &'static WlSurfaceHandle, Allow<Disabled>>;
 
 struct IpcRequestDispatchCtx<'a> {
@@ -1692,7 +1693,6 @@ mod tests {
                 window: XdgWindow {
                     app_id: "test.app".to_owned(),
                     title: "Test".to_owned(),
-                    last_acked_configure: None,
                 },
                 layout: WindowLayout::Tiled,
                 mode: WindowMode::Normal,

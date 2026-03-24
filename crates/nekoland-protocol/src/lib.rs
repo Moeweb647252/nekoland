@@ -3,6 +3,8 @@
 //! Smithay callbacks enqueue `ProtocolEvent`s here first; later, `ProtocolState::flush_into_ecs`
 //! translates them into the typed request queues consumed by shell/layout systems.
 
+use std::collections::BTreeSet;
+
 pub mod compositor;
 pub mod data_device;
 pub mod dmabuf;
@@ -33,10 +35,10 @@ use nekoland_ecs::kinds::ProtocolEvent as ProtocolEventKind;
 use nekoland_ecs::resources::{
     ClipboardSelection, ClipboardSelectionState, DragAndDropDrop, DragAndDropSession,
     DragAndDropState, LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec,
-    OutputEventRecord, PendingLayerRequests, PendingOutputEvents, PendingWindowControls,
-    PendingWindowEvents, PendingXdgRequests, PopupPlacement, PrimarySelection,
-    PrimarySelectionState, ResizeEdges, SelectionOwner, SurfaceExtent, WindowEvent,
-    WindowEventRequest, WindowLifecycleAction, WindowLifecycleRequest, WindowManagerRequest,
+    OutputEventRecord, PendingLayerRequests, PendingOutputEvents, PendingPopupEvents,
+    PendingWindowControls, PendingWindowEvents, PendingXdgRequests, PopupEvent,
+    PopupEventRequest, PopupPlacement, PrimarySelection, PrimarySelectionState, ResizeEdges,
+    SelectionOwner, SurfaceExtent, WindowEvent, WindowEventRequest, WindowManagerRequest,
     SeatRegistry, X11WindowGeometry, XdgSurfaceRole,
 };
 use nekoland_ecs::selectors::SurfaceId;
@@ -160,6 +162,7 @@ pub enum ProtocolEvent {
         override_redirect: bool,
         popup: bool,
         transient_parent_surface_id: Option<u64>,
+        popup_placement: Option<PopupPlacement>,
         window_type: Option<X11WindowType>,
         title: String,
         app_id: String,
@@ -171,6 +174,7 @@ pub enum ProtocolEvent {
         app_id: String,
         popup: bool,
         transient_parent_surface_id: Option<u64>,
+        popup_placement: Option<PopupPlacement>,
         window_type: Option<X11WindowType>,
         geometry: X11WindowGeometry,
     },
@@ -263,14 +267,14 @@ mod kind_tests {
 #[cfg(test)]
 mod tests {
     use nekoland_core::bridge::WaylandBridge;
-    use nekoland_ecs::components::{WindowSceneGeometry, X11WindowType};
+    use nekoland_ecs::components::X11WindowType;
     use nekoland_ecs::resources::PendingWindowControls;
 
     use nekoland_ecs::resources::{
         ClipboardSelectionState, DragAndDropState, PendingLayerRequests, PendingOutputEvents,
-        PendingWindowEvents, PendingXdgRequests, PrimarySelectionState, ResizeEdges,
-        SeatRegistry, SurfaceExtent, WindowEvent, WindowManagerRequest, X11WindowGeometry,
-        XdgSurfaceRole,
+        PendingPopupEvents, PendingWindowEvents, PendingXdgRequests, PopupEvent,
+        PrimarySelectionState, ResizeEdges, SeatRegistry, SurfaceExtent, WindowEvent,
+        X11WindowGeometry, XdgSurfaceRole,
     };
 
     use super::{ProtocolEvent, ProtocolFlushTargets, ProtocolState, supported_protocols};
@@ -291,6 +295,7 @@ mod tests {
 
         let mut pending_xdg_requests = PendingXdgRequests::default();
         let mut pending_window_events = PendingWindowEvents::default();
+        let mut pending_popup_events = PendingPopupEvents::default();
         let mut pending_layer_requests = PendingLayerRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_output_events = PendingOutputEvents::default();
@@ -302,6 +307,7 @@ mod tests {
         protocol_state.flush_into_ecs(&mut ProtocolFlushTargets {
             pending_xdg_requests: &mut pending_xdg_requests,
             pending_window_events: &mut pending_window_events,
+            pending_popup_events: &mut pending_popup_events,
             pending_layer_requests: &mut pending_layer_requests,
             pending_window_controls: &mut pending_window_controls,
             pending_output_events: &mut pending_output_events,
@@ -313,6 +319,7 @@ mod tests {
 
         assert!(pending_xdg_requests.is_empty());
         assert!(pending_window_events.is_empty());
+        assert!(pending_popup_events.is_empty());
         assert_eq!(pending_window_controls.as_slice().len(), 1);
         assert_eq!(pending_window_controls.as_slice()[0].surface_id.0, 77);
         assert!(pending_window_controls.as_slice()[0].focus);
@@ -329,6 +336,7 @@ mod tests {
 
         let mut pending_xdg_requests = PendingXdgRequests::default();
         let mut pending_window_events = PendingWindowEvents::default();
+        let mut pending_popup_events = PendingPopupEvents::default();
         let mut pending_layer_requests = PendingLayerRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_output_events = PendingOutputEvents::default();
@@ -340,6 +348,7 @@ mod tests {
         protocol_state.flush_into_ecs(&mut ProtocolFlushTargets {
             pending_xdg_requests: &mut pending_xdg_requests,
             pending_window_events: &mut pending_window_events,
+            pending_popup_events: &mut pending_popup_events,
             pending_layer_requests: &mut pending_layer_requests,
             pending_window_controls: &mut pending_window_controls,
             pending_output_events: &mut pending_output_events,
@@ -350,6 +359,7 @@ mod tests {
         });
 
         assert!(pending_xdg_requests.is_empty());
+        assert!(pending_popup_events.is_empty());
         let events = pending_window_events.as_slice();
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0].action, WindowEvent::Upsert { .. }));
@@ -360,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn x11_map_flushes_into_unified_window_events() {
+    fn x11_helper_map_flushes_into_unified_popup_events() {
         let mut protocol_state = ProtocolState::default();
         protocol_state.queue_event(ProtocolEvent::X11WindowMapped {
             surface_id: 64,
@@ -368,6 +378,13 @@ mod tests {
             override_redirect: true,
             popup: true,
             transient_parent_surface_id: Some(7),
+            popup_placement: Some(nekoland_ecs::resources::PopupPlacement {
+                x: 3,
+                y: 4,
+                width: 333,
+                height: 444,
+                reposition_token: None,
+            }),
             window_type: Some(X11WindowType::Tooltip),
             title: "Tip".to_owned(),
             app_id: "x11.test".to_owned(),
@@ -381,6 +398,7 @@ mod tests {
 
         let mut pending_xdg_requests = PendingXdgRequests::default();
         let mut pending_window_events = PendingWindowEvents::default();
+        let mut pending_popup_events = PendingPopupEvents::default();
         let mut pending_layer_requests = PendingLayerRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_output_events = PendingOutputEvents::default();
@@ -392,6 +410,7 @@ mod tests {
         protocol_state.flush_into_ecs(&mut ProtocolFlushTargets {
             pending_xdg_requests: &mut pending_xdg_requests,
             pending_window_events: &mut pending_window_events,
+            pending_popup_events: &mut pending_popup_events,
             pending_layer_requests: &mut pending_layer_requests,
             pending_window_controls: &mut pending_window_controls,
             pending_output_events: &mut pending_output_events,
@@ -401,28 +420,28 @@ mod tests {
             primary_selection: &mut primary_selection,
         });
 
-        let events = pending_window_events.as_slice();
+        assert!(pending_window_events.is_empty());
+        let events = pending_popup_events.as_slice();
         assert_eq!(events.len(), 2);
-        match &events[0].action {
-            WindowEvent::Upsert { title, app_id, hints, scene_geometry, attached } => {
-                assert_eq!(title.as_deref(), Some("Tip"));
-                assert_eq!(app_id.as_deref(), Some("x11.test"));
-                assert!(hints.helper_surface);
-                assert!(hints.bypass_window_rules);
-                assert_eq!(hints.transient_parent_surface_id, Some(7));
-                assert_eq!(
-                    *scene_geometry,
-                    Some(WindowSceneGeometry { x: 11, y: 22, width: 333, height: 444 })
-                );
-                assert!(*attached);
+        assert!(matches!(
+            events[0].action,
+            PopupEvent::Created {
+                parent_surface_id: 7,
+                placement: nekoland_ecs::resources::PopupPlacement {
+                    x: 3,
+                    y: 4,
+                    width: 333,
+                    height: 444,
+                    reposition_token: None,
+                }
             }
-            action => panic!("unexpected action: {action:?}"),
-        }
+        ));
         assert!(matches!(
             events[1].action,
-            WindowEvent::ManagerRequest(WindowManagerRequest::BeginResize {
-                edges: ResizeEdges::TopLeft
-            })
+            PopupEvent::Committed {
+                size: Some(SurfaceExtent { width: 333, height: 444 }),
+                attached: true
+            }
         ));
     }
 }
@@ -447,6 +466,8 @@ pub struct ProtocolState {
     pub output_management: output_management::OutputManagementState,
     pub session_lock: session_lock::SessionLockState,
     pub idle_notify: idle_notify::IdleNotifyState,
+    x11_helper_surfaces: BTreeSet<u64>,
+    x11_popup_surfaces: BTreeSet<u64>,
     bridge: EventBridge<ProtocolEvent>,
 }
 
@@ -454,8 +475,9 @@ impl ProtocolState {
     /// Moves buffered protocol events into the typed ECS request/resources that downstream systems
     /// consume during layout, focus, selection, and output handling.
     pub fn flush_into_ecs(&mut self, targets: &mut ProtocolFlushTargets<'_>) {
-        let pending_xdg_requests = &mut *targets.pending_xdg_requests;
+        let _pending_xdg_requests = &mut *targets.pending_xdg_requests;
         let pending_window_events = &mut *targets.pending_window_events;
+        let pending_popup_events = &mut *targets.pending_popup_events;
         let pending_layer_requests = &mut *targets.pending_layer_requests;
         let pending_window_controls = &mut *targets.pending_window_controls;
         let pending_output_events = &mut *targets.pending_output_events;
@@ -495,25 +517,12 @@ impl ProtocolState {
                     role: XdgSurfaceRole::Popup,
                     size,
                 } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
+                    pending_popup_events.push(PopupEventRequest {
                         surface_id,
-                        action: WindowLifecycleAction::Committed {
-                            role: XdgSurfaceRole::Popup,
-                            size,
-                        },
+                        action: PopupEvent::Committed { size, attached: size.is_some() },
                     });
                 }
-                ProtocolEvent::ConfigureRequested {
-                    surface_id,
-                    role: XdgSurfaceRole::Popup,
-                } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
-                        surface_id,
-                        action: WindowLifecycleAction::ConfigureRequested {
-                            role: XdgSurfaceRole::Popup,
-                        },
-                    });
-                }
+                ProtocolEvent::ConfigureRequested { role: XdgSurfaceRole::Popup, .. } => {}
                 ProtocolEvent::ConfigureRequested {
                     role: XdgSurfaceRole::Toplevel,
                     ..
@@ -522,19 +531,7 @@ impl ProtocolState {
                     role: XdgSurfaceRole::Toplevel,
                     ..
                 } => {}
-                ProtocolEvent::AckConfigure {
-                    surface_id,
-                    role: XdgSurfaceRole::Popup,
-                    serial,
-                } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
-                        surface_id,
-                        action: WindowLifecycleAction::AckConfigure {
-                            role: XdgSurfaceRole::Popup,
-                            serial,
-                        },
-                    });
-                }
+                ProtocolEvent::AckConfigure { role: XdgSurfaceRole::Popup, .. } => {}
                 ProtocolEvent::ToplevelMetadataChanged { surface_id, title, app_id } => {
                     pending_window_events.push(WindowEventRequest {
                         surface_id,
@@ -597,25 +594,25 @@ impl ProtocolState {
                     pending_window_controls.surface(SurfaceId(surface_id)).focus();
                 }
                 ProtocolEvent::PopupCreated { surface_id, parent_surface_id, placement } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
+                    let Some(parent_surface_id) = parent_surface_id else {
+                        continue;
+                    };
+                    pending_popup_events.push(PopupEventRequest {
                         surface_id,
-                        action: WindowLifecycleAction::PopupCreated {
-                            parent_surface_id,
-                            placement,
-                        },
+                        action: PopupEvent::Created { parent_surface_id, placement },
                     });
                 }
                 ProtocolEvent::PopupRepositionRequested { surface_id, placement } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
+                    pending_popup_events.push(PopupEventRequest {
                         surface_id,
-                        action: WindowLifecycleAction::PopupRepositioned { placement },
+                        action: PopupEvent::Repositioned { placement },
                     });
                 }
                 ProtocolEvent::PopupGrabRequested { surface_id, seat_name, serial } => {
                     let seat_id = seat_id_for_wayland_name(seat_registry, seat_name);
-                    pending_xdg_requests.push(WindowLifecycleRequest {
+                    pending_popup_events.push(PopupEventRequest {
                         surface_id,
-                        action: WindowLifecycleAction::PopupGrab { seat_id, serial },
+                        action: PopupEvent::Grab { seat_id, serial },
                     });
                 }
                 ProtocolEvent::SurfaceDestroyed {
@@ -631,12 +628,8 @@ impl ProtocolState {
                     surface_id,
                     role: XdgSurfaceRole::Popup,
                 } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
-                        surface_id,
-                        action: WindowLifecycleAction::Destroyed {
-                            role: XdgSurfaceRole::Popup,
-                        },
-                    });
+                    pending_popup_events
+                        .push(PopupEventRequest { surface_id, action: PopupEvent::Closed });
                 }
                 ProtocolEvent::LayerSurfaceCreated {
                     surface_id,
@@ -698,12 +691,40 @@ impl ProtocolState {
                     override_redirect,
                     popup,
                     transient_parent_surface_id,
+                    popup_placement,
                     window_type,
                     title,
                     app_id,
                     geometry,
                 } => {
                     let helper_surface = x11_helper_surface(popup, window_type);
+                    if helper_surface {
+                        self.x11_helper_surfaces.insert(surface_id);
+                        if let (Some(parent_surface_id), Some(placement)) =
+                            (transient_parent_surface_id, popup_placement)
+                        {
+                            self.x11_popup_surfaces.insert(surface_id);
+                            pending_popup_events.push(PopupEventRequest {
+                                surface_id,
+                                action: PopupEvent::Created { parent_surface_id, placement },
+                            });
+                            pending_popup_events.push(PopupEventRequest {
+                                surface_id,
+                                action: PopupEvent::Committed {
+                                    size: Some(SurfaceExtent {
+                                        width: geometry.width.max(1),
+                                        height: geometry.height.max(1),
+                                    }),
+                                    attached: true,
+                                },
+                            });
+                        } else {
+                            self.x11_popup_surfaces.remove(&surface_id);
+                        }
+                        continue;
+                    }
+                    self.x11_helper_surfaces.remove(&surface_id);
+                    self.x11_popup_surfaces.remove(&surface_id);
                     pending_window_events.push(WindowEventRequest {
                         surface_id,
                         action: WindowEvent::Upsert {
@@ -731,10 +752,44 @@ impl ProtocolState {
                     app_id,
                     popup,
                     transient_parent_surface_id,
+                    popup_placement,
                     window_type,
                     geometry,
                 } => {
                     let helper_surface = x11_helper_surface(popup, window_type);
+                    if helper_surface {
+                        self.x11_helper_surfaces.insert(surface_id);
+                        if let (Some(parent_surface_id), Some(placement)) =
+                            (transient_parent_surface_id, popup_placement)
+                        {
+                            let event = if self.x11_popup_surfaces.insert(surface_id) {
+                                PopupEvent::Created { parent_surface_id, placement }
+                            } else {
+                                PopupEvent::Repositioned { placement }
+                            };
+                            pending_popup_events
+                                .push(PopupEventRequest { surface_id, action: event });
+                            pending_popup_events.push(PopupEventRequest {
+                                surface_id,
+                                action: PopupEvent::Committed {
+                                    size: Some(SurfaceExtent {
+                                        width: geometry.width.max(1),
+                                        height: geometry.height.max(1),
+                                    }),
+                                    attached: true,
+                                },
+                            });
+                        } else if self.x11_popup_surfaces.remove(&surface_id) {
+                            pending_popup_events
+                                .push(PopupEventRequest { surface_id, action: PopupEvent::Closed });
+                        }
+                        continue;
+                    }
+                    self.x11_helper_surfaces.remove(&surface_id);
+                    if self.x11_popup_surfaces.remove(&surface_id) {
+                        pending_popup_events
+                            .push(PopupEventRequest { surface_id, action: PopupEvent::Closed });
+                    }
                     pending_window_events.push(WindowEventRequest {
                         surface_id,
                         action: WindowEvent::Upsert {
@@ -757,18 +812,27 @@ impl ProtocolState {
                     });
                 }
                 ProtocolEvent::X11WindowMaximizeRequested { surface_id } => {
+                    if self.x11_helper_surfaces.contains(&surface_id) {
+                        continue;
+                    }
                     pending_window_events.push(WindowEventRequest {
                         surface_id,
                         action: WindowEvent::ManagerRequest(WindowManagerRequest::Maximize),
                     });
                 }
                 ProtocolEvent::X11WindowUnMaximizeRequested { surface_id } => {
+                    if self.x11_helper_surfaces.contains(&surface_id) {
+                        continue;
+                    }
                     pending_window_events.push(WindowEventRequest {
                         surface_id,
                         action: WindowEvent::ManagerRequest(WindowManagerRequest::UnMaximize),
                     });
                 }
                 ProtocolEvent::X11WindowFullscreenRequested { surface_id } => {
+                    if self.x11_helper_surfaces.contains(&surface_id) {
+                        continue;
+                    }
                     pending_window_events.push(WindowEventRequest {
                         surface_id,
                         action: WindowEvent::ManagerRequest(WindowManagerRequest::Fullscreen {
@@ -777,30 +841,45 @@ impl ProtocolState {
                     });
                 }
                 ProtocolEvent::X11WindowUnFullscreenRequested { surface_id } => {
+                    if self.x11_helper_surfaces.contains(&surface_id) {
+                        continue;
+                    }
                     pending_window_events.push(WindowEventRequest {
                         surface_id,
                         action: WindowEvent::ManagerRequest(WindowManagerRequest::UnFullscreen),
                     });
                 }
                 ProtocolEvent::X11WindowMinimizeRequested { surface_id } => {
+                    if self.x11_helper_surfaces.contains(&surface_id) {
+                        continue;
+                    }
                     pending_window_events.push(WindowEventRequest {
                         surface_id,
                         action: WindowEvent::ManagerRequest(WindowManagerRequest::Minimize),
                     });
                 }
                 ProtocolEvent::X11WindowUnMinimizeRequested { surface_id } => {
+                    if self.x11_helper_surfaces.contains(&surface_id) {
+                        continue;
+                    }
                     pending_window_events.push(WindowEventRequest {
                         surface_id,
                         action: WindowEvent::ManagerRequest(WindowManagerRequest::UnMinimize),
                     });
                 }
                 ProtocolEvent::X11WindowMoveRequested { surface_id, .. } => {
+                    if self.x11_helper_surfaces.contains(&surface_id) {
+                        continue;
+                    }
                     pending_window_events.push(WindowEventRequest {
                         surface_id,
                         action: WindowEvent::ManagerRequest(WindowManagerRequest::BeginMove),
                     });
                 }
                 ProtocolEvent::X11WindowResizeRequested { surface_id, edges, .. } => {
+                    if self.x11_helper_surfaces.contains(&surface_id) {
+                        continue;
+                    }
                     pending_window_events.push(WindowEventRequest {
                         surface_id,
                         action: WindowEvent::ManagerRequest(WindowManagerRequest::BeginResize {
@@ -810,6 +889,12 @@ impl ProtocolState {
                 }
                 ProtocolEvent::X11WindowUnmapped { surface_id }
                 | ProtocolEvent::X11WindowDestroyed { surface_id } => {
+                    self.x11_helper_surfaces.remove(&surface_id);
+                    if self.x11_popup_surfaces.remove(&surface_id) {
+                        pending_popup_events
+                            .push(PopupEventRequest { surface_id, action: PopupEvent::Closed });
+                        continue;
+                    }
                     pending_window_events.push(WindowEventRequest {
                         surface_id,
                         action: WindowEvent::Closed,
@@ -950,6 +1035,7 @@ fn x11_helper_surface(popup: bool, window_type: Option<X11WindowType>) -> bool {
 pub struct ProtocolFlushTargets<'a> {
     pub pending_xdg_requests: &'a mut PendingXdgRequests,
     pub pending_window_events: &'a mut PendingWindowEvents,
+    pub pending_popup_events: &'a mut PendingPopupEvents,
     pub pending_layer_requests: &'a mut PendingLayerRequests,
     pub pending_window_controls: &'a mut PendingWindowControls,
     pub pending_output_events: &'a mut PendingOutputEvents,

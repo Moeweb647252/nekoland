@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Nekoland
+Comment=Start the Nekoland Wayland compositor
+Exec=nekeland-session
+TryExec=nekeland-session
+Type=Application
+Keywords=wayland;compositor;tiling;
