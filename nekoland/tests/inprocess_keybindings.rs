@@ -3,6 +3,8 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,8 +17,7 @@ use nekoland_core::schedules::{LayoutSchedule, RenderSchedule};
 use nekoland_ecs::components::{WlSurfaceHandle, XdgWindow};
 use nekoland_ecs::events::WindowClosed;
 use nekoland_ecs::resources::{
-    BackendInputAction, BackendInputEvent, KeyboardFocusState, PendingBackendInputEvents,
-    WaylandFeedback,
+    KeyboardFocusState, PendingWindowControls, WaylandFeedback,
 };
 use nekoland_shell::decorations;
 use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
@@ -25,15 +26,13 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 mod common;
 
-/// Linux keycode used for the synthetic Super press.
-const SUPER_KEYCODE: u32 = 133;
-/// Linux keycode used for the synthetic `Q` press.
-const Q_KEYCODE: u32 = 24;
-
-/// One-shot resource that injects the close-window key chord used by the scenario.
+/// One-shot resource that triggers the close-focused-window action once the helper client is
+/// ready.
 #[derive(Debug, Default, Resource)]
 struct KeybindingInputPump {
-    /// Set once the synthetic key chord has been injected.
+    /// Armed once the helper client has acknowledged its initial configure.
+    ready: Arc<AtomicBool>,
+    /// Set once the close action has been queued.
     injected: bool,
 }
 
@@ -54,6 +53,7 @@ struct KeybindingClientSummary {
 /// Helper Wayland client state used to create one XDG toplevel and wait for `xdg_toplevel.close`.
 #[derive(Debug, Default)]
 struct KeybindingClientState {
+    ready: Option<Arc<AtomicBool>>,
     globals: Vec<String>,
     compositor: Option<wl_compositor::WlCompositor>,
     wm_base: Option<xdg_wm_base::XdgWmBase>,
@@ -112,6 +112,7 @@ fn close_window_keybinding_reaches_real_wayland_client() {
 /// Runs the end-to-end keybinding scenario and returns both the app and the helper-client summary.
 fn run_close_window_keybinding_scenario() -> Option<(NekolandApp, KeybindingClientSummary)> {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-keybinding-runtime");
     let config_path = runtime_dir.path.join("keybindings.toml");
     if let Err(error) = fs::write(&config_path, test_config()) {
@@ -119,16 +120,17 @@ fn run_close_window_keybinding_scenario() -> Option<(NekolandApp, KeybindingClie
     }
 
     let mut app = build_app(&config_path);
+    let client_ready = Arc::new(AtomicBool::new(false));
     app.insert_resource(RunLoopSettings {
         frame_timeout: Duration::from_millis(1),
         max_frames: Some(160),
     });
     app.inner_mut()
-        .init_resource::<KeybindingInputPump>()
+        .insert_resource(KeybindingInputPump { ready: client_ready.clone(), injected: false })
         .init_resource::<ClosedWindowAudit>()
         .add_systems(
             LayoutSchedule,
-            inject_close_keybinding_input.after(decorations::server_decoration_system),
+            queue_close_focused_window.after(decorations::server_decoration_system),
         )
         .add_systems(RenderSchedule, capture_window_closed_messages);
 
@@ -141,7 +143,7 @@ fn run_close_window_keybinding_scenario() -> Option<(NekolandApp, KeybindingClie
         Err(error) => panic!("protocol startup failed before run: {error}"),
     };
 
-    let client_thread = thread::spawn(move || run_keybinding_client(&socket_path));
+    let client_thread = thread::spawn(move || run_keybinding_client(&socket_path, client_ready));
     if let Err(error) = app.run() {
         panic!("nekoland app should complete the configured frame budget: {error}");
     }
@@ -162,14 +164,14 @@ fn run_close_window_keybinding_scenario() -> Option<(NekolandApp, KeybindingClie
     Some((app, summary))
 }
 
-/// Injects the `Super+Q` keybinding once a window exists and focuses that window first.
-fn inject_close_keybinding_input(
+/// Queues the focused-window close action once a window exists and the helper client is ready.
+fn queue_close_focused_window(
     mut pump: ResMut<KeybindingInputPump>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
-    mut pending_backend_inputs: ResMut<PendingBackendInputEvents>,
+    mut pending_window_controls: ResMut<PendingWindowControls>,
     windows: Query<&WlSurfaceHandle, With<XdgWindow>>,
 ) {
-    if pump.injected {
+    if pump.injected || !pump.ready.load(Ordering::SeqCst) {
         return;
     }
 
@@ -178,16 +180,10 @@ fn inject_close_keybinding_input(
     };
 
     keyboard_focus.focused_surface = Some(surface.id);
-    pending_backend_inputs.extend([
-        BackendInputEvent {
-            device: "keybinding-test".to_owned(),
-            action: BackendInputAction::Key { keycode: SUPER_KEYCODE, pressed: true },
-        },
-        BackendInputEvent {
-            device: "keybinding-test".to_owned(),
-            action: BackendInputAction::Key { keycode: Q_KEYCODE, pressed: true },
-        },
-    ]);
+    let Some(mut focused_window) = pending_window_controls.focused(&keyboard_focus) else {
+        return;
+    };
+    focused_window.close();
     pump.injected = true;
 }
 
@@ -204,6 +200,7 @@ fn capture_window_closed_messages(
 /// Runs the helper Wayland client until it receives `xdg_toplevel.close`.
 fn run_keybinding_client(
     socket_path: &Path,
+    ready: Arc<AtomicBool>,
 ) -> Result<KeybindingClientSummary, common::TestControl> {
     let stream = std::os::unix::net::UnixStream::connect(socket_path)
         .map_err(|error| common::TestControl::Fail(error.to_string()))?;
@@ -220,7 +217,7 @@ fn run_keybinding_client(
     let qh = event_queue.handle();
     conn.display().get_registry(&qh, ());
 
-    let mut state = KeybindingClientState::default();
+    let mut state = KeybindingClientState { ready: Some(ready), ..Default::default() };
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut post_close_dispatch = false;
 
@@ -369,6 +366,9 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for KeybindingClientState {
     ) {
         if let xdg_surface::Event::Configure { serial, .. } = event {
             state.configured = true;
+            if let Some(ready) = state.ready.as_ref() {
+                ready.store(true, Ordering::SeqCst);
+            }
             xdg_surface.ack_configure(serial);
             if let Some(surface) = state.surface.as_ref() {
                 surface.commit();

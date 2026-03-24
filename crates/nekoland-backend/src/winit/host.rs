@@ -337,8 +337,18 @@ impl EventSource for HostWinitEventLoop {
 pub(crate) fn init_host_winit(
     attributes: WindowAttributes,
 ) -> Result<(HostWinitGraphicsBackend, HostWinitEventLoop, HostCaptureModeState), NekolandError> {
-    let event_loop =
-        EventLoop::builder().build().map_err(|error| NekolandError::Runtime(error.to_string()))?;
+    let mut event_loop_builder = EventLoop::builder();
+    #[cfg(target_os = "linux")]
+    {
+        use smithay::reexports::winit::platform::wayland::EventLoopBuilderExtWayland;
+        use smithay::reexports::winit::platform::x11::EventLoopBuilderExtX11;
+
+        EventLoopBuilderExtWayland::with_any_thread(&mut event_loop_builder, true);
+        EventLoopBuilderExtX11::with_any_thread(&mut event_loop_builder, true);
+    }
+    let event_loop = event_loop_builder
+        .build()
+        .map_err(|error| NekolandError::Runtime(error.to_string()))?;
     event_loop.listen_device_events(DeviceEvents::WhenFocused);
 
     #[allow(deprecated)]
