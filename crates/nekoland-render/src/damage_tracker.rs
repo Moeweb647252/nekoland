@@ -154,12 +154,24 @@ fn render_signature_for_item(
             surface_versions.get(&item.surface_id).copied().unwrap_or_default().hash(&mut hasher);
             item.instance.opacity.to_bits().hash(&mut hasher);
         }
-        RenderPlanItem::SolidRect(item) => {
+        RenderPlanItem::Quad(item) => {
             1_u8.hash(&mut hasher);
-            item.color.r.hash(&mut hasher);
-            item.color.g.hash(&mut hasher);
-            item.color.b.hash(&mut hasher);
-            item.color.a.hash(&mut hasher);
+            match &item.content {
+                nekoland_ecs::resources::QuadContent::SolidColor { color } => {
+                    0_u8.hash(&mut hasher);
+                    color.r.hash(&mut hasher);
+                    color.g.hash(&mut hasher);
+                    color.b.hash(&mut hasher);
+                    color.a.hash(&mut hasher);
+                }
+                nekoland_ecs::resources::QuadContent::RasterImage { image } => {
+                    1_u8.hash(&mut hasher);
+                    image.width.hash(&mut hasher);
+                    image.height.hash(&mut hasher);
+                    image.scale.hash(&mut hasher);
+                    image.pixels_rgba.hash(&mut hasher);
+                }
+            }
             item.instance.opacity.to_bits().hash(&mut hasher);
         }
         RenderPlanItem::Backdrop(_) => {
@@ -830,8 +842,8 @@ mod tests {
     }
 
     #[test]
-    fn solid_rect_injections_participate_in_damage_diff() {
-        let mut app = NekolandApp::new("damage-tracker-solid-rect-test");
+    fn quad_injections_participate_in_damage_diff() {
+        let mut app = NekolandApp::new("damage-tracker-quad-test");
         install_damage_pipeline(&mut app);
 
         app.inner_mut().world_mut().spawn(OutputBundle {
@@ -855,7 +867,7 @@ mod tests {
                 virtual_id,
                 OutputCompositorScene::from_entries([(
                     CompositorSceneEntryId(1),
-                    CompositorSceneEntry::solid_rect(
+                    CompositorSceneEntry::solid_color(
                         RenderColor { r: 1, g: 2, b: 3, a: 200 },
                         RenderItemInstance {
                             rect: RenderRect { x: 10, y: 20, width: 40, height: 30 },
@@ -887,7 +899,7 @@ mod tests {
                 virtual_id,
                 OutputCompositorScene::from_entries([(
                     CompositorSceneEntryId(1),
-                    CompositorSceneEntry::solid_rect(
+                    CompositorSceneEntry::solid_color(
                         RenderColor { r: 1, g: 2, b: 3, a: 200 },
                         RenderItemInstance {
                             rect: RenderRect { x: 20, y: 20, width: 40, height: 30 },

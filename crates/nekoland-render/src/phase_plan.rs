@@ -81,7 +81,7 @@ mod tests {
         MaterialParamsId, OutputRenderPlan, PendingScreenshotRequests, RenderItemId,
         RenderItemIdentity, RenderItemInstance, RenderMaterialId, RenderPhasePlan, RenderPlan,
         RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId, ShellRenderInput,
-        SolidRectRenderItem, SurfaceRenderItem,
+        QuadContent, QuadRenderItem, SurfaceRenderItem,
     };
 
     use crate::material::{RenderMaterialRequest, RenderMaterialRequestQueue};
@@ -110,9 +110,16 @@ mod tests {
                             scene_role: RenderSceneRole::Desktop,
                         },
                     }),
-                    RenderPlanItem::SolidRect(SolidRectRenderItem {
+                    RenderPlanItem::Quad(QuadRenderItem {
                         identity: identity(12),
-                        color: nekoland_ecs::resources::RenderColor { r: 0, g: 0, b: 0, a: 255 },
+                        content: QuadContent::SolidColor {
+                            color: nekoland_ecs::resources::RenderColor {
+                                r: 0,
+                                g: 0,
+                                b: 0,
+                                a: 255,
+                            },
+                        },
                         instance: RenderItemInstance {
                             rect: RenderRect { x: 0, y: 0, width: 100, height: 30 },
                             opacity: 1.0,

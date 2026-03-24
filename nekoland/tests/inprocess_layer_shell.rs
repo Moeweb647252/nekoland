@@ -281,7 +281,7 @@ fn layer_shell_surface_reaches_ecs_and_render_plan() {
             .flat_map(|output_plan| output_plan.iter_ordered())
             .filter_map(|item| match item {
                 RenderPlanItem::Surface(item) => Some(item.surface_id),
-                RenderPlanItem::SolidRect(_)
+                RenderPlanItem::Quad(_)
                 | RenderPlanItem::Backdrop(_)
                 | RenderPlanItem::Cursor(_) => None,
             })

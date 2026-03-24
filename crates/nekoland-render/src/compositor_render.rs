@@ -604,11 +604,10 @@ mod tests {
     };
     use nekoland_ecs::resources::{
         CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, OutputCompositorScene,
-        OutputOverlayId, OutputOverlaySpec, OutputOverlayState, RenderColor, RenderItemIdentity,
-        RenderItemInstance, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
-        RenderSourceId, ShellRenderInput, SurfacePresentationRole, SurfacePresentationSnapshot,
-        SurfacePresentationState, UNASSIGNED_WORKSPACE_STACK_ID, WaylandIngress,
-        WindowStackingState,
+        OutputOverlaySpec, OutputOverlayState, RenderColor, RenderItemIdentity, RenderItemInstance,
+        RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId, ShellRenderInput,
+        SurfacePresentationRole, SurfacePresentationSnapshot, SurfacePresentationState,
+        UNASSIGNED_WORKSPACE_STACK_ID, WaylandIngress, WindowStackingState,
     };
 
     use crate::animation::{
@@ -710,7 +709,7 @@ mod tests {
             .flat_map(|plan| plan.iter_ordered())
             .filter_map(|item| match item {
                 RenderPlanItem::Surface(item) => Some(item.surface_id),
-                RenderPlanItem::SolidRect(_)
+                RenderPlanItem::Quad(_)
                 | RenderPlanItem::Backdrop(_)
                 | RenderPlanItem::Cursor(_) => None,
             })
@@ -1078,7 +1077,7 @@ mod tests {
                 output_id,
                 OutputCompositorScene::from_entries([(
                     CompositorSceneEntryId(1),
-                    CompositorSceneEntry::solid_rect(
+                    CompositorSceneEntry::solid_color(
                         RenderColor { r: 10, g: 20, b: 30, a: 200 },
                         RenderItemInstance {
                             rect: RenderRect { x: 5, y: 6, width: 40, height: 50 },
@@ -1100,11 +1099,11 @@ mod tests {
             .outputs
             .get(&output_id)
             .unwrap_or_else(|| panic!("output plan should exist for injected scene items"));
-        assert!(matches!(output_plan.iter_ordered().next(), Some(RenderPlanItem::SolidRect(_))));
-        let RenderPlanItem::SolidRect(item) =
-            output_plan.iter_ordered().next().expect("expected one solid rect item")
+        assert!(matches!(output_plan.iter_ordered().next(), Some(RenderPlanItem::Quad(_))));
+        let RenderPlanItem::Quad(item) =
+            output_plan.iter_ordered().next().expect("expected one quad item")
         else {
-            panic!("expected solid rect");
+            panic!("expected quad");
         };
         assert_eq!(item.identity, identity(1));
     }
@@ -1119,14 +1118,14 @@ mod tests {
         let output_id = spawn_default_output(&mut app);
         app.inner_mut().world_mut().resource_mut::<ShellRenderInput>().output_overlays.upsert(
             output_id,
-            OutputOverlaySpec {
-                overlay_id: OutputOverlayId::from("debug"),
-                rect: RenderRect { x: 9, y: 8, width: 70, height: 60 },
-                clip_rect: Some(RenderRect { x: 10, y: 11, width: 20, height: 21 }),
-                color: RenderColor { r: 1, g: 2, b: 3, a: 200 },
-                opacity: 0.5,
-                z_index: 7,
-            },
+            OutputOverlaySpec::solid_color(
+                "debug",
+                RenderRect { x: 9, y: 8, width: 70, height: 60 },
+                Some(RenderRect { x: 10, y: 11, width: 20, height: 21 }),
+                RenderColor { r: 1, g: 2, b: 3, a: 200 },
+                0.5,
+                7,
+            ),
         );
 
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
@@ -1138,10 +1137,10 @@ mod tests {
             .outputs
             .get(&output_id)
             .unwrap_or_else(|| panic!("output plan should exist for overlay state"));
-        let RenderPlanItem::SolidRect(item) =
+        let RenderPlanItem::Quad(item) =
             output_plan.iter_ordered().next().expect("expected one overlay rect item")
         else {
-            panic!("expected solid rect");
+            panic!("expected quad");
         };
         assert_eq!(item.instance.rect.x, 9);
         assert_eq!(item.instance.clip_rect.map(|rect| rect.width), Some(20));

@@ -367,8 +367,8 @@ fn virtual_output_element_from_audit(
             nekoland_ecs::resources::PresentAuditElementKind::Layer => {
                 VirtualOutputElementKind::Layer
             }
-            nekoland_ecs::resources::PresentAuditElementKind::SolidRect => {
-                VirtualOutputElementKind::SolidRect
+            nekoland_ecs::resources::PresentAuditElementKind::Quad => {
+                VirtualOutputElementKind::Quad
             }
             nekoland_ecs::resources::PresentAuditElementKind::Backdrop => {
                 VirtualOutputElementKind::Backdrop

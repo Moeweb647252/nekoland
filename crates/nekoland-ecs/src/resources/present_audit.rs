@@ -11,7 +11,7 @@ pub enum PresentAuditElementKind {
     Window,
     Popup,
     Layer,
-    SolidRect,
+    Quad,
     Backdrop,
     Compositor,
     Cursor,

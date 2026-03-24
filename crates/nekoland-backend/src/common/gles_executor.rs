@@ -17,7 +17,9 @@ use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::Id;
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::memory::{
+    MemoryRenderBuffer, MemoryRenderBufferRenderElement,
+};
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
@@ -362,6 +364,58 @@ pub(crate) fn render_color_to_color32f(color: RenderColor, opacity: f32) -> Colo
     )
 }
 
+fn raster_image_memory_buffer(
+    rect: RenderRect,
+    visible_rect: RenderRect,
+    image: &nekoland_ecs::resources::QuadRasterImage,
+) -> Option<MemoryRenderBuffer> {
+    let scale = image.scale.max(1);
+    let scale_i32 = i32::try_from(scale).ok()?;
+    let image_width = usize::try_from(image.width).ok()?;
+    let image_height = usize::try_from(image.height).ok()?;
+    if image_width == 0 || image_height == 0 {
+        return None;
+    }
+    if image.pixels_rgba.len() != image_width.checked_mul(image_height)?.checked_mul(4)? {
+        return None;
+    }
+
+    let logical_offset_x = visible_rect.x.checked_sub(rect.x)?;
+    let logical_offset_y = visible_rect.y.checked_sub(rect.y)?;
+    let physical_offset_x = usize::try_from(logical_offset_x.checked_mul(scale_i32)?).ok()?;
+    let physical_offset_y = usize::try_from(logical_offset_y.checked_mul(scale_i32)?).ok()?;
+    let physical_width = usize::try_from(visible_rect.width.checked_mul(scale)?).ok()?;
+    let physical_height = usize::try_from(visible_rect.height.checked_mul(scale)?).ok()?;
+    if physical_width == 0 || physical_height == 0 {
+        return None;
+    }
+    if physical_offset_x.checked_add(physical_width)? > image_width
+        || physical_offset_y.checked_add(physical_height)? > image_height
+    {
+        return None;
+    }
+
+    let row_len = physical_width.checked_mul(4)?;
+    let mut pixels = vec![0_u8; physical_height.checked_mul(row_len)?];
+    for row in 0..physical_height {
+        let src_start =
+            ((physical_offset_y + row) * image_width + physical_offset_x).checked_mul(4)?;
+        let src_end = src_start.checked_add(row_len)?;
+        let dst_start = row.checked_mul(row_len)?;
+        let dst_end = dst_start.checked_add(row_len)?;
+        pixels[dst_start..dst_end].copy_from_slice(&image.pixels_rgba[src_start..src_end]);
+    }
+
+    Some(MemoryRenderBuffer::from_slice(
+        &pixels,
+        Fourcc::Abgr8888,
+        (i32::try_from(physical_width).ok()?, i32::try_from(physical_height).ok()?),
+        scale_i32,
+        Transform::Normal,
+        None,
+    ))
+}
+
 pub(crate) fn clear_color(config: Option<&CompositorConfig>) -> Color32F {
     let Some(config) = config else {
         return Color32F::new(0.0, 0.0, 0.0, 1.0);
@@ -462,21 +516,44 @@ fn build_scene_pass_elements(
                     .map(CommonGlesRenderElement::from),
                 );
             }
-            PreparedSceneItem::SolidRect(item) => {
-                let Some(visible_rect) = render_rect_to_physical(&item.visible_rect, output_scale)
-                else {
-                    continue;
-                };
-                elements.push(
-                    SolidColorRenderElement::new(
-                        Id::new(),
-                        visible_rect,
-                        CommitCounter::default(),
-                        render_color_to_color32f(item.color, item.opacity),
+            PreparedSceneItem::Quad(item) => match &item.content {
+                nekoland_ecs::resources::QuadContent::SolidColor { color } => {
+                    let Some(visible_rect) = render_rect_to_physical(&item.visible_rect, output_scale)
+                    else {
+                        continue;
+                    };
+                    elements.push(
+                        SolidColorRenderElement::new(
+                            Id::new(),
+                            visible_rect,
+                            CommitCounter::default(),
+                            render_color_to_color32f(*color, item.opacity),
+                            Kind::Unspecified,
+                        )
+                        .into(),
+                    );
+                }
+                nekoland_ecs::resources::QuadContent::RasterImage { image } => {
+                    let Some(buffer) =
+                        raster_image_memory_buffer(item.rect, item.visible_rect, image)
+                    else {
+                        continue;
+                    };
+                    match MemoryRenderBufferRenderElement::from_buffer(
+                        renderer,
+                        (f64::from(item.visible_rect.x), f64::from(item.visible_rect.y)),
+                        &buffer,
+                        Some(item.opacity),
+                        None,
+                        None,
                         Kind::Unspecified,
-                    )
-                    .into(),
-                );
+                    ) {
+                        Ok(element) => elements.push(element.into()),
+                        Err(error) => {
+                            tracing::warn!(error = %error, "failed to upload quad raster image");
+                        }
+                    }
+                }
             }
             PreparedSceneItem::Backdrop(item) => {
                 let Some(visible_rect) = render_rect_to_physical(&item.visible_rect, output_scale)

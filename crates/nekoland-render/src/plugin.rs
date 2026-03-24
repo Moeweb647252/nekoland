@@ -13,9 +13,9 @@ use nekoland_ecs::resources::{
 
 use crate::{
     animation, compositor_render, cursor, damage_tracker, effects, final_output_plan,
-    frame_callback, material, output_overlay, phase_plan, pipeline_cache, prepare_resources,
-    presentation_feedback, process_plan, readback_plan, render_graph, scene_process, scene_source,
-    screenshot,
+    frame_callback, material, output_overlay, overlay_ui, phase_plan, pipeline_cache,
+    prepare_resources, presentation_feedback, process_plan, readback_plan, render_graph,
+    scene_process, scene_source, screenshot,
 };
 
 pub mod extract;
@@ -54,6 +54,8 @@ impl NekolandPlugin for RenderPlugin {
             .init_resource::<CompiledOutputFrames>()
             .init_resource::<CompositorSceneState>()
             .init_resource::<output_overlay::OutputOverlaySceneSyncState>()
+            .init_resource::<overlay_ui::OverlayUiSceneSyncState>()
+            .init_resource::<overlay_ui::OverlayTextRasterizerState>()
             .init_resource::<scene_source::RenderSceneContributionQueue>()
             .init_resource::<scene_source::RenderSceneIdentityRegistry>()
             .init_resource::<compositor_render::DesktopSurfaceOrderSnapshot>()
@@ -107,6 +109,8 @@ impl NekolandPlugin for RenderSubAppPlugin {
             .init_resource::<CompositorClock>()
             .init_resource::<ShellRenderInput>()
             .init_resource::<output_overlay::OutputOverlaySceneSyncState>()
+            .init_resource::<overlay_ui::OverlayUiSceneSyncState>()
+            .init_resource::<overlay_ui::OverlayTextRasterizerState>()
             .init_resource::<scene_source::RenderSceneContributionQueue>()
             .init_resource::<scene_source::RenderSceneIdentityRegistry>()
             .init_resource::<scene_process::AppearanceSnapshot>()
@@ -134,6 +138,7 @@ impl NekolandPlugin for RenderSubAppPlugin {
                 (
                     material::clear_material_requests_system,
                     output_overlay::sync_output_overlay_scene_state_system,
+                    overlay_ui::sync_overlay_ui_scene_state_system,
                     scene_source::clear_scene_contributions_system,
                     compositor_render::emit_desktop_scene_contributions_from_snapshot_system,
                     scene_source::emit_compositor_scene_contributions_system,

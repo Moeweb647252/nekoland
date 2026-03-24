@@ -31,7 +31,7 @@ pub enum RenderClipMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ScenePipelineDrawKind {
     Surface,
-    SolidRect,
+    Quad,
     Backdrop,
     Cursor,
 }
@@ -149,12 +149,19 @@ fn scene_pipeline_key_for_item(item: &RenderPlanItem) -> ScenePipelineKey {
             sample_mode: RenderSampleMode::Linear,
             clip_mode,
         },
-        RenderPlanItem::SolidRect(_) => ScenePipelineKey {
-            draw_kind: ScenePipelineDrawKind::SolidRect,
+        RenderPlanItem::Quad(item) => ScenePipelineKey {
+            draw_kind: ScenePipelineDrawKind::Quad,
             scene_role: instance.scene_role,
             color_format: RenderColorFormat::Rgba8Unorm,
             blend_mode: RenderBlendMode::AlphaBlend,
-            sample_mode: RenderSampleMode::Nearest,
+            sample_mode: match &item.content {
+                nekoland_ecs::resources::QuadContent::SolidColor { .. } => {
+                    RenderSampleMode::Nearest
+                }
+                nekoland_ecs::resources::QuadContent::RasterImage { .. } => {
+                    RenderSampleMode::Linear
+                }
+            },
             clip_mode,
         },
         RenderPlanItem::Backdrop(_) => ScenePipelineKey {

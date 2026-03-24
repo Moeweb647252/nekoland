@@ -159,7 +159,7 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
             .flat_map(|output_plan| output_plan.iter_ordered())
             .filter_map(|item| match item {
                 RenderPlanItem::Surface(item) => Some(item.surface_id),
-                RenderPlanItem::SolidRect(_)
+                RenderPlanItem::Quad(_)
                 | RenderPlanItem::Backdrop(_)
                 | RenderPlanItem::Cursor(_) => None,
             })

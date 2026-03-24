@@ -8,7 +8,7 @@ use nekoland_ecs::resources::{
     PreparedBackdropSceneItem, PreparedGpuResources, PreparedMaterialBinding,
     PreparedMaterialBindingCacheKey, PreparedMaterialBindingKey, PreparedNamedCursorSceneItem,
     PreparedRenderTargetCacheKey, PreparedRenderTargetResource, PreparedSceneItem,
-    PreparedSceneResources, PreparedSolidRectSceneItem, PreparedSurfaceCursorSceneItem,
+    PreparedQuadSceneItem, PreparedSceneResources, PreparedSurfaceCursorSceneItem,
     PreparedSurfaceImport, PreparedSurfaceImportCacheKey, PreparedSurfaceImportStrategy,
     PreparedSurfaceSceneItem, RenderMaterialFrameState, RenderPassGraph, RenderPlan,
     RenderProcessPlan, RenderTargetAllocationPlan, RenderTargetAllocationSpec, ShellRenderInput,
@@ -167,11 +167,12 @@ fn prepare_scene_item_descriptor(
                 import_ready: bridge.is_some_and(|bridge| bridge.attached),
             }))
         }
-        nekoland_ecs::resources::RenderPlanItem::SolidRect(item) => {
+        nekoland_ecs::resources::RenderPlanItem::Quad(item) => {
             let visible_rect = item.instance.visible_rect()?;
-            Some(PreparedSceneItem::SolidRect(PreparedSolidRectSceneItem {
+            Some(PreparedSceneItem::Quad(PreparedQuadSceneItem {
+                rect: item.instance.rect,
                 visible_rect,
-                color: item.color,
+                content: item.content.clone(),
                 opacity: item.instance.opacity,
             }))
         }
@@ -396,7 +397,7 @@ mod tests {
         RenderMaterialId, RenderMaterialKind, RenderMaterialParamBlock, RenderMaterialPipelineKey,
         RenderMaterialQueueKind, RenderMaterialShaderSource, RenderPassGraph, RenderPlan,
         RenderPlanItem, RenderProcessPlan, RenderRect, RenderSceneRole, RenderSourceId,
-        RenderTargetId, RenderTargetKind, ShellRenderInput, SolidRectRenderItem,
+        RenderTargetId, RenderTargetKind, ShellRenderInput, QuadContent, QuadRenderItem,
         SurfacePresentationRole, SurfacePresentationSnapshot, SurfacePresentationState,
         SurfaceRenderItem,
     };
@@ -740,9 +741,11 @@ mod tests {
                             scene_role: RenderSceneRole::Desktop,
                         },
                     }),
-                    RenderPlanItem::SolidRect(SolidRectRenderItem {
+                    RenderPlanItem::Quad(QuadRenderItem {
                         identity: identity(12),
-                        color: RenderColor { r: 1, g: 2, b: 3, a: 255 },
+                        content: QuadContent::SolidColor {
+                            color: RenderColor { r: 1, g: 2, b: 3, a: 255 },
+                        },
                         instance: RenderItemInstance {
                             rect: RenderRect { x: 0, y: 0, width: 8, height: 9 },
                             opacity: 1.0,
@@ -795,7 +798,7 @@ mod tests {
             vec![RenderItemId(11), RenderItemId(12), RenderItemId(13)]
         );
         assert!(matches!(output.items[&RenderItemId(11)], PreparedSceneItem::Surface(_)));
-        assert!(matches!(output.items[&RenderItemId(12)], PreparedSceneItem::SolidRect(_)));
+        assert!(matches!(output.items[&RenderItemId(12)], PreparedSceneItem::Quad(_)));
         assert!(matches!(output.items[&RenderItemId(13)], PreparedSceneItem::CursorNamed(_)));
     }
 

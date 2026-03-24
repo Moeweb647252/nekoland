@@ -96,7 +96,7 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
             .flat_map(|output_plan| output_plan.iter_ordered())
             .filter_map(|item| match item {
                 RenderPlanItem::Surface(item) => Some(item.surface_id),
-                RenderPlanItem::SolidRect(_)
+                RenderPlanItem::Quad(_)
                 | RenderPlanItem::Backdrop(_)
                 | RenderPlanItem::Cursor(_) => None,
             })

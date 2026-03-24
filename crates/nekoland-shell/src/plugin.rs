@@ -2,16 +2,16 @@ use bevy_app::App;
 use bevy_ecs::prelude::{Res, ResMut};
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use nekoland_core::plugin::NekolandPlugin;
-use nekoland_core::schedules::LayoutSchedule;
+use nekoland_core::schedules::{LayoutSchedule, PostRenderSchedule};
 use nekoland_ecs::events::{
     ExternalCommandFailed, ExternalCommandLaunched, WindowClosed, WindowCreated, WindowMoved,
 };
 use nekoland_ecs::resources::register_entity_index_hooks;
 use nekoland_ecs::resources::{
     CommandHistoryState, FocusedOutputState, GlobalPointerPosition, OutputOverlayState,
-    PendingExternalCommandRequests, PendingOutputControls, PendingOutputOverlayControls,
-    PendingOutputServerRequests, PendingPopupServerRequests, PendingWindowControls,
-    PendingWindowServerRequests, PendingWorkspaceControls, ShellRenderInput,
+    OverlayUiFrame, PendingExternalCommandRequests, PendingOutputControls,
+    PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
+    PendingWindowControls, PendingWindowServerRequests, PendingWorkspaceControls, ShellRenderInput,
     SurfacePresentationSnapshot, WaylandCommands, WaylandFeedback, WaylandIngress,
     WindowStackingState, WorkArea,
     WorkspaceTilingState,
@@ -43,6 +43,7 @@ impl NekolandPlugin for ShellPlugin {
             .init_resource::<WindowStackingState>()
             .init_resource::<WorkspaceTilingState>()
             .init_resource::<OutputOverlayState>()
+            .init_resource::<OverlayUiFrame>()
             .init_resource::<SurfacePresentationSnapshot>()
             .init_resource::<WaylandCommands>()
             .init_resource::<WaylandIngress>()
@@ -115,7 +116,8 @@ impl NekolandPlugin for ShellPlugin {
                         .chain(),
                 )
                     .chain(),
-            );
+            )
+            .add_systems(PostRenderSchedule, clear_overlay_ui_frame_system);
     }
 }
 
@@ -146,6 +148,7 @@ fn sync_shell_render_boundary_system(
     wayland_feedback: Res<'_, WaylandFeedback>,
     surface_presentation: Res<'_, SurfacePresentationSnapshot>,
     output_overlays: Res<'_, OutputOverlayState>,
+    overlay_ui: Res<'_, OverlayUiFrame>,
     mut shell_render_input: ResMut<'_, ShellRenderInput>,
 ) {
     *shell_render_input = ShellRenderInput {
@@ -153,8 +156,13 @@ fn sync_shell_render_boundary_system(
         cursor_image: wayland_ingress.cursor_image.clone(),
         surface_presentation: surface_presentation.clone(),
         output_overlays: output_overlays.clone(),
+        overlay_ui: overlay_ui.clone(),
         pending_screenshot_requests: wayland_feedback.pending_screenshot_requests.clone(),
     };
+}
+
+fn clear_overlay_ui_frame_system(mut overlay_ui: ResMut<'_, OverlayUiFrame>) {
+    overlay_ui.clear();
 }
 
 #[cfg(test)]
@@ -165,27 +173,28 @@ mod tests {
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::WindowBundle;
+    use nekoland_ecs::components::OutputId;
     use nekoland_ecs::components::{
         BufferState, WindowLayout, WindowMode, WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::events::{PointerButton, WindowMoved};
     use nekoland_ecs::resources::{
-        EntityIndex, GlobalPointerPosition, KeyboardFocusState, WorkArea,
-        WindowStackingState, register_entity_index_hooks,
-    };
-    use nekoland_ecs::components::OutputId;
-    use nekoland_ecs::resources::{
-        CursorImageSnapshot, OutputOverlayState, PendingScreenshotRequests,
-        PendingOutputControls, PendingOutputOverlayControls, PendingOutputServerRequests,
-        PendingPopupServerRequests, PendingWindowServerRequests, ShellRenderInput, SurfaceExtent,
-        SurfacePresentationSnapshot, WaylandCommands, WaylandFeedback, WaylandIngress,
-        WindowServerAction, WindowServerRequest,
+        CursorImageSnapshot, EntityIndex, GlobalPointerPosition, KeyboardFocusState,
+        OutputOverlayState, OverlayUiFrame, OverlayUiLayer, PendingOutputControls,
+        PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
+        PendingScreenshotRequests, PendingWindowServerRequests, RenderColor, RenderRect,
+        ShellRenderInput, SurfaceExtent, SurfacePresentationSnapshot, WaylandCommands,
+        WaylandFeedback, WaylandIngress, WindowServerAction, WindowServerRequest,
+        WindowStackingState, WorkArea, register_entity_index_hooks,
     };
 
     use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab, window_grab_system};
     use crate::presentation::window_presentation_sync_system;
 
-    use super::{sync_shell_render_boundary_system, sync_wayland_commands_boundary_system};
+    use super::{
+        clear_overlay_ui_frame_system, sync_shell_render_boundary_system,
+        sync_wayland_commands_boundary_system,
+    };
 
     #[test]
     fn shell_render_boundary_captures_shell_owned_snapshots() {
@@ -197,6 +206,7 @@ mod tests {
         });
         world.insert_resource(SurfacePresentationSnapshot::default());
         world.insert_resource(OutputOverlayState::default());
+        world.insert_resource(OverlayUiFrame::default());
         let mut pending_screenshot_requests = PendingScreenshotRequests::default();
         let _ = pending_screenshot_requests.request_output(OutputId(7));
         world.insert_resource(WaylandFeedback {
@@ -218,6 +228,46 @@ mod tests {
         );
         assert_eq!(boundary.pending_screenshot_requests.requests.len(), 1);
         assert_eq!(boundary.pending_screenshot_requests.requests[0].output_id, OutputId(7));
+    }
+
+    #[test]
+    fn overlay_ui_frame_is_cleared_after_boundary_sync() {
+        let mut world = World::default();
+        world.insert_resource(GlobalPointerPosition::default());
+        world.insert_resource(WaylandIngress::default());
+        world.insert_resource(SurfacePresentationSnapshot::default());
+        world.insert_resource(OutputOverlayState::default());
+        world.insert_resource(WaylandFeedback::default());
+        world.init_resource::<ShellRenderInput>();
+
+        let mut overlay_ui = OverlayUiFrame::default();
+        overlay_ui.output(OutputId(9)).panel(
+            "hud.panel",
+            OverlayUiLayer::Main,
+            RenderRect { x: 10, y: 20, width: 100, height: 40 },
+            None,
+            RenderColor { r: 1, g: 2, b: 3, a: 255 },
+            1.0,
+            5,
+        );
+        world.insert_resource(overlay_ui);
+
+        let mut sync_system = IntoSystem::into_system(sync_shell_render_boundary_system);
+        sync_system.initialize(&mut world);
+        let _ = sync_system.run((), &mut world);
+
+        let mut clear_system = IntoSystem::into_system(clear_overlay_ui_frame_system);
+        clear_system.initialize(&mut world);
+        let _ = clear_system.run((), &mut world);
+
+        assert!(world.resource::<OverlayUiFrame>().outputs.is_empty());
+        let boundary = world.resource::<ShellRenderInput>();
+        let output_frame = boundary
+            .overlay_ui
+            .outputs
+            .get(&OutputId(9))
+            .expect("shell render boundary should keep this frame's overlay UI");
+        assert_eq!(output_frame.primitives.len(), 1);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use crate::components::OutputId;
 use crate::resources::{
     MaterialParamsId, PlatformDmabufFormat, PlatformSurfaceBufferSource,
     PlatformSurfaceImportStrategy, PlatformSurfaceKind, ProcessShaderKey, RenderBindGroupLayoutKey,
-    RenderColor, RenderItemId, RenderMaterialDescriptor, RenderMaterialId,
+    QuadContent, RenderItemId, RenderMaterialDescriptor, RenderMaterialId,
     RenderMaterialParamBlock, RenderRect, RenderTargetId, RenderTargetKind,
 };
 
@@ -155,7 +155,7 @@ pub struct PreparedMaterialBinding {
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum PreparedSceneItem {
     Surface(PreparedSurfaceSceneItem),
-    SolidRect(PreparedSolidRectSceneItem),
+    Quad(PreparedQuadSceneItem),
     Backdrop(PreparedBackdropSceneItem),
     CursorNamed(PreparedNamedCursorSceneItem),
     CursorSurface(PreparedSurfaceCursorSceneItem),
@@ -173,9 +173,10 @@ pub struct PreparedSurfaceSceneItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PreparedSolidRectSceneItem {
+pub struct PreparedQuadSceneItem {
+    pub rect: RenderRect,
     pub visible_rect: RenderRect,
-    pub color: RenderColor,
+    pub content: QuadContent,
     pub opacity: f32,
 }
 

@@ -157,14 +157,14 @@ impl OutputControlHandle<'_> {
         z_index: Option<i32>,
         clip_rect: Option<RenderRect>,
     ) -> &mut Self {
-        let spec = OutputOverlaySpec {
-            overlay_id: overlay_id.into(),
+        let spec = OutputOverlaySpec::solid_color(
+            overlay_id,
             rect,
             clip_rect,
             color,
-            opacity: opacity.unwrap_or(1.0).clamp(0.0, 1.0),
-            z_index: z_index.unwrap_or_default(),
-        };
+            opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+            z_index.unwrap_or_default(),
+        );
         let overlay_id = spec.overlay_id.clone();
         self.control.overlay_updates.retain(|update| update.overlay_id() != &overlay_id);
         self.control.overlay_updates.push(OutputOverlayUpdate::Set(spec));
@@ -187,7 +187,7 @@ impl OutputControlHandle<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::resources::{OutputOverlayId, OutputOverlayUpdate, RenderColor, RenderRect};
+    use crate::resources::{OutputOverlayUpdate, RenderColor, RenderRect};
     use crate::selectors::{OutputName, OutputSelector, SurfaceId};
 
     use super::{
@@ -249,14 +249,14 @@ mod tests {
         assert_eq!(controls.as_slice().len(), 1);
         assert_eq!(
             controls.as_slice()[0].overlay_updates,
-            vec![OutputOverlayUpdate::Set(crate::resources::OutputOverlaySpec {
-                overlay_id: OutputOverlayId::from("debug"),
-                rect: RenderRect { x: 5, y: 6, width: 20, height: 30 },
-                clip_rect: Some(RenderRect { x: 6, y: 7, width: 10, height: 11 }),
-                color: RenderColor { r: 40, g: 50, b: 60, a: 200 },
-                opacity: 0.75,
-                z_index: 9,
-            })]
+            vec![OutputOverlayUpdate::Set(crate::resources::OutputOverlaySpec::solid_color(
+                "debug",
+                RenderRect { x: 5, y: 6, width: 20, height: 30 },
+                Some(RenderRect { x: 6, y: 7, width: 10, height: 11 }),
+                RenderColor { r: 40, g: 50, b: 60, a: 200 },
+                0.75,
+                9,
+            ))]
         );
     }
 

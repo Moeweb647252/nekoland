@@ -23,7 +23,7 @@ pub fn frame_callback_system(
         .flat_map(|plan| plan.iter_ordered())
         .filter_map(|item| match item {
             RenderPlanItem::Surface(item) => Some(item.surface_id),
-            RenderPlanItem::SolidRect(_)
+            RenderPlanItem::Quad(_)
             | RenderPlanItem::Backdrop(_)
             | RenderPlanItem::Cursor(_) => None,
         })

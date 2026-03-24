@@ -4,7 +4,7 @@ use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
 use crate::components::OutputId;
-use crate::resources::{CompositorSceneEntryId, RenderColor, RenderRect};
+use crate::resources::{CompositorSceneEntryId, QuadContent, RenderColor, RenderRect};
 
 /// Stable user-facing identifier for one output overlay entry.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -35,12 +35,30 @@ pub struct OutputOverlaySpec {
     pub overlay_id: OutputOverlayId,
     pub rect: RenderRect,
     pub clip_rect: Option<RenderRect>,
-    pub color: RenderColor,
+    pub content: QuadContent,
     pub opacity: f32,
     pub z_index: i32,
 }
 
 impl OutputOverlaySpec {
+    pub fn solid_color(
+        overlay_id: impl Into<OutputOverlayId>,
+        rect: RenderRect,
+        clip_rect: Option<RenderRect>,
+        color: RenderColor,
+        opacity: f32,
+        z_index: i32,
+    ) -> Self {
+        Self {
+            overlay_id: overlay_id.into(),
+            rect,
+            clip_rect,
+            content: QuadContent::SolidColor { color },
+            opacity,
+            z_index,
+        }
+    }
+
     pub fn normalized(mut self) -> Self {
         self.opacity = self.opacity.clamp(0.0, 1.0);
         self
@@ -129,7 +147,7 @@ pub struct OutputOverlayEntry {
     pub entry_id: CompositorSceneEntryId,
     pub rect: RenderRect,
     pub clip_rect: Option<RenderRect>,
-    pub color: RenderColor,
+    pub content: QuadContent,
     pub opacity: f32,
     pub z_index: i32,
 }
@@ -167,7 +185,7 @@ impl OutputOverlayState {
         if let Some(existing) = output.overlays.get_mut(&spec.overlay_id) {
             existing.rect = spec.rect;
             existing.clip_rect = spec.clip_rect;
-            existing.color = spec.color;
+            existing.content = spec.content;
             existing.opacity = spec.opacity;
             existing.z_index = spec.z_index;
             return existing.entry_id;
@@ -181,7 +199,7 @@ impl OutputOverlayState {
                 entry_id,
                 rect: spec.rect,
                 clip_rect: spec.clip_rect,
-                color: spec.color,
+                content: spec.content,
                 opacity: spec.opacity,
                 z_index: spec.z_index,
             },
@@ -212,7 +230,7 @@ mod tests {
     use crate::components::OutputId;
     use crate::resources::{
         OutputOverlayCollection, OutputOverlayId, OutputOverlaySpec, OutputOverlayState,
-        OutputOverlayUpdate, PendingOutputOverlayControls, RenderColor, RenderRect,
+        OutputOverlayUpdate, QuadContent, PendingOutputOverlayControls, RenderColor, RenderRect,
     };
 
     #[test]
@@ -220,35 +238,35 @@ mod tests {
         let mut controls = PendingOutputOverlayControls::default();
         controls
             .output(OutputId(7))
-            .set_overlay(OutputOverlaySpec {
-                overlay_id: OutputOverlayId::from("debug"),
-                rect: RenderRect { x: 1, y: 2, width: 30, height: 40 },
-                clip_rect: None,
-                color: RenderColor { r: 1, g: 2, b: 3, a: 255 },
-                opacity: 0.5,
-                z_index: 3,
-            })
-            .set_overlay(OutputOverlaySpec {
-                overlay_id: OutputOverlayId::from("debug"),
-                rect: RenderRect { x: 5, y: 6, width: 70, height: 80 },
-                clip_rect: None,
-                color: RenderColor { r: 9, g: 8, b: 7, a: 255 },
-                opacity: 0.25,
-                z_index: 4,
-            });
+            .set_overlay(OutputOverlaySpec::solid_color(
+                "debug",
+                RenderRect { x: 1, y: 2, width: 30, height: 40 },
+                None,
+                RenderColor { r: 1, g: 2, b: 3, a: 255 },
+                0.5,
+                3,
+            ))
+            .set_overlay(OutputOverlaySpec::solid_color(
+                "debug",
+                RenderRect { x: 5, y: 6, width: 70, height: 80 },
+                None,
+                RenderColor { r: 9, g: 8, b: 7, a: 255 },
+                0.25,
+                4,
+            ));
 
         let taken = controls.take();
         assert_eq!(taken.len(), 1);
         assert_eq!(
             taken[0].overlay_updates,
-            vec![OutputOverlayUpdate::Set(OutputOverlaySpec {
-                overlay_id: OutputOverlayId::from("debug"),
-                rect: RenderRect { x: 5, y: 6, width: 70, height: 80 },
-                clip_rect: None,
-                color: RenderColor { r: 9, g: 8, b: 7, a: 255 },
-                opacity: 0.25,
-                z_index: 4,
-            })]
+            vec![OutputOverlayUpdate::Set(OutputOverlaySpec::solid_color(
+                "debug",
+                RenderRect { x: 5, y: 6, width: 70, height: 80 },
+                None,
+                RenderColor { r: 9, g: 8, b: 7, a: 255 },
+                0.25,
+                4,
+            ))]
         );
     }
 
@@ -257,14 +275,14 @@ mod tests {
         let mut controls = PendingOutputOverlayControls::default();
         controls
             .output(OutputId(9))
-            .set_overlay(OutputOverlaySpec {
-                overlay_id: OutputOverlayId::from("debug"),
-                rect: RenderRect { x: 1, y: 2, width: 30, height: 40 },
-                clip_rect: None,
-                color: RenderColor { r: 1, g: 2, b: 3, a: 255 },
-                opacity: 0.5,
-                z_index: 3,
-            })
+            .set_overlay(OutputOverlaySpec::solid_color(
+                "debug",
+                RenderRect { x: 1, y: 2, width: 30, height: 40 },
+                None,
+                RenderColor { r: 1, g: 2, b: 3, a: 255 },
+                0.5,
+                3,
+            ))
             .clear_overlays();
 
         let taken = controls.take();
@@ -277,30 +295,34 @@ mod tests {
         let mut state = OutputOverlayState::default();
         let first = state.upsert(
             OutputId(1),
-            OutputOverlaySpec {
-                overlay_id: OutputOverlayId::from("debug"),
-                rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
-                clip_rect: None,
-                color: RenderColor { r: 0, g: 0, b: 0, a: 255 },
-                opacity: 1.0,
-                z_index: 0,
-            },
+            OutputOverlaySpec::solid_color(
+                "debug",
+                RenderRect { x: 0, y: 0, width: 100, height: 100 },
+                None,
+                RenderColor { r: 0, g: 0, b: 0, a: 255 },
+                1.0,
+                0,
+            ),
         );
         let second = state.upsert(
             OutputId(1),
-            OutputOverlaySpec {
-                overlay_id: OutputOverlayId::from("debug"),
-                rect: RenderRect { x: 10, y: 10, width: 20, height: 20 },
-                clip_rect: None,
-                color: RenderColor { r: 255, g: 0, b: 0, a: 255 },
-                opacity: 0.5,
-                z_index: 8,
-            },
+            OutputOverlaySpec::solid_color(
+                "debug",
+                RenderRect { x: 10, y: 10, width: 20, height: 20 },
+                None,
+                RenderColor { r: 255, g: 0, b: 0, a: 255 },
+                0.5,
+                8,
+            ),
         );
 
         assert_eq!(first, second);
         let output = &state.outputs[&OutputId(1)];
         assert_eq!(output.overlays[&OutputOverlayId::from("debug")].rect.x, 10);
+        assert_eq!(
+            output.overlays[&OutputOverlayId::from("debug")].content,
+            QuadContent::SolidColor { color: RenderColor { r: 255, g: 0, b: 0, a: 255 } }
+        );
     }
 
     #[test]
@@ -312,7 +334,7 @@ mod tests {
                 entry_id: crate::resources::CompositorSceneEntryId(2),
                 rect: RenderRect { x: 0, y: 0, width: 1, height: 1 },
                 clip_rect: None,
-                color: RenderColor::default(),
+                content: QuadContent::SolidColor { color: RenderColor::default() },
                 opacity: 1.0,
                 z_index: 3,
             },
@@ -323,7 +345,7 @@ mod tests {
                 entry_id: crate::resources::CompositorSceneEntryId(1),
                 rect: RenderRect { x: 0, y: 0, width: 1, height: 1 },
                 clip_rect: None,
-                color: RenderColor::default(),
+                content: QuadContent::SolidColor { color: RenderColor::default() },
                 opacity: 1.0,
                 z_index: 3,
             },
