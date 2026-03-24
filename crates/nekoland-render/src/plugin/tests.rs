@@ -68,6 +68,7 @@ fn render_subapp_extract_syncs_shell_owned_inputs_from_shell_render_boundary() {
             )]),
         },
         output_overlays: OutputOverlayState::default(),
+        overlay_ui: nekoland_ecs::resources::OverlayUiFrame::default(),
         pending_screenshot_requests,
     });
 

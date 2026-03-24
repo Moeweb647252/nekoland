@@ -4,7 +4,7 @@ use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
 use crate::components::OutputId;
-use crate::resources::{RenderColor, RenderItemInstance, RenderSceneRole};
+use crate::resources::{QuadContent, RenderColor, RenderItemInstance, RenderSceneRole};
 
 /// Stable identity for one compositor-owned scene entry.
 #[derive(
@@ -17,7 +17,7 @@ pub struct CompositorSceneEntryId(pub u64);
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum CompositorSceneItem {
-    SolidRect { color: RenderColor },
+    Quad { content: QuadContent },
     Backdrop,
 }
 
@@ -29,8 +29,12 @@ pub struct CompositorSceneEntry {
 }
 
 impl CompositorSceneEntry {
-    pub fn solid_rect(color: RenderColor, instance: RenderItemInstance) -> Self {
-        Self { item: CompositorSceneItem::SolidRect { color }, instance }
+    pub fn quad(content: QuadContent, instance: RenderItemInstance) -> Self {
+        Self { item: CompositorSceneItem::Quad { content }, instance }
+    }
+
+    pub fn solid_color(color: RenderColor, instance: RenderItemInstance) -> Self {
+        Self::quad(QuadContent::SolidColor { color }, instance)
     }
 
     pub fn backdrop(instance: RenderItemInstance) -> Self {
@@ -105,7 +109,7 @@ pub struct CompositorSceneState {
 #[cfg(test)]
 mod tests {
     use crate::components::OutputId;
-    use crate::resources::{RenderColor, RenderItemInstance, RenderRect, RenderSceneRole};
+    use crate::resources::{QuadContent, RenderColor, RenderItemInstance, RenderRect, RenderSceneRole};
 
     use super::{
         CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneItem, CompositorSceneState,
@@ -127,8 +131,8 @@ mod tests {
         let scene = OutputCompositorScene::from_entries([
             (
                 CompositorSceneEntryId(2),
-                CompositorSceneEntry::solid_rect(
-                    RenderColor { r: 1, g: 2, b: 3, a: 4 },
+                CompositorSceneEntry::quad(
+                    QuadContent::SolidColor { color: RenderColor { r: 1, g: 2, b: 3, a: 4 } },
                     overlay_instance(5),
                 ),
             ),

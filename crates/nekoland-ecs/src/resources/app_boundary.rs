@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::resources::{
     ClipboardSelectionState, CompletedScreenshotFrames, CursorImageSnapshot, DragAndDropState,
     GlobalPointerPosition, OutputOverlayState, OutputPresentationState, OutputSnapshotState,
-    PendingLayerRequests, PendingOutputControls, PendingOutputEvents, PendingOutputOverlayControls,
-    PendingOutputServerRequests, PendingPlatformInputEvents, PendingPopupEvents,
+    OverlayUiFrame, PendingLayerRequests, PendingOutputControls, PendingOutputEvents,
+    PendingOutputOverlayControls, PendingOutputServerRequests, PendingPlatformInputEvents, PendingPopupEvents,
     PendingPopupServerRequests, PendingProtocolInputEvents, PendingScreenshotRequests,
     PendingWindowControls, PendingWindowEvents, PendingWindowServerRequests, PendingXdgRequests,
     PlatformBackendState, PlatformImportCapabilities, PlatformImportDiagnosticsState,
@@ -43,6 +43,7 @@ pub struct ShellRenderInput {
     pub cursor_image: CursorImageSnapshot,
     pub surface_presentation: SurfacePresentationSnapshot,
     pub output_overlays: OutputOverlayState,
+    pub overlay_ui: OverlayUiFrame,
     pub pending_screenshot_requests: PendingScreenshotRequests,
 }
 

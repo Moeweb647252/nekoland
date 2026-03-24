@@ -150,7 +150,7 @@ pub fn backdrop_blur_effect_system(
                     item.instance.visible_rect().map(ProcessRect::from)
                 }
                 RenderPlanItem::Surface(_)
-                | RenderPlanItem::SolidRect(_)
+                | RenderPlanItem::Quad(_)
                 | RenderPlanItem::Cursor(_) => None,
             })
             .collect::<Vec<_>>();

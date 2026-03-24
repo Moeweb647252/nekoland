@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
     CompiledOutputFrame, CompiledOutputFrames, CursorRenderSource, OutputExecutionPlan,
-    OutputPresentAudit, PresentAuditElement, PresentAuditElementKind, RenderColor,
+    OutputPresentAudit, PresentAuditElement, PresentAuditElementKind, QuadContent,
     RenderItemInstance, RenderMaterialFrameState, RenderPassGraph, RenderPassKind,
     RenderPassPayload, RenderPlan, RenderPlanItem, RenderSceneRole, RenderSurfaceRole,
     RenderSurfaceSnapshot, RenderTargetId, RenderTargetKind,
@@ -18,8 +18,8 @@ pub(crate) struct OutputSurfaceRenderRecord {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct OutputSolidRectRenderRecord {
-    pub color: RenderColor,
+pub(crate) struct OutputQuadRenderRecord {
+    pub content: QuadContent,
     pub instance: RenderItemInstance,
 }
 
@@ -37,7 +37,7 @@ pub(crate) struct OutputCursorRenderRecord {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum OutputRenderRecord {
     Surface(OutputSurfaceRenderRecord),
-    SolidRect(OutputSolidRectRenderRecord),
+    Quad(OutputQuadRenderRecord),
     Backdrop(OutputBackdropRenderRecord),
     Cursor(OutputCursorRenderRecord),
 }
@@ -90,7 +90,7 @@ pub(crate) fn render_graph_output_surfaces_in_presentation_order(
     .into_iter()
     .filter_map(|record| match record {
         OutputRenderRecord::Surface(record) => Some(record),
-        OutputRenderRecord::SolidRect(_)
+        OutputRenderRecord::Quad(_)
         | OutputRenderRecord::Backdrop(_)
         | OutputRenderRecord::Cursor(_) => None,
     })
@@ -118,13 +118,13 @@ pub(crate) fn render_graph_output_present_audit_elements(
                         })
                         .unwrap_or(PresentAuditElementKind::Unknown),
                 ),
-                OutputRenderRecord::SolidRect(record) => (
+                OutputRenderRecord::Quad(record) => (
                     0,
                     record.instance,
                     if record.instance.scene_role == RenderSceneRole::Compositor {
                         PresentAuditElementKind::Compositor
                     } else {
-                        PresentAuditElementKind::SolidRect
+                        PresentAuditElementKind::Quad
                     },
                 ),
                 OutputRenderRecord::Backdrop(record) => {
@@ -321,9 +321,9 @@ fn output_record_from_plan_item(item: &RenderPlanItem) -> OutputRenderRecord {
             surface_id: item.surface_id,
             instance: item.instance,
         }),
-        RenderPlanItem::SolidRect(item) => {
-            OutputRenderRecord::SolidRect(OutputSolidRectRenderRecord {
-                color: item.color,
+        RenderPlanItem::Quad(item) => {
+            OutputRenderRecord::Quad(OutputQuadRenderRecord {
+                content: item.content.clone(),
                 instance: item.instance,
             })
         }
@@ -363,14 +363,14 @@ mod tests {
     use nekoland_ecs::resources::{
         CompiledOutputFrame, CompiledOutputFrames, CursorRenderItem, CursorRenderSource,
         OutputDamageRegions, OutputExecutionPlan, OutputProcessPlan, OutputRenderPlan,
-        PresentAuditElementKind, RenderColor, RenderFinalOutputPlan, RenderItemId,
-        RenderItemIdentity, RenderItemInstance, RenderMaterialDescriptor, RenderMaterialFrameState,
-        RenderMaterialId, RenderMaterialKind, RenderMaterialParamBlock, RenderMaterialPipelineKey,
-        RenderPassGraph, RenderPassId, RenderPassNode, RenderPipelineStage, RenderPlan,
-        RenderPlanItem, RenderProcessPlan, RenderReadbackPlan, RenderRect, RenderSceneRole,
-        RenderSourceId, RenderSurfaceRole, RenderSurfaceSnapshot, RenderTargetAllocationPlan,
-        RenderTargetId, RenderTargetKind, SolidRectRenderItem, SurfaceRenderItem,
-        SurfaceTextureBridgePlan,
+        PresentAuditElementKind, QuadContent, QuadRenderItem, RenderColor,
+        RenderFinalOutputPlan, RenderItemId, RenderItemIdentity, RenderItemInstance,
+        RenderMaterialDescriptor, RenderMaterialFrameState, RenderMaterialId, RenderMaterialKind,
+        RenderMaterialParamBlock, RenderMaterialPipelineKey, RenderPassGraph, RenderPassId,
+        RenderPassNode, RenderPipelineStage, RenderPlan, RenderPlanItem, RenderProcessPlan,
+        RenderReadbackPlan, RenderRect, RenderSceneRole, RenderSourceId, RenderSurfaceRole,
+        RenderSurfaceSnapshot, RenderTargetAllocationPlan, RenderTargetId, RenderTargetKind,
+        SurfaceRenderItem, SurfaceTextureBridgePlan,
     };
 
     use super::{
@@ -489,7 +489,7 @@ mod tests {
                 .into_iter()
                 .filter_map(|record| match record {
                     super::OutputRenderRecord::Surface(record) => Some(record.surface_id),
-                    super::OutputRenderRecord::SolidRect(_)
+                    super::OutputRenderRecord::Quad(_)
                     | super::OutputRenderRecord::Backdrop(_)
                     | super::OutputRenderRecord::Cursor(_) => None,
                 })
@@ -506,7 +506,7 @@ mod tests {
             .into_iter()
             .filter_map(|record| match record {
                 super::OutputRenderRecord::Surface(record) => Some(record.surface_id),
-                super::OutputRenderRecord::SolidRect(_)
+                super::OutputRenderRecord::Quad(_)
                 | super::OutputRenderRecord::Backdrop(_)
                 | super::OutputRenderRecord::Cursor(_) => None,
             })
@@ -578,13 +578,15 @@ mod tests {
     }
 
     #[test]
-    fn audit_records_include_solid_rect_items() {
+    fn audit_records_include_quad_items() {
         let render_plan = RenderPlan {
             outputs: std::collections::BTreeMap::from([(
                 OutputId(1),
-                OutputRenderPlan::from_items([RenderPlanItem::SolidRect(SolidRectRenderItem {
+                OutputRenderPlan::from_items([RenderPlanItem::Quad(QuadRenderItem {
                     identity: identity(1),
-                    color: RenderColor { r: 20, g: 40, b: 60, a: 128 },
+                    content: QuadContent::SolidColor {
+                        color: RenderColor { r: 20, g: 40, b: 60, a: 128 },
+                    },
                     instance: RenderItemInstance {
                         rect: RenderRect { x: 8, y: 9, width: 50, height: 60 },
                         opacity: 0.75,
@@ -626,7 +628,7 @@ mod tests {
             OutputId(1),
         );
         assert_eq!(elements.len(), 1);
-        assert_eq!(elements[0].kind, PresentAuditElementKind::SolidRect);
+        assert_eq!(elements[0].kind, PresentAuditElementKind::Quad);
         assert_eq!(elements[0].surface_id, 0);
         assert_eq!((elements[0].x, elements[0].y), (8, 9));
         assert_eq!((elements[0].width, elements[0].height), (50, 60));
@@ -649,9 +651,11 @@ mod tests {
                             scene_role: RenderSceneRole::Desktop,
                         },
                     }),
-                    RenderPlanItem::SolidRect(SolidRectRenderItem {
+                    RenderPlanItem::Quad(QuadRenderItem {
                         identity: identity(2),
-                        color: RenderColor { r: 0, g: 0, b: 0, a: 180 },
+                        content: QuadContent::SolidColor {
+                            color: RenderColor { r: 0, g: 0, b: 0, a: 180 },
+                        },
                         instance: RenderItemInstance {
                             rect: RenderRect { x: 1, y: 2, width: 30, height: 40 },
                             opacity: 0.5,
@@ -703,7 +707,7 @@ mod tests {
             &no_materials(),
             OutputId(2),
         );
-        assert!(matches!(records[0], super::OutputRenderRecord::SolidRect(_)));
+        assert!(matches!(records[0], super::OutputRenderRecord::Quad(_)));
         assert!(matches!(records[1], super::OutputRenderRecord::Surface(_)));
     }
 

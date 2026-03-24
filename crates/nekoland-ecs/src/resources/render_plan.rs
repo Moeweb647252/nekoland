@@ -123,11 +123,28 @@ pub struct RenderColor {
     pub a: u8,
 }
 
-/// One solid-color rectangle in the current output-local scene.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
-pub struct SolidRectRenderItem {
+/// CPU-side raster image payload attached to one quad.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuadRasterImage {
+    pub width: u32,
+    pub height: u32,
+    pub scale: u32,
+    pub pixels_rgba: Vec<u8>,
+}
+
+/// Content payload carried by one quad render item.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum QuadContent {
+    SolidColor { color: RenderColor },
+    RasterImage { image: QuadRasterImage },
+}
+
+/// One generic quad in the current output-local scene.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct QuadRenderItem {
     pub identity: RenderItemIdentity,
-    pub color: RenderColor,
+    pub content: QuadContent,
     pub instance: RenderItemInstance,
 }
 
@@ -159,7 +176,7 @@ pub struct CursorRenderItem {
 #[serde(rename_all = "snake_case")]
 pub enum RenderPlanItem {
     Surface(SurfaceRenderItem),
-    SolidRect(SolidRectRenderItem),
+    Quad(QuadRenderItem),
     Backdrop(BackdropRenderItem),
     Cursor(CursorRenderItem),
 }
@@ -168,7 +185,7 @@ impl RenderPlanItem {
     pub fn identity(&self) -> RenderItemIdentity {
         match self {
             Self::Surface(item) => item.identity,
-            Self::SolidRect(item) => item.identity,
+            Self::Quad(item) => item.identity,
             Self::Backdrop(item) => item.identity,
             Self::Cursor(item) => item.identity,
         }
@@ -185,7 +202,7 @@ impl RenderPlanItem {
     pub fn instance(&self) -> &RenderItemInstance {
         match self {
             Self::Surface(item) => &item.instance,
-            Self::SolidRect(item) => &item.instance,
+            Self::Quad(item) => &item.instance,
             Self::Backdrop(item) => &item.instance,
             Self::Cursor(item) => &item.instance,
         }
@@ -202,7 +219,7 @@ impl RenderPlanItem {
                 CursorRenderSource::Surface { surface_id } => Some(*surface_id),
                 CursorRenderSource::Named { .. } => None,
             },
-            Self::SolidRect(_) | Self::Backdrop(_) => None,
+            Self::Quad(_) | Self::Backdrop(_) => None,
         }
     }
 }
@@ -261,9 +278,10 @@ pub struct RenderPlan {
 mod tests {
     use crate::components::OutputId;
     use crate::resources::{
-        BackdropRenderItem, CursorRenderItem, CursorRenderSource, OutputRenderPlan, RenderColor,
-        RenderItemId, RenderItemIdentity, RenderItemInstance, RenderPlan, RenderPlanItem,
-        RenderRect, RenderSceneRole, RenderSourceId, SolidRectRenderItem, SurfaceRenderItem,
+        BackdropRenderItem, CursorRenderItem, CursorRenderSource, OutputRenderPlan, QuadContent,
+        QuadRenderItem, RenderColor, RenderItemId, RenderItemIdentity, RenderItemInstance,
+        RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId,
+        SurfaceRenderItem,
     };
 
     #[test]
@@ -280,9 +298,9 @@ mod tests {
                 scene_role: RenderSceneRole::Desktop,
             },
         }));
-        plan.insert(RenderPlanItem::SolidRect(SolidRectRenderItem {
+        plan.insert(RenderPlanItem::Quad(QuadRenderItem {
             identity: RenderItemIdentity { source_id: RenderSourceId(1), item_id: RenderItemId(1) },
-            color: RenderColor { r: 0, g: 0, b: 0, a: 255 },
+            content: QuadContent::SolidColor { color: RenderColor { r: 0, g: 0, b: 0, a: 255 } },
             instance: RenderItemInstance {
                 rect: RenderRect::default(),
                 opacity: 1.0,
@@ -298,12 +316,12 @@ mod tests {
             .iter_ordered()
             .map(|item| match item {
                 RenderPlanItem::Surface(item) => format!("surface-{}", item.surface_id),
-                RenderPlanItem::SolidRect(_) => "solid-rect".to_owned(),
+                RenderPlanItem::Quad(_) => "quad".to_owned(),
                 RenderPlanItem::Backdrop(_) => "backdrop".to_owned(),
                 RenderPlanItem::Cursor(_) => "cursor".to_owned(),
             })
             .collect::<Vec<_>>();
-        assert_eq!(item_kinds, vec!["solid-rect", "surface-2"]);
+        assert_eq!(item_kinds, vec!["quad", "surface-2"]);
     }
 
     #[test]

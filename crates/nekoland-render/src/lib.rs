@@ -8,6 +8,7 @@ pub mod effects;
 pub mod final_output_plan;
 pub mod frame_callback;
 pub mod material;
+pub mod overlay_ui;
 pub mod output_overlay;
 pub mod phase_plan;
 pub mod pipeline_cache;

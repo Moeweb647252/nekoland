@@ -29,8 +29,8 @@ pub fn sync_output_overlay_scene_state_system(
             current_entries.entry(*output_id).or_default().insert(overlay.entry_id);
             output_scene.insert(
                 overlay.entry_id,
-                CompositorSceneEntry::solid_rect(
-                    overlay.color,
+                CompositorSceneEntry::quad(
+                    overlay.content.clone(),
                     RenderItemInstance {
                         rect: overlay.rect,
                         opacity: overlay.opacity,
@@ -102,14 +102,14 @@ mod tests {
                 app.inner_mut().world_mut().resource_mut::<ShellRenderInput>();
             shell_render_input.output_overlays.upsert(
                 OutputId(7),
-                OutputOverlaySpec {
-                    overlay_id: OutputOverlayId::from("debug"),
-                    rect: RenderRect { x: 1, y: 2, width: 30, height: 40 },
-                    clip_rect: None,
-                    color: RenderColor { r: 10, g: 20, b: 30, a: 255 },
-                    opacity: 0.5,
-                    z_index: 9,
-                },
+                OutputOverlaySpec::solid_color(
+                    "debug",
+                    RenderRect { x: 1, y: 2, width: 30, height: 40 },
+                    None,
+                    RenderColor { r: 10, g: 20, b: 30, a: 255 },
+                    0.5,
+                    9,
+                ),
             )
         };
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
@@ -122,14 +122,14 @@ mod tests {
                 app.inner_mut().world_mut().resource_mut::<ShellRenderInput>();
             shell_render_input.output_overlays.upsert(
                 OutputId(7),
-                OutputOverlaySpec {
-                    overlay_id: OutputOverlayId::from("debug"),
-                    rect: RenderRect { x: 5, y: 6, width: 70, height: 80 },
-                    clip_rect: None,
-                    color: RenderColor { r: 90, g: 91, b: 92, a: 255 },
-                    opacity: 1.0,
-                    z_index: 2,
-                },
+                OutputOverlaySpec::solid_color(
+                    "debug",
+                    RenderRect { x: 5, y: 6, width: 70, height: 80 },
+                    None,
+                    RenderColor { r: 90, g: 91, b: 92, a: 255 },
+                    1.0,
+                    2,
+                ),
             );
         }
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
@@ -150,14 +150,14 @@ mod tests {
 
         app.inner_mut().world_mut().resource_mut::<ShellRenderInput>().output_overlays.upsert(
             OutputId(3),
-            OutputOverlaySpec {
-                overlay_id: OutputOverlayId::from("debug"),
-                rect: RenderRect { x: 1, y: 2, width: 30, height: 40 },
-                clip_rect: None,
-                color: RenderColor { r: 10, g: 20, b: 30, a: 255 },
-                opacity: 0.5,
-                z_index: 9,
-            },
+            OutputOverlaySpec::solid_color(
+                "debug",
+                RenderRect { x: 1, y: 2, width: 30, height: 40 },
+                None,
+                RenderColor { r: 10, g: 20, b: 30, a: 255 },
+                0.5,
+                9,
+            ),
         );
         app.inner_mut().world_mut().run_schedule(RenderSchedule);
 

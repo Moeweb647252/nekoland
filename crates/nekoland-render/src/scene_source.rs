@@ -4,8 +4,8 @@ use bevy_ecs::prelude::{Res, ResMut, Resource};
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
     BackdropRenderItem, CompositorSceneItem, CompositorSceneState, CursorRenderItem,
-    CursorRenderSource, RenderColor, RenderItemId, RenderItemIdentity, RenderItemInstance,
-    RenderPlanItem, RenderSourceId, SolidRectRenderItem, SurfacePresentationRole,
+    CursorRenderSource, QuadContent, QuadRenderItem, RenderItemId, RenderItemIdentity,
+    RenderItemInstance, RenderPlanItem, RenderSourceId, SurfacePresentationRole,
     SurfaceRenderItem,
 };
 
@@ -88,7 +88,7 @@ impl RenderInstanceKey {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderSceneContributionPayload {
     Surface { surface_id: u64 },
-    SolidRect { color: RenderColor },
+    Quad { content: QuadContent },
     Backdrop,
     Cursor { source: CursorRenderSource },
 }
@@ -116,12 +116,8 @@ impl RenderSceneContribution {
         }
     }
 
-    pub fn solid_rect(
-        key: RenderInstanceKey,
-        color: RenderColor,
-        instance: RenderItemInstance,
-    ) -> Self {
-        Self { key, instance, payload: RenderSceneContributionPayload::SolidRect { color } }
+    pub fn quad(key: RenderInstanceKey, content: QuadContent, instance: RenderItemInstance) -> Self {
+        Self { key, instance, payload: RenderSceneContributionPayload::Quad { content } }
     }
 
     pub fn backdrop(key: RenderInstanceKey, instance: RenderItemInstance) -> Self {
@@ -229,8 +225,8 @@ pub fn emit_compositor_scene_contributions_system(
             );
 
             let contribution = match &entry.item {
-                CompositorSceneItem::SolidRect { color } => {
-                    RenderSceneContribution::solid_rect(key, *color, instance)
+                CompositorSceneItem::Quad { content } => {
+                    RenderSceneContribution::quad(key, content.clone(), instance)
                 }
                 CompositorSceneItem::Backdrop => RenderSceneContribution::backdrop(key, instance),
             };
@@ -252,10 +248,10 @@ pub fn contribution_to_plan_item(
                 instance: contribution.instance,
             })
         }
-        RenderSceneContributionPayload::SolidRect { color } => {
-            RenderPlanItem::SolidRect(SolidRectRenderItem {
+        RenderSceneContributionPayload::Quad { ref content } => {
+            RenderPlanItem::Quad(QuadRenderItem {
                 identity,
-                color,
+                content: content.clone(),
                 instance: contribution.instance,
             })
         }
@@ -280,7 +276,9 @@ mod tests {
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::{IntoSystem, System};
     use nekoland_ecs::components::OutputId;
-    use nekoland_ecs::resources::{RenderColor, RenderItemInstance, RenderRect, RenderSceneRole};
+    use nekoland_ecs::resources::{
+        QuadContent, RenderColor, RenderItemInstance, RenderRect, RenderSceneRole,
+    };
 
     use super::{
         RenderInstanceKey, RenderSceneContribution, RenderSceneContributionPayload,
@@ -336,18 +334,23 @@ mod tests {
                 z_index: 9,
                 scene_role: RenderSceneRole::Overlay,
             },
-            payload: RenderSceneContributionPayload::SolidRect {
-                color: RenderColor { r: 1, g: 2, b: 3, a: 4 },
+            payload: RenderSceneContributionPayload::Quad {
+                content: QuadContent::SolidColor {
+                    color: RenderColor { r: 1, g: 2, b: 3, a: 4 },
+                },
             },
         };
 
         let item = contribution_to_plan_item(&contribution, &mut registry);
-        let nekoland_ecs::resources::RenderPlanItem::SolidRect(item) = item else {
-            panic!("expected solid rect item");
+        let nekoland_ecs::resources::RenderPlanItem::Quad(item) = item else {
+            panic!("expected quad item");
         };
         assert_eq!(item.identity.source_id.0, 1);
         assert_eq!(item.identity.item_id.0, 1);
-        assert_eq!(item.color, RenderColor { r: 1, g: 2, b: 3, a: 4 });
+        assert_eq!(
+            item.content,
+            QuadContent::SolidColor { color: RenderColor { r: 1, g: 2, b: 3, a: 4 } }
+        );
         assert_eq!(item.instance.opacity, 0.5);
     }
 
@@ -389,7 +392,7 @@ mod tests {
                 OutputId(5),
                 nekoland_ecs::resources::OutputCompositorScene::from_entries([(
                     nekoland_ecs::resources::CompositorSceneEntryId(9),
-                    nekoland_ecs::resources::CompositorSceneEntry::solid_rect(
+                    nekoland_ecs::resources::CompositorSceneEntry::solid_color(
                         RenderColor { r: 1, g: 2, b: 3, a: 4 },
                         RenderItemInstance {
                             rect: RenderRect { x: 6, y: 7, width: 8, height: 9 },
@@ -417,7 +420,7 @@ mod tests {
         );
         assert!(matches!(
             contributions[0].payload,
-            RenderSceneContributionPayload::SolidRect { .. }
+            RenderSceneContributionPayload::Quad { .. }
         ));
     }
 }

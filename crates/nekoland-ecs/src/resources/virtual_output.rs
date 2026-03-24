@@ -9,7 +9,7 @@ pub enum VirtualOutputElementKind {
     Window,
     Popup,
     Layer,
-    SolidRect,
+    Quad,
     Backdrop,
     Compositor,
     Cursor,
