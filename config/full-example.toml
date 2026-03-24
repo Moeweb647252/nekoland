@@ -1,0 +1,282 @@
+# Full nekoland config example.
+#
+# Purpose:
+# - document every currently supported on-disk config key
+# - show every supported keybinding action shape
+# - explain validation rules and current behavior in-place
+#
+# Out of scope:
+# - environment variables such as NEKOLAND_CONFIG / NEKOLAND_BACKEND / RUST_LOG
+# - runtime-only control through `nekoland-msg`
+#
+# Notes:
+# - this file is meant to be read and copied from, not treated as a minimal default
+# - matching in window_rules is exact string equality, not regex or glob
+# - `nekoland-msg query config` shows a normalized runtime snapshot, not the raw TOML
+
+# Default policy for newly managed windows before any matching window rule is applied.
+#
+# Allowed values:
+# - "floating"
+# - "maximized"
+# - "fullscreen"
+# - "tiling"
+# - "stacking"
+#
+# Current implementation detail:
+# - "stacking" currently normalizes to floating layout with normal window mode
+default_layout = "tiling"
+
+[theme]
+# Arbitrary theme label exposed through IPC snapshots and diagnostics.
+name = "nord-light"
+
+# Cursor theme name used by the compositor when resolving cursor assets.
+cursor_theme = "Bibata-Modern-Ice"
+
+# Decoration border color as a hex string.
+border_color = "#81a1c1"
+
+# Clear/background color as a hex string.
+background_color = "#e5e9f0"
+
+[input]
+# Whether pointer motion can move focus.
+#
+# Current runtime behavior is effectively a boolean toggle.
+focus_follows_mouse = false
+
+# Keyboard repeat rate passed into protocol bootstrap.
+repeat_rate = 40
+
+[input.keyboard]
+# Name of the layout that should start active.
+#
+# Requirements:
+# - must match one `[[input.keyboard.layouts]].name`
+# - if omitted, the first layout becomes active
+current = "de"
+
+[[input.keyboard.layouts]]
+# Optional logical name.
+#
+# If omitted, nekoland uses the `layout` string as the logical name.
+# Names must be unique after normalization.
+name = "us"
+
+# XKB layout string. Must be non-empty.
+layout = "us"
+
+# Optional XKB fields. Empty string means "unset / use backend default behavior".
+rules = ""
+model = ""
+variant = ""
+options = ""
+
+[[input.keyboard.layouts]]
+# A second layout showing the fully populated XKB fields.
+name = "de"
+layout = "de"
+rules = "evdev"
+model = "pc105"
+variant = "nodeadkeys"
+options = "caps:escape"
+
+[ipc]
+# Maximum number of command history records retained by the compositor.
+#
+# Behavior:
+# - values > 0 keep a bounded ring buffer
+# - value 0 clears the history and disables retention
+command_history_limit = 128
+
+[startup]
+# Startup actions run once after the nested Wayland socket is ready.
+#
+# Additional behavior:
+# - if XWayland is enabled, startup waits until XWayland is ready too
+# - the action objects use the same schema as keybindings
+# - `viewport_pan_mode` is keybinding-only and is not valid here
+#
+# This array is intentionally small even though more action shapes are supported:
+# the comprehensive action catalog is demonstrated below in [keybinds.bindings].
+actions = [
+  { exec = ["waybar"] },
+  { workspace_create = "dev" },
+  { workspace = "dev" },
+  { exec = ["wezterm", "start", "--always-new-process"] },
+]
+
+[xwayland]
+# Enable or disable XWayland startup.
+enabled = true
+
+[[outputs]]
+# Output names must match backend-visible output names.
+name = "HDMI-A-1"
+
+# Output mode string is currently passed through as-is to backend control paths.
+mode = "2560x1440@144"
+
+# Output scale is normalized to >= 1.
+scale = 1
+
+# Initial enabled state for this output.
+enabled = true
+
+[[outputs]]
+# Multiple outputs are supported.
+name = "eDP-1"
+mode = "1920x1080@60"
+scale = 1
+enabled = false
+
+[[window_rules]]
+# Match by app_id.
+app_id = "mpv"
+
+# Optional layout override applied after the global default layout.
+#
+# Allowed values:
+# - "tiled"
+# - "floating"
+layout = "floating"
+
+# Optional mode override.
+#
+# Allowed values:
+# - "normal"
+# - "maximized"
+# - "fullscreen"
+# - "hidden"
+mode = "fullscreen"
+
+[[window_rules]]
+# Match by title instead of app_id.
+title = "Picture in Picture"
+layout = "floating"
+
+[[window_rules]]
+# Background rule example.
+#
+# Matching windows can be marked as output background content.
+app_id = "swaybg"
+background = "HDMI-A-1"
+
+[keybinds.bindings]
+# Binding syntax rules:
+# - normal bindings must contain exactly one non-modifier key
+# - `viewport_pan_mode` is the only modifier-only binding form
+# - binding strings are case-insensitive for supported tokens
+#
+# Supported modifier tokens:
+# - Ctrl / Control
+# - Alt
+# - Shift
+# - Super / Logo / Meta
+#
+# Supported non-modifier keys:
+# - 0-9
+# - a-z
+# - Tab
+# - Return / Enter
+# - Space
+# - Escape / Esc
+# - Backspace
+# - Delete
+# - Left / Right / Up / Down
+# - F1-F12
+
+# exec:
+# Launch an external command using an argv array.
+"Super+Return" = { exec = ["wezterm", "start", "--always-new-process"] }
+
+# close:
+# Close the focused window.
+"Super+Q" = { close = true }
+
+# move:
+# Move the focused window by the given x/y delta or target coordinates,
+# depending on the current control path behavior.
+"Super+H" = { move = [-50, 0] }
+"Super+L" = { move = [50, 0] }
+
+# resize:
+# Resize the focused window to the given width/height.
+"Super+Shift+H" = { resize = [800, 600] }
+
+# split:
+# Change the focused tiled window split axis.
+#
+# Allowed values:
+# - "horizontal"
+# - "vertical"
+"Super+S" = { split = "vertical" }
+
+# background:
+# Mark the focused window as background content for the named output.
+"Super+B" = { background = "HDMI-A-1" }
+
+# clear_background:
+# Remove background status from the focused window.
+"Super+Shift+B" = { clear_background = true }
+
+# workspace:
+# Switch to the target workspace, creating it if required by the control path.
+# Both numeric ids and string names are accepted.
+"Super+1" = { workspace = 1 }
+"Super+2" = { workspace = "web" }
+
+# workspace_create:
+# Create a workspace by id or name.
+"Super+Shift+1" = { workspace_create = 1 }
+"Super+Shift+2" = { workspace_create = "chat" }
+
+# workspace_destroy:
+# Destroy a workspace by id, by name, or by the special string "active".
+"Super+Ctrl+1" = { workspace_destroy = 1 }
+"Super+Ctrl+2" = { workspace_destroy = "chat" }
+"Super+Ctrl+W" = { workspace_destroy = "active" }
+
+# output_enable / output_disable:
+# Enable or disable a named output.
+"Super+Ctrl+O" = { output_enable = "HDMI-A-1" }
+"Super+Shift+O" = { output_disable = "eDP-1" }
+
+# output_configure:
+# Reconfigure a named output.
+#
+# `scale` is optional in the schema. It is shown here explicitly.
+"Super+Alt+M" = { output_configure = { output = "HDMI-A-1", mode = "2560x1440@144", scale = 1 } }
+
+# viewport_pan:
+# Pan the focused output viewport by a relative delta.
+"Super+Alt+Left" = { viewport_pan = [-200, 0] }
+"Super+Alt+Right" = { viewport_pan = [200, 0] }
+"Super+Alt+Down" = { viewport_pan = [0, 200] }
+"Super+Alt+Up" = { viewport_pan = [0, -200] }
+
+# viewport_move:
+# Move the focused output viewport to an absolute origin.
+"Super+Alt+0" = { viewport_move = [0, 0] }
+
+# viewport_center:
+# Center the focused output viewport on the focused window.
+"Super+Alt+C" = { viewport_center = true }
+
+# viewport_pan_mode:
+# Special keybinding-only action.
+#
+# Rules:
+# - must be the only action in the binding
+# - may be configured at most once
+# - binding must contain only modifiers
+# - binding must contain at least one modifier
+"Ctrl+Shift" = { viewport_pan_mode = true }
+
+# Multiple actions can be chained in order.
+# This demonstrates the array form instead of the single-action inline-table form.
+"Super+Shift+Return" = [
+  { workspace = "dev" },
+  { exec = ["wezterm", "start"] },
+]
