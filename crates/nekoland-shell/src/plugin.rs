@@ -123,16 +123,18 @@ fn sync_wayland_commands_boundary_system(
     pending_output_controls: Res<'_, PendingOutputControls>,
     pending_output_overlay_controls: Res<'_, PendingOutputOverlayControls>,
     pending_output_server_requests: Res<'_, PendingOutputServerRequests>,
-    pending_window_server_requests: Res<'_, PendingWindowServerRequests>,
+    mut pending_window_server_requests: ResMut<'_, PendingWindowServerRequests>,
     pending_popup_server_requests: Res<'_, PendingPopupServerRequests>,
     mut wayland_commands: ResMut<'_, WaylandCommands>,
 ) {
     let pending_protocol_input_events = wayland_commands.pending_protocol_input_events.clone();
+    let pending_window_server_requests_boundary = pending_window_server_requests.clone();
+    pending_window_server_requests.clear();
     *wayland_commands = WaylandCommands {
         pending_output_controls: pending_output_controls.clone(),
         pending_output_overlay_controls: pending_output_overlay_controls.clone(),
         pending_output_server_requests: pending_output_server_requests.clone(),
-        pending_window_server_requests: pending_window_server_requests.clone(),
+        pending_window_server_requests: pending_window_server_requests_boundary,
         pending_popup_server_requests: pending_popup_server_requests.clone(),
         pending_protocol_input_events,
     };
@@ -162,10 +164,13 @@ mod tests {
     use nekoland_ecs::components::OutputId;
     use nekoland_ecs::resources::{
         CursorImageSnapshot, GlobalPointerPosition, OutputOverlayState, PendingScreenshotRequests,
-        ShellRenderInput, SurfacePresentationSnapshot, WaylandFeedback, WaylandIngress,
+        PendingOutputControls, PendingOutputOverlayControls, PendingOutputServerRequests,
+        PendingPopupServerRequests, PendingWindowServerRequests, ShellRenderInput, SurfaceExtent,
+        SurfacePresentationSnapshot, WaylandCommands, WaylandFeedback, WaylandIngress,
+        WindowServerAction, WindowServerRequest,
     };
 
-    use super::sync_shell_render_boundary_system;
+    use super::{sync_shell_render_boundary_system, sync_wayland_commands_boundary_system};
 
     #[test]
     fn shell_render_boundary_captures_shell_owned_snapshots() {
@@ -198,5 +203,32 @@ mod tests {
         );
         assert_eq!(boundary.pending_screenshot_requests.requests.len(), 1);
         assert_eq!(boundary.pending_screenshot_requests.requests[0].output_id, OutputId(7));
+    }
+
+    #[test]
+    fn wayland_commands_boundary_drains_one_shot_server_requests() {
+        let mut world = World::default();
+        let mut pending_window_server_requests = PendingWindowServerRequests::default();
+        pending_window_server_requests.push(WindowServerRequest {
+            surface_id: 7,
+            action: WindowServerAction::SyncXdgToplevelState {
+                size: Some(SurfaceExtent { width: 800, height: 600 }),
+                fullscreen: false,
+                maximized: false,
+            },
+        });
+        world.insert_resource(PendingOutputControls::default());
+        world.insert_resource(PendingOutputOverlayControls::default());
+        world.insert_resource(PendingOutputServerRequests::default());
+        world.insert_resource(pending_window_server_requests);
+        world.insert_resource(PendingPopupServerRequests::default());
+        world.insert_resource(WaylandCommands::default());
+
+        let mut system = IntoSystem::into_system(sync_wayland_commands_boundary_system);
+        system.initialize(&mut world);
+        let _ = system.run((), &mut world);
+
+        assert!(world.resource::<PendingWindowServerRequests>().is_empty());
+        assert_eq!(world.resource::<WaylandCommands>().pending_window_server_requests.len(), 1);
     }
 }

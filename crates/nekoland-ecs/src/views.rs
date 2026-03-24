@@ -4,10 +4,10 @@ use bevy_ecs::query::QueryData;
 use crate::components::{
     BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow,
     OutputCurrentWorkspace, OutputDevice, OutputId, OutputPlacement, OutputProperties,
-    OutputViewport, OutputWorkArea, PopupGrab, SurfaceContentVersion, SurfaceGeometry,
-    WindowFullscreenTarget, WindowLayout, WindowMode, WindowPlacement, WindowPolicyState,
-    WindowRestoreSnapshot, WindowRole, WindowSceneGeometry, WindowViewportVisibility,
-    WlSurfaceHandle, Workspace, X11Window, XdgPopup, XdgWindow,
+    OutputViewport, OutputWorkArea, PendingInteractiveResize, PopupGrab, SurfaceContentVersion,
+    SurfaceGeometry, WindowFullscreenTarget, WindowLayout, WindowMode, WindowPlacement,
+    WindowPolicyState, WindowRestoreSnapshot, WindowRole, WindowSceneGeometry,
+    WindowViewportVisibility, WlSurfaceHandle, Workspace, X11Window, XdgPopup, XdgWindow,
 };
 
 /// Common read-only runtime view over one surface-backed entity with committed geometry.
@@ -59,6 +59,7 @@ pub struct WindowRuntime {
     pub role: &'static mut WindowRole,
     pub background: Option<&'static mut OutputBackgroundWindow>,
     pub placement: &'static mut WindowPlacement,
+    pub pending_resize: Option<&'static mut PendingInteractiveResize>,
     pub fullscreen_target: &'static mut WindowFullscreenTarget,
     pub restore: &'static mut WindowRestoreSnapshot,
     pub policy_state: &'static mut WindowPolicyState,

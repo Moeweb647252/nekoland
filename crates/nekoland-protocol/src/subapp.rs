@@ -178,7 +178,7 @@ pub fn sync_wayland_subapp_back(
     match schedule {
         Some(schedule) if schedule == ExtractSchedule.intern() => {
             clone_resource_into::<CompositorClock>(wayland_world, main_world);
-            clear_main_world_protocol_input_command_boundary(main_world);
+            clear_main_world_wayland_command_boundary(main_world);
         }
         Some(schedule) if schedule == ProtocolSchedule.intern() => {
             clone_resource_into::<WaylandIngress>(wayland_world, main_world);
@@ -194,10 +194,11 @@ pub fn sync_wayland_subapp_back(
     }
 }
 
-fn clear_main_world_protocol_input_command_boundary(main_world: &mut World) {
+fn clear_main_world_wayland_command_boundary(main_world: &mut World) {
     let Some(mut wayland_commands) = main_world.get_resource_mut::<WaylandCommands>() else {
         return;
     };
+    wayland_commands.pending_window_server_requests.clear();
     wayland_commands.pending_protocol_input_events.clear();
 }
 
@@ -460,15 +461,15 @@ mod tests {
         OutputSnapshotState, PendingLayerRequests, PendingOutputControls, PendingOutputEvents,
         PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
         PendingPlatformInputEvents, PendingProtocolInputEvents, PendingScreenshotRequests,
-        PendingWindowControls,
-        PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests, PlatformSurfaceKind,
+        PendingWindowControls, PendingWindowServerRequests, PendingX11Requests,
+        PendingXdgRequests, PlatformSurfaceKind,
         PlatformSurfaceSnapshot, PlatformSurfaceSnapshotState, PresentAuditElement,
         PresentAuditElementKind, PresentAuditState, PrimarySelection, PrimarySelectionState,
-        ProtocolServerState, ScreenshotFrame, SelectionOwner,
-        ShellRenderInput, SurfacePresentationRole, SurfacePresentationSnapshot,
+        ProtocolServerState, ScreenshotFrame, SelectionOwner, ShellRenderInput, SurfaceExtent,
+        SurfacePresentationRole, SurfacePresentationSnapshot,
         SurfacePresentationState, VirtualOutputCaptureState, VirtualOutputElement,
         VirtualOutputElementKind, VirtualOutputFrame, WaylandCommands, WaylandFeedback,
-        WaylandIngress, XWaylandServerState,
+        WaylandIngress, WindowServerAction, WindowServerRequest, XWaylandServerState,
     };
     use crate::plugin::feedback::WorkspaceVisibilitySnapshot;
 
@@ -709,10 +710,20 @@ mod tests {
     }
 
     #[test]
-    fn extract_schedule_sync_back_drains_main_world_protocol_input_commands() {
+    fn extract_schedule_sync_back_drains_main_world_one_shot_wayland_commands() {
         let mut main_world = World::default();
         let mut wayland_world = World::default();
+        let mut pending_window_server_requests = PendingWindowServerRequests::default();
+        pending_window_server_requests.push(WindowServerRequest {
+            surface_id: 9,
+            action: WindowServerAction::SyncXdgToplevelState {
+                size: Some(SurfaceExtent { width: 800, height: 600 }),
+                fullscreen: false,
+                maximized: false,
+            },
+        });
         main_world.insert_resource(WaylandCommands {
+            pending_window_server_requests,
             pending_protocol_input_events: PendingProtocolInputEvents::from_items(vec![
                 BackendInputEvent {
                     device: "test-seat".to_owned(),
@@ -731,6 +742,13 @@ mod tests {
             Some(ExtractSchedule.intern()),
         );
 
+        assert!(
+            main_world
+                .resource::<WaylandCommands>()
+                .pending_window_server_requests
+                .is_empty(),
+            "extract schedule sync-back should clear one-shot window server commands after handoff",
+        );
         assert!(
             main_world
                 .resource::<WaylandCommands>()

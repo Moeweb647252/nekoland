@@ -9,9 +9,10 @@ use bevy_ecs::system::SystemParam;
 use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    BorderTheme, BufferState, ServerDecoration, SurfaceContentVersion, SurfaceGeometry,
-    WindowAnimation, WindowFullscreenTarget, WindowLayout, WindowMode, WindowPolicyState,
-    WindowRole, WindowSceneGeometry, WlSurfaceHandle, XdgPopup, XdgWindow,
+    BorderTheme, BufferState, PendingInteractiveResize, ServerDecoration, SurfaceContentVersion,
+    SurfaceGeometry, WindowAnimation, WindowFullscreenTarget, WindowLayout, WindowMode,
+    WindowPolicyState, WindowPosition, WindowRole, WindowSceneGeometry, WindowSize, WlSurfaceHandle,
+    XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
@@ -191,7 +192,7 @@ pub(crate) fn toplevel_lifecycle_system(
                         .find(|(_, window)| window.surface_id() == request.surface_id);
                 }
 
-                let Some((_, mut window)) = window else {
+                let Some((entity, mut window)) = window else {
                     deferred.push(request);
                     continue;
                 };
@@ -211,6 +212,51 @@ pub(crate) fn toplevel_lifecycle_system(
                 ) {
                     window.scene_geometry.width = size.width.max(1);
                     window.scene_geometry.height = size.height.max(1);
+                    if *window.layout == WindowLayout::Floating
+                        && (window.placement.floating_size.is_some() || window.pending_resize.is_some())
+                    {
+                        window.placement.floating_size = Some(WindowSize {
+                            width: size.width.max(1),
+                            height: size.height.max(1),
+                        });
+                    }
+                    let committed_width = size.width.max(1);
+                    let committed_height = size.height.max(1);
+                    if let Some(mut pending_resize) = window.pending_resize {
+                        let matched_inflight = pending_resize
+                            .inflight_geometry
+                            .as_ref()
+                            .is_some_and(|inflight| {
+                                inflight.width == committed_width && inflight.height == committed_height
+                            });
+                        if matched_inflight {
+                            let inflight = pending_resize
+                                .inflight_geometry
+                                .clone()
+                                .expect("matched inflight resize above");
+                            window.scene_geometry.x = inflight.x;
+                            window.scene_geometry.y = inflight.y;
+                            window.placement.set_explicit_position(WindowPosition {
+                                x: inflight.x,
+                                y: inflight.y,
+                            });
+                            if pending_resize.requested_geometry == inflight {
+                                commands.entity(entity).remove::<PendingInteractiveResize>();
+                            } else {
+                                pending_resize.inflight_geometry = None;
+                            }
+                        } else if pending_resize.requested_geometry.width == committed_width
+                            && pending_resize.requested_geometry.height == committed_height
+                        {
+                            window.scene_geometry.x = pending_resize.requested_geometry.x;
+                            window.scene_geometry.y = pending_resize.requested_geometry.y;
+                            window.placement.set_explicit_position(WindowPosition {
+                                x: pending_resize.requested_geometry.x,
+                                y: pending_resize.requested_geometry.y,
+                            });
+                            commands.entity(entity).remove::<PendingInteractiveResize>();
+                        }
+                    }
                 } else if let Some(restored) = window.restore.snapshot.as_mut() {
                     restored.geometry.width = size.width.max(1);
                     restored.geometry.height = size.height.max(1);

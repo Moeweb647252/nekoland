@@ -299,6 +299,74 @@ pub(crate) fn committed_surface_extent(
     })
 }
 
+fn renderer_buffer_extent(
+    surface: &super::WlSurface,
+) -> Option<nekoland_ecs::resources::SurfaceExtent> {
+    super::with_renderer_surface_state(surface, |state| state.buffer_size())
+        .flatten()
+        .and_then(surface_extent_from_logical_size)
+}
+
+fn surface_extent_from_logical_size(
+    size: smithay::utils::Size<i32, smithay::utils::Logical>,
+) -> Option<nekoland_ecs::resources::SurfaceExtent> {
+    let width = u32::try_from(size.w).ok()?.max(1);
+    let height = u32::try_from(size.h).ok()?.max(1);
+    Some(nekoland_ecs::resources::SurfaceExtent { width, height })
+}
+
+fn current_buffer_assignment_extent(
+    attributes: &super::SurfaceAttributes,
+) -> Option<nekoland_ecs::resources::SurfaceExtent> {
+    let super::BufferAssignment::NewBuffer(buffer) = attributes.buffer.as_ref()? else {
+        return None;
+    };
+    let logical_size = smithay::backend::renderer::buffer_dimensions(buffer)?
+        .to_logical(attributes.buffer_scale, attributes.buffer_transform.into());
+    surface_extent_from_logical_size(logical_size)
+}
+
+fn reset_renderer_state_for_resized_buffer(surface: &super::WlSurface) {
+    let Some(previous_extent) = renderer_buffer_extent(surface) else {
+        return;
+    };
+
+    let mut replay_buffer = None;
+    let mut replay_damage = Vec::new();
+    let mut should_reset = false;
+
+    super::compositor::with_states(surface, |states| {
+        let mut attributes = states.cached_state.get::<super::SurfaceAttributes>();
+        let current = attributes.current();
+        let Some(next_extent) = current_buffer_assignment_extent(current) else {
+            return;
+        };
+        if next_extent == previous_extent {
+            return;
+        }
+
+        replay_buffer = current.buffer.take();
+        replay_damage = std::mem::take(&mut current.damage);
+        current.buffer = Some(super::BufferAssignment::Removed);
+        should_reset = true;
+    });
+
+    if !should_reset {
+        return;
+    }
+
+    smithay::backend::renderer::utils::on_commit_buffer_handler::<
+        super::server::ProtocolRuntimeState,
+    >(surface);
+
+    super::compositor::with_states(surface, |states| {
+        let mut attributes = states.cached_state.get::<super::SurfaceAttributes>();
+        let current = attributes.current();
+        current.buffer = replay_buffer.take();
+        current.damage = replay_damage;
+    });
+}
+
 pub(crate) fn layer_cached_state(
     surface: &super::WlSurface,
 ) -> smithay::wayland::shell::wlr_layer::LayerSurfaceCachedState {
@@ -442,6 +510,7 @@ impl smithay::wayland::compositor::CompositorHandler for super::server::Protocol
     }
 
     fn commit(&mut self, surface: &super::WlSurface) {
+        reset_renderer_state_for_resized_buffer(surface);
         smithay::backend::renderer::utils::on_commit_buffer_handler::<
             super::server::ProtocolRuntimeState,
         >(surface);

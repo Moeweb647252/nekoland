@@ -6,7 +6,7 @@ use nekoland_ecs::resources::{
     PendingWindowServerRequests, SurfaceExtent, WindowServerAction, WindowServerRequest,
     X11WindowGeometry,
 };
-use nekoland_ecs::views::{WindowSnapshotRuntime, WindowSnapshotRuntimeItem};
+use nekoland_ecs::views::WindowRuntime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WindowPresentationState {
@@ -16,21 +16,26 @@ pub(crate) enum WindowPresentationState {
 
 pub fn window_presentation_sync_system(
     mut pending_window_requests: ResMut<PendingWindowServerRequests>,
-    windows: Query<WindowSnapshotRuntime, With<XdgWindow>>,
+    mut windows: Query<WindowRuntime, With<XdgWindow>>,
     mut synced: Local<BTreeMap<u64, WindowPresentationState>>,
 ) {
     let mut seen_surfaces = BTreeSet::new();
 
-    for window in windows.iter() {
+    for mut window in &mut windows {
         let surface_id = window.surface_id();
         seen_surfaces.insert(surface_id);
 
-        let desired = desired_presentation_state(&window);
+        let desired = desired_presentation_state(&mut window);
         if synced.get(&surface_id) == desired.as_ref() {
             continue;
         }
 
         if let Some(desired) = desired {
+            if let Some(mut pending_resize) = window.pending_resize
+                && pending_resize.inflight_geometry.is_none()
+            {
+                pending_resize.inflight_geometry = Some(pending_resize.requested_geometry.clone());
+            }
             pending_window_requests.push(WindowServerRequest {
                 surface_id,
                 action: window_server_action_for_presentation_state(&desired),
@@ -55,7 +60,7 @@ pub fn window_presentation_sync_system(
 }
 
 fn desired_presentation_state(
-    window: &WindowSnapshotRuntimeItem<'_, '_>,
+    window: &mut nekoland_ecs::views::WindowRuntimeItem<'_, '_>,
 ) -> Option<WindowPresentationState> {
     let fullscreen = window.role.is_output_background() || *window.mode == WindowMode::Fullscreen;
     let maximized = window.role.is_managed() && *window.mode == WindowMode::Maximized;
@@ -88,6 +93,31 @@ fn desired_presentation_state(
             fullscreen,
             maximized,
         }),
+        None if window.pending_resize.is_some() => {
+            let pending_resize = window.pending_resize.as_deref().expect("checked above");
+            let target_geometry = pending_resize
+                .inflight_geometry
+                .as_ref()
+                .unwrap_or(&pending_resize.requested_geometry);
+            Some(WindowPresentationState::XdgToplevelState {
+                size: Some(SurfaceExtent {
+                    width: target_geometry.width.max(1),
+                    height: target_geometry.height.max(1),
+                }),
+                fullscreen: false,
+                maximized: false,
+            })
+        }
+        None if window.placement.floating_size.is_some() => {
+            Some(WindowPresentationState::XdgToplevelState {
+                size: Some(SurfaceExtent {
+                    width: window.scene_geometry.width.max(1),
+                    height: window.scene_geometry.height.max(1),
+                }),
+                fullscreen: false,
+                maximized: false,
+            })
+        }
         None => None,
     }
 }
@@ -123,8 +153,9 @@ mod tests {
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::{WindowBundle, X11WindowBundle};
     use nekoland_ecs::components::{
-        OutputBackgroundWindow, OutputId, WindowLayout, WindowRestoreState, WindowRole,
-        WindowSceneGeometry, WlSurfaceHandle, X11Window,
+        OutputBackgroundWindow, OutputId, PendingInteractiveResize, WindowLayout,
+        WindowRestoreState, WindowRole, WindowPlacement, WindowSceneGeometry, WindowSize,
+        WlSurfaceHandle, X11Window,
     };
     use nekoland_ecs::resources::{
         PendingWindowServerRequests, SurfaceExtent, WindowServerAction, X11WindowGeometry,
@@ -312,6 +343,105 @@ mod tests {
             WindowServerAction::SyncXdgToplevelState { size, fullscreen, maximized } => {
                 assert_eq!(*size, Some(SurfaceExtent { width: 1280, height: 720 }));
                 assert!(*fullscreen);
+                assert!(!maximized);
+            }
+            action => panic!("unexpected action: {action:?}"),
+        }
+    }
+
+    #[test]
+    fn resized_floating_xdg_windows_sync_explicit_size() {
+        let mut app = NekolandApp::new("window-presentation-xdg-resize-test");
+        app.inner_mut()
+            .init_resource::<PendingWindowServerRequests>()
+            .add_systems(LayoutSchedule, window_presentation_sync_system);
+
+        app.inner_mut().world_mut().spawn((
+            WindowBundle {
+                surface: WlSurfaceHandle { id: 55 },
+                geometry: nekoland_ecs::components::SurfaceGeometry {
+                    x: 50,
+                    y: 60,
+                    width: 1024,
+                    height: 768,
+                },
+                scene_geometry: WindowSceneGeometry { x: 4000, y: 5000, width: 1440, height: 900 },
+                layout: WindowLayout::Floating,
+                mode: nekoland_ecs::components::WindowMode::Normal,
+                ..Default::default()
+            },
+            WindowPlacement {
+                floating_size: Some(WindowSize { width: 1440, height: 900 }),
+                ..WindowPlacement::default()
+            },
+        ));
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let requests = app
+            .inner()
+            .world()
+            .resource::<PendingWindowServerRequests>()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(requests.len(), 1);
+        match &requests[0].action {
+            WindowServerAction::SyncXdgToplevelState { size, fullscreen, maximized } => {
+                assert_eq!(*size, Some(SurfaceExtent { width: 1440, height: 900 }));
+                assert!(!fullscreen);
+                assert!(!maximized);
+            }
+            action => panic!("unexpected action: {action:?}"),
+        }
+    }
+
+    #[test]
+    fn pending_interactive_resize_prefers_requested_size_over_committed_geometry() {
+        let mut app = NekolandApp::new("window-presentation-xdg-pending-resize-test");
+        app.inner_mut()
+            .init_resource::<PendingWindowServerRequests>()
+            .add_systems(LayoutSchedule, window_presentation_sync_system);
+
+        app.inner_mut().world_mut().spawn((
+            WindowBundle {
+                surface: WlSurfaceHandle { id: 66 },
+                geometry: nekoland_ecs::components::SurfaceGeometry {
+                    x: 50,
+                    y: 60,
+                    width: 1024,
+                    height: 768,
+                },
+                scene_geometry: WindowSceneGeometry { x: 4000, y: 5000, width: 1024, height: 768 },
+                layout: WindowLayout::Floating,
+                mode: nekoland_ecs::components::WindowMode::Normal,
+                ..Default::default()
+            },
+            PendingInteractiveResize {
+                requested_geometry: WindowSceneGeometry {
+                    x: 4010,
+                    y: 5010,
+                    width: 1440,
+                    height: 900,
+                },
+                inflight_geometry: None,
+            },
+        ));
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let requests = app
+            .inner()
+            .world()
+            .resource::<PendingWindowServerRequests>()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(requests.len(), 1);
+        match &requests[0].action {
+            WindowServerAction::SyncXdgToplevelState { size, fullscreen, maximized } => {
+                assert_eq!(*size, Some(SurfaceExtent { width: 1440, height: 900 }));
+                assert!(!fullscreen);
                 assert!(!maximized);
             }
             action => panic!("unexpected action: {action:?}"),

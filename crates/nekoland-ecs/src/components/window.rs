@@ -36,6 +36,13 @@ pub struct WindowSceneGeometry {
     pub height: u32,
 }
 
+/// Requested XDG resize geometry that has been sent to the client but not fully committed yet.
+#[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingInteractiveResize {
+    pub requested_geometry: WindowSceneGeometry,
+    pub inflight_geometry: Option<WindowSceneGeometry>,
+}
+
 /// Whether the current window scene geometry intersects the active output viewport.
 #[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowViewportVisibility {

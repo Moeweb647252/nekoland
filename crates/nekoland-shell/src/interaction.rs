@@ -1,8 +1,9 @@
 use bevy_ecs::message::{MessageReader, MessageWriter};
-use bevy_ecs::prelude::{Query, Res, ResMut, Resource, With};
+use bevy_ecs::prelude::{Commands, Query, Res, ResMut, Resource, With};
 use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{
-    WindowLayout, WindowPosition, WindowSceneGeometry, WindowSize, XdgWindow,
+    PendingInteractiveResize, WindowLayout, WindowPosition, WindowSceneGeometry, WindowSize,
+    XdgWindow,
 };
 use nekoland_ecs::events::{PointerButton, WindowMoved};
 use nekoland_ecs::resources::{
@@ -62,6 +63,7 @@ pub struct ActiveWindowGrab {
 /// Advances the active floating-window grab from pointer motion/button events and applies the
 /// resulting geometry updates in real time.
 pub fn window_grab_system(
+    mut commands: Commands,
     mut pointer_buttons: MessageReader<PointerButton>,
     mut grab: WindowGrabParams<'_, '_>,
 ) {
@@ -70,11 +72,11 @@ pub fn window_grab_system(
         return;
     };
 
-    let Some(mut window) = grab
-        .entity_index
-        .entity_for_surface(grab_state.surface_id)
-        .and_then(|entity| grab.windows.get_mut(entity).ok())
-    else {
+    let Some(entity) = grab.entity_index.entity_for_surface(grab_state.surface_id) else {
+        grab.active_grab.state = None;
+        return;
+    };
+    let Some(mut window) = grab.windows.get_mut(entity).ok() else {
         grab.active_grab.state = None;
         return;
     };
@@ -89,8 +91,19 @@ pub fn window_grab_system(
         window.scene_geometry.x != next_geometry.x || window.scene_geometry.y != next_geometry.y;
     let resized = window.scene_geometry.width != next_geometry.width
         || window.scene_geometry.height != next_geometry.height;
+    let defer_native_xdg_resize =
+        resized && window.xdg_window.is_some() && window.x11_window.is_none();
 
-    if moved || resized {
+    if defer_native_xdg_resize {
+        if let Some(mut pending_resize) = window.pending_resize {
+            pending_resize.requested_geometry = next_geometry.clone();
+        } else {
+            commands.entity(entity).insert(PendingInteractiveResize {
+                requested_geometry: next_geometry.clone(),
+                inflight_geometry: None,
+            });
+        }
+    } else if moved || resized {
         *window.scene_geometry = next_geometry.clone();
         let workspace_id = window_workspace_runtime_id(window.child_of, &grab.workspaces)
             .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID);
