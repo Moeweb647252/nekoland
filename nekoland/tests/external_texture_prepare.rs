@@ -91,7 +91,6 @@ fn render_subapp_prepares_external_texture_imports_from_boundaries() {
             window: XdgWindow {
                 app_id: "org.nekoland.external-texture".to_owned(),
                 title: "External Texture".to_owned(),
-                last_acked_configure: None,
             },
             layout: WindowLayout::Floating,
             mode: WindowMode::Normal,

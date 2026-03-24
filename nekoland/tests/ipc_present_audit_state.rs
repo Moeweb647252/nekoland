@@ -112,7 +112,6 @@ fn seed_floating_window(world: &mut bevy_ecs::world::World) {
         window: XdgWindow {
             app_id: "org.nekoland.present-audit".to_owned(),
             title: "Present Audit Window".to_owned(),
-            last_acked_configure: None,
         },
         layout: WindowLayout::Floating,
         mode: WindowMode::Normal,

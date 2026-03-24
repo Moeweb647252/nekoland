@@ -2,16 +2,33 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::hierarchy::{ChildOf, Children};
-use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, With, Without};
+use bevy_ecs::prelude::{Commands, Entity, Query, Res, ResMut, Resource, With, Without};
 use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{
-    BufferState, PopupGrab, SurfaceContentVersion, SurfaceGeometry, WindowAnimation,
-    WlSurfaceHandle, XdgPopup, XdgWindow,
+    BufferState, PopupGrab, PopupSurface, SurfaceContentVersion, SurfaceGeometry, Window,
+    WindowAnimation, WlSurfaceHandle,
 };
 use nekoland_ecs::resources::{
-    EntityIndex, PendingXdgRequests, PopupPlacement, WaylandIngress, WindowLifecycleAction,
-    XdgSurfaceRole,
+    EntityIndex, PendingPopupEvents, PopupEvent, PopupEventRequest, PopupPlacement, WaylandIngress,
 };
+
+#[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct DeferredPopupEvents(PendingPopupEvents);
+
+impl DeferredPopupEvents {
+    pub(crate) fn take(&mut self) -> Vec<PopupEventRequest> {
+        self.0.take()
+    }
+
+    pub(crate) fn replace(&mut self, requests: Vec<PopupEventRequest>) {
+        self.0.replace(requests);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push(&mut self, request: PopupEventRequest) {
+        self.0.push(request);
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PopupManager;
@@ -20,7 +37,7 @@ type PopupParentGeometries<'w, 's> = Query<
     'w,
     's,
     (Entity, &'static WlSurfaceHandle, &'static SurfaceGeometry),
-    (With<XdgWindow>, Without<XdgPopup>, Allow<Disabled>),
+    (With<Window>, Without<PopupSurface>, Allow<Disabled>),
 >;
 type PopupManagementQuery<'w, 's> = Query<
     'w,
@@ -31,35 +48,35 @@ type PopupManagementQuery<'w, 's> = Query<
         &'static mut SurfaceGeometry,
         &'static mut BufferState,
         &'static mut SurfaceContentVersion,
-        &'static mut XdgPopup,
+        &'static mut PopupSurface,
         &'static mut PopupGrab,
         &'static ChildOf,
     ),
-    (Without<XdgWindow>, Allow<Disabled>),
+    (Without<Window>, Allow<Disabled>),
 >;
 type PopupProjectionParents<'w, 's> =
     Query<
         'w,
         's,
         (Entity, &'static SurfaceGeometry),
-        (With<XdgWindow>, Without<XdgPopup>, Allow<Disabled>),
+        (With<Window>, Without<PopupSurface>, Allow<Disabled>),
     >;
 type PopupProjectionQuery<'w, 's> = Query<
     'w,
     's,
-    (Entity, &'static mut SurfaceGeometry, &'static XdgPopup, &'static ChildOf),
-    (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>),
+    (Entity, &'static mut SurfaceGeometry, &'static PopupSurface, &'static ChildOf),
+    (With<PopupSurface>, Without<Window>, Allow<Disabled>),
 >;
 
 /// Owns popup lifecycle requests after they have been bridged out of protocol callbacks.
 ///
 /// Popup creation is deferred until the parent surface can be resolved so the popup enters the
 /// ECS hierarchy with the correct `ChildOf` relationship from the start.
-pub fn popup_management_system(
+pub(crate) fn popup_management_system(
     mut commands: Commands,
+    mut deferred_popup_events: ResMut<'_, DeferredPopupEvents>,
     wayland_ingress: Option<Res<WaylandIngress>>,
-    mut pending_xdg_requests: Option<ResMut<PendingXdgRequests>>,
-    entity_index: bevy_ecs::prelude::Res<EntityIndex>,
+    entity_index: Res<'_, EntityIndex>,
     parent_geometries: PopupParentGeometries<'_, '_>,
     mut popups: PopupManagementQuery<'_, '_>,
 ) {
@@ -75,32 +92,21 @@ pub fn popup_management_system(
         parent_entities_by_surface.insert(surface.id, entity);
         parent_geometries_by_entity.insert(entity, (*geometry).clone());
     }
+
     let mut deferred = Vec::new();
-    let mut requests =
-        pending_xdg_requests.as_deref_mut().map(PendingXdgRequests::take).unwrap_or_default();
+    let mut requests = deferred_popup_events.take();
     if let Some(wayland_ingress) = wayland_ingress.as_deref() {
-        requests.extend(wayland_ingress.pending_xdg_requests.iter().cloned());
+        requests.extend(wayland_ingress.pending_popup_events.iter().cloned());
     }
 
     for request in requests {
         match request.action.clone() {
-            WindowLifecycleAction::PopupCreated { parent_surface_id, placement }
-                if known_popups.insert(request.surface_id) =>
-            {
-                let Some(parent_surface_id) = parent_surface_id else {
-                    tracing::warn!(
-                        surface_id = request.surface_id,
-                        "dropping popup create request without parent surface id"
-                    );
-                    known_popups.remove(&request.surface_id);
-                    continue;
-                };
+            PopupEvent::Created { parent_surface_id, placement } if known_popups.insert(request.surface_id) => {
                 let Some(parent_entity) = popup_parent_entity(
                     parent_surface_id,
                     &entity_index,
                     &parent_entities_by_surface,
-                )
-                else {
+                ) else {
                     known_popups.remove(&request.surface_id);
                     deferred.push(request);
                     continue;
@@ -117,21 +123,18 @@ pub fn popup_management_system(
                     WlSurfaceHandle { id: request.surface_id },
                     geometry,
                     BufferState { attached: false, scale: 1 },
-                    XdgPopup {
-                        configure_serial: None,
-                        grab_serial: None,
-                        placement_x: placement.x,
-                        placement_y: placement.y,
-                        placement_width: placement.width.max(1) as u32,
-                        placement_height: placement.height.max(1) as u32,
-                        reposition_token: placement.reposition_token,
+                    PopupSurface {
+                        x: placement.x,
+                        y: placement.y,
+                        width: placement.width.max(1) as u32,
+                        height: placement.height.max(1) as u32,
                     },
                     PopupGrab::default(),
                     WindowAnimation::default(),
                 ));
                 popup_entity.insert(ChildOf(parent_entity));
             }
-            WindowLifecycleAction::PopupRepositioned { placement } => {
+            PopupEvent::Repositioned { placement } => {
                 let mut popup = entity_index
                     .entity_for_surface(request.surface_id)
                     .and_then(|entity| popups.get_mut(entity).ok());
@@ -149,13 +152,12 @@ pub fn popup_management_system(
                 {
                     *geometry = next_geometry;
                 }
-                popup.placement_x = placement.x;
-                popup.placement_y = placement.y;
-                popup.placement_width = placement.width.max(1) as u32;
-                popup.placement_height = placement.height.max(1) as u32;
-                popup.reposition_token = placement.reposition_token;
+                popup.x = placement.x;
+                popup.y = placement.y;
+                popup.width = placement.width.max(1) as u32;
+                popup.height = placement.height.max(1) as u32;
             }
-            WindowLifecycleAction::Committed { role: XdgSurfaceRole::Popup, size } => {
+            PopupEvent::Committed { size, attached } => {
                 let mut popup = entity_index
                     .entity_for_surface(request.surface_id)
                     .and_then(|entity| popups.get_mut(entity).ok());
@@ -175,13 +177,10 @@ pub fn popup_management_system(
                     geometry.width = size.width.max(1);
                     geometry.height = size.height.max(1);
                 }
-                buffer.attached = size.is_some();
+                buffer.attached = attached;
                 content_version.bump();
             }
-            WindowLifecycleAction::ConfigureRequested { role: XdgSurfaceRole::Popup } => {
-                tracing::trace!(surface_id = request.surface_id, "popup configure requested");
-            }
-            WindowLifecycleAction::PopupGrab { seat_id, serial } => {
+            PopupEvent::Grab { seat_id, serial } => {
                 let mut popup = entity_index
                     .entity_for_surface(request.surface_id)
                     .and_then(|entity| popups.get_mut(entity).ok());
@@ -189,17 +188,16 @@ pub fn popup_management_system(
                     popup =
                         popups.iter_mut().find(|(_, surface, ..)| surface.id == request.surface_id);
                 }
-                let Some((_, _, _, _, _, mut popup, mut grab, _)) = popup else {
+                let Some((_, _, _, _, _, _, mut grab, _)) = popup else {
                     deferred.push(request);
                     continue;
                 };
 
-                popup.grab_serial = Some(serial);
                 grab.active = true;
                 grab.seat_id = seat_id;
                 grab.serial = Some(serial);
             }
-            WindowLifecycleAction::Destroyed { role: XdgSurfaceRole::Popup } => {
+            PopupEvent::Closed => {
                 let mut popup = entity_index
                     .entity_for_surface(request.surface_id)
                     .and_then(|entity| popups.get_mut(entity).ok());
@@ -219,10 +217,8 @@ pub fn popup_management_system(
         }
     }
 
-    if let Some(mut pending_xdg_requests) = pending_xdg_requests {
-        pending_xdg_requests.replace(deferred);
-    }
-    tracing::trace!(count = known_popups.len(), "xdg popup system tick");
+    deferred_popup_events.replace(deferred);
+    tracing::trace!(count = known_popups.len(), "popup system tick");
 }
 
 pub fn popup_projection_system(
@@ -236,22 +232,17 @@ pub fn popup_projection_system(
     let pending = popups
         .iter_mut()
         .map(|(entity, _geometry, popup, child_of)| {
-            (
-                entity,
-                child_of.parent(),
-                popup.placement_x,
-                popup.placement_y,
-                popup.placement_width,
-                popup.placement_height,
-            )
+            (entity, child_of.parent(), popup.x, popup.y, popup.width, popup.height)
         })
         .collect::<Vec<_>>();
     let mut updates = BTreeMap::new();
 
     loop {
         let mut progressed = false;
-        for (index, (entity, parent_entity, placement_x, placement_y, placement_width, placement_height)) in
-            pending.iter().enumerate()
+        for (
+            index,
+            (entity, parent_entity, placement_x, placement_y, placement_width, placement_height),
+        ) in pending.iter().enumerate()
         {
             if updates.contains_key(&index) {
                 continue;
@@ -349,21 +340,21 @@ mod tests {
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::components::{
-        BufferState, PopupGrab, SurfaceContentVersion, SurfaceGeometry, WlSurfaceHandle, XdgPopup,
+        BufferState, PopupGrab, PopupSurface, SurfaceContentVersion, SurfaceGeometry, WlSurfaceHandle,
         XdgWindow,
     };
-    use nekoland_ecs::resources::{
-        EntityIndex, PendingXdgRequests, PopupPlacement, WindowLifecycleAction,
-        WindowLifecycleRequest, XdgSurfaceRole, rebuild_entity_index_system,
-    };
     use nekoland_ecs::components::WindowAnimation;
+    use nekoland_ecs::resources::{
+        EntityIndex, PopupEvent, PopupEventRequest, PopupPlacement, rebuild_entity_index_system,
+    };
 
-    use super::{popup_management_system, popup_projection_system};
+    use super::{DeferredPopupEvents, popup_management_system, popup_projection_system};
 
     #[test]
     fn popup_creation_inserts_child_of_parent_when_parent_exists() {
         let mut app = NekolandApp::new("popup-management-test");
-        app.insert_resource(EntityIndex::default()).insert_resource(PendingXdgRequests::default());
+        app.insert_resource(EntityIndex::default())
+            .insert_resource(DeferredPopupEvents::default());
         app.inner_mut().add_systems(
             LayoutSchedule,
             (rebuild_entity_index_system, popup_management_system).chain(),
@@ -379,11 +370,11 @@ mod tests {
             ))
             .id();
 
-        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
-            WindowLifecycleRequest {
+        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(
+            PopupEventRequest {
                 surface_id: 100,
-                action: WindowLifecycleAction::PopupCreated {
-                    parent_surface_id: Some(42),
+                action: PopupEvent::Created {
+                    parent_surface_id: 42,
                     placement: PopupPlacement {
                         x: 10,
                         y: 12,
@@ -413,7 +404,8 @@ mod tests {
     #[test]
     fn popup_projection_tracks_parent_geometry_changes() {
         let mut app = NekolandApp::new("popup-projection-test");
-        app.insert_resource(EntityIndex::default()).insert_resource(PendingXdgRequests::default());
+        app.insert_resource(EntityIndex::default())
+            .insert_resource(DeferredPopupEvents::default());
         app.inner_mut().add_systems(
             LayoutSchedule,
             (rebuild_entity_index_system, popup_management_system, popup_projection_system).chain(),
@@ -429,11 +421,11 @@ mod tests {
             ))
             .id();
 
-        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
-            WindowLifecycleRequest {
+        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(
+            PopupEventRequest {
                 surface_id: 100,
-                action: WindowLifecycleAction::PopupCreated {
-                    parent_surface_id: Some(42),
+                action: PopupEvent::Created {
+                    parent_surface_id: 42,
                     placement: PopupPlacement {
                         x: 10,
                         y: 12,
@@ -474,7 +466,8 @@ mod tests {
     #[test]
     fn popup_creation_accepts_popup_parent_surfaces() {
         let mut app = NekolandApp::new("nested-popup-management-test");
-        app.insert_resource(EntityIndex::default()).insert_resource(PendingXdgRequests::default());
+        app.insert_resource(EntityIndex::default())
+            .insert_resource(DeferredPopupEvents::default());
         app.inner_mut().add_systems(
             LayoutSchedule,
             (rebuild_entity_index_system, popup_management_system).chain(),
@@ -495,17 +488,17 @@ mod tests {
             .spawn((
                 WlSurfaceHandle { id: 100 },
                 SurfaceGeometry { x: 120, y: 150, width: 240, height: 120 },
-                XdgPopup::default(),
+                PopupSurface::default(),
                 ChildOf(window),
             ))
             .id();
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
-        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
-            WindowLifecycleRequest {
+        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(
+            PopupEventRequest {
                 surface_id: 200,
-                action: WindowLifecycleAction::PopupCreated {
-                    parent_surface_id: Some(100),
+                action: PopupEvent::Created {
+                    parent_surface_id: 100,
                     placement: PopupPlacement {
                         x: 10,
                         y: 12,
@@ -535,7 +528,8 @@ mod tests {
     #[test]
     fn popup_destroy_is_idempotent_when_duplicate_requests_arrive() {
         let mut app = NekolandApp::new("popup-destroy-idempotent-test");
-        app.insert_resource(EntityIndex::default()).insert_resource(PendingXdgRequests::default());
+        app.insert_resource(EntityIndex::default())
+            .insert_resource(DeferredPopupEvents::default());
         app.inner_mut().add_systems(
             LayoutSchedule,
             (rebuild_entity_index_system, popup_management_system).chain(),
@@ -555,7 +549,7 @@ mod tests {
             SurfaceGeometry { x: 40, y: 50, width: 160, height: 90 },
             BufferState { attached: true, scale: 1 },
             SurfaceContentVersion::default(),
-            XdgPopup::default(),
+            PopupSurface::default(),
             PopupGrab::default(),
             WindowAnimation::default(),
             ChildOf(parent),
@@ -573,30 +567,26 @@ mod tests {
             SurfaceGeometry { x: 60, y: 70, width: 120, height: 60 },
             BufferState { attached: true, scale: 1 },
             SurfaceContentVersion::default(),
-            XdgPopup::default(),
+            PopupSurface::default(),
             PopupGrab::default(),
             WindowAnimation::default(),
             ChildOf(popup_parent),
         ));
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
-        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
-            WindowLifecycleRequest {
-                surface_id: 100,
-                action: WindowLifecycleAction::Destroyed { role: XdgSurfaceRole::Popup },
-            },
-        );
-        app.inner_mut().world_mut().resource_mut::<PendingXdgRequests>().push(
-            WindowLifecycleRequest {
-                surface_id: 100,
-                action: WindowLifecycleAction::Destroyed { role: XdgSurfaceRole::Popup },
-            },
-        );
+        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(PopupEventRequest {
+            surface_id: 100,
+            action: PopupEvent::Closed,
+        });
+        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(PopupEventRequest {
+            surface_id: 100,
+            action: PopupEvent::Closed,
+        });
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner_mut().world_mut();
-        let popup_count = world.query::<&XdgPopup>().iter(world).count();
+        let popup_count = world.query::<&PopupSurface>().iter(world).count();
         assert_eq!(popup_count, 0);
     }
 }

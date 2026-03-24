@@ -10,9 +10,9 @@ use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, PendingInteractiveResize, ServerDecoration, SurfaceContentVersion,
-    SurfaceGeometry, WindowAnimation, WindowFullscreenTarget, WindowLayout,
+    PopupSurface, SurfaceGeometry, WindowAnimation, WindowFullscreenTarget, WindowLayout,
     WindowManagementHints, WindowMode, WindowPolicyState, WindowPosition, WindowRole,
-    WindowSceneGeometry, WindowSize, WlSurfaceHandle, XdgPopup, XdgWindow,
+    WindowSceneGeometry, WindowSize, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
@@ -38,7 +38,7 @@ use crate::window_policy::{
 pub struct ToplevelManager;
 
 type ToplevelPopups<'w, 's> =
-    Query<'w, 's, PopupRuntime, (With<XdgPopup>, Without<XdgWindow>, Allow<Disabled>)>;
+    Query<'w, 's, PopupRuntime, (With<PopupSurface>, Without<XdgWindow>, Allow<Disabled>)>;
 type ToplevelSurfaces<'w, 's> =
     Query<'w, 's, &'static WlSurfaceHandle, (With<XdgWindow>, Allow<Disabled>)>;
 type ToplevelOutputs<'w, 's> = Query<'w, 's, (Entity, OutputRuntime)>;
@@ -570,7 +570,7 @@ mod tests {
         OutputWorkArea, PendingInteractiveResize, SurfaceGeometry, WindowAnimation, WindowLayout,
         WindowManagementHints, WindowMode, WindowPlacement, WindowPosition,
         WindowRestoreSnapshot, WindowRestoreState, WindowSceneGeometry, WindowSize,
-        WlSurfaceHandle, Workspace, WorkspaceId, XdgPopup, XdgWindow,
+        PopupSurface, WlSurfaceHandle, Workspace, WorkspaceId, XdgWindow,
     };
     use nekoland_ecs::events::{WindowClosed, WindowCreated};
     use nekoland_ecs::resources::{
@@ -674,15 +674,7 @@ mod tests {
             .id();
         app.inner_mut().world_mut().spawn((
             WlSurfaceHandle { id: 12 },
-            XdgPopup {
-                configure_serial: None,
-                grab_serial: None,
-                reposition_token: None,
-                placement_x: 0,
-                placement_y: 0,
-                placement_width: 1,
-                placement_height: 1,
-            },
+            PopupSurface { x: 0, y: 0, width: 1, height: 1 },
             ChildOf(parent),
         ));
 

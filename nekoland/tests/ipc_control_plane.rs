@@ -328,7 +328,6 @@ fn seed_windows(world: &mut bevy_ecs::world::World) {
                 window: XdgWindow {
                     app_id: "org.nekoland.ipc".to_owned(),
                     title: title.to_owned(),
-                    last_acked_configure: None,
                 },
                 layout: WindowLayout::Tiled,
                 mode: WindowMode::Normal,
@@ -358,7 +357,6 @@ fn seed_split_windows(world: &mut bevy_ecs::world::World) {
                 window: XdgWindow {
                     app_id: "org.nekoland.ipc".to_owned(),
                     title: title.to_owned(),
-                    last_acked_configure: None,
                 },
                 layout: WindowLayout::Tiled,
                 mode: WindowMode::Normal,

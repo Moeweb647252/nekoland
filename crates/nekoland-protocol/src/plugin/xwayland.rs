@@ -152,7 +152,7 @@ impl super::server::ProtocolRuntimeState {
         }
     }
 
-    fn x11_window_type(
+    pub(crate) fn x11_window_type(
         window: &smithay::xwayland::xwm::X11Surface,
     ) -> Option<nekoland_ecs::components::X11WindowType> {
         match window.window_type() {
@@ -190,31 +190,32 @@ impl super::server::ProtocolRuntimeState {
         }
     }
 
-    fn should_publish_managed_x11_window(
+    fn should_publish_x11_surface(
         title: &str,
         app_id: &str,
         geometry: nekoland_ecs::resources::X11WindowGeometry,
-        popup: bool,
-        window_type: Option<nekoland_ecs::components::X11WindowType>,
     ) -> bool {
-        if title.is_empty() && app_id.is_empty() && geometry.width <= 1 && geometry.height <= 1 {
-            return false;
-        }
+        !(title.is_empty() && app_id.is_empty() && geometry.width <= 1 && geometry.height <= 1)
+    }
 
-        if popup {
-            return false;
-        }
+    fn x11_popup_placement(
+        &self,
+        geometry: nekoland_ecs::resources::X11WindowGeometry,
+        transient_for: Option<u32>,
+        transient_parent_surface_id: Option<u64>,
+    ) -> Option<nekoland_ecs::resources::PopupPlacement> {
+        let _parent_surface_id = transient_parent_surface_id?;
+        let parent_window_id = transient_for?;
+        let parent_window = self.x11_windows.get(&parent_window_id)?;
+        let parent_geometry = Self::x11_geometry(parent_window);
 
-        !matches!(
-            window_type,
-            Some(
-                nekoland_ecs::components::X11WindowType::DropdownMenu
-                    | nekoland_ecs::components::X11WindowType::Menu
-                    | nekoland_ecs::components::X11WindowType::Notification
-                    | nekoland_ecs::components::X11WindowType::PopupMenu
-                    | nekoland_ecs::components::X11WindowType::Tooltip
-            )
-        )
+        Some(nekoland_ecs::resources::PopupPlacement {
+            x: geometry.x.saturating_sub(parent_geometry.x),
+            y: geometry.y.saturating_sub(parent_geometry.y),
+            width: geometry.width.min(i32::MAX as u32) as i32,
+            height: geometry.height.min(i32::MAX as u32) as i32,
+            reposition_token: None,
+        })
     }
 
     fn remember_x11_window(&mut self, window: &smithay::xwayland::xwm::X11Surface) {
@@ -241,8 +242,10 @@ impl super::server::ProtocolRuntimeState {
         let transient_parent_surface_id =
             transient_for.and_then(|window_id| self.x11_surface_ids_by_window.get(&window_id).copied());
         let window_type = Self::x11_window_type(&window);
+        let popup_placement =
+            self.x11_popup_placement(geometry, transient_for, transient_parent_surface_id);
 
-        if !Self::should_publish_managed_x11_window(&title, &app_id, geometry, popup, window_type) {
+        if !Self::should_publish_x11_surface(&title, &app_id, geometry) {
             tracing::trace!(
                 window_id,
                 surface_id,
@@ -263,6 +266,7 @@ impl super::server::ProtocolRuntimeState {
                 override_redirect: window.is_override_redirect(),
                 popup,
                 transient_parent_surface_id,
+                popup_placement,
                 window_type,
                 title,
                 app_id,
@@ -275,6 +279,7 @@ impl super::server::ProtocolRuntimeState {
                 app_id,
                 popup,
                 transient_parent_surface_id,
+                popup_placement,
                 window_type,
                 geometry,
             }
@@ -298,6 +303,8 @@ impl super::server::ProtocolRuntimeState {
         let transient_parent_surface_id =
             transient_for.and_then(|window_id| self.x11_surface_ids_by_window.get(&window_id).copied());
         let window_type = Self::x11_window_type(&window);
+        let popup_placement =
+            self.x11_popup_placement(Self::x11_geometry(&window), transient_for, transient_parent_surface_id);
 
         self.queue_event(crate::ProtocolEvent::X11WindowReconfigured {
             surface_id,
@@ -305,6 +312,7 @@ impl super::server::ProtocolRuntimeState {
             app_id: Self::x11_app_id(&window),
             popup,
             transient_parent_surface_id,
+            popup_placement,
             window_type,
             geometry: Self::x11_geometry(&window),
         });

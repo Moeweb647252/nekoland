@@ -8,6 +8,7 @@ use nekoland_ecs::selectors::OutputName;
 use nekoland_ecs::views::OutputRuntime;
 
 /// Applies a newly resolved default policy to a window and marks policy updates as unlocked.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_window_policy(
     policy: WindowPolicy,
     layout: &mut WindowLayout,

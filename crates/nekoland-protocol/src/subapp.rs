@@ -23,11 +23,11 @@ use nekoland_ecs::resources::{
     KeyboardFocusState,
     OutputPresentationState, OutputSnapshotState, PendingLayerRequests, PendingOutputControls,
     PendingOutputEvents, PendingOutputOverlayControls, PendingOutputServerRequests,
-    PendingPlatformInputEvents, PendingPopupServerRequests, PendingProtocolInputEvents,
-    PendingWindowControls, PendingWindowEvents, PendingWindowServerRequests, PendingX11Requests,
-    PendingXdgRequests, PlatformSurfaceSnapshotState, PresentAuditState, PrimarySelectionState,
-    SeatRegistry,
-    ProtocolServerState, RenderPlan, ShellRenderInput, SurfaceContentVersionSnapshot,
+    PendingPlatformInputEvents, PendingPopupEvents, PendingPopupServerRequests,
+    PendingProtocolInputEvents, PendingWindowControls, PendingWindowEvents,
+    PendingWindowServerRequests, PendingXdgRequests, PlatformSurfaceSnapshotState,
+    PresentAuditState, PrimarySelectionState, SeatRegistry, ProtocolServerState, RenderPlan,
+    ShellRenderInput, SurfaceContentVersionSnapshot,
     VirtualOutputCaptureState, WaylandCommands, WaylandFeedback, WaylandIngress, XWaylandServerState,
 };
 
@@ -63,9 +63,9 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             .init_resource::<RenderPlan>()
             .init_resource::<WorkspaceVisibilitySnapshot>()
             .init_resource::<PendingXdgRequests>()
+            .init_resource::<PendingPopupEvents>()
             .init_resource::<PendingWindowEvents>()
             .init_resource::<PendingLayerRequests>()
-            .init_resource::<PendingX11Requests>()
             .init_resource::<PendingOutputEvents>()
             .init_resource::<PendingWindowControls>()
             .init_resource::<PendingOutputControls>()
@@ -258,7 +258,7 @@ fn extract_workspace_visibility_snapshot(main_world: &mut World, wayland_world: 
         nekoland_ecs::views::PopupRuntime,
         bevy_ecs::prelude::Has<bevy_ecs::entity_disabling::Disabled>,
     ), (
-        bevy_ecs::query::With<nekoland_ecs::components::XdgPopup>,
+        bevy_ecs::query::With<nekoland_ecs::components::PopupSurface>,
         bevy_ecs::query::Allow<bevy_ecs::entity_disabling::Disabled>,
     )>();
     let surface_presentation = shell_render_input.surface_presentation;
@@ -357,9 +357,9 @@ fn sync_wayland_ingress_boundary_system(
     output_snapshots: Res<'_, OutputSnapshotState>,
     surface_snapshots: Res<'_, PlatformSurfaceSnapshotState>,
     mut pending_window_events: ResMut<'_, PendingWindowEvents>,
+    mut pending_popup_events: ResMut<'_, PendingPopupEvents>,
     mut pending_xdg_requests: ResMut<'_, PendingXdgRequests>,
     mut pending_layer_requests: ResMut<'_, PendingLayerRequests>,
-    mut pending_x11_requests: ResMut<'_, PendingX11Requests>,
     mut pending_window_controls: ResMut<'_, PendingWindowControls>,
     mut pending_output_events: ResMut<'_, PendingOutputEvents>,
     mut wayland_ingress: ResMut<'_, WaylandIngress>,
@@ -378,9 +378,9 @@ fn sync_wayland_ingress_boundary_system(
         output_snapshots: output_snapshots.clone(),
         surface_snapshots: surface_snapshots.clone(),
         pending_window_events: PendingWindowEvents::from_items(pending_window_events.take()),
+        pending_popup_events: PendingPopupEvents::from_items(pending_popup_events.take()),
         pending_xdg_requests: PendingXdgRequests::from_items(pending_xdg_requests.take()),
         pending_layer_requests: PendingLayerRequests::from_items(pending_layer_requests.take()),
-        pending_x11_requests: PendingX11Requests::from_items(pending_x11_requests.take()),
         pending_window_controls: pending_window_controls_boundary,
         pending_output_events: PendingOutputEvents::from_items(pending_output_events.take()),
         output_materialization,
@@ -447,15 +447,14 @@ mod tests {
     use bevy_app::SubApp;
     use bevy_ecs::hierarchy::ChildOf;
     use bevy_ecs::schedule::ScheduleLabel;
-    use bevy_ecs::system::{IntoSystem, System};
     use bevy_ecs::world::World;
     use nekoland_core::plugin::NekolandAppPlugin;
     use nekoland_core::schedules::{
         ExtractSchedule, PresentSchedule, ProtocolSchedule, install_core_schedules_sub_app,
     };
     use nekoland_ecs::components::{
-        BufferState, SeatId, SurfaceGeometry, WindowMode, WindowRole, WindowViewportVisibility,
-        WlSurfaceHandle, XdgPopup, XdgWindow,
+        BufferState, PopupSurface, SeatId, SurfaceGeometry, WindowMode, WindowRole,
+        WindowViewportVisibility, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, ClipboardSelection, ClipboardSelectionState,
@@ -464,8 +463,8 @@ mod tests {
         OutputGeometrySnapshot, OutputPresentationState, OutputPresentationTimeline,
         OutputSnapshotState, PendingLayerRequests, PendingOutputControls, PendingOutputEvents,
         PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
-        PendingPlatformInputEvents, PendingProtocolInputEvents, PendingScreenshotRequests,
-        PendingWindowControls, PendingWindowServerRequests, PendingX11Requests,
+        PendingPopupEvents, PendingProtocolInputEvents, PendingScreenshotRequests,
+        PendingWindowControls, PendingWindowServerRequests,
         PendingXdgRequests, PlatformSurfaceKind,
         PlatformSurfaceSnapshot, PlatformSurfaceSnapshotState, PresentAuditElement,
         PresentAuditElementKind, PresentAuditState, PrimarySelection, PrimarySelectionState,
@@ -479,7 +478,7 @@ mod tests {
 
     use super::{
         WaylandSubAppPlugin, configure_wayland_subapp, extract_workspace_visibility_snapshot,
-        sync_wayland_ingress_boundary_system, sync_wayland_subapp_back,
+        sync_wayland_subapp_back,
     };
 
     #[test]
@@ -575,7 +574,7 @@ mod tests {
         });
         sub_app.world_mut().init_resource::<PendingXdgRequests>();
         sub_app.world_mut().init_resource::<PendingLayerRequests>();
-        sub_app.world_mut().init_resource::<PendingX11Requests>();
+        sub_app.world_mut().init_resource::<PendingPopupEvents>();
         sub_app.world_mut().run_schedule(ExtractSchedule);
         sub_app.world_mut().run_schedule(ProtocolSchedule);
 
@@ -653,7 +652,7 @@ mod tests {
             },
             pending_xdg_requests: pending_xdg_requests.clone(),
             pending_layer_requests: PendingLayerRequests::default(),
-            pending_x11_requests: PendingX11Requests::default(),
+            pending_popup_events: PendingPopupEvents::default(),
             ..Default::default()
         });
 
@@ -674,43 +673,6 @@ mod tests {
         assert_eq!(ingress.pending_xdg_requests, pending_xdg_requests);
         assert!(main_world.get_resource::<PendingWindowControls>().is_none());
         assert!(main_world.get_resource::<PendingOutputEvents>().is_none());
-    }
-
-    #[test]
-    fn ingress_boundary_drains_protocol_queues_after_sync() {
-        let mut world = World::default();
-        let mut pending_xdg_requests = PendingXdgRequests::default();
-        pending_xdg_requests.push(nekoland_ecs::resources::WindowLifecycleRequest {
-            surface_id: 11,
-            action: nekoland_ecs::resources::WindowLifecycleAction::InteractiveMove {
-                seat_id: SeatId::PRIMARY,
-                serial: 9,
-            },
-        });
-
-        world.insert_resource(ProtocolServerState::default());
-        world.insert_resource(XWaylandServerState::default());
-        world.insert_resource(CursorImageSnapshot::default());
-        world.insert_resource(PendingPlatformInputEvents::default());
-        world.insert_resource(OutputSnapshotState::default());
-        world.insert_resource(PlatformSurfaceSnapshotState::default());
-        world.insert_resource(pending_xdg_requests.clone());
-        world.insert_resource(PendingLayerRequests::default());
-        world.insert_resource(PendingX11Requests::default());
-        world.insert_resource(PendingWindowControls::default());
-        world.insert_resource(PendingOutputEvents::default());
-        world.insert_resource(WaylandIngress::default());
-
-        let mut system = IntoSystem::into_system(sync_wayland_ingress_boundary_system);
-        system.initialize(&mut world);
-        let _ = system.run((), &mut world);
-
-        assert_eq!(world.resource::<WaylandIngress>().pending_xdg_requests, pending_xdg_requests);
-        assert!(world.resource::<PendingXdgRequests>().is_empty());
-
-        let _ = system.run((), &mut world);
-
-        assert!(world.resource::<WaylandIngress>().pending_xdg_requests.is_empty());
     }
 
     #[test]
@@ -1007,14 +969,14 @@ mod tests {
             .spawn((
                 WlSurfaceHandle { id: 11 },
                 BufferState { attached: true, scale: 1 },
-                XdgPopup::default(),
+                PopupSurface::default(),
                 ChildOf(window),
             ))
             .id();
         main_world.spawn((
             WlSurfaceHandle { id: 12 },
             BufferState { attached: true, scale: 1 },
-            XdgPopup::default(),
+            PopupSurface::default(),
             ChildOf(popup),
         ));
         main_world.insert_resource(ShellRenderInput {

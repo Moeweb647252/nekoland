@@ -248,10 +248,24 @@ impl super::server::ProtocolRuntimeState {
             |(surface_id, window_id)| {
                 self.x11_windows.get(window_id).and_then(|window| {
                     window.wl_surface().map(|surface| {
+                        let popup =
+                            crate::x11_helper_surface(
+                                window.is_popup(),
+                                super::server::ProtocolRuntimeState::x11_window_type(window),
+                            ) && window
+                                .is_transient_for()
+                                .and_then(|parent_window_id| {
+                                    self.x11_surface_ids_by_window.get(&parent_window_id).copied()
+                                })
+                                .is_some();
                         (
                             *surface_id,
                             crate::ProtocolSurfaceEntry {
-                                kind: crate::ProtocolSurfaceKind::Toplevel,
+                                kind: if popup {
+                                    crate::ProtocolSurfaceKind::Popup
+                                } else {
+                                    crate::ProtocolSurfaceKind::Toplevel
+                                },
                                 surface,
                             },
                         )

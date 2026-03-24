@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
 use bevy_ecs::system::SystemParam;
-use nekoland_ecs::components::{XdgPopup, XdgWindow};
+use nekoland_ecs::components::{PopupSurface, XdgWindow};
 use nekoland_ecs::presentation_logic::{
     is_background_band_layer, is_foreground_band_layer, managed_window_visible, popup_visible,
 };
@@ -62,7 +62,7 @@ pub struct FrameCompositionInputs<'w, 's> {
     outputs: Query<'w, 's, OutputRuntime>,
     layers: Query<'w, 's, LayerRenderRuntime, With<nekoland_ecs::components::LayerShellSurface>>,
     windows: Query<'w, 's, (Entity, WindowRenderRuntime), With<XdgWindow>>,
-    popups: Query<'w, 's, PopupRenderRuntime, With<XdgPopup>>,
+    popups: Query<'w, 's, PopupRenderRuntime, With<PopupSurface>>,
     stacking: Res<'w, WindowStackingState>,
     workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
     shell_render_input: Res<'w, ShellRenderInput>,
@@ -92,7 +92,7 @@ pub struct DesktopSurfaceOrderInputs<'w, 's> {
     outputs: Query<'w, 's, OutputRuntime>,
     layers: Query<'w, 's, LayerRenderRuntime, With<nekoland_ecs::components::LayerShellSurface>>,
     windows: Query<'w, 's, (Entity, WindowRenderRuntime), With<XdgWindow>>,
-    popups: Query<'w, 's, PopupRenderRuntime, With<XdgPopup>>,
+    popups: Query<'w, 's, PopupRenderRuntime, With<PopupSurface>>,
     stacking: Res<'w, WindowStackingState>,
     workspaces: Query<'w, 's, (Entity, WorkspaceRuntime)>,
     shell_render_input: Res<'w, ShellRenderInput>,
@@ -772,7 +772,6 @@ mod tests {
             window: XdgWindow {
                 app_id: "org.nekoland.test".to_owned(),
                 title: "front".to_owned(),
-                last_acked_configure: None,
             },
             ..Default::default()
         });
@@ -781,7 +780,6 @@ mod tests {
             window: XdgWindow {
                 app_id: "org.nekoland.test".to_owned(),
                 title: "back".to_owned(),
-                last_acked_configure: None,
             },
             ..Default::default()
         });
@@ -815,7 +813,6 @@ mod tests {
                 window: XdgWindow {
                     app_id: "org.nekoland.test".to_owned(),
                     title: "background".to_owned(),
-                    last_acked_configure: None,
                 },
                 ..Default::default()
             },
@@ -836,7 +833,6 @@ mod tests {
             window: XdgWindow {
                 app_id: "org.nekoland.test".to_owned(),
                 title: "front".to_owned(),
-                last_acked_configure: None,
             },
             ..Default::default()
         });
@@ -869,7 +865,6 @@ mod tests {
                 window: XdgWindow {
                     app_id: "org.nekoland.test".to_owned(),
                     title: "background".to_owned(),
-                    last_acked_configure: None,
                 },
                 ..Default::default()
             },
@@ -924,7 +919,6 @@ mod tests {
             window: XdgWindow {
                 app_id: "org.nekoland.test".to_owned(),
                 title: "window".to_owned(),
-                last_acked_configure: None,
             },
             animation: WindowAnimation { progress: 0.9, ..Default::default() },
             ..Default::default()
@@ -967,7 +961,6 @@ mod tests {
             window: XdgWindow {
                 app_id: "org.nekoland.test".to_owned(),
                 title: "window".to_owned(),
-                last_acked_configure: None,
             },
             ..Default::default()
         });
@@ -1042,7 +1035,6 @@ mod tests {
                     window: XdgWindow {
                         app_id: "org.nekoland.test".to_owned(),
                         title: format!("background-{surface_id}"),
-                        last_acked_configure: None,
                     },
                     ..Default::default()
                 },

@@ -10,9 +10,9 @@ use nekoland_config::resources::{CompositorConfig, WindowRuleContext};
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, PendingInteractiveResize, ServerDecoration, SurfaceContentVersion,
-    SurfaceGeometry, Window, WindowAnimation, WindowFullscreenTarget, WindowLayout,
+    PopupSurface, SurfaceGeometry, Window, WindowAnimation, WindowFullscreenTarget, WindowLayout,
     WindowManagementHints, WindowMode, WindowPlacement, WindowPolicyState, WindowPosition,
-    WindowRole, WindowSceneGeometry, WindowSize, WlSurfaceHandle, XdgPopup,
+    WindowRole, WindowSceneGeometry, WindowSize, WlSurfaceHandle,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
 use nekoland_ecs::resources::{
@@ -49,7 +49,7 @@ impl DeferredWindowEvents {
 type LifecycleWindows<'w, 's> =
     Query<'w, 's, (Entity, WindowRuntime), (With<Window>, Allow<Disabled>)>;
 type LifecyclePopups<'w, 's> =
-    Query<'w, 's, PopupRuntime, (With<XdgPopup>, Without<Window>, Allow<Disabled>)>;
+    Query<'w, 's, PopupRuntime, (With<PopupSurface>, Without<Window>, Allow<Disabled>)>;
 type LifecycleSurfaces<'w, 's> =
     Query<'w, 's, &'static WlSurfaceHandle, (With<Window>, Allow<Disabled>)>;
 type LifecycleOutputs<'w, 's> = Query<'w, 's, (Entity, OutputRuntime)>;
