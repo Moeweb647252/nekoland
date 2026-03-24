@@ -1114,6 +1114,7 @@ mod tests {
     #[test]
     fn wayland_subapp_builds_feedback_from_present_phase_state() {
         let mut main_world = World::default();
+        main_world.insert_resource(GlobalPointerPosition::default());
         main_world.insert_resource(ShellRenderInput::default());
 
         let mut sub_app = SubApp::new();

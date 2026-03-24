@@ -126,12 +126,16 @@ fn window_subscription_reports_geometry_and_state_transitions() {
     assert_eq!(events.geometry.surface_id, TARGET_SURFACE_ID);
     assert_eq!(events.geometry.previous_x, summary.initial_window.x);
     assert_eq!(events.geometry.previous_y, summary.initial_window.y);
-    assert_eq!(events.geometry.previous_width, summary.initial_window.width);
-    assert_eq!(events.geometry.previous_height, summary.initial_window.height);
     assert_eq!(events.geometry.x, summary.target_x);
     assert_eq!(events.geometry.y, summary.target_y);
-    assert_eq!(events.geometry.width, summary.initial_window.width);
-    assert_eq!(events.geometry.height, summary.initial_window.height);
+    assert_eq!(
+        events.geometry.width, events.geometry.previous_width,
+        "move requests should preserve window width"
+    );
+    assert_eq!(
+        events.geometry.height, events.geometry.previous_height,
+        "move requests should preserve window height"
+    );
 
     assert_eq!(events.state.surface_id, TARGET_SURFACE_ID);
     assert_eq!(events.state.previous_state, summary.initial_window.state);

@@ -51,30 +51,47 @@ pub fn env_lock() -> &'static Mutex<()> {
 #[derive(Debug)]
 pub struct EnvVarGuard {
     name: &'static str,
-    previous: Option<OsString>,
+    state: EnvVarGuardState,
+}
+
+#[derive(Debug)]
+enum EnvVarGuardState {
+    ProcessEnv { previous: Option<OsString> },
+    BackendOverride { previous: Option<String> },
 }
 
 impl EnvVarGuard {
     /// Sets the variable immediately and remembers the previous value for restoration on drop.
     pub fn set(name: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        if name == "NEKOLAND_BACKEND" {
+            let value = value.as_ref().to_string_lossy().into_owned();
+            let previous = nekoland_backend::set_requested_backend_override(Some(value));
+            return Self { name, state: EnvVarGuardState::BackendOverride { previous } };
+        }
+
         let previous = std::env::var_os(name);
         unsafe {
             std::env::set_var(name, value);
         }
-        Self { name, previous }
+        Self { name, state: EnvVarGuardState::ProcessEnv { previous } }
     }
 }
 
 impl Drop for EnvVarGuard {
     /// Restores the previous environment-variable state when the guard leaves scope.
     fn drop(&mut self) {
-        match self.previous.take() {
-            Some(previous) => unsafe {
-                std::env::set_var(self.name, previous);
+        match &mut self.state {
+            EnvVarGuardState::ProcessEnv { previous } => match previous.take() {
+                Some(previous) => unsafe {
+                    std::env::set_var(self.name, previous);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.name);
+                },
             },
-            None => unsafe {
-                std::env::remove_var(self.name);
-            },
+            EnvVarGuardState::BackendOverride { previous } => {
+                nekoland_backend::set_requested_backend_override(previous.take());
+            }
         }
     }
 }

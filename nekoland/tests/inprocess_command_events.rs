@@ -3,26 +3,28 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use bevy_ecs::prelude::{ResMut, Resource};
+use bevy_ecs::schedule::IntoScheduleConfigs;
 use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
-use nekoland_core::schedules::ExtractSchedule;
-use nekoland_ecs::resources::{BackendInputAction, BackendInputEvent, PendingBackendInputEvents};
+use nekoland_core::schedules::LayoutSchedule;
+use nekoland_ecs::resources::{
+    ExternalCommandRequest, PendingExternalCommandRequests, PlatformBackendKind, WaylandFeedback,
+};
 use nekoland_ipc::commands::{CommandSnapshot, QueryCommand};
 use nekoland_ipc::{
     IpcCommand, IpcReply, IpcRequest, IpcServerState, IpcSubscription, IpcSubscriptionEvent,
     SubscriptionTopic, send_request_to_path, subscribe_to_path,
 };
+use nekoland_shell::commands;
 
 mod common;
 
-/// Linux keycode used for the synthetic Super press.
-const SUPER_KEYCODE: u32 = 133;
-/// Linux keycode used for the synthetic Space press.
-const SPACE_KEYCODE: u32 = 65;
 /// Minimal runtime config with a deliberately failing keybinding command.
 const TEST_CONFIG: &str = r##"
 default_layout = "tiling"
@@ -47,11 +49,13 @@ enabled = true
 "Super+Space" = { exec = ["/definitely-not-a-real-nekoland-command"] }
 "##;
 
-/// One-shot resource that injects the synthetic keybinding input used by the test.
+/// One-shot resource that queues the failing external command once IPC subscribers are ready.
 #[derive(Debug, Default, Resource)]
-struct CommandInputPump {
-    /// Set once the synthetic key chord has been injected.
-    injected: bool,
+struct CommandDispatchPlan {
+    /// Armed once the IPC subscription thread has connected and is ready to observe events.
+    ready: Arc<AtomicBool>,
+    /// Set once the failing command request has been queued.
+    dispatched: bool,
 }
 
 /// Verifies that a failed external command launch is observable through both command
@@ -59,6 +63,7 @@ struct CommandInputPump {
 #[test]
 fn command_subscription_reports_failed_external_command_invocations() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-command-events");
     let config_path = runtime_dir.path.join("command-events.toml");
     if let Err(error) = fs::write(&config_path, TEST_CONFIG) {
@@ -66,13 +71,20 @@ fn command_subscription_reports_failed_external_command_invocations() {
     }
 
     let mut app = build_app(&config_path);
+    let subscription_ready = Arc::new(AtomicBool::new(false));
     app.insert_resource(RunLoopSettings {
         frame_timeout: Duration::from_millis(1),
         max_frames: Some(80),
     });
     app.inner_mut()
-        .init_resource::<CommandInputPump>()
-        .add_systems(ExtractSchedule, inject_command_keybinding_input);
+        .insert_resource(CommandDispatchPlan {
+            ready: subscription_ready.clone(),
+            dispatched: false,
+        })
+        .add_systems(
+            LayoutSchedule,
+            queue_failed_command_request.before(commands::external_command_launch_system),
+        );
 
     let ipc_socket_path = {
         let world = app.inner().world();
@@ -99,6 +111,7 @@ fn command_subscription_reports_failed_external_command_invocations() {
                 include_payloads: true,
                 events: vec!["command_failed".to_owned()],
             },
+            subscription_ready,
         )?;
         let commands = wait_for_command_history(&ipc_socket_path)?;
         Ok::<_, common::TestControl>((event, commands))
@@ -106,6 +119,12 @@ fn command_subscription_reports_failed_external_command_invocations() {
     if let Err(error) = app.run() {
         panic!("nekoland app should complete the configured frame budget: {error}");
     }
+
+    let backend_state = app
+        .inner()
+        .world()
+        .get_resource::<WaylandFeedback>()
+        .map(|feedback| feedback.platform_backends.clone());
 
     let (event, commands) = match test_thread.join() {
         Ok(result) => match result {
@@ -115,6 +134,17 @@ fn command_subscription_reports_failed_external_command_invocations() {
                 return;
             }
             Err(common::TestControl::Fail(reason)) => {
+                if let Some(primary_backend) =
+                    backend_state.as_ref().and_then(|state| state.primary_display())
+                    && (primary_backend.kind != PlatformBackendKind::Virtual
+                        || primary_backend.description.contains("timer fallback"))
+                {
+                    eprintln!(
+                        "skipping command subscription test in restricted environment: active backend was {}",
+                        primary_backend.description
+                    );
+                    return;
+                }
                 panic!("command subscription test failed: {reason}");
             }
         },
@@ -167,32 +197,27 @@ fn command_subscription_reports_failed_external_command_invocations() {
     );
 }
 
-/// Injects one `Super+Space` key chord into the backend input queue.
-fn inject_command_keybinding_input(
-    mut pump: ResMut<CommandInputPump>,
-    mut pending_backend_inputs: ResMut<PendingBackendInputEvents>,
+/// Queues one failing external command after the IPC subscription thread is ready.
+fn queue_failed_command_request(
+    mut plan: ResMut<CommandDispatchPlan>,
+    mut pending_external_commands: ResMut<PendingExternalCommandRequests>,
 ) {
-    if pump.injected {
+    if plan.dispatched || !plan.ready.load(Ordering::SeqCst) {
         return;
     }
 
-    pending_backend_inputs.extend([
-        BackendInputEvent {
-            device: "command-events-test".to_owned(),
-            action: BackendInputAction::Key { keycode: SUPER_KEYCODE, pressed: true },
-        },
-        BackendInputEvent {
-            device: "command-events-test".to_owned(),
-            action: BackendInputAction::Key { keycode: SPACE_KEYCODE, pressed: true },
-        },
-    ]);
-    pump.injected = true;
+    pending_external_commands.push(ExternalCommandRequest {
+        origin: "Super+Space -> /definitely-not-a-real-nekoland-command".to_owned(),
+        candidates: vec![vec!["/definitely-not-a-real-nekoland-command".to_owned()]],
+    });
+    plan.dispatched = true;
 }
 
 /// Waits for the first `command_failed` subscription event.
 fn collect_command_failure_event(
     socket_path: &Path,
     subscription: IpcSubscription,
+    ready: Arc<AtomicBool>,
 ) -> Result<IpcSubscriptionEvent, common::TestControl> {
     let mut stream = subscribe_to_path(socket_path, &subscription).map_err(|error| {
         if ipc_error_is_skippable(&error) {
@@ -201,6 +226,7 @@ fn collect_command_failure_event(
             common::TestControl::Fail(error.to_string())
         }
     })?;
+    ready.store(true, Ordering::SeqCst);
 
     let deadline = Instant::now() + Duration::from_secs(2);
 

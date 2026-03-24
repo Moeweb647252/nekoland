@@ -252,7 +252,7 @@ fn ipc_error_is_retryable(error: &std::io::Error) -> bool {
             | ErrorKind::TimedOut
             | ErrorKind::NotFound
             | ErrorKind::ConnectionRefused
-    )
+    ) || error.raw_os_error() == Some(11)
 }
 
 /// Identifies IPC errors that should skip the test in restricted environments.

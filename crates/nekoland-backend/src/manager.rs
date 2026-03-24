@@ -16,6 +16,10 @@ use crate::traits::{
 use crate::virtual_output::VirtualRuntime;
 use crate::winit::backend::WinitRuntime;
 
+thread_local! {
+    static REQUESTED_BACKEND_OVERRIDE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
 /// ECS-facing snapshot of the currently active backend runtimes.
 #[derive(Debug, Clone, Default, Resource, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackendStatus {
@@ -199,12 +203,22 @@ impl BackendManager {
     }
 }
 
+/// Overrides `NEKOLAND_BACKEND` for the current thread only.
+///
+/// This is primarily intended for integration tests that need deterministic backend selection
+/// without mutating the whole process environment.
+pub fn set_requested_backend_override(requested: Option<String>) -> Option<String> {
+    REQUESTED_BACKEND_OVERRIDE.with(|override_cell| override_cell.replace(requested))
+}
+
 /// Parse the requested backend list from `NEKOLAND_BACKEND`.
 ///
 /// The variable accepts comma-separated backend names such as `winit`, `drm`,
 /// or `virtual`; duplicates are removed while preserving order.
 pub fn requested_backend_kinds() -> Vec<BackendKind> {
-    let requested = std::env::var("NEKOLAND_BACKEND").unwrap_or_else(|_| "winit".to_owned());
+    let requested = REQUESTED_BACKEND_OVERRIDE
+        .with(|override_cell| override_cell.borrow().clone())
+        .unwrap_or_else(|| std::env::var("NEKOLAND_BACKEND").unwrap_or_else(|_| "winit".to_owned()));
     let mut kinds = Vec::new();
 
     for raw_kind in requested.split(',') {

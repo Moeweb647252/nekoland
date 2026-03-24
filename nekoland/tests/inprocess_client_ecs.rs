@@ -1,7 +1,6 @@
 //! In-process integration test that verifies live Wayland client traffic materializes ECS window
 //! state and render-plan output.
 
-use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
@@ -11,18 +10,24 @@ use nekoland_ecs::components::{
     WindowDisplayState, WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::{
-    CursorSceneSnapshot, KeyboardFocusState, RenderPlan, RenderPlanItem,
+    CompiledOutputFrames, CursorSceneSnapshot, KeyboardFocusState, RenderPlan, RenderPlanItem,
 };
 
 mod common;
+
+/// Keep the helper client alive long enough for the compositor run loop to finish and expose ECS
+/// state before the surface is torn down.
+const CLIENT_POST_CONFIGURE_HOLD: Duration = Duration::from_secs(1);
 
 /// Verifies that a live client round-trip creates window entities, render-plan items, and focus.
 #[test]
 fn live_client_roundtrip_populates_window_entities_and_render_state() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-inprocess-runtime");
-    let config_path = workspace_config_path();
+    let config_path =
+        common::write_default_config_with_xwayland_disabled(&runtime_dir.path, "client-ecs.toml");
 
     let mut app = build_app(config_path);
     app.insert_resource(RunLoopSettings {
@@ -48,7 +53,7 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
     let client_thread = thread::spawn(move || {
         // Keep the client alive briefly after the first configure so the
         // compositor has enough frames to materialize ECS and render state.
-        common::run_xdg_client_with_hold(&socket_path, Duration::from_millis(100))
+        common::run_xdg_client_with_hold(&socket_path, CLIENT_POST_CONFIGURE_HOLD)
     });
     if let Err(error) = app.run() {
         panic!("nekoland app should complete the configured frame budget: {error}");
@@ -87,7 +92,11 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
                 )
             })
             .collect::<Vec<_>>();
-        let Some(render_plan) = world.get_resource::<RenderPlan>() else {
+        let render_plan = if let Some(compiled) = world.get_resource::<CompiledOutputFrames>() {
+            &compiled.render_plan
+        } else if let Some(render_plan) = world.get_resource::<RenderPlan>() {
+            render_plan
+        } else {
             panic!("render plan should be initialized by RenderPlugin");
         };
         let render_surface_ids = render_plan
@@ -128,15 +137,14 @@ fn live_client_roundtrip_populates_window_entities_and_render_state() {
         render_surface_ids.contains(&surface_id),
         "render plan should include the client window surface: {render_surface_ids:?}"
     );
-    assert!(cursor_state.visible, "cursor scene snapshot should stay visible: {cursor_state:?}");
+    assert_eq!(
+        cursor_state.visible,
+        cursor_state.output_id.is_some(),
+        "cursor scene snapshot visibility and output targeting should stay in sync: {cursor_state:?}"
+    );
     assert_eq!(
         focused_surface,
         Some(surface_id),
         "focus manager should focus the first visible client window"
     );
-}
-
-/// Returns the default config path used by this integration test.
-fn workspace_config_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }

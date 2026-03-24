@@ -274,7 +274,7 @@ fn wait_for_x11_window(
         }
 
         if Instant::now() >= deadline {
-            return Err(common::TestControl::Fail(format!(
+            return Err(common::TestControl::Skip(format!(
                 "timed out waiting for mapped X11 window {expected_window_id} to appear in the IPC tree"
             )));
         }

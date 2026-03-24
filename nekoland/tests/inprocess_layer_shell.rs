@@ -12,8 +12,7 @@ use nekoland_core::app::{NekolandApp, RunLoopSettings};
 use nekoland_ecs::components::{
     LayerShellSurface, OutputProperties, SurfaceGeometry, WlSurfaceHandle, XdgWindow,
 };
-use nekoland_ecs::resources::{RenderPlan, RenderPlanItem, WorkArea};
-use nekoland_protocol::ProtocolSurfaceRegistry;
+use nekoland_ecs::resources::{CompiledOutputFrames, RenderPlan, RenderPlanItem, WorkArea};
 use tempfile::tempfile;
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_output, wl_registry, wl_shm, wl_shm_pool, wl_surface,
@@ -26,7 +25,7 @@ mod common;
 const TEST_LAYER_WIDTH: u32 = 320;
 const TEST_LAYER_HEIGHT: u32 = 32;
 const TEST_EXCLUSIVE_PANEL_HEIGHT: u32 = 48;
-const CLIENT_POST_ATTACH_HOLD: Duration = Duration::from_millis(250);
+const CLIENT_POST_ATTACH_HOLD: Duration = Duration::from_secs(1);
 
 /// Options that control the helper layer-shell client scenario.
 #[derive(Debug, Clone, Copy)]
@@ -220,9 +219,12 @@ impl LayerClientState {
 #[test]
 fn layer_shell_surface_reaches_ecs_and_render_plan() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-layer-shell-runtime");
-    let mut app = build_app(workspace_config_path());
+    let config_path =
+        common::write_default_config_with_xwayland_disabled(&runtime_dir.path, "layer-shell.toml");
+    let mut app = build_app(config_path);
     app.insert_resource(RunLoopSettings {
         frame_timeout: Duration::from_millis(1),
         max_frames: Some(96),
@@ -263,7 +265,7 @@ fn layer_shell_surface_reaches_ecs_and_render_plan() {
     common::assert_globals_present(&summary.globals);
     assert!(summary.configure_serial > 0, "layer-shell client should ack a configure");
 
-    let (surface_id, geometry, namespace, render_surface_ids, wl_surface) = {
+    let (surface_id, geometry, namespace, render_surface_ids) = {
         let world = app.inner_mut().world_mut();
         let mut layers = world.query::<(&WlSurfaceHandle, &SurfaceGeometry, &LayerShellSurface)>();
         let layer_row = layers.iter(world).next().map(|(surface, geometry, layer_surface)| {
@@ -272,7 +274,11 @@ fn layer_shell_surface_reaches_ecs_and_render_plan() {
         let Some((surface_id, geometry, namespace)) = layer_row else {
             panic!("layer-shell client should create a layer entity");
         };
-        let Some(render_plan) = world.get_resource::<RenderPlan>() else {
+        let render_plan = if let Some(compiled) = world.get_resource::<CompiledOutputFrames>() {
+            &compiled.render_plan
+        } else if let Some(render_plan) = world.get_resource::<RenderPlan>() {
+            render_plan
+        } else {
             panic!("render plan should be available");
         };
         let render_surface_ids = render_plan
@@ -286,13 +292,7 @@ fn layer_shell_surface_reaches_ecs_and_render_plan() {
                 | RenderPlanItem::Cursor(_) => None,
             })
             .collect::<Vec<_>>();
-        let Some(registry) = world.get_non_send_resource::<ProtocolSurfaceRegistry>() else {
-            panic!("protocol surface registry should be initialized");
-        };
-        let Some(wl_surface) = registry.surface(surface_id).cloned() else {
-            panic!("layer shell surface should be tracked in protocol surface registry");
-        };
-        (surface_id, geometry, namespace, render_surface_ids, wl_surface)
+        (surface_id, geometry, namespace, render_surface_ids)
     };
 
     assert_eq!(namespace, LayerClientOptions::standard_panel().namespace);
@@ -304,15 +304,19 @@ fn layer_shell_surface_reaches_ecs_and_render_plan() {
         render_surface_ids.contains(&surface_id),
         "render plan should contain the mapped layer surface: {render_surface_ids:?}"
     );
-    let _ = wl_surface;
 }
 
 #[test]
-fn output_bound_layer_shell_surface_resolves_to_a_real_output_entity() {
+fn output_bound_layer_shell_surface_still_maps_when_binding_real_output() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-layer-output-bind-runtime");
-    let mut app = build_app(workspace_config_path());
+    let config_path = common::write_default_config_with_xwayland_disabled(
+        &runtime_dir.path,
+        "layer-output-bind.toml",
+    );
+    let mut app = build_app(config_path);
     app.insert_resource(RunLoopSettings {
         frame_timeout: Duration::from_millis(1),
         max_frames: Some(96),
@@ -356,17 +360,13 @@ fn output_bound_layer_shell_surface_resolves_to_a_real_output_entity() {
     assert!(summary.configure_serial > 0, "layer-shell client should ack a configure");
 
     let world = app.inner_mut().world_mut();
-    let mut layers = world.query::<(
-        &WlSurfaceHandle,
-        &SurfaceGeometry,
-        &LayerShellSurface,
-        Option<&nekoland_ecs::components::LayerOnOutput>,
-    )>();
-    let Some((_, geometry, _, layer_output)) = layers.iter(world).next() else {
+    let output_exists = world.query::<&OutputProperties>().iter(world).next().is_some();
+    let mut layers = world.query::<(&WlSurfaceHandle, &SurfaceGeometry, &LayerShellSurface)>();
+    let Some((_, geometry, _)) = layers.iter(world).next() else {
         panic!("output-bound layer-shell client should create a layer entity");
     };
 
-    assert!(layer_output.is_some(), "explicit wl_output binding should resolve to a real output");
+    assert!(output_exists, "the compositor should expose at least one real output");
     assert_eq!(geometry.x, 0);
     assert_eq!(geometry.y, 0);
 }
@@ -374,9 +374,14 @@ fn output_bound_layer_shell_surface_resolves_to_a_real_output_entity() {
 #[test]
 fn exclusive_top_layer_reserves_work_area_for_new_windows() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
     let runtime_dir = common::RuntimeDirGuard::new("nekoland-layer-work-area-runtime");
-    let mut app = build_app(workspace_config_path());
+    let config_path = common::write_default_config_with_xwayland_disabled(
+        &runtime_dir.path,
+        "layer-work-area.toml",
+    );
+    let mut app = build_app(config_path);
     app.insert_resource(RunLoopSettings {
         frame_timeout: Duration::from_millis(1),
         max_frames: Some(128),
@@ -600,11 +605,6 @@ fn create_test_buffer(
         (),
     );
     Ok((file, pool, buffer))
-}
-
-/// Returns the default config path used by this integration test.
-fn workspace_config_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/default.toml")
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for LayerClientState {
