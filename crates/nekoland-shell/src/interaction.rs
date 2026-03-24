@@ -2,8 +2,8 @@ use bevy_ecs::message::{MessageReader, MessageWriter};
 use bevy_ecs::prelude::{Commands, Query, Res, ResMut, Resource, With};
 use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{
-    PendingInteractiveResize, WindowLayout, WindowPosition, WindowSceneGeometry, WindowSize,
-    XdgWindow,
+    PendingInteractiveResize, Window, WindowLayout, WindowPosition, WindowSceneGeometry,
+    WindowSize,
 };
 use nekoland_ecs::events::{PointerButton, WindowMoved};
 use nekoland_ecs::resources::{
@@ -19,7 +19,7 @@ use crate::viewport::{
 
 const MIN_WINDOW_SIZE: i32 = 32;
 
-type GrabWindows<'w, 's> = Query<'w, 's, WindowRuntime, With<XdgWindow>>;
+type GrabWindows<'w, 's> = Query<'w, 's, WindowRuntime, With<Window>>;
 type GrabOutputs<'w, 's> = Query<'w, 's, (bevy_ecs::prelude::Entity, OutputRuntime)>;
 type GrabWorkspaces<'w, 's> = Query<'w, 's, (bevy_ecs::prelude::Entity, WorkspaceRuntime)>;
 
@@ -86,18 +86,17 @@ pub fn window_grab_system(
         return;
     }
 
-    let next_geometry = geometry_for_pointer(&grab_state, &grab.pointer);
+    let resize_grab = matches!(grab_state.mode, WindowGrabMode::Resize { .. });
+    let next_geometry = geometry_for_pointer(&grab_state, &grab.pointer, Some(&window.scene_geometry));
     let moved =
         window.scene_geometry.x != next_geometry.x || window.scene_geometry.y != next_geometry.y;
     let resized = window.scene_geometry.width != next_geometry.width
         || window.scene_geometry.height != next_geometry.height;
     let defer_native_xdg_resize =
-        resized && window.xdg_window.is_some() && window.x11_window.is_none();
+        resize_grab && resized && window.management_hints.client_driven_resize;
 
     if defer_native_xdg_resize {
-        let WindowGrabMode::Resize { edges } = grab_state.mode else {
-            unreachable!("native xdg resize deferral only applies to resize grabs");
-        };
+        let WindowGrabMode::Resize { edges } = grab_state.mode else { return };
         if let Some(mut pending_resize) = window.pending_resize {
             pending_resize.requested_geometry = next_geometry.clone();
             pending_resize.edges = edges;
@@ -179,6 +178,7 @@ pub(crate) fn begin_window_grab(
 fn geometry_for_pointer(
     grab_state: &WindowGrabState,
     pointer: &GlobalPointerPosition,
+    current_geometry: Option<&WindowSceneGeometry>,
 ) -> WindowSceneGeometry {
     let delta_x = (pointer.x - grab_state.start_pointer_x).round() as i32;
     let delta_y = (pointer.y - grab_state.start_pointer_y).round() as i32;
@@ -187,7 +187,12 @@ fn geometry_for_pointer(
         WindowGrabMode::Move => WindowSceneGeometry {
             x: grab_state.start_scene_geometry.x.saturating_add(delta_x as isize),
             y: grab_state.start_scene_geometry.y.saturating_add(delta_y as isize),
-            ..grab_state.start_scene_geometry.clone()
+            width: current_geometry
+                .map(|geometry| geometry.width)
+                .unwrap_or(grab_state.start_scene_geometry.width),
+            height: current_geometry
+                .map(|geometry| geometry.height)
+                .unwrap_or(grab_state.start_scene_geometry.height),
         },
         WindowGrabMode::Resize { edges } => {
             resize_geometry(&grab_state.start_scene_geometry, *edges, delta_x, delta_y)
@@ -265,6 +270,7 @@ mod tests {
         let geometry = geometry_for_pointer(
             &grab_state(WindowGrabMode::Move),
             &GlobalPointerPosition { x: 148.0, y: 236.0 },
+            None,
         );
 
         assert_eq!(geometry.x, 88);
@@ -278,6 +284,7 @@ mod tests {
         let geometry = geometry_for_pointer(
             &grab_state(WindowGrabMode::Resize { edges: ResizeEdges::Left }),
             &GlobalPointerPosition { x: 900.0, y: 200.0 },
+            None,
         );
 
         assert_eq!(geometry.x, 808);
@@ -289,9 +296,24 @@ mod tests {
         let geometry = geometry_for_pointer(
             &grab_state(WindowGrabMode::Resize { edges: ResizeEdges::BottomRight }),
             &GlobalPointerPosition { x: 164.0, y: 248.0 },
+            None,
         );
 
         assert_eq!(geometry.width, 864);
         assert_eq!(geometry.height, 648);
+    }
+
+    #[test]
+    fn move_grab_preserves_current_size_when_client_size_changed_during_grab() {
+        let geometry = geometry_for_pointer(
+            &grab_state(WindowGrabMode::Move),
+            &GlobalPointerPosition { x: 148.0, y: 236.0 },
+            Some(&WindowSceneGeometry { x: 40, y: 60, width: 960, height: 720 }),
+        );
+
+        assert_eq!(geometry.x, 88);
+        assert_eq!(geometry.y, 96);
+        assert_eq!(geometry.width, 960);
+        assert_eq!(geometry.height, 720);
     }
 }

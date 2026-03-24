@@ -23,4 +23,5 @@ impl DeferredXdgRequests {
 
 pub mod configure;
 pub mod popup;
+#[cfg(test)]
 pub mod toplevel;

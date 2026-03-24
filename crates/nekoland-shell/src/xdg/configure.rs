@@ -44,29 +44,7 @@ pub(crate) fn configure_sequence_system(mut configure: ConfigureSequenceParams<'
             WindowLifecycleAction::ConfigureRequested { role: XdgSurfaceRole::Toplevel } => {
                 tracing::trace!(surface_id = request.surface_id, "toplevel configure requested");
             }
-            WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Toplevel, serial } => {
-                let Some(entity) = resolve_xdg_window_entity(
-                    request.surface_id,
-                    &configure.entity_index,
-                    &mut configure.windows,
-                ) else {
-                    deferred.push(request);
-                    continue;
-                };
-                let Ok((_, mut window)) = configure.windows.get_mut(entity) else {
-                    deferred.push(request);
-                    continue;
-                };
-
-                let Some(xdg_window) = window.xdg_window.as_mut() else {
-                    tracing::warn!(
-                        surface_id = request.surface_id,
-                        "skipping ack_configure for xdg window without xdg metadata"
-                    );
-                    continue;
-                };
-                xdg_window.last_acked_configure = Some(serial);
-            }
+            WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Toplevel, .. } => {}
             WindowLifecycleAction::AckConfigure { role: XdgSurfaceRole::Popup, serial } => {
                 let Some(entity) = resolve_xdg_popup_entity(
                     request.surface_id,
@@ -352,6 +330,7 @@ mod tests {
                 buffer: BufferState { attached: true, scale: 1 },
                 content_version: Default::default(),
                 window: XdgWindow::default(),
+                management_hints: nekoland_ecs::components::WindowManagementHints::native_wayland(),
                 layout: WindowLayout::Floating,
                 mode: WindowMode::Normal,
                 decoration: Default::default(),

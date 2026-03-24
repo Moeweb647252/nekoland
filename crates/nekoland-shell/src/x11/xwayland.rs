@@ -8,9 +8,9 @@ use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::bundles::X11WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, FloatingPosition, ServerDecoration, SurfaceGeometry, WindowAnimation,
-    WindowFullscreenTarget, WindowLayout, WindowMode, WindowPlacement, WindowPolicyState,
-    WindowPosition, WindowRole, WindowSceneGeometry, WindowSize, WlSurfaceHandle, X11Window,
-    XdgPopup, XdgWindow,
+    WindowFullscreenTarget, WindowLayout, WindowManagementHints, WindowMode, WindowPlacement,
+    WindowPolicyState, WindowPosition, WindowRole, WindowSceneGeometry, WindowSize,
+    WlSurfaceHandle, X11Window, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
 use nekoland_ecs::resources::{
@@ -348,12 +348,8 @@ fn map_x11_window(
             return;
         };
         buffer.attached = true;
-        let Some(xdg_window) = window.xdg_window.as_mut() else {
-            tracing::warn!(surface_id, "skipping mapped x11 window update without xdg metadata");
-            return;
-        };
-        xdg_window.title = title.clone();
-        xdg_window.app_id = app_id.clone();
+        window.window.title = title.clone();
+        window.window.app_id = app_id.clone();
         apply_window_policy(policy, &mut window.layout, &mut window.mode, &mut window.policy_state);
         let current_background = window.background.as_ref().map(|background| (*background).clone());
         let background_output_id =
@@ -414,8 +410,28 @@ fn map_x11_window(
                 window: XdgWindow {
                     app_id: app_id.clone(),
                     title: title.clone(),
-                    last_acked_configure: None,
                 },
+                management_hints: WindowManagementHints::x11(
+                    X11Window {
+                        window_id,
+                        override_redirect,
+                        popup,
+                        transient_for,
+                        window_type,
+                    }
+                    .is_helper_surface(),
+                    override_redirect,
+                    override_redirect
+                        || X11Window {
+                            window_id,
+                            override_redirect,
+                            popup,
+                            transient_for,
+                            window_type,
+                        }
+                        .is_helper_surface(),
+                    None,
+                ),
                 x11_window: X11Window {
                     window_id,
                     override_redirect,
@@ -511,13 +527,9 @@ fn reconfigure_x11_window(
     };
     buffer.attached = true;
     let (resolved_title, resolved_app_id) = {
-        let Some(xdg_window) = window.xdg_window.as_mut() else {
-            tracing::warn!(surface_id, "skipping x11 reconfigure without xdg metadata");
-            return true;
-        };
-        xdg_window.title = title;
-        xdg_window.app_id = app_id;
-        (xdg_window.title.clone(), xdg_window.app_id.clone())
+        window.window.title = title;
+        window.window.app_id = app_id;
+        (window.window.title.clone(), window.window.app_id.clone())
     };
     let override_redirect = {
         let Some(x11_window) = window.x11_window.as_mut() else {
@@ -747,8 +759,8 @@ mod tests {
     use nekoland_ecs::components::{
         BorderTheme, BufferState, OutputCurrentWorkspace, OutputDevice, OutputId, OutputKind,
         OutputProperties, OutputWorkArea, ServerDecoration, SurfaceGeometry, WindowAnimation,
-        WindowLayout, WindowMode, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle,
-        Workspace, WorkspaceId, X11Window, XdgWindow,
+        WindowLayout, WindowManagementHints, WindowMode, WindowSceneGeometry,
+        WindowViewportVisibility, WlSurfaceHandle, Workspace, WorkspaceId, X11Window, XdgWindow,
     };
     use nekoland_ecs::events::{PointerButton, WindowClosed, WindowCreated, WindowMoved};
     use nekoland_ecs::resources::{
@@ -805,8 +817,8 @@ mod tests {
                 window: XdgWindow {
                     app_id: "x11-test".to_owned(),
                     title: "X11 Test".to_owned(),
-                    last_acked_configure: None,
                 },
+                management_hints: WindowManagementHints::x11(false, false, false, None),
                 x11_window: X11Window {
                     window_id: 7,
                     override_redirect: false,
@@ -932,8 +944,8 @@ mod tests {
                     window: XdgWindow {
                         app_id: "x11-test".to_owned(),
                         title: "X11 Test".to_owned(),
-                        last_acked_configure: None,
                     },
+                    management_hints: WindowManagementHints::x11(false, false, false, None),
                     x11_window: X11Window {
                         window_id: 7,
                         override_redirect: false,

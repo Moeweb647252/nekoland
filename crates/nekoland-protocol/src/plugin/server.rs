@@ -462,6 +462,30 @@ impl SmithayProtocolServer {
             .unwrap_or(false)
     }
 
+    pub(crate) fn sync_window_presentation(
+        &mut self,
+        surface_id: u64,
+        geometry: nekoland_ecs::components::SurfaceGeometry,
+        scene_geometry: Option<nekoland_ecs::components::WindowSceneGeometry>,
+        fullscreen: bool,
+        maximized: bool,
+        resizing: bool,
+    ) -> bool {
+        self.runtime
+            .as_ref()
+            .map(|runtime| {
+                runtime.borrow_mut().sync_window_presentation(
+                    surface_id,
+                    geometry,
+                    scene_geometry,
+                    fullscreen,
+                    maximized,
+                    resizing,
+                )
+            })
+            .unwrap_or(false)
+    }
+
     pub(crate) fn sync_x11_window_presentation(
         &mut self,
         surface_id: u64,
@@ -1183,6 +1207,56 @@ impl SmithayProtocolRuntime {
         }
 
         handled
+    }
+
+    pub(crate) fn sync_window_presentation(
+        &mut self,
+        surface_id: u64,
+        geometry: nekoland_ecs::components::SurfaceGeometry,
+        scene_geometry: Option<nekoland_ecs::components::WindowSceneGeometry>,
+        fullscreen: bool,
+        maximized: bool,
+        resizing: bool,
+    ) -> bool {
+        if self.state.toplevels.contains_key(&surface_id) {
+            let size = if fullscreen || maximized {
+                Some(nekoland_ecs::resources::SurfaceExtent {
+                    width: geometry.width.max(1),
+                    height: geometry.height.max(1),
+                })
+            } else {
+                scene_geometry.as_ref().map(|scene_geometry| nekoland_ecs::resources::SurfaceExtent {
+                    width: scene_geometry.width.max(1),
+                    height: scene_geometry.height.max(1),
+                })
+            };
+            return self.sync_xdg_toplevel_state(surface_id, size, fullscreen, maximized, resizing);
+        }
+
+        let x11_geometry = if fullscreen || maximized {
+            nekoland_ecs::resources::X11WindowGeometry {
+                x: geometry.x,
+                y: geometry.y,
+                width: geometry.width.max(1),
+                height: geometry.height.max(1),
+            }
+        } else if let Some(scene_geometry) = scene_geometry {
+            nekoland_ecs::resources::X11WindowGeometry {
+                x: scene_geometry.x.clamp(i32::MIN as isize, i32::MAX as isize) as i32,
+                y: scene_geometry.y.clamp(i32::MIN as isize, i32::MAX as isize) as i32,
+                width: scene_geometry.width.max(1),
+                height: scene_geometry.height.max(1),
+            }
+        } else {
+            nekoland_ecs::resources::X11WindowGeometry {
+                x: geometry.x,
+                y: geometry.y,
+                width: geometry.width.max(1),
+                height: geometry.height.max(1),
+            }
+        };
+
+        self.sync_x11_window_presentation(surface_id, x11_geometry, fullscreen, maximized)
     }
 
     pub(crate) fn dismiss_popup(&mut self, surface_id: u64) -> bool {

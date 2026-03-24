@@ -12,6 +12,7 @@ mod presentation;
 mod surface_presentation;
 pub mod viewport;
 pub mod window_control;
+mod window_lifecycle;
 mod window_policy;
 pub mod workspace;
 pub mod x11;

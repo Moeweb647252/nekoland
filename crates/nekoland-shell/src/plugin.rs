@@ -22,6 +22,7 @@ use crate::{
     interaction::{self, ActiveWindowGrab},
     layer, layout, presentation, surface_presentation, viewport, window_control, workspace, x11,
     xdg,
+    window_lifecycle,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -52,6 +53,7 @@ impl NekolandPlugin for ShellPlugin {
             .init_resource::<x11::DeferredX11Requests>()
             .init_resource::<layer::DeferredLayerRequests>()
             .init_resource::<xdg::DeferredXdgRequests>()
+            .init_resource::<window_lifecycle::DeferredWindowEvents>()
             .init_resource::<workspace::RememberedOutputWorkspaceState>()
             .init_resource::<CommandHistoryState>()
             .init_resource::<commands::StartupActionState>()
@@ -87,7 +89,7 @@ impl NekolandPlugin for ShellPlugin {
                         layer::arrange::sync_layer_output_relationships_system.run_if(
                             layer::arrange::layer_output_relationship_reconciliation_needed,
                         ),
-                        xdg::toplevel::toplevel_lifecycle_system,
+                        window_lifecycle::window_lifecycle_system,
                         xdg::popup::popup_management_system,
                         xdg::configure::configure_sequence_system,
                         window_control::window_control_request_system,
@@ -96,7 +98,6 @@ impl NekolandPlugin for ShellPlugin {
                     (
                         layer::arrange::layer_arrangement_system,
                         layer::arrange::work_area_system,
-                        x11::xwayland::xwayland_bridge_system,
                         layout::tiling::tiling_layout_system,
                         layout::floating::floating_layout_system,
                         layout::fullscreen::fullscreen_layout_system,
@@ -333,8 +334,19 @@ mod tests {
         assert_eq!(requests[0].surface_id, 99);
         assert_eq!(
             requests[0].action,
-            WindowServerAction::SyncXdgToplevelState {
-                size: Some(SurfaceExtent { width: 840, height: 640 }),
+            WindowServerAction::SyncPresentation {
+                geometry: nekoland_ecs::components::SurfaceGeometry {
+                    x: 10,
+                    y: 20,
+                    width: 840,
+                    height: 640,
+                },
+                scene_geometry: Some(WindowSceneGeometry {
+                    x: 10,
+                    y: 20,
+                    width: 840,
+                    height: 640,
+                }),
                 fullscreen: false,
                 maximized: false,
                 resizing: true,

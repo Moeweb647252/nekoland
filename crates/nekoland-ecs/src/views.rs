@@ -5,9 +5,10 @@ use crate::components::{
     BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow,
     OutputCurrentWorkspace, OutputDevice, OutputId, OutputPlacement, OutputProperties,
     OutputViewport, OutputWorkArea, PendingInteractiveResize, PopupGrab, SurfaceContentVersion,
-    SurfaceGeometry, WindowFullscreenTarget, WindowLayout, WindowMode, WindowPlacement,
-    WindowPolicyState, WindowRestoreSnapshot, WindowRole, WindowSceneGeometry,
-    WindowViewportVisibility, WlSurfaceHandle, Workspace, X11Window, XdgPopup, XdgWindow,
+    SurfaceGeometry, Window, WindowFullscreenTarget, WindowLayout, WindowManagementHints,
+    WindowMode, WindowPlacement, WindowPolicyState, WindowRestoreSnapshot, WindowRole,
+    WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle, Workspace, X11Window,
+    XdgPopup,
 };
 
 /// Common read-only runtime view over one surface-backed entity with committed geometry.
@@ -28,14 +29,15 @@ impl<'w, 's> SurfaceRuntimeItem<'w, 's> {
 #[derive(QueryData)]
 pub struct WindowFocusRuntime {
     pub surface: &'static WlSurfaceHandle,
+    pub window: &'static Window,
     pub geometry: &'static SurfaceGeometry,
     pub viewport_visibility: &'static WindowViewportVisibility,
+    pub management_hints: &'static WindowManagementHints,
     pub role: &'static WindowRole,
     pub background: Option<&'static OutputBackgroundWindow>,
     pub layout: &'static WindowLayout,
     pub mode: &'static WindowMode,
     pub child_of: Option<&'static ChildOf>,
-    pub x11_window: Option<&'static X11Window>,
 }
 
 impl<'w, 's> WindowFocusRuntimeItem<'w, 's> {
@@ -52,10 +54,12 @@ impl<'w, 's> WindowFocusRuntimeItem<'w, 's> {
 #[query_data(mutable)]
 pub struct WindowRuntime {
     pub surface: &'static WlSurfaceHandle,
+    pub window: &'static mut Window,
     pub geometry: &'static mut SurfaceGeometry,
     pub scene_geometry: &'static mut WindowSceneGeometry,
     pub content_version: &'static mut SurfaceContentVersion,
     pub viewport_visibility: &'static mut WindowViewportVisibility,
+    pub management_hints: &'static mut WindowManagementHints,
     pub role: &'static mut WindowRole,
     pub background: Option<&'static mut OutputBackgroundWindow>,
     pub placement: &'static mut WindowPlacement,
@@ -67,7 +71,6 @@ pub struct WindowRuntime {
     pub mode: &'static mut WindowMode,
     pub child_of: Option<&'static ChildOf>,
     pub buffer: Option<&'static mut BufferState>,
-    pub xdg_window: Option<&'static mut XdgWindow>,
     pub x11_window: Option<&'static mut X11Window>,
 }
 
@@ -95,6 +98,7 @@ impl<'w, 's> WindowRuntimeReadOnlyItem<'w, 's> {
 #[derive(QueryData)]
 pub struct WindowVisibilityRuntime {
     pub surface: &'static WlSurfaceHandle,
+    pub management_hints: &'static WindowManagementHints,
     pub viewport_visibility: &'static WindowViewportVisibility,
     pub role: &'static WindowRole,
     pub background: Option<&'static OutputBackgroundWindow>,
@@ -140,7 +144,8 @@ impl<'w, 's> PopupConfigureRuntimeItem<'w, 's> {
 #[derive(QueryData)]
 pub struct WindowSnapshotRuntime {
     pub surface: &'static WlSurfaceHandle,
-    pub window: &'static XdgWindow,
+    pub window: &'static Window,
+    pub management_hints: &'static WindowManagementHints,
     pub x11_window: Option<&'static X11Window>,
     pub geometry: &'static SurfaceGeometry,
     pub scene_geometry: &'static WindowSceneGeometry,
@@ -234,7 +239,7 @@ pub struct LayerOutputBindingRuntime {
 pub struct BackendPresentSurfaceRuntime {
     pub surface: &'static WlSurfaceHandle,
     pub geometry: &'static SurfaceGeometry,
-    pub window: Option<&'static XdgWindow>,
+    pub window: Option<&'static Window>,
     pub popup: Option<&'static XdgPopup>,
     pub layer: Option<&'static LayerShellSurface>,
     pub viewport_visibility: Option<&'static WindowViewportVisibility>,

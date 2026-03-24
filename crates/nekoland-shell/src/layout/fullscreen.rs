@@ -180,6 +180,7 @@ mod tests {
                     buffer: Default::default(),
                     content_version: Default::default(),
                     window: XdgWindow::default(),
+                    management_hints: nekoland_ecs::components::WindowManagementHints::native_wayland(),
                     layout: WindowLayout::Floating,
                     mode: WindowMode::Fullscreen,
                     decoration: Default::default(),

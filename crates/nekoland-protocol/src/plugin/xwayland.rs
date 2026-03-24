@@ -43,6 +43,20 @@ pub(crate) fn dispatch_window_server_requests_system(
             nekoland_ecs::resources::WindowServerAction::Close => {
                 server.send_close(request.surface_id)
             }
+            nekoland_ecs::resources::WindowServerAction::SyncPresentation {
+                ref geometry,
+                ref scene_geometry,
+                fullscreen,
+                maximized,
+                resizing,
+            } => server.sync_window_presentation(
+                request.surface_id,
+                geometry.clone(),
+                scene_geometry.clone(),
+                fullscreen,
+                maximized,
+                resizing,
+            ),
             nekoland_ecs::resources::WindowServerAction::SyncXdgToplevelState {
                 size,
                 fullscreen,
@@ -224,6 +238,8 @@ impl super::server::ProtocolRuntimeState {
         let geometry = Self::x11_geometry(&window);
         let popup = window.is_popup();
         let transient_for = window.is_transient_for();
+        let transient_parent_surface_id =
+            transient_for.and_then(|window_id| self.x11_surface_ids_by_window.get(&window_id).copied());
         let window_type = Self::x11_window_type(&window);
 
         if !Self::should_publish_managed_x11_window(&title, &app_id, geometry, popup, window_type) {
@@ -233,6 +249,7 @@ impl super::server::ProtocolRuntimeState {
                 window_type = ?window_type,
                 popup,
                 transient_for = ?transient_for,
+                transient_parent_surface_id = ?transient_parent_surface_id,
                 override_redirect = window.is_override_redirect(),
                 "ignoring XWayland helper surface"
             );
@@ -245,7 +262,7 @@ impl super::server::ProtocolRuntimeState {
                 window_id,
                 override_redirect: window.is_override_redirect(),
                 popup,
-                transient_for,
+                transient_parent_surface_id,
                 window_type,
                 title,
                 app_id,
@@ -257,7 +274,7 @@ impl super::server::ProtocolRuntimeState {
                 title,
                 app_id,
                 popup,
-                transient_for,
+                transient_parent_surface_id,
                 window_type,
                 geometry,
             }
@@ -278,6 +295,8 @@ impl super::server::ProtocolRuntimeState {
         };
         let popup = window.is_popup();
         let transient_for = window.is_transient_for();
+        let transient_parent_surface_id =
+            transient_for.and_then(|window_id| self.x11_surface_ids_by_window.get(&window_id).copied());
         let window_type = Self::x11_window_type(&window);
 
         self.queue_event(crate::ProtocolEvent::X11WindowReconfigured {
@@ -285,7 +304,7 @@ impl super::server::ProtocolRuntimeState {
             title: window.title(),
             app_id: Self::x11_app_id(&window),
             popup,
-            transient_for,
+            transient_parent_surface_id,
             window_type,
             geometry: Self::x11_geometry(&window),
         });

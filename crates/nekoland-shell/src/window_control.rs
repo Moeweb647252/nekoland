@@ -3,7 +3,7 @@ use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::{Commands, Query, ResMut, With};
 use bevy_ecs::query::Allow;
 use bevy_ecs::system::SystemParam;
-use nekoland_ecs::components::{WindowLayout, WindowMode, WindowPosition, WindowSize, XdgWindow};
+use nekoland_ecs::components::{Window, WindowLayout, WindowMode, WindowPosition, WindowSize};
 use nekoland_ecs::events::WindowMoved;
 use nekoland_ecs::resources::{
     EntityIndex, KeyboardFocusState, PendingWindowControls, PendingWindowServerRequests,
@@ -21,7 +21,7 @@ use crate::window_policy::{
     sync_window_background_role,
 };
 
-type ControlledWindows<'w, 's> = Query<'w, 's, WindowRuntime, (With<XdgWindow>, Allow<Disabled>)>;
+type ControlledWindows<'w, 's> = Query<'w, 's, WindowRuntime, (With<Window>, Allow<Disabled>)>;
 type ControlOutputs<'w, 's> = Query<'w, 's, (bevy_ecs::prelude::Entity, OutputRuntime)>;
 type ControlWorkspaces<'w, 's> = Query<'w, 's, (bevy_ecs::prelude::Entity, WorkspaceRuntime)>;
 
@@ -191,7 +191,7 @@ pub fn window_control_request_system(
 
         if control.focus
             && *window.mode != WindowMode::Hidden
-            && window.x11_window.as_ref().is_none_or(|window| !window.is_helper_surface())
+            && !window.management_hints.helper_surface
         {
             controls.keyboard_focus.focused_surface = Some(window.surface_id());
             controls.stacking.raise(workspace_id, window.surface_id());

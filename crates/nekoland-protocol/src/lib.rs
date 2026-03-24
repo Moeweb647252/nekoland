@@ -25,16 +25,19 @@ pub mod xdg_shell;
 
 use bevy_ecs::prelude::Resource;
 use nekoland_core::bridge::{EventBridge, WaylandBridge};
-use nekoland_ecs::components::{LayerAnchor, LayerLevel, LayerMargins, X11WindowType};
+use nekoland_ecs::components::{
+    LayerAnchor, LayerLevel, LayerMargins, WindowManagementHints, WindowSceneGeometry,
+    X11WindowType,
+};
 use nekoland_ecs::kinds::ProtocolEvent as ProtocolEventKind;
 use nekoland_ecs::resources::{
     ClipboardSelection, ClipboardSelectionState, DragAndDropDrop, DragAndDropSession,
     DragAndDropState, LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec,
     OutputEventRecord, PendingLayerRequests, PendingOutputEvents, PendingWindowControls,
-    PendingX11Requests, PendingXdgRequests, PopupPlacement, PrimarySelection,
-    PrimarySelectionState, ResizeEdges, SelectionOwner, SurfaceExtent, WindowLifecycleAction,
-    WindowLifecycleRequest, X11LifecycleAction, X11LifecycleRequest, X11WindowGeometry,
-    XdgSurfaceRole,
+    PendingWindowEvents, PendingXdgRequests, PopupPlacement, PrimarySelection,
+    PrimarySelectionState, ResizeEdges, SelectionOwner, SurfaceExtent, WindowEvent,
+    WindowEventRequest, WindowLifecycleAction, WindowLifecycleRequest, WindowManagerRequest,
+    X11WindowGeometry, XdgSurfaceRole,
 };
 use nekoland_ecs::selectors::SurfaceId;
 use serde::{Deserialize, Serialize};
@@ -156,7 +159,7 @@ pub enum ProtocolEvent {
         window_id: u32,
         override_redirect: bool,
         popup: bool,
-        transient_for: Option<u32>,
+        transient_parent_surface_id: Option<u64>,
         window_type: Option<X11WindowType>,
         title: String,
         app_id: String,
@@ -167,7 +170,7 @@ pub enum ProtocolEvent {
         title: String,
         app_id: String,
         popup: bool,
-        transient_for: Option<u32>,
+        transient_parent_surface_id: Option<u64>,
         window_type: Option<X11WindowType>,
         geometry: X11WindowGeometry,
     },
@@ -260,11 +263,13 @@ mod kind_tests {
 #[cfg(test)]
 mod tests {
     use nekoland_core::bridge::WaylandBridge;
+    use nekoland_ecs::components::{WindowSceneGeometry, X11WindowType};
     use nekoland_ecs::resources::PendingWindowControls;
 
     use nekoland_ecs::resources::{
         ClipboardSelectionState, DragAndDropState, PendingLayerRequests, PendingOutputEvents,
-        PendingX11Requests, PendingXdgRequests, PrimarySelectionState,
+        PendingWindowEvents, PendingXdgRequests, PrimarySelectionState, ResizeEdges,
+        SurfaceExtent, WindowEvent, WindowManagerRequest, X11WindowGeometry, XdgSurfaceRole,
     };
 
     use super::{ProtocolEvent, ProtocolFlushTargets, ProtocolState, supported_protocols};
@@ -284,9 +289,9 @@ mod tests {
         protocol_state.queue_event(ProtocolEvent::ActivationRequested { surface_id: 77 });
 
         let mut pending_xdg_requests = PendingXdgRequests::default();
+        let mut pending_window_events = PendingWindowEvents::default();
         let mut pending_layer_requests = PendingLayerRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
-        let mut pending_x11_requests = PendingX11Requests::default();
         let mut pending_output_events = PendingOutputEvents::default();
         let mut clipboard_selection = ClipboardSelectionState::default();
         let mut drag_and_drop = DragAndDropState::default();
@@ -294,9 +299,9 @@ mod tests {
 
         protocol_state.flush_into_ecs(&mut ProtocolFlushTargets {
             pending_xdg_requests: &mut pending_xdg_requests,
+            pending_window_events: &mut pending_window_events,
             pending_layer_requests: &mut pending_layer_requests,
             pending_window_controls: &mut pending_window_controls,
-            pending_x11_requests: &mut pending_x11_requests,
             pending_output_events: &mut pending_output_events,
             clipboard_selection: &mut clipboard_selection,
             drag_and_drop: &mut drag_and_drop,
@@ -304,9 +309,114 @@ mod tests {
         });
 
         assert!(pending_xdg_requests.is_empty());
+        assert!(pending_window_events.is_empty());
         assert_eq!(pending_window_controls.as_slice().len(), 1);
         assert_eq!(pending_window_controls.as_slice()[0].surface_id.0, 77);
         assert!(pending_window_controls.as_slice()[0].focus);
+    }
+
+    #[test]
+    fn toplevel_commit_flushes_into_unified_window_events() {
+        let mut protocol_state = ProtocolState::default();
+        protocol_state.queue_event(ProtocolEvent::SurfaceCommitted {
+            surface_id: 42,
+            role: XdgSurfaceRole::Toplevel,
+            size: Some(SurfaceExtent { width: 800, height: 600 }),
+        });
+
+        let mut pending_xdg_requests = PendingXdgRequests::default();
+        let mut pending_window_events = PendingWindowEvents::default();
+        let mut pending_layer_requests = PendingLayerRequests::default();
+        let mut pending_window_controls = PendingWindowControls::default();
+        let mut pending_output_events = PendingOutputEvents::default();
+        let mut clipboard_selection = ClipboardSelectionState::default();
+        let mut drag_and_drop = DragAndDropState::default();
+        let mut primary_selection = PrimarySelectionState::default();
+
+        protocol_state.flush_into_ecs(&mut ProtocolFlushTargets {
+            pending_xdg_requests: &mut pending_xdg_requests,
+            pending_window_events: &mut pending_window_events,
+            pending_layer_requests: &mut pending_layer_requests,
+            pending_window_controls: &mut pending_window_controls,
+            pending_output_events: &mut pending_output_events,
+            clipboard_selection: &mut clipboard_selection,
+            drag_and_drop: &mut drag_and_drop,
+            primary_selection: &mut primary_selection,
+        });
+
+        assert!(pending_xdg_requests.is_empty());
+        let events = pending_window_events.as_slice();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0].action, WindowEvent::Upsert { .. }));
+        assert!(matches!(
+            events[1].action,
+            WindowEvent::Committed { size: Some(SurfaceExtent { width: 800, height: 600 }), attached: true }
+        ));
+    }
+
+    #[test]
+    fn x11_map_flushes_into_unified_window_events() {
+        let mut protocol_state = ProtocolState::default();
+        protocol_state.queue_event(ProtocolEvent::X11WindowMapped {
+            surface_id: 64,
+            window_id: 9,
+            override_redirect: true,
+            popup: true,
+            transient_parent_surface_id: Some(7),
+            window_type: Some(X11WindowType::Tooltip),
+            title: "Tip".to_owned(),
+            app_id: "x11.test".to_owned(),
+            geometry: X11WindowGeometry { x: 11, y: 22, width: 333, height: 444 },
+        });
+        protocol_state.queue_event(ProtocolEvent::X11WindowResizeRequested {
+            surface_id: 64,
+            button: 1,
+            edges: ResizeEdges::TopLeft,
+        });
+
+        let mut pending_xdg_requests = PendingXdgRequests::default();
+        let mut pending_window_events = PendingWindowEvents::default();
+        let mut pending_layer_requests = PendingLayerRequests::default();
+        let mut pending_window_controls = PendingWindowControls::default();
+        let mut pending_output_events = PendingOutputEvents::default();
+        let mut clipboard_selection = ClipboardSelectionState::default();
+        let mut drag_and_drop = DragAndDropState::default();
+        let mut primary_selection = PrimarySelectionState::default();
+
+        protocol_state.flush_into_ecs(&mut ProtocolFlushTargets {
+            pending_xdg_requests: &mut pending_xdg_requests,
+            pending_window_events: &mut pending_window_events,
+            pending_layer_requests: &mut pending_layer_requests,
+            pending_window_controls: &mut pending_window_controls,
+            pending_output_events: &mut pending_output_events,
+            clipboard_selection: &mut clipboard_selection,
+            drag_and_drop: &mut drag_and_drop,
+            primary_selection: &mut primary_selection,
+        });
+
+        let events = pending_window_events.as_slice();
+        assert_eq!(events.len(), 2);
+        match &events[0].action {
+            WindowEvent::Upsert { title, app_id, hints, scene_geometry, attached } => {
+                assert_eq!(title.as_deref(), Some("Tip"));
+                assert_eq!(app_id.as_deref(), Some("x11.test"));
+                assert!(hints.helper_surface);
+                assert!(hints.bypass_window_rules);
+                assert_eq!(hints.transient_parent_surface_id, Some(7));
+                assert_eq!(
+                    *scene_geometry,
+                    Some(WindowSceneGeometry { x: 11, y: 22, width: 333, height: 444 })
+                );
+                assert!(*attached);
+            }
+            action => panic!("unexpected action: {action:?}"),
+        }
+        assert!(matches!(
+            events[1].action,
+            WindowEvent::ManagerRequest(WindowManagerRequest::BeginResize {
+                edges: ResizeEdges::TopLeft
+            })
+        ));
     }
 }
 
@@ -338,8 +448,8 @@ impl ProtocolState {
     /// consume during layout, focus, selection, and output handling.
     pub fn flush_into_ecs(&mut self, targets: &mut ProtocolFlushTargets<'_>) {
         let pending_xdg_requests = &mut *targets.pending_xdg_requests;
+        let pending_window_events = &mut *targets.pending_window_events;
         let pending_layer_requests = &mut *targets.pending_layer_requests;
-        let pending_x11_requests = &mut *targets.pending_x11_requests;
         let pending_window_controls = &mut *targets.pending_window_controls;
         let pending_output_events = &mut *targets.pending_output_events;
         let clipboard_selection = &mut *targets.clipboard_selection;
@@ -347,74 +457,132 @@ impl ProtocolState {
         let primary_selection = &mut *targets.primary_selection;
         for event in self.bridge.drain() {
             match event {
-                ProtocolEvent::SurfaceCommitted { surface_id, role, size } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
+                ProtocolEvent::SurfaceCommitted {
+                    surface_id,
+                    role: XdgSurfaceRole::Toplevel,
+                    size,
+                } => {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: WindowLifecycleAction::Committed { role, size },
+                        action: WindowEvent::Upsert {
+                            title: None,
+                            app_id: None,
+                            hints: WindowManagementHints::native_wayland(),
+                            scene_geometry: size.map(|size| WindowSceneGeometry {
+                                x: 0,
+                                y: 0,
+                                width: size.width.max(1),
+                                height: size.height.max(1),
+                            }),
+                            attached: size.is_some(),
+                        },
+                    });
+                    pending_window_events.push(WindowEventRequest {
+                        surface_id,
+                        action: WindowEvent::Committed { size, attached: size.is_some() },
                     });
                 }
-                ProtocolEvent::ConfigureRequested { surface_id, role } => {
+                ProtocolEvent::SurfaceCommitted {
+                    surface_id,
+                    role: XdgSurfaceRole::Popup,
+                    size,
+                } => {
                     pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
-                        action: WindowLifecycleAction::ConfigureRequested { role },
-                    });
-                }
-                ProtocolEvent::AckConfigure { surface_id, role, serial } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
-                        surface_id,
-                        action: WindowLifecycleAction::AckConfigure { role, serial },
-                    });
-                }
-                ProtocolEvent::ToplevelMetadataChanged { surface_id, title, app_id } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
-                        surface_id,
-                        action: WindowLifecycleAction::MetadataChanged { title, app_id },
-                    });
-                }
-                ProtocolEvent::MoveRequested { surface_id, seat_name, serial } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
-                        surface_id,
-                        action: WindowLifecycleAction::InteractiveMove { seat_name, serial },
-                    });
-                }
-                ProtocolEvent::ResizeRequested { surface_id, seat_name, serial, edges } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
-                        surface_id,
-                        action: WindowLifecycleAction::InteractiveResize {
-                            seat_name,
-                            serial,
-                            edges,
+                        action: WindowLifecycleAction::Committed {
+                            role: XdgSurfaceRole::Popup,
+                            size,
                         },
                     });
                 }
-                ProtocolEvent::MaximizeRequested { surface_id } => {
+                ProtocolEvent::ConfigureRequested {
+                    surface_id,
+                    role: XdgSurfaceRole::Popup,
+                } => {
                     pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
-                        action: WindowLifecycleAction::Maximize,
+                        action: WindowLifecycleAction::ConfigureRequested {
+                            role: XdgSurfaceRole::Popup,
+                        },
+                    });
+                }
+                ProtocolEvent::ConfigureRequested {
+                    role: XdgSurfaceRole::Toplevel,
+                    ..
+                }
+                | ProtocolEvent::AckConfigure {
+                    role: XdgSurfaceRole::Toplevel,
+                    ..
+                } => {}
+                ProtocolEvent::AckConfigure {
+                    surface_id,
+                    role: XdgSurfaceRole::Popup,
+                    serial,
+                } => {
+                    pending_xdg_requests.push(WindowLifecycleRequest {
+                        surface_id,
+                        action: WindowLifecycleAction::AckConfigure {
+                            role: XdgSurfaceRole::Popup,
+                            serial,
+                        },
+                    });
+                }
+                ProtocolEvent::ToplevelMetadataChanged { surface_id, title, app_id } => {
+                    pending_window_events.push(WindowEventRequest {
+                        surface_id,
+                        action: WindowEvent::Upsert {
+                            title,
+                            app_id,
+                            hints: WindowManagementHints::native_wayland(),
+                            scene_geometry: None,
+                            attached: false,
+                        },
+                    });
+                }
+                ProtocolEvent::MoveRequested { surface_id, .. } => {
+                    pending_window_events.push(WindowEventRequest {
+                        surface_id,
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::BeginMove),
+                    });
+                }
+                ProtocolEvent::ResizeRequested { surface_id, edges, .. } => {
+                    pending_window_events.push(WindowEventRequest {
+                        surface_id,
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::BeginResize {
+                            edges,
+                        }),
+                    });
+                }
+                ProtocolEvent::MaximizeRequested { surface_id } => {
+                    pending_window_events.push(WindowEventRequest {
+                        surface_id,
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::Maximize),
                     });
                 }
                 ProtocolEvent::UnMaximizeRequested { surface_id } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: WindowLifecycleAction::UnMaximize,
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::UnMaximize),
                     });
                 }
                 ProtocolEvent::FullscreenRequested { surface_id, output_name } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: WindowLifecycleAction::Fullscreen { output_name },
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::Fullscreen {
+                            output_name,
+                        }),
                     });
                 }
                 ProtocolEvent::UnFullscreenRequested { surface_id } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: WindowLifecycleAction::UnFullscreen,
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::UnFullscreen),
                     });
                 }
                 ProtocolEvent::MinimizeRequested { surface_id } => {
-                    pending_xdg_requests.push(WindowLifecycleRequest {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: WindowLifecycleAction::Minimize,
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::Minimize),
                     });
                 }
                 ProtocolEvent::ActivationRequested { surface_id } => {
@@ -441,10 +609,24 @@ impl ProtocolState {
                         action: WindowLifecycleAction::PopupGrab { seat_name, serial },
                     });
                 }
-                ProtocolEvent::SurfaceDestroyed { surface_id, role } => {
+                ProtocolEvent::SurfaceDestroyed {
+                    surface_id,
+                    role: XdgSurfaceRole::Toplevel,
+                } => {
+                    pending_window_events.push(WindowEventRequest {
+                        surface_id,
+                        action: WindowEvent::Closed,
+                    });
+                }
+                ProtocolEvent::SurfaceDestroyed {
+                    surface_id,
+                    role: XdgSurfaceRole::Popup,
+                } => {
                     pending_xdg_requests.push(WindowLifecycleRequest {
                         surface_id,
-                        action: WindowLifecycleAction::Destroyed { role },
+                        action: WindowLifecycleAction::Destroyed {
+                            role: XdgSurfaceRole::Popup,
+                        },
                     });
                 }
                 ProtocolEvent::LayerSurfaceCreated {
@@ -503,26 +685,34 @@ impl ProtocolState {
                 }
                 ProtocolEvent::X11WindowMapped {
                     surface_id,
-                    window_id,
+                    window_id: _,
                     override_redirect,
                     popup,
-                    transient_for,
+                    transient_parent_surface_id,
                     window_type,
                     title,
                     app_id,
                     geometry,
                 } => {
-                    pending_x11_requests.push(X11LifecycleRequest {
+                    let helper_surface = x11_helper_surface(popup, window_type);
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: X11LifecycleAction::Mapped {
-                            window_id,
-                            override_redirect,
-                            popup,
-                            transient_for,
-                            window_type,
-                            title,
-                            app_id,
-                            geometry,
+                        action: WindowEvent::Upsert {
+                            title: Some(title),
+                            app_id: Some(app_id),
+                            hints: WindowManagementHints::x11(
+                                helper_surface,
+                                override_redirect,
+                                override_redirect || helper_surface,
+                                transient_parent_surface_id,
+                            ),
+                            scene_geometry: Some(WindowSceneGeometry {
+                                x: geometry.x as isize,
+                                y: geometry.y as isize,
+                                width: geometry.width.max(1),
+                                height: geometry.height.max(1),
+                            }),
+                            attached: true,
                         },
                     });
                 }
@@ -531,80 +721,89 @@ impl ProtocolState {
                     title,
                     app_id,
                     popup,
-                    transient_for,
+                    transient_parent_surface_id,
                     window_type,
                     geometry,
                 } => {
-                    pending_x11_requests.push(X11LifecycleRequest {
+                    let helper_surface = x11_helper_surface(popup, window_type);
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: X11LifecycleAction::Reconfigured {
-                            title,
-                            app_id,
-                            popup,
-                            transient_for,
-                            window_type,
-                            geometry,
+                        action: WindowEvent::Upsert {
+                            title: Some(title),
+                            app_id: Some(app_id),
+                            hints: WindowManagementHints::x11(
+                                helper_surface,
+                                false,
+                                helper_surface,
+                                transient_parent_surface_id,
+                            ),
+                            scene_geometry: Some(WindowSceneGeometry {
+                                x: geometry.x as isize,
+                                y: geometry.y as isize,
+                                width: geometry.width.max(1),
+                                height: geometry.height.max(1),
+                            }),
+                            attached: true,
                         },
                     });
                 }
                 ProtocolEvent::X11WindowMaximizeRequested { surface_id } => {
-                    pending_x11_requests.push(X11LifecycleRequest {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: X11LifecycleAction::Maximize,
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::Maximize),
                     });
                 }
                 ProtocolEvent::X11WindowUnMaximizeRequested { surface_id } => {
-                    pending_x11_requests.push(X11LifecycleRequest {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: X11LifecycleAction::UnMaximize,
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::UnMaximize),
                     });
                 }
                 ProtocolEvent::X11WindowFullscreenRequested { surface_id } => {
-                    pending_x11_requests.push(X11LifecycleRequest {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: X11LifecycleAction::Fullscreen,
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::Fullscreen {
+                            output_name: None,
+                        }),
                     });
                 }
                 ProtocolEvent::X11WindowUnFullscreenRequested { surface_id } => {
-                    pending_x11_requests.push(X11LifecycleRequest {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: X11LifecycleAction::UnFullscreen,
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::UnFullscreen),
                     });
                 }
                 ProtocolEvent::X11WindowMinimizeRequested { surface_id } => {
-                    pending_x11_requests.push(X11LifecycleRequest {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: X11LifecycleAction::Minimize,
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::Minimize),
                     });
                 }
                 ProtocolEvent::X11WindowUnMinimizeRequested { surface_id } => {
-                    pending_x11_requests.push(X11LifecycleRequest {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: X11LifecycleAction::UnMinimize,
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::UnMinimize),
                     });
                 }
-                ProtocolEvent::X11WindowMoveRequested { surface_id, button } => {
-                    pending_x11_requests.push(X11LifecycleRequest {
+                ProtocolEvent::X11WindowMoveRequested { surface_id, .. } => {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: X11LifecycleAction::InteractiveMove { button },
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::BeginMove),
                     });
                 }
-                ProtocolEvent::X11WindowResizeRequested { surface_id, button, edges } => {
-                    pending_x11_requests.push(X11LifecycleRequest {
+                ProtocolEvent::X11WindowResizeRequested { surface_id, edges, .. } => {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: X11LifecycleAction::InteractiveResize { button, edges },
+                        action: WindowEvent::ManagerRequest(WindowManagerRequest::BeginResize {
+                            edges,
+                        }),
                     });
                 }
-                ProtocolEvent::X11WindowUnmapped { surface_id } => {
-                    pending_x11_requests.push(X11LifecycleRequest {
+                ProtocolEvent::X11WindowUnmapped { surface_id }
+                | ProtocolEvent::X11WindowDestroyed { surface_id } => {
+                    pending_window_events.push(WindowEventRequest {
                         surface_id,
-                        action: X11LifecycleAction::Unmapped,
-                    });
-                }
-                ProtocolEvent::X11WindowDestroyed { surface_id } => {
-                    pending_x11_requests.push(X11LifecycleRequest {
-                        surface_id,
-                        action: X11LifecycleAction::Destroyed,
+                        action: WindowEvent::Closed,
                     });
                 }
                 ProtocolEvent::OutputAnnounced { output_name } => {
@@ -719,11 +918,25 @@ impl ProtocolState {
     }
 }
 
+fn x11_helper_surface(popup: bool, window_type: Option<X11WindowType>) -> bool {
+    popup
+        || matches!(
+            window_type,
+            Some(
+                X11WindowType::DropdownMenu
+                    | X11WindowType::Menu
+                    | X11WindowType::Notification
+                    | X11WindowType::PopupMenu
+                    | X11WindowType::Tooltip
+            )
+        )
+}
+
 pub struct ProtocolFlushTargets<'a> {
     pub pending_xdg_requests: &'a mut PendingXdgRequests,
+    pub pending_window_events: &'a mut PendingWindowEvents,
     pub pending_layer_requests: &'a mut PendingLayerRequests,
     pub pending_window_controls: &'a mut PendingWindowControls,
-    pub pending_x11_requests: &'a mut PendingX11Requests,
     pub pending_output_events: &'a mut PendingOutputEvents,
     pub clipboard_selection: &'a mut ClipboardSelectionState,
     pub drag_and_drop: &'a mut DragAndDropState,

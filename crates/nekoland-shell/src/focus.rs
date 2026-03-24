@@ -4,7 +4,7 @@ use bevy_ecs::message::MessageReader;
 use bevy_ecs::prelude::{Entity, Local, Query, Res, ResMut, With};
 use bevy_ecs::system::SystemParam;
 use nekoland_config::resources::CompositorConfig;
-use nekoland_ecs::components::{OutputId, SurfaceGeometry, WindowLayout, WindowMode, XdgWindow};
+use nekoland_ecs::components::{OutputId, SurfaceGeometry, Window, WindowLayout, WindowMode};
 use nekoland_ecs::events::PointerButton;
 use nekoland_ecs::resources::{
     GlobalPointerPosition, KeyboardFocusState, OutputSnapshotState, UNASSIGNED_WORKSPACE_STACK_ID,
@@ -24,7 +24,7 @@ pub struct FocusHoverState {
     hovered_surface: Option<u64>,
 }
 
-type FocusWindows<'w, 's> = Query<'w, 's, WindowFocusRuntime, With<XdgWindow>>;
+type FocusWindows<'w, 's> = Query<'w, 's, WindowFocusRuntime, With<Window>>;
 type FocusWorkspaces<'w, 's> = Query<'w, 's, (Entity, WorkspaceRuntime)>;
 
 #[derive(SystemParam)]
@@ -47,7 +47,7 @@ pub fn pointer_button_focus_system(
     mut pointer_buttons: MessageReader<PointerButton>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
     mut stacking: ResMut<WindowStackingState>,
-    windows: Query<WindowFocusRuntime, With<XdgWindow>>,
+    windows: Query<WindowFocusRuntime, With<Window>>,
     wayland_ingress: Res<WaylandIngress>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
 ) {
@@ -172,7 +172,7 @@ pub fn focus_management_system(
 }
 
 fn visible_window_geometries(
-    windows: &Query<WindowFocusRuntime, With<XdgWindow>>,
+    windows: &Query<WindowFocusRuntime, With<Window>>,
     workspaces: &Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
 ) -> BTreeMap<u64, (SurfaceGeometry, u32, Option<OutputId>, WindowLayout)> {
     windows
@@ -181,7 +181,7 @@ fn visible_window_geometries(
             (*window.mode != WindowMode::Hidden
                 && window.viewport_visibility.visible
                 && window.role.is_managed()
-                && window.x11_window.is_none_or(|x11_window| !x11_window.is_helper_surface()))
+                && !window.management_hints.helper_surface)
             .then_some((
                 window.surface_id(),
                 (

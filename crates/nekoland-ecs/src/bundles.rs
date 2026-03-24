@@ -3,9 +3,9 @@ use bevy_ecs::bundle::Bundle;
 use crate::components::{
     BorderTheme, BufferState, DesiredOutputName, LayerAnchor, LayerLevel, LayerMargins,
     LayerShellSurface, OutputDevice, OutputPlacement, OutputProperties, OutputViewport,
-    OutputWorkArea, ServerDecoration, SurfaceContentVersion, SurfaceGeometry, WindowAnimation,
-    WindowLayout, WindowMode, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle,
-    X11Window, XdgWindow,
+    OutputWorkArea, ServerDecoration, SurfaceContentVersion, SurfaceGeometry, Window,
+    WindowAnimation, WindowLayout, WindowManagementHints, WindowMode, WindowSceneGeometry,
+    WindowViewportVisibility, WlSurfaceHandle, X11Window,
 };
 
 /// Canonical component set for a native XDG toplevel window entity.
@@ -17,7 +17,8 @@ pub struct WindowBundle {
     pub viewport_visibility: WindowViewportVisibility,
     pub buffer: BufferState,
     pub content_version: SurfaceContentVersion,
-    pub window: XdgWindow,
+    pub window: Window,
+    pub management_hints: WindowManagementHints,
     pub layout: WindowLayout,
     pub mode: WindowMode,
     pub decoration: ServerDecoration,
@@ -34,7 +35,8 @@ pub struct X11WindowBundle {
     pub viewport_visibility: WindowViewportVisibility,
     pub buffer: BufferState,
     pub content_version: SurfaceContentVersion,
-    pub window: XdgWindow,
+    pub window: Window,
+    pub management_hints: WindowManagementHints,
     pub x11_window: X11Window,
     pub layout: WindowLayout,
     pub mode: WindowMode,

@@ -3,7 +3,10 @@ use std::fmt;
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{LayerAnchor, LayerLevel, LayerMargins, X11WindowType};
+use crate::components::{
+    LayerAnchor, LayerLevel, LayerMargins, SurfaceGeometry, WindowManagementHints,
+    WindowSceneGeometry, X11WindowType,
+};
 use crate::kinds::{
     BackendEvent, CompositorRequest, FrameQueue, ProtocolEvent, ProtocolEventQueue,
 };
@@ -118,6 +121,49 @@ impl ProtocolEvent for WindowLifecycleRequest {}
 
 /// Platform-to-shell queue for XDG lifecycle events.
 pub type PendingXdgRequests = ProtocolEventQueue<WindowLifecycleRequest>;
+
+/// High-level manager-side requests that the shell can apply uniformly to any managed window.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WindowManagerRequest {
+    BeginMove,
+    BeginResize { edges: ResizeEdges },
+    Maximize,
+    UnMaximize,
+    Fullscreen { output_name: Option<String> },
+    UnFullscreen,
+    Minimize,
+    UnMinimize,
+}
+
+/// Unified window events exported by the wayland subapp into the main app.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WindowEvent {
+    Upsert {
+        title: Option<String>,
+        app_id: Option<String>,
+        hints: WindowManagementHints,
+        scene_geometry: Option<WindowSceneGeometry>,
+        attached: bool,
+    },
+    Committed {
+        size: Option<SurfaceExtent>,
+        attached: bool,
+    },
+    ManagerRequest(WindowManagerRequest),
+    Closed,
+}
+
+/// One queued window event targeting a surface id.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowEventRequest {
+    pub surface_id: u64,
+    pub action: WindowEvent,
+}
+
+impl ProtocolEvent for WindowEventRequest {}
+
+/// Platform-to-shell queue for unified window lifecycle events.
+pub type PendingWindowEvents = ProtocolEventQueue<WindowEventRequest>;
 
 /// Human-readable input log entry used by tests and diagnostics.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -256,6 +302,13 @@ pub type PendingX11Requests = ProtocolEventQueue<X11LifecycleRequest>;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WindowServerAction {
     Close,
+    SyncPresentation {
+        geometry: SurfaceGeometry,
+        scene_geometry: Option<WindowSceneGeometry>,
+        fullscreen: bool,
+        maximized: bool,
+        resizing: bool,
+    },
     SyncXdgToplevelState {
         size: Option<SurfaceExtent>,
         fullscreen: bool,

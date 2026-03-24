@@ -1,6 +1,8 @@
 use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 
+use crate::components::WindowManagementHints;
+
 /// Normalized X11 window-type classification copied out of XWayland metadata.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -19,7 +21,7 @@ pub enum X11WindowType {
 
 /// Extra metadata attached to windows whose lifecycle is driven by XWayland/X11.
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[require(crate::components::XdgWindow)]
+#[require(crate::components::Window)]
 pub struct X11Window {
     pub window_id: u32,
     pub override_redirect: bool,
@@ -42,6 +44,17 @@ impl X11Window {
                 )
             )
     }
+
+    pub fn management_hints(&self, transient_parent_surface_id: Option<u64>) -> WindowManagementHints {
+        let helper_surface = self.is_helper_surface();
+        let bypass_window_rules = self.override_redirect;
+        WindowManagementHints::x11(
+            helper_surface,
+            bypass_window_rules,
+            bypass_window_rules || helper_surface,
+            transient_parent_surface_id,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -49,14 +62,14 @@ mod tests {
     use bevy_ecs::world::World;
 
     use super::{X11Window, X11WindowType};
-    use crate::components::{BufferState, SurfaceGeometry, WindowAnimation, WindowMode, XdgWindow};
+    use crate::components::{BufferState, SurfaceGeometry, Window, WindowAnimation, WindowMode};
 
     #[test]
-    fn x11_window_requires_xdg_window_stack() {
+    fn x11_window_requires_window_stack() {
         let mut world = World::new();
         let entity = world.spawn(X11Window::default()).id();
 
-        assert!(world.get::<XdgWindow>(entity).is_some());
+        assert!(world.get::<Window>(entity).is_some());
         assert!(world.get::<SurfaceGeometry>(entity).is_some());
         assert!(world.get::<BufferState>(entity).is_some());
         assert!(world.get::<WindowMode>(entity).is_some());

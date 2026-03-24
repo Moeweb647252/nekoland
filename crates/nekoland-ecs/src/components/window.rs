@@ -5,13 +5,15 @@ use crate::components::{OutputId, WorkspaceCoord};
 use crate::resources::ResizeEdges;
 use crate::selectors::OutputName;
 
-/// Metadata tracked for a mapped XDG toplevel surface.
+/// Metadata tracked for one managed window regardless of whether it originates from native XDG or
+/// XWayland.
 #[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[require(
     crate::components::SurfaceGeometry,
     crate::components::BufferState,
     crate::components::SurfaceContentVersion,
     WindowSceneGeometry,
+    WindowManagementHints,
     WindowViewportVisibility,
     WindowRole,
     WindowLayout,
@@ -22,10 +24,54 @@ use crate::selectors::OutputName;
     WindowRestoreSnapshot,
     crate::components::WindowAnimation
 )]
-pub struct XdgWindow {
+pub struct Window {
     pub app_id: String,
     pub title: String,
-    pub last_acked_configure: Option<u32>,
+}
+
+pub type XdgWindow = Window;
+
+/// Normalized management hints derived from protocol/runtime-specific window details.
+#[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowManagementHints {
+    pub helper_surface: bool,
+    pub bypass_window_rules: bool,
+    pub prefer_floating: bool,
+    pub transient_parent_surface_id: Option<u64>,
+    pub client_driven_resize: bool,
+}
+
+impl WindowManagementHints {
+    pub const fn native_wayland() -> Self {
+        Self {
+            helper_surface: false,
+            bypass_window_rules: false,
+            prefer_floating: false,
+            transient_parent_surface_id: None,
+            client_driven_resize: true,
+        }
+    }
+
+    pub const fn x11(
+        helper_surface: bool,
+        bypass_window_rules: bool,
+        prefer_floating: bool,
+        transient_parent_surface_id: Option<u64>,
+    ) -> Self {
+        Self {
+            helper_surface,
+            bypass_window_rules,
+            prefer_floating,
+            transient_parent_surface_id,
+            client_driven_resize: false,
+        }
+    }
+}
+
+impl Default for WindowManagementHints {
+    fn default() -> Self {
+        Self::native_wayland()
+    }
 }
 
 /// Authoritative window geometry in workspace-scene coordinates.
@@ -296,20 +342,22 @@ impl WindowDisplayState {
 mod tests {
     use bevy_ecs::world::World;
 
-    use super::XdgWindow;
+    use super::Window;
     use crate::components::{
-        BufferState, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode, WindowPlacement,
-        WindowPolicyState, WindowRestoreSnapshot, WindowSceneGeometry, WindowViewportVisibility,
+        BufferState, SurfaceGeometry, WindowAnimation, WindowLayout, WindowManagementHints,
+        WindowMode, WindowPlacement, WindowPolicyState, WindowRestoreSnapshot,
+        WindowSceneGeometry, WindowViewportVisibility,
     };
 
     #[test]
-    fn xdg_window_requires_surface_runtime_components() {
+    fn window_requires_surface_runtime_components() {
         let mut world = World::new();
-        let entity = world.spawn(XdgWindow::default()).id();
+        let entity = world.spawn(Window::default()).id();
 
         assert!(world.get::<SurfaceGeometry>(entity).is_some());
         assert!(world.get::<WindowSceneGeometry>(entity).is_some());
         assert!(world.get::<WindowViewportVisibility>(entity).is_some());
+        assert!(world.get::<WindowManagementHints>(entity).is_some());
         assert!(world.get::<BufferState>(entity).is_some());
         assert!(world.get::<WindowMode>(entity).is_some());
         assert!(world.get::<WindowLayout>(entity).is_some());

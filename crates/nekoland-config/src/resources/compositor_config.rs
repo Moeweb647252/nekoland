@@ -113,6 +113,15 @@ pub fn describe_action_sequence(actions: &[ConfiguredAction]) -> String {
     actions.iter().map(ConfiguredAction::describe).collect::<Vec<_>>().join(" ; ")
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowRuleContext<'a> {
+    pub app_id: &'a str,
+    pub title: &'a str,
+    pub bypass_window_rules: bool,
+    pub helper_surface: bool,
+    pub prefer_floating: bool,
+}
+
 fn split_axis_label(axis: SplitAxis) -> &'static str {
     match axis {
         SplitAxis::Horizontal => "horizontal",
@@ -280,14 +289,32 @@ impl CompositorConfig {
         title: &str,
         override_redirect: bool,
     ) -> WindowPolicy {
-        if override_redirect {
+        self.resolve_window_policy_with_context(WindowRuleContext {
+            app_id,
+            title,
+            bypass_window_rules: override_redirect,
+            helper_surface: false,
+            prefer_floating: override_redirect,
+        })
+    }
+
+    pub fn resolve_window_policy_with_context(
+        &self,
+        context: WindowRuleContext<'_>,
+    ) -> WindowPolicy {
+        if context.bypass_window_rules {
             return WindowPolicy::new(WindowLayout::Floating, WindowMode::Normal);
         }
 
-        self.window_rules
+        let mut policy = self
+            .window_rules
             .iter()
-            .filter(|rule| rule.matches(app_id, title))
-            .fold(self.default_window_policy(), |policy, rule| rule.apply_to(policy))
+            .filter(|rule| rule.matches(context.app_id, context.title))
+            .fold(self.default_window_policy(), |policy, rule| rule.apply_to(policy));
+        if context.prefer_floating {
+            policy.layout = WindowLayout::Floating;
+        }
+        policy
     }
 
     pub fn resolve_window_background(
@@ -296,13 +323,26 @@ impl CompositorConfig {
         title: &str,
         override_redirect: bool,
     ) -> Option<OutputName> {
-        if override_redirect {
+        self.resolve_window_background_with_context(WindowRuleContext {
+            app_id,
+            title,
+            bypass_window_rules: override_redirect,
+            helper_surface: false,
+            prefer_floating: override_redirect,
+        })
+    }
+
+    pub fn resolve_window_background_with_context(
+        &self,
+        context: WindowRuleContext<'_>,
+    ) -> Option<OutputName> {
+        if context.bypass_window_rules {
             return None;
         }
 
         self.window_rules
             .iter()
-            .filter(|rule| rule.matches(app_id, title))
+            .filter(|rule| rule.matches(context.app_id, context.title))
             .fold(None, |background, rule| rule.background.clone().or(background))
     }
 }

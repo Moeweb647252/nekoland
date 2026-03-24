@@ -10,9 +10,9 @@ use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
     BorderTheme, BufferState, PendingInteractiveResize, ServerDecoration, SurfaceContentVersion,
-    SurfaceGeometry, WindowAnimation, WindowFullscreenTarget, WindowLayout, WindowMode,
-    WindowPolicyState, WindowPosition, WindowRole, WindowSceneGeometry, WindowSize, WlSurfaceHandle,
-    XdgPopup, XdgWindow,
+    SurfaceGeometry, WindowAnimation, WindowFullscreenTarget, WindowLayout,
+    WindowManagementHints, WindowMode, WindowPolicyState, WindowPosition, WindowRole,
+    WindowSceneGeometry, WindowSize, WlSurfaceHandle, XdgPopup, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
@@ -140,8 +140,8 @@ pub(crate) fn toplevel_lifecycle_system(
                             window: XdgWindow {
                                 app_id: "org.nekoland.demo".to_owned(),
                                 title: title.clone(),
-                                last_acked_configure: None,
                             },
+                            management_hints: WindowManagementHints::native_wayland(),
                             layout,
                             mode,
                             decoration: ServerDecoration { enabled: true },
@@ -352,22 +352,15 @@ pub(crate) fn toplevel_lifecycle_system(
                     continue;
                 };
 
-                let (window_app_id, window_title) = {
-                    let Some(window) = window_runtime.xdg_window.as_mut() else {
-                        tracing::warn!(
-                            surface_id = request.surface_id,
-                            "skipping xdg metadata update for window without xdg metadata"
-                        );
-                        continue;
-                    };
-                    if let Some(title) = &title {
-                        window.title = title.clone();
-                    }
-                    if let Some(app_id) = &app_id {
-                        window.app_id = app_id.clone();
-                    }
-                    (window.app_id.clone(), window.title.clone())
-                };
+                let window = &mut *window_runtime.window;
+                if let Some(title) = &title {
+                    window.title = title.clone();
+                }
+                if let Some(app_id) = &app_id {
+                    window.app_id = app_id.clone();
+                }
+                let (window_app_id, window_title) =
+                    (window.app_id.clone(), window.title.clone());
                 let policy = config.resolve_window_policy(&window_app_id, &window_title, false);
                 refresh_window_policy(
                     policy,
@@ -575,8 +568,8 @@ mod tests {
     use nekoland_ecs::components::{
         BufferState, OutputCurrentWorkspace, OutputDevice, OutputKind, OutputProperties,
         OutputWorkArea, PendingInteractiveResize, SurfaceGeometry, WindowAnimation, WindowLayout,
-        WindowMode, WindowPlacement, WindowPosition, WindowRestoreSnapshot, WindowRestoreState,
-        WindowSceneGeometry, WindowSize,
+        WindowManagementHints, WindowMode, WindowPlacement, WindowPosition,
+        WindowRestoreSnapshot, WindowRestoreState, WindowSceneGeometry, WindowSize,
         WlSurfaceHandle, Workspace, WorkspaceId, XdgPopup, XdgWindow,
     };
     use nekoland_ecs::events::{WindowClosed, WindowCreated};
@@ -671,6 +664,7 @@ mod tests {
                 buffer: BufferState { attached: true, scale: 1 },
                 content_version: Default::default(),
                 window: XdgWindow::default(),
+                management_hints: WindowManagementHints::native_wayland(),
                 layout: WindowLayout::Tiled,
                 mode: WindowMode::Normal,
                 decoration: Default::default(),
@@ -793,6 +787,7 @@ mod tests {
                     buffer: BufferState { attached: false, scale: 1 },
                     content_version: Default::default(),
                     window: XdgWindow::default(),
+                    management_hints: WindowManagementHints::native_wayland(),
                     layout: WindowLayout::Floating,
                     mode: WindowMode::Fullscreen,
                     decoration: Default::default(),
@@ -931,6 +926,7 @@ mod tests {
                     buffer: BufferState { attached: true, scale: 1 },
                     content_version: Default::default(),
                     window: XdgWindow::default(),
+                    management_hints: WindowManagementHints::native_wayland(),
                     layout: WindowLayout::Floating,
                     mode: WindowMode::Normal,
                     decoration: Default::default(),
@@ -1002,6 +998,7 @@ mod tests {
                     buffer: BufferState { attached: true, scale: 1 },
                     content_version: Default::default(),
                     window: XdgWindow::default(),
+                    management_hints: WindowManagementHints::native_wayland(),
                     layout: WindowLayout::Floating,
                     mode: WindowMode::Normal,
                     decoration: Default::default(),
@@ -1080,6 +1077,7 @@ mod tests {
                     buffer: BufferState { attached: true, scale: 1 },
                     content_version: Default::default(),
                     window: XdgWindow::default(),
+                    management_hints: WindowManagementHints::native_wayland(),
                     layout: WindowLayout::Floating,
                     mode: WindowMode::Normal,
                     decoration: Default::default(),

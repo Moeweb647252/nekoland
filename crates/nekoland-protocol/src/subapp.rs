@@ -24,11 +24,10 @@ use nekoland_ecs::resources::{
     OutputPresentationState, OutputSnapshotState, PendingLayerRequests, PendingOutputControls,
     PendingOutputEvents, PendingOutputOverlayControls, PendingOutputServerRequests,
     PendingPlatformInputEvents, PendingPopupServerRequests, PendingProtocolInputEvents,
-    PendingWindowControls, PendingWindowServerRequests, PendingX11Requests, PendingXdgRequests,
-    PlatformSurfaceSnapshotState, PresentAuditState, PrimarySelectionState,
+    PendingWindowControls, PendingWindowEvents, PendingWindowServerRequests, PendingX11Requests,
+    PendingXdgRequests, PlatformSurfaceSnapshotState, PresentAuditState, PrimarySelectionState,
     ProtocolServerState, RenderPlan, ShellRenderInput, SurfaceContentVersionSnapshot,
-    VirtualOutputCaptureState, WaylandCommands, WaylandFeedback, WaylandIngress,
-    XWaylandServerState,
+    VirtualOutputCaptureState, WaylandCommands, WaylandFeedback, WaylandIngress, XWaylandServerState,
 };
 
 /// Entrypoint for the dedicated wayland subapp boundary.
@@ -63,6 +62,7 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             .init_resource::<RenderPlan>()
             .init_resource::<WorkspaceVisibilitySnapshot>()
             .init_resource::<PendingXdgRequests>()
+            .init_resource::<PendingWindowEvents>()
             .init_resource::<PendingLayerRequests>()
             .init_resource::<PendingX11Requests>()
             .init_resource::<PendingOutputEvents>()
@@ -223,15 +223,12 @@ where
 
 fn extract_foreign_toplevel_snapshot(main_world: &mut World, wayland_world: &mut World) {
     let mut windows = main_world.query_filtered::<nekoland_ecs::views::WindowSnapshotRuntime, (
-        bevy_ecs::query::With<nekoland_ecs::components::XdgWindow>,
+        bevy_ecs::query::With<nekoland_ecs::components::Window>,
         bevy_ecs::query::Allow<bevy_ecs::entity_disabling::Disabled>,
     )>();
     let windows = windows
         .iter(main_world)
-        .filter(|window| {
-            window.role.is_managed()
-                && window.x11_window.is_none_or(|x11_window| !x11_window.is_helper_surface())
-        })
+        .filter(|window| window.role.is_managed() && !window.management_hints.helper_surface)
         .map(|window| ForeignToplevelSnapshot {
             surface_id: window.surface_id(),
             title: window.window.title.clone(),
@@ -250,7 +247,7 @@ fn extract_workspace_visibility_snapshot(main_world: &mut World, wayland_world: 
         nekoland_ecs::views::WindowVisibilityRuntime,
         bevy_ecs::prelude::Has<bevy_ecs::entity_disabling::Disabled>,
     ), (
-        bevy_ecs::query::With<nekoland_ecs::components::XdgWindow>,
+        bevy_ecs::query::With<nekoland_ecs::components::Window>,
         bevy_ecs::query::Allow<bevy_ecs::entity_disabling::Disabled>,
     )>();
     let mut popups = main_world.query_filtered::<(
@@ -355,6 +352,7 @@ fn sync_wayland_ingress_boundary_system(
     mut platform_input_events: ResMut<'_, PendingPlatformInputEvents>,
     output_snapshots: Res<'_, OutputSnapshotState>,
     surface_snapshots: Res<'_, PlatformSurfaceSnapshotState>,
+    mut pending_window_events: ResMut<'_, PendingWindowEvents>,
     mut pending_xdg_requests: ResMut<'_, PendingXdgRequests>,
     mut pending_layer_requests: ResMut<'_, PendingLayerRequests>,
     mut pending_x11_requests: ResMut<'_, PendingX11Requests>,
@@ -374,6 +372,7 @@ fn sync_wayland_ingress_boundary_system(
         platform_input_events: PendingPlatformInputEvents::from_items(platform_input_events.take()),
         output_snapshots: output_snapshots.clone(),
         surface_snapshots: surface_snapshots.clone(),
+        pending_window_events: PendingWindowEvents::from_items(pending_window_events.take()),
         pending_xdg_requests: PendingXdgRequests::from_items(pending_xdg_requests.take()),
         pending_layer_requests: PendingLayerRequests::from_items(pending_layer_requests.take()),
         pending_x11_requests: PendingX11Requests::from_items(pending_x11_requests.take()),

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
 use nekoland_ecs::components::{
     BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, SurfaceGeometry,
-    WlSurfaceHandle, XdgPopup, XdgWindow,
+    Window, WlSurfaceHandle, XdgPopup,
 };
 use nekoland_ecs::presentation_logic::{
     layer_visible, managed_window_visible, output_background_window_visible, popup_visible,
@@ -33,7 +33,7 @@ pub fn surface_presentation_snapshot_system(
     outputs: Query<(Entity, OutputRuntime)>,
     wayland_ingress: Option<Res<WaylandIngress>>,
     primary_output: Option<Res<PrimaryOutputState>>,
-    windows: Query<(Entity, WindowSnapshotRuntime), With<XdgWindow>>,
+    windows: Query<(Entity, WindowSnapshotRuntime), With<Window>>,
     popups: Query<(Entity, PopupSnapshotRuntime), With<XdgPopup>>,
     layers: LayerPresentationQuery<'_, '_>,
     mut snapshot: ResMut<SurfacePresentationSnapshot>,
@@ -80,7 +80,7 @@ pub fn surface_presentation_snapshot_system(
             geometry: window.geometry.clone(),
             input_enabled: visible
                 && window.role.is_managed()
-                && window.x11_window.is_none_or(|window| !window.is_helper_surface()),
+                && !window.management_hints.helper_surface,
             damage_enabled: visible,
             role,
         };
