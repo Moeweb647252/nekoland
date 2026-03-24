@@ -10,8 +10,9 @@ use nekoland_core::schedules::{ExtractSchedule, PresentSchedule, ProtocolSchedul
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::resources::{
     BackendOutputRegistry, CompiledOutputFrames, CompletedScreenshotFrames, FocusedOutputState,
-    PendingBackendInputEvents, PendingProtocolInputEvents, PendingScreenshotRequests,
-    PlatformImportDiagnosticsState, PresentAuditState, PresentSurfaceSnapshotState, ShellRenderInput,
+    OutputViewportAnimationState, PendingBackendInputEvents, PendingProtocolInputEvents,
+    PendingScreenshotRequests, PlatformImportDiagnosticsState, PresentAuditState,
+    PresentSurfaceSnapshotState, ShellRenderInput, ViewportAnimationActivityState,
     VirtualOutputCaptureState,
 };
 use nekoland_ecs::views::{BackendPresentSurfaceRuntime, OutputRuntime};
@@ -21,9 +22,10 @@ use nekoland_protocol::{
 
 use crate::common::outputs::{
     PendingBackendOutputEvents, PendingBackendOutputUpdates, RememberedOutputViewportState,
-    apply_output_control_requests_system, apply_output_overlay_controls_system,
-    apply_output_server_requests_system, remember_output_viewports_system,
-    sync_configured_outputs_system, sync_output_layout_state_system,
+    advance_output_viewport_animations_system, apply_output_control_requests_system,
+    apply_output_overlay_controls_system, apply_output_server_requests_system,
+    remember_output_viewports_system, sync_configured_outputs_system,
+    sync_output_layout_state_system,
     sync_output_snapshot_state_from_present_inputs_system,
 };
 use crate::common::presentation::apply_output_presentation_events_system;
@@ -70,6 +72,8 @@ impl NekolandPlugin for BackendPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(BackendOutputRegistry::default())
             .insert_resource(RememberedOutputViewportState::default())
+            .insert_resource(OutputViewportAnimationState::default())
+            .insert_resource(ViewportAnimationActivityState::default())
             .init_resource::<FocusedOutputState>()
             .init_resource::<PendingOutputPresentationEvents>()
             .add_message::<OutputConnected>()
@@ -78,6 +82,7 @@ impl NekolandPlugin for BackendPlugin {
                 ExtractSchedule,
                 (
                     apply_output_control_requests_system,
+                    advance_output_viewport_animations_system,
                     apply_output_overlay_controls_system,
                     sync_output_layout_state_system,
                     remember_output_viewports_system,

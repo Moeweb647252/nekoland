@@ -8,7 +8,8 @@ use nekoland_ecs::components::{OutputId, SurfaceGeometry, Window, WindowLayout, 
 use nekoland_ecs::events::PointerButton;
 use nekoland_ecs::resources::{
     GlobalPointerPosition, KeyboardFocusState, OutputSnapshotState, UNASSIGNED_WORKSPACE_STACK_ID,
-    ViewportPointerPanState, WaylandIngress, WindowStackingState,
+    ViewportAnimationActivityState, ViewportPointerPanState, WaylandIngress,
+    WindowStackingState,
 };
 use nekoland_ecs::views::{WindowFocusRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
@@ -33,6 +34,7 @@ pub struct FocusManagementParams<'w, 's> {
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
     wayland_ingress: Res<'w, WaylandIngress>,
     stacking: Res<'w, WindowStackingState>,
+    viewport_animation: Option<Res<'w, ViewportAnimationActivityState>>,
     viewport_pan: Option<Res<'w, ViewportPointerPanState>>,
     windows: FocusWindows<'w, 's>,
     workspaces: FocusWorkspaces<'w, 's>,
@@ -128,6 +130,12 @@ pub fn focus_management_system(
 
     if config.focus_follows_mouse
         && !focus.viewport_pan.as_deref().is_some_and(|state| state.active)
+        && !output_context.as_ref().is_some_and(|(output_id, _, _)| {
+            focus
+                .viewport_animation
+                .as_deref()
+                .is_some_and(|state| state.is_output_active(*output_id))
+        })
     {
         let hovered_surface = visible_surfaces.iter().rev().find_map(|surface_id| {
             visible_windows
@@ -232,11 +240,14 @@ mod tests {
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::WindowBundle;
-    use nekoland_ecs::components::{SurfaceGeometry, WindowLayout, WlSurfaceHandle};
+    use nekoland_ecs::components::{
+        OutputId, SurfaceGeometry, WindowLayout, WindowViewportVisibility, WlSurfaceHandle,
+    };
     use nekoland_ecs::events::PointerButton;
     use nekoland_ecs::resources::{
         GlobalPointerPosition, KeyboardFocusState, UNASSIGNED_WORKSPACE_STACK_ID,
-        ViewportPointerPanState, WaylandIngress, WindowStackingState,
+        ViewportAnimationActivityState, ViewportPointerPanState, WaylandIngress,
+        WindowStackingState,
     };
 
     use super::{focus_management_system, pointer_button_focus_system};
@@ -526,6 +537,61 @@ mod tests {
         app.inner_mut().world_mut().spawn(WindowBundle {
             surface: WlSurfaceHandle { id: 22 },
             geometry: SurfaceGeometry { x: 40, y: 40, width: 120, height: 120 },
+            layout: WindowLayout::Tiled,
+            ..Default::default()
+        });
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let focus = app.inner().world().resource::<KeyboardFocusState>();
+        assert_eq!(focus.focused_surface, Some(22));
+    }
+
+    #[test]
+    fn viewport_animation_blocks_hover_focus_changes_on_pointer_output() {
+        let output_id = OutputId(7);
+        let mut app = NekolandApp::new("focus-hover-viewport-animation-test");
+        app.inner_mut()
+            .insert_resource(WaylandIngress {
+                output_snapshots: nekoland_ecs::resources::OutputSnapshotState {
+                    outputs: vec![nekoland_ecs::resources::OutputGeometrySnapshot {
+                        output_id,
+                        name: "Virtual-1".to_owned(),
+                        x: 0,
+                        y: 0,
+                        width: 1280,
+                        height: 720,
+                        scale: 1,
+                        refresh_millihz: 60_000,
+                    }],
+                },
+                ..WaylandIngress::default()
+            })
+            .insert_resource(CompositorConfig::default())
+            .insert_resource(GlobalPointerPosition { x: 10.0, y: 10.0 })
+            .insert_resource(KeyboardFocusState { focused_surface: Some(22) })
+            .insert_resource(ViewportAnimationActivityState {
+                active_outputs: std::collections::BTreeSet::from([output_id]),
+            })
+            .insert_resource(WindowStackingState {
+                workspaces: std::collections::BTreeMap::from([(
+                    UNASSIGNED_WORKSPACE_STACK_ID,
+                    vec![11, 22],
+                )]),
+            })
+            .add_systems(LayoutSchedule, focus_management_system);
+
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 11 },
+            geometry: SurfaceGeometry { x: 0, y: 0, width: 120, height: 120 },
+            viewport_visibility: WindowViewportVisibility { visible: true, output: Some(output_id) },
+            layout: WindowLayout::Tiled,
+            ..Default::default()
+        });
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 22 },
+            geometry: SurfaceGeometry { x: 40, y: 40, width: 120, height: 120 },
+            viewport_visibility: WindowViewportVisibility { visible: true, output: Some(output_id) },
             layout: WindowLayout::Tiled,
             ..Default::default()
         });

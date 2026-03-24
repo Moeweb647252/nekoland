@@ -14,12 +14,13 @@ use nekoland_ecs::components::{
 use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
 use nekoland_ecs::kinds::{BackendEvent, FrameQueue};
 use nekoland_ecs::resources::{
-    BackendOutputRegistry, EntityIndex, FocusedOutputState, OutputGeometrySnapshot,
-    OutputOverlayState, OutputServerAction, OutputServerRequest, OutputSnapshotState,
+    BackendOutputRegistry, CompositorClock, EntityIndex, FocusedOutputState,
+    OutputGeometrySnapshot, OutputOverlayState, OutputServerAction, OutputServerRequest,
+    OutputSnapshotState, OutputViewportAnimation, OutputViewportAnimationState,
     PendingOutputControl, PendingOutputControls, PendingOutputOverlayControls,
     PendingOutputServerRequests, PlatformOutputBlueprint, PlatformOutputLifecycleChange,
     PlatformOutputLifecycleRecord, PlatformOutputMaterializationPlan, PlatformOutputPropertyUpdate,
-    WaylandIngress,
+    ViewportAnimationActivityState, WaylandIngress,
 };
 use nekoland_ecs::selectors::OutputSelector;
 use nekoland_ecs::views::OutputRuntime;
@@ -29,6 +30,8 @@ use crate::components::OutputBackend;
 use crate::manager::SharedBackendManager;
 use crate::plugin::BackendPresentInputs;
 use crate::traits::{BackendId, BackendOutputId, OutputSnapshot};
+
+const OUTPUT_VIEWPORT_ANIMATION_DURATION_MS: u32 = 180;
 
 /// Remembers output-local viewport origins across output disable/enable and reconnect cycles.
 #[derive(Debug, Clone, Default, Resource, Serialize, Deserialize, PartialEq, Eq)]
@@ -205,12 +208,14 @@ type OutputWindowSceneQuery<'w, 's> =
 
 #[derive(SystemParam)]
 pub(crate) struct OutputControlRequestCtx<'w, 's> {
+    clock: Option<Res<'w, CompositorClock>>,
     pending_output_controls: ResMut<'w, PendingOutputControls>,
     pending_output_overlay_controls: ResMut<'w, PendingOutputOverlayControls>,
     pending_output_requests: ResMut<'w, PendingOutputServerRequests>,
     wayland_ingress: Res<'w, WaylandIngress>,
     focused_output: Res<'w, FocusedOutputState>,
     entity_index: Res<'w, EntityIndex>,
+    viewport_animations: ResMut<'w, OutputViewportAnimationState>,
     remembered_viewports: ResMut<'w, RememberedOutputViewportState>,
     outputs: OutputViewportQuery<'w, 's>,
     windows: OutputWindowSceneQuery<'w, 's>,
@@ -285,16 +290,19 @@ pub fn sync_configured_outputs_system(
 /// that config sync and runtime application already use.
 pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<'_, '_>) {
     let OutputControlRequestCtx {
+        clock,
         mut pending_output_controls,
         mut pending_output_overlay_controls,
         mut pending_output_requests,
         wayland_ingress,
         focused_output,
         entity_index,
+        mut viewport_animations,
         mut remembered_viewports,
         mut outputs,
         windows,
     } = ctx;
+    let current_uptime_millis = clock.as_deref().map_or(0, |clock| clock.uptime_millis);
     let primary_output_id = wayland_ingress.primary_output.id;
     let mut deferred = Vec::new();
 
@@ -389,11 +397,21 @@ pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<
             continue;
         };
 
+        let current_viewport =
+            viewport_animations.sampled_viewport(*output_id, &viewport, current_uptime_millis);
+        *viewport = current_viewport.clone();
+
+        let mut staged_viewport = current_viewport.clone();
+        let mut animated_target = None;
         if let Some(origin) = deferred_control.viewport_origin.take() {
-            viewport.move_to(origin.x, origin.y);
+            staged_viewport.move_to(origin.x, origin.y);
+            animated_target = Some(staged_viewport.clone());
         }
         if let Some(pan) = deferred_control.viewport_pan.take() {
-            viewport.pan_by(pan.delta_x, pan.delta_y);
+            staged_viewport.pan_by(pan.delta_x, pan.delta_y);
+            if animated_target.is_some() {
+                animated_target = Some(staged_viewport.clone());
+            }
         }
         if let Some(surface_id) = deferred_control.center_viewport_on.take() {
             let target_window = entity_index
@@ -401,11 +419,38 @@ pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<
                 .and_then(|entity| windows.get(entity).ok())
                 .or_else(|| windows.iter().find(|(surface, _)| surface.id == surface_id.0));
             if let Some((_, scene_geometry)) = target_window {
-                center_viewport_on_scene_geometry(&mut viewport, scene_geometry, output_properties);
+                center_viewport_on_scene_geometry(
+                    &mut staged_viewport,
+                    scene_geometry,
+                    output_properties,
+                );
+                animated_target = Some(staged_viewport.clone());
             } else {
                 deferred_control.center_viewport_on = Some(surface_id);
             }
         }
+
+        if let Some(target_viewport) = animated_target {
+            if target_viewport == current_viewport {
+                viewport_animations.cancel(*output_id);
+                *viewport = target_viewport;
+            } else {
+                viewport_animations.start(
+                    *output_id,
+                    OutputViewportAnimation {
+                        from: current_viewport.clone(),
+                        to: target_viewport,
+                        start_uptime_millis: current_uptime_millis,
+                        duration_millis: OUTPUT_VIEWPORT_ANIMATION_DURATION_MS,
+                    },
+                );
+                *viewport = current_viewport;
+            }
+        } else if staged_viewport != current_viewport {
+            viewport_animations.cancel(*output_id);
+            *viewport = staged_viewport;
+        }
+
         if deferred_control.clear_overlays {
             pending_output_overlay_controls.output(*output_id).clear_overlays();
             deferred_control.clear_overlays = false;
@@ -434,6 +479,44 @@ pub(crate) fn apply_output_control_requests_system(ctx: OutputControlRequestCtx<
     }
 
     pending_output_controls.replace(deferred);
+}
+
+/// Advances authoritative viewport animations before shell layout consumes output viewport state.
+pub(crate) fn advance_output_viewport_animations_system(
+    clock: Option<Res<'_, CompositorClock>>,
+    mut animations: ResMut<'_, OutputViewportAnimationState>,
+    mut activity: ResMut<'_, ViewportAnimationActivityState>,
+    mut outputs: Query<'_, '_, (&OutputId, &'static mut OutputViewport)>,
+) {
+    let current_uptime_millis = clock.as_deref().map_or(0, |clock| clock.uptime_millis);
+    let output_ids = animations.output_ids();
+    let mut completed = Vec::new();
+    let mut active_outputs = BTreeSet::new();
+
+    for output_id in output_ids {
+        let Some((_, mut viewport)) =
+            outputs.iter_mut().find(|(candidate_id, _)| **candidate_id == output_id)
+        else {
+            completed.push(output_id);
+            continue;
+        };
+        let Some(animation) = animations.animation_for(output_id).cloned() else {
+            continue;
+        };
+
+        *viewport = animation.sample(current_uptime_millis);
+        if animation.is_complete(current_uptime_millis) {
+            *viewport = animation.to.clone();
+            completed.push(output_id);
+        } else {
+            active_outputs.insert(output_id);
+        }
+    }
+
+    for output_id in completed {
+        animations.cancel(output_id);
+    }
+    activity.active_outputs = active_outputs;
 }
 
 /// Applies output-local overlay control updates after selectors have been resolved into `OutputId`.
@@ -858,12 +941,13 @@ mod tests {
     };
     use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
     use nekoland_ecs::resources::{
-        EntityIndex, FocusedOutputState, OutputOverlayId, OutputOverlayState, OutputServerAction,
-        OutputServerRequest, OutputSnapshotState, PendingOutputControls,
-        PendingOutputOverlayControls, PendingOutputServerRequests, PlatformOutputBlueprint,
-        PlatformOutputLifecycleChange, PlatformOutputLifecycleRecord,
-        PlatformOutputMaterializationPlan, PlatformOutputPropertyUpdate, PrimaryOutputState,
-        RenderColor, RenderRect, WaylandIngress,
+        CompositorClock, EntityIndex, FocusedOutputState, OutputOverlayId, OutputOverlayState,
+        OutputServerAction, OutputServerRequest, OutputSnapshotState,
+        OutputViewportAnimationState, PendingOutputControls, PendingOutputOverlayControls,
+        PendingOutputServerRequests, PlatformOutputBlueprint, PlatformOutputLifecycleChange,
+        PlatformOutputLifecycleRecord, PlatformOutputMaterializationPlan,
+        PlatformOutputPropertyUpdate, PrimaryOutputState, RenderColor, RenderRect,
+        ViewportAnimationActivityState, WaylandIngress,
     };
     use nekoland_ecs::selectors::{OutputName, OutputSelector, SurfaceId};
     use nekoland_ecs::views::OutputRuntime;
@@ -876,10 +960,11 @@ mod tests {
     use super::{
         BackendOutputChange, BackendOutputRegistry, PendingBackendOutputEvents,
         PendingBackendOutputUpdates, RememberedOutputViewportState,
-        apply_output_control_requests_system, apply_output_overlay_controls_system,
-        apply_output_server_requests_system, collect_output_snapshots,
-        remember_output_viewports_system, sync_configured_outputs_system,
-        sync_output_snapshot_state_system, synchronize_backend_outputs_system,
+        advance_output_viewport_animations_system, apply_output_control_requests_system,
+        apply_output_overlay_controls_system, apply_output_server_requests_system,
+        collect_output_snapshots, remember_output_viewports_system,
+        sync_configured_outputs_system, sync_output_snapshot_state_system,
+        synchronize_backend_outputs_system,
     };
 
     #[derive(Debug, Default, bevy_ecs::prelude::Resource)]
@@ -892,10 +977,13 @@ mod tests {
     fn viewport_controls_update_output_viewport_state() {
         let mut app = NekolandApp::new("output-viewport-control-test");
         app.inner_mut()
+            .insert_resource(CompositorClock { frame: 1, uptime_millis: 0 })
             .init_resource::<PendingOutputControls>()
             .init_resource::<PendingOutputOverlayControls>()
             .init_resource::<PendingOutputServerRequests>()
             .init_resource::<OutputOverlayState>()
+            .insert_resource(OutputViewportAnimationState::default())
+            .insert_resource(ViewportAnimationActivityState::default())
             .init_resource::<WaylandIngress>()
             .insert_resource(RememberedOutputViewportState::default())
             .insert_resource(FocusedOutputState::default())
@@ -904,6 +992,7 @@ mod tests {
                 ExtractSchedule,
                 (
                     apply_output_control_requests_system,
+                    advance_output_viewport_animations_system,
                     apply_output_overlay_controls_system,
                     remember_output_viewports_system,
                 )
@@ -947,7 +1036,31 @@ mod tests {
         let Some(viewport) = app.inner().world().get::<OutputViewport>(output) else {
             panic!("output viewport");
         };
+        assert_eq!((viewport.origin_x, viewport.origin_y), (0, 0));
+        assert!(
+            app.inner()
+                .world()
+                .resource::<OutputViewportAnimationState>()
+                .animation_for(output_id)
+                .is_some()
+        );
+
+        app.inner_mut()
+            .world_mut()
+            .insert_resource(CompositorClock { frame: 2, uptime_millis: 180 });
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+
+        let Some(viewport) = app.inner().world().get::<OutputViewport>(output) else {
+            panic!("output viewport");
+        };
         assert_eq!((viewport.origin_x, viewport.origin_y), (125, 160));
+        assert!(
+            app.inner()
+                .world()
+                .resource::<OutputViewportAnimationState>()
+                .animation_for(output_id)
+                .is_none()
+        );
         let remembered = app.inner().world().resource::<RememberedOutputViewportState>();
         assert_eq!(
             remembered.viewport_for_output_name("Virtual-1"),
@@ -959,10 +1072,13 @@ mod tests {
     fn primary_output_controls_prefer_wayland_ingress_over_stale_compat_state() {
         let mut app = NekolandApp::new("output-primary-control-ingress-test");
         app.inner_mut()
+            .insert_resource(CompositorClock { frame: 1, uptime_millis: 0 })
             .init_resource::<PendingOutputControls>()
             .init_resource::<PendingOutputOverlayControls>()
             .init_resource::<PendingOutputServerRequests>()
             .init_resource::<OutputOverlayState>()
+            .insert_resource(OutputViewportAnimationState::default())
+            .insert_resource(ViewportAnimationActivityState::default())
             .insert_resource(RememberedOutputViewportState::default())
             .insert_resource(PrimaryOutputState::default())
             .insert_resource(FocusedOutputState::default())
@@ -972,6 +1088,7 @@ mod tests {
                 ExtractSchedule,
                 (
                     apply_output_control_requests_system,
+                    advance_output_viewport_animations_system,
                     apply_output_overlay_controls_system,
                     remember_output_viewports_system,
                 )
@@ -1031,6 +1148,10 @@ mod tests {
             .select(OutputSelector::Primary)
             .move_viewport_to(90, 140);
 
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+        app.inner_mut()
+            .world_mut()
+            .insert_resource(CompositorClock { frame: 2, uptime_millis: 180 });
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
         let first_viewport =
@@ -1160,10 +1281,13 @@ mod tests {
     fn center_viewport_control_targets_window_scene_geometry() {
         let mut app = NekolandApp::new("output-viewport-center-test");
         app.inner_mut()
+            .insert_resource(CompositorClock { frame: 1, uptime_millis: 0 })
             .init_resource::<PendingOutputControls>()
             .init_resource::<PendingOutputOverlayControls>()
             .init_resource::<PendingOutputServerRequests>()
             .init_resource::<OutputOverlayState>()
+            .insert_resource(OutputViewportAnimationState::default())
+            .insert_resource(ViewportAnimationActivityState::default())
             .init_resource::<WaylandIngress>()
             .insert_resource(RememberedOutputViewportState::default())
             .insert_resource(FocusedOutputState::default())
@@ -1172,6 +1296,7 @@ mod tests {
                 ExtractSchedule,
                 (
                     apply_output_control_requests_system,
+                    advance_output_viewport_animations_system,
                     apply_output_overlay_controls_system,
                     remember_output_viewports_system,
                 )
@@ -1218,6 +1343,10 @@ mod tests {
             .center_viewport_on_window(SurfaceId(77));
 
         app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+        app.inner_mut()
+            .world_mut()
+            .insert_resource(CompositorClock { frame: 2, uptime_millis: 180 });
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
 
         let Some(viewport) = app.inner().world().get::<OutputViewport>(output) else {
             panic!("output viewport");
@@ -1226,13 +1355,16 @@ mod tests {
     }
 
     #[test]
-    fn overlay_controls_update_output_overlay_state() {
-        let mut app = NekolandApp::new("output-overlay-control-test");
+    fn viewport_pan_cancels_active_output_viewport_animation() {
+        let mut app = NekolandApp::new("output-viewport-pan-cancel-test");
         app.inner_mut()
+            .insert_resource(CompositorClock { frame: 1, uptime_millis: 0 })
             .init_resource::<PendingOutputControls>()
             .init_resource::<PendingOutputOverlayControls>()
             .init_resource::<PendingOutputServerRequests>()
             .init_resource::<OutputOverlayState>()
+            .insert_resource(OutputViewportAnimationState::default())
+            .insert_resource(ViewportAnimationActivityState::default())
             .init_resource::<WaylandIngress>()
             .insert_resource(RememberedOutputViewportState::default())
             .insert_resource(FocusedOutputState::default())
@@ -1241,6 +1373,92 @@ mod tests {
                 ExtractSchedule,
                 (
                     apply_output_control_requests_system,
+                    advance_output_viewport_animations_system,
+                    apply_output_overlay_controls_system,
+                    remember_output_viewports_system,
+                )
+                    .chain(),
+            );
+
+        let output = app
+            .inner_mut()
+            .world_mut()
+            .spawn(OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "Virtual".to_owned(),
+                    model: "test".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1280,
+                    height: 720,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                ..Default::default()
+            })
+            .id();
+        let output_id =
+            *app.inner().world().get::<OutputId>(output).expect("output id should exist");
+        app.inner_mut().world_mut().resource_mut::<FocusedOutputState>().id = Some(output_id);
+        app.inner_mut().world_mut().resource_mut::<WaylandIngress>().primary_output.id =
+            Some(output_id);
+
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<PendingOutputControls>()
+            .named(OutputName::from("Virtual-1"))
+            .move_viewport_to(100, 200);
+
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+        app.inner_mut()
+            .world_mut()
+            .insert_resource(CompositorClock { frame: 2, uptime_millis: 90 });
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+
+        let viewport = app.inner().world().get::<OutputViewport>(output).expect("output viewport");
+        assert_eq!((viewport.origin_x, viewport.origin_y), (50, 100));
+
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<PendingOutputControls>()
+            .named(OutputName::from("Virtual-1"))
+            .pan_viewport_by(25, -40);
+
+        app.inner_mut().world_mut().run_schedule(ExtractSchedule);
+
+        let viewport = app.inner().world().get::<OutputViewport>(output).expect("output viewport");
+        assert_eq!((viewport.origin_x, viewport.origin_y), (75, 60));
+        assert!(
+            app.inner()
+                .world()
+                .resource::<OutputViewportAnimationState>()
+                .animation_for(output_id)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn overlay_controls_update_output_overlay_state() {
+        let mut app = NekolandApp::new("output-overlay-control-test");
+        app.inner_mut()
+            .insert_resource(CompositorClock { frame: 1, uptime_millis: 0 })
+            .init_resource::<PendingOutputControls>()
+            .init_resource::<PendingOutputOverlayControls>()
+            .init_resource::<PendingOutputServerRequests>()
+            .init_resource::<OutputOverlayState>()
+            .insert_resource(OutputViewportAnimationState::default())
+            .insert_resource(ViewportAnimationActivityState::default())
+            .init_resource::<WaylandIngress>()
+            .insert_resource(RememberedOutputViewportState::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(EntityIndex::default())
+            .add_systems(
+                ExtractSchedule,
+                (
+                    apply_output_control_requests_system,
+                    advance_output_viewport_animations_system,
                     apply_output_overlay_controls_system,
                     remember_output_viewports_system,
                 )
