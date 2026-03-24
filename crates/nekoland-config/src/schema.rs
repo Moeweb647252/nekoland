@@ -1,3 +1,9 @@
+//! TOML-facing config schema loaded from disk before normalization into runtime resources.
+//!
+//! Most public fields mirror the disk representation directly, so type-level documentation is used
+//! in place of repetitive field-by-field comments.
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use crate::resources::{

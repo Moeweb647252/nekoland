@@ -1,3 +1,8 @@
+//! Preparation of scene and GPU descriptors used by backend executors.
+//!
+//! These resources are still backend-neutral: they describe what needs to be imported, allocated,
+//! or bound, but they do not perform live GPU work themselves.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::prelude::{Res, ResMut};

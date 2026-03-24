@@ -1,3 +1,9 @@
+//! Config-facing action encodings used before normalization into runtime control requests.
+//!
+//! This module is intentionally schema-heavy: many public variants and fields map one-to-one to
+//! the on-disk config format, so type-level documentation carries most of the meaning.
+#![allow(missing_docs)]
+
 use crate::resources::ConfiguredAction;
 use nekoland_ecs::selectors::{OutputName, WorkspaceLookup, WorkspaceSelector};
 use serde::{Deserialize, Serialize};

@@ -1,3 +1,5 @@
+//! Transitional entity index keyed by stable external identifiers such as surface ids and names.
+
 use std::collections::{BTreeMap, HashMap};
 
 use bevy_ecs::entity_disabling::Disabled;
@@ -202,6 +204,7 @@ fn index_output_removed(mut world: DeferredWorld, context: HookContext) {
 }
 
 /// Rebuilds the transitional entity index from the current world snapshot.
+/// Rebuilds the index from the current world snapshot instead of relying on incremental hooks.
 pub fn rebuild_entity_index_system(
     mut index: bevy_ecs::prelude::ResMut<EntityIndex>,
     surfaces: Query<(Entity, &WlSurfaceHandle), Allow<Disabled>>,

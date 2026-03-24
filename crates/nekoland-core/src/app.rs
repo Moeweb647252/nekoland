@@ -20,35 +20,46 @@ use crate::schedules::{
     install_core_schedules_sub_app,
 };
 
+/// Bevy sub-app label for the platform-facing Wayland/backend world.
 #[derive(AppLabel, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct WaylandSubApp;
 
+/// Bevy sub-app label for the render-world extraction and compilation pipeline.
 #[derive(AppLabel, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RenderSubApp;
 
+/// Extract-phase set that polls the platform runtime event loop.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WaylandPollSystems;
 
+/// Extract-phase set that pulls runtime state into frame-local platform queues and snapshots.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WaylandExtractSystems;
 
+/// Set that normalizes raw platform/runtime state into boundary-friendly snapshots.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WaylandNormalizeSystems;
 
+/// Set that applies shell-driven commands inside the platform sub-app.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WaylandApplySystems;
 
+/// Present-phase set that performs backend/protocol-side submission work.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WaylandPresentSystems;
 
+/// Set that emits platform feedback after normalize/apply or present work completes.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WaylandFeedbackSystems;
 
+/// Final present-phase set that clears frame-local platform queues.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WaylandCleanupSystems;
 
+/// Lightweight metadata describing the running compositor process.
 #[derive(Debug, Clone, Resource)]
 pub struct AppMetadata {
+    /// Human-readable application name used in logging and backend-facing labels.
     pub name: String,
 }
 
@@ -65,7 +76,9 @@ struct SubAppSyncRegistry {
 /// cap frame counts and shorten waits without patching application code.
 #[derive(Debug, Clone, Resource)]
 pub struct RunLoopSettings {
+    /// Maximum time the outer frame loop waits while polling the platform event loop.
     pub frame_timeout: Duration,
+    /// Optional frame cap used mainly by tests and deterministic short-lived runs.
     pub max_frames: Option<u64>,
 }
 
@@ -89,11 +102,13 @@ impl Default for RunLoopSettings {
     }
 }
 
+/// Root application wrapper that owns the main world plus the Wayland and render sub-apps.
 pub struct NekolandApp {
     app: App,
 }
 
 impl NekolandApp {
+    /// Creates a new compositor app with the canonical schedules and empty sub-app shells.
     pub fn new(name: impl Into<String>) -> Self {
         let mut app = App::new();
         app.set_error_handler(warn);
@@ -138,6 +153,9 @@ impl NekolandApp {
         Self { app }
     }
 
+    /// Registers one plugin on the main shell world.
+    ///
+    /// This is where shell policy, config, IPC, and other main-world systems are installed.
     pub fn add_plugin<P>(&mut self, plugin: P) -> &mut Self
     where
         P: NekolandPlugin,
@@ -147,6 +165,7 @@ impl NekolandApp {
         self
     }
 
+    /// Registers one plugin on the Wayland/platform sub-app.
     pub fn add_wayland_plugin<P>(&mut self, plugin: P) -> &mut Self
     where
         P: NekolandPlugin,
@@ -156,6 +175,7 @@ impl NekolandApp {
         self
     }
 
+    /// Registers one plugin on the render sub-app.
     pub fn add_render_plugin<P>(&mut self, plugin: P) -> &mut Self
     where
         P: NekolandPlugin,
@@ -165,6 +185,7 @@ impl NekolandApp {
         self
     }
 
+    /// Installs a sync-back hook that mirrors selected sub-app resources into the main world.
     pub fn set_sub_app_sync_back(
         &mut self,
         label: impl AppLabel,
@@ -179,6 +200,7 @@ impl NekolandApp {
         self
     }
 
+    /// Inserts one resource into the main world.
     pub fn insert_resource<R>(&mut self, resource: R) -> &mut Self
     where
         R: Resource,
@@ -187,14 +209,17 @@ impl NekolandApp {
         self
     }
 
+    /// Returns the underlying Bevy app.
     pub fn inner(&self) -> &App {
         &self.app
     }
 
+    /// Returns the underlying Bevy app mutably.
     pub fn inner_mut(&mut self) -> &mut App {
         &mut self.app
     }
 
+    /// Runs the compositor until shutdown is requested or the configured frame cap is reached.
     pub fn run(&mut self) -> Result<(), NekolandError> {
         let settings =
             self.app.world().get_resource::<RunLoopSettings>().cloned().unwrap_or_default();

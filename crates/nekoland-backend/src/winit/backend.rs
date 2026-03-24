@@ -1,3 +1,8 @@
+//! Nested `winit` backend runtime used for the default development path.
+//!
+//! This backend owns host-window integration, event-loop bridging, and final submission of the
+//! compiled output graph into a nested desktop window.
+
 use std::cell::RefCell;
 use std::panic::AssertUnwindSafe;
 use std::rc::Rc;

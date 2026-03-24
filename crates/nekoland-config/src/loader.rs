@@ -7,8 +7,11 @@ use crate::schema::NekolandConfigFile;
 /// Errors returned while loading and decoding the on-disk config file.
 #[derive(Debug)]
 pub enum ConfigError {
+    /// Wrapper for file-system failures while reading the config source.
     Io(std::io::Error),
+    /// Decoder failure emitted by the selected config format parser.
     Parse(String),
+    /// Unsupported file extension supplied to the config loader.
     UnsupportedFormat(String),
 }
 

@@ -4,8 +4,11 @@ use std::fmt::{Display, Formatter};
 /// Common error type used by the core app and plugin infrastructure.
 #[derive(Debug)]
 pub enum NekolandError {
+    /// Wrapper for plain I/O failures.
     Io(std::io::Error),
+    /// Configuration loading or normalization failure.
     Config(String),
+    /// Runtime wiring, backend, or orchestration failure.
     Runtime(String),
 }
 

@@ -1,3 +1,8 @@
+//! Layer-shell lifecycle handling, output binding, arrangement, and work-area derivation.
+//!
+//! Layer-shell surfaces affect both what gets rendered and how shell work areas are carved out for
+//! window layout, so this module owns both geometry projection and work-area reduction.
+
 use std::collections::BTreeSet;
 
 use bevy_ecs::lifecycle::RemovedComponents;

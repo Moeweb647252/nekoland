@@ -3,9 +3,13 @@ use serde::{Deserialize, Serialize};
 /// Theme section loaded from the config file before normalization into `CompositorConfig`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Theme {
+    /// Human-readable theme name exposed through config snapshots and diagnostics.
     pub name: String,
+    /// Cursor theme requested by compositor-owned cursor rendering paths.
     pub cursor_theme: String,
+    /// Accent color used by server-side border rendering.
     pub border_color: String,
+    /// Background color used when clearing compositor-owned render targets.
     pub background_color: String,
 }
 

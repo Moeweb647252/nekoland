@@ -1,3 +1,5 @@
+//! Render plugin wiring for both the main-world animation stage and the render sub-app.
+
 use bevy_app::{App, SubApp};
 use bevy_ecs::schedule::{InternedScheduleLabel, IntoScheduleConfigs, ScheduleLabel, SystemSet};
 use bevy_ecs::world::World;
@@ -22,21 +24,27 @@ pub mod extract;
 pub mod sync_back;
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Main-world plugin that owns shared render resources and pre-render animation updates.
 pub struct RenderPlugin;
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Render sub-app plugin that compiles shell snapshots into backend-neutral output frames.
 pub struct RenderSubAppPlugin;
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Render schedule set that extracts scene state and prepares per-item descriptors.
 pub struct RenderPrepareSystems;
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Render schedule set that compiles phases, graphs, and allocation plans.
 pub struct RenderQueueSystems;
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Render schedule set that computes damage and publishes compiled output frames.
 pub struct RenderExecuteSystems;
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Render schedule set that emits cleanup-stage feedback such as frame callbacks and screenshots.
 pub struct RenderCleanupSystems;
 
 impl NekolandPlugin for RenderPlugin {
@@ -187,11 +195,13 @@ impl NekolandPlugin for RenderSubAppPlugin {
     }
 }
 
+/// Configures the render sub-app to run `RenderSchedule` and extract from the main world.
 pub fn configure_render_subapp(sub_app: &mut SubApp) {
     sub_app.update_schedule = Some(RenderSchedule.intern());
     sub_app.set_extract(extract::extract_render_subapp_inputs);
 }
 
+/// Mirrors render-world products such as compiled frames and damage state back into the main world.
 pub fn sync_render_subapp_back(
     main_world: &mut World,
     render_world: &mut World,

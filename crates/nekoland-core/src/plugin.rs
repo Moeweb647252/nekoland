@@ -39,6 +39,7 @@ impl<T: bevy_app::Plugin> NekolandPlugin for BevyPlugin<T> {
 pub struct NekolandAppPlugin<T: NekolandPlugin>(T);
 
 impl<T: NekolandPlugin> NekolandAppPlugin<T> {
+    /// Wraps an internal plugin so it can be installed into a Bevy sub-app.
     pub fn new(plugin: T) -> Self {
         Self(plugin)
     }

@@ -148,6 +148,7 @@ pub fn cursor_motion_system(
     motion_events.write(PointerMotion { x: pointer.x, y: pointer.y });
 }
 
+/// Tracks which output currently owns pointer context for output-scoped shell policy.
 pub fn focused_output_tracking_system(
     pointer: Res<GlobalPointerPosition>,
     mut focused_output: ResMut<FocusedOutputState>,
