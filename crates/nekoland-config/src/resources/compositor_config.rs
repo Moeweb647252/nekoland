@@ -253,16 +253,7 @@ pub struct CompositorConfig {
 
 impl Default for CompositorConfig {
     fn default() -> Self {
-        let mut keybindings = BTreeMap::new();
-        keybindings.insert(
-            "Super+Return".to_owned(),
-            vec![ConfiguredAction::Exec { argv: vec!["foot".to_owned()] }],
-        );
-        keybindings.insert(
-            "Super+Space".to_owned(),
-            vec![ConfiguredAction::Exec { argv: vec!["fuzzel".to_owned()] }],
-        );
-        keybindings.insert("Super+Q".to_owned(), vec![ConfiguredAction::CloseFocusedWindow]);
+        let keybindings = BTreeMap::new();
 
         Self {
             theme: "catppuccin-latte".to_owned(),

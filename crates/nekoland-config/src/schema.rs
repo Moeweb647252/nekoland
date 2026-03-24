@@ -42,18 +42,6 @@ impl Default for NekolandConfigFile {
     fn default() -> Self {
         let mut bindings = BTreeMap::new();
         bindings.insert(
-            "Super+Return".to_owned(),
-            ActionListConfig::One(ConfiguredActionConfig::Exec { exec: vec!["foot".to_owned()] }),
-        );
-        bindings.insert(
-            "Super+Space".to_owned(),
-            ActionListConfig::One(ConfiguredActionConfig::Exec { exec: vec!["fuzzel".to_owned()] }),
-        );
-        bindings.insert(
-            "Super+Q".to_owned(),
-            ActionListConfig::One(ConfiguredActionConfig::Close { close: true }),
-        );
-        bindings.insert(
             "Super+Alt".to_owned(),
             ActionListConfig::One(ConfiguredActionConfig::ViewportPanMode {
                 viewport_pan_mode: true,

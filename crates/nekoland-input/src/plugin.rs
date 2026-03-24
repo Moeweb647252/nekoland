@@ -5,12 +5,11 @@ use nekoland_core::schedules::InputSchedule;
 use nekoland_ecs::events::{GestureSwipe, KeyPress, PointerButton, PointerMotion};
 use nekoland_ecs::resources::{
     FocusedOutputState, GlobalPointerPosition, KeyboardFocusState, ModifierState,
-    PendingExternalCommandRequests, PendingInputEvents, PendingOutputControls,
-    PendingWindowControls, PendingWorkspaceControls, PhysicalPointerPosition, PointerDelta,
-    PressedKeys, SeatRegistry, ViewportPointerPanState, WaylandIngress,
+    PendingInputEvents, PendingOutputControls, PhysicalPointerPosition, PointerDelta, PressedKeys,
+    SeatRegistry, ViewportPointerPanState, WaylandIngress,
 };
 
-use crate::{gestures, keybindings, keyboard, pointer, seat_manager, touch};
+use crate::{gestures, keyboard, pointer, seat_manager, touch};
 
 #[derive(Debug, Default, Clone, Copy)]
 /// Main-world plugin that turns normalized platform input into shell-facing actions and messages.
@@ -28,12 +27,8 @@ impl NekolandPlugin for InputPlugin {
             .init_resource::<KeyboardFocusState>()
             .init_resource::<ModifierState>()
             .init_resource::<PressedKeys>()
-            .init_resource::<PendingExternalCommandRequests>()
             .init_resource::<PendingInputEvents>()
             .init_resource::<PendingOutputControls>()
-            .init_resource::<PendingWindowControls>()
-            .init_resource::<PendingWorkspaceControls>()
-            .init_resource::<keybindings::CompiledKeybindings>()
             .init_resource::<SeatRegistry>()
             .add_message::<KeyPress>()
             .add_message::<PointerButton>()
@@ -46,16 +41,11 @@ impl NekolandPlugin for InputPlugin {
                 (
                     keyboard::keyboard_input_system,
                     pointer::pointer_input_system,
-                    keybindings::reload_keybindings_system,
                     pointer::viewport_pointer_pan_system,
                     pointer::cursor_motion_system,
                     pointer::focused_output_tracking_system,
                     touch::touch_input_system,
                     gestures::gesture_recognition_system,
-                    keybindings::window_keybinding_system,
-                    keybindings::workspace_keybinding_system,
-                    keybindings::output_keybinding_system,
-                    keybindings::command_keybinding_system,
                     seat_manager::seat_management_system,
                 )
                     .chain(),

@@ -62,15 +62,8 @@ app_id = "ffplay"
 background = "eDP-1"
 
 [keybinds.bindings]
-# External commands use argv arrays.
-"Super+Return" = { exec = ["foot"] }
-"Super+Space" = { exec = ["fuzzel"] }
-
 # Modifier-only binding: hold these keys and move the pointer to pan the focused output viewport.
 "Super+Alt" = { viewport_pan_mode = true }
-
-# Window actions target the focused window.
-"Super+Q" = { close = true }
 
 # Workspace actions are runtime-only and can be addressed by id or name.
 # "Super+1" = { workspace = 1 }
@@ -85,17 +78,6 @@ background = "eDP-1"
 # "Super+L" = { move = [50, 0] }
 # "Super+Shift+H" = { resize = [800, 600] }
 # "Super+S" = { split = "vertical" }
-
-# Output and viewport helpers target the focused output unless the action names one explicitly.
-# "Super+Alt+H" = { viewport_pan = [-200, 0] }
-# "Super+Alt+L" = { viewport_pan = [200, 0] }
-# "Super+Alt+J" = { viewport_pan = [0, 200] }
-# "Super+Alt+K" = { viewport_pan = [0, -200] }
-# "Super+Alt+0" = { viewport_move = [0, 0] }
-# "Super+Alt+C" = { viewport_center = true }
-# "Super+Shift+O" = { output_disable = "eDP-1" }
-# "Super+Ctrl+O" = { output_enable = "eDP-1" }
-# "Super+Alt+M" = { output_configure = { output = "eDP-1", mode = "1920x1080@60", scale = 1 } }
 #
 # Multiple actions can be chained in order.
 # "Super+Shift+Return" = [
