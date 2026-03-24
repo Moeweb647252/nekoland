@@ -10,7 +10,12 @@ use nekoland_ecs::views::WindowRuntime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WindowPresentationState {
-    XdgToplevelState { size: Option<SurfaceExtent>, fullscreen: bool, maximized: bool },
+    XdgToplevelState {
+        size: Option<SurfaceExtent>,
+        fullscreen: bool,
+        maximized: bool,
+        resizing: bool,
+    },
     X11Presentation { geometry: X11WindowGeometry, fullscreen: bool, maximized: bool },
 }
 
@@ -51,6 +56,7 @@ pub fn window_presentation_sync_system(
                     size: None,
                     fullscreen: false,
                     maximized: false,
+                    resizing: false,
                 },
             });
         }
@@ -64,6 +70,7 @@ fn desired_presentation_state(
 ) -> Option<WindowPresentationState> {
     let fullscreen = window.role.is_output_background() || *window.mode == WindowMode::Fullscreen;
     let maximized = window.role.is_managed() && *window.mode == WindowMode::Maximized;
+    let resizing = window.pending_resize.is_some();
     match window.x11_window {
         Some(_) if fullscreen || maximized => Some(WindowPresentationState::X11Presentation {
             geometry: X11WindowGeometry {
@@ -92,6 +99,7 @@ fn desired_presentation_state(
             }),
             fullscreen,
             maximized,
+            resizing,
         }),
         None if window.pending_resize.is_some() => {
             let pending_resize = window.pending_resize.as_deref().expect("checked above");
@@ -106,6 +114,7 @@ fn desired_presentation_state(
                 }),
                 fullscreen: false,
                 maximized: false,
+                resizing: true,
             })
         }
         None if window.placement.floating_size.is_some() => {
@@ -116,6 +125,7 @@ fn desired_presentation_state(
                 }),
                 fullscreen: false,
                 maximized: false,
+                resizing: false,
             })
         }
         None => None,
@@ -126,11 +136,17 @@ fn window_server_action_for_presentation_state(
     state: &WindowPresentationState,
 ) -> WindowServerAction {
     match state {
-        WindowPresentationState::XdgToplevelState { size, fullscreen, maximized } => {
+        WindowPresentationState::XdgToplevelState {
+            size,
+            fullscreen,
+            maximized,
+            resizing,
+        } => {
             WindowServerAction::SyncXdgToplevelState {
                 size: *size,
                 fullscreen: *fullscreen,
                 maximized: *maximized,
+                resizing: *resizing,
             }
         }
         WindowPresentationState::X11Presentation { geometry, fullscreen, maximized } => {
@@ -340,10 +356,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(requests.len(), 1);
         match &requests[0].action {
-            WindowServerAction::SyncXdgToplevelState { size, fullscreen, maximized } => {
+            WindowServerAction::SyncXdgToplevelState { size, fullscreen, maximized, resizing } => {
                 assert_eq!(*size, Some(SurfaceExtent { width: 1280, height: 720 }));
                 assert!(*fullscreen);
                 assert!(!maximized);
+                assert!(!resizing);
             }
             action => panic!("unexpected action: {action:?}"),
         }
@@ -387,10 +404,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(requests.len(), 1);
         match &requests[0].action {
-            WindowServerAction::SyncXdgToplevelState { size, fullscreen, maximized } => {
+            WindowServerAction::SyncXdgToplevelState { size, fullscreen, maximized, resizing } => {
                 assert_eq!(*size, Some(SurfaceExtent { width: 1440, height: 900 }));
                 assert!(!fullscreen);
                 assert!(!maximized);
+                assert!(!resizing);
             }
             action => panic!("unexpected action: {action:?}"),
         }
@@ -425,6 +443,7 @@ mod tests {
                     height: 900,
                 },
                 inflight_geometry: None,
+                edges: nekoland_ecs::resources::ResizeEdges::BottomRight,
             },
         ));
 
@@ -439,10 +458,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(requests.len(), 1);
         match &requests[0].action {
-            WindowServerAction::SyncXdgToplevelState { size, fullscreen, maximized } => {
+            WindowServerAction::SyncXdgToplevelState { size, fullscreen, maximized, resizing } => {
                 assert_eq!(*size, Some(SurfaceExtent { width: 1440, height: 900 }));
                 assert!(!fullscreen);
                 assert!(!maximized);
+                assert!(*resizing);
             }
             action => panic!("unexpected action: {action:?}"),
         }

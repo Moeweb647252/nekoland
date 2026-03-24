@@ -17,7 +17,7 @@ use nekoland_ecs::components::{
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
     EntityIndex, FocusedOutputState, PendingPopupServerRequests, PopupServerAction,
-    PopupServerRequest, SurfaceExtent, WaylandIngress, WindowLifecycleAction,
+    PopupServerRequest, ResizeEdges, SurfaceExtent, WaylandIngress, WindowLifecycleAction,
     WindowLifecycleRequest, WorkArea, XdgSurfaceRole,
 };
 use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowRuntime, WorkspaceRuntime};
@@ -210,51 +210,69 @@ pub(crate) fn toplevel_lifecycle_system(
                     *window.mode,
                     WindowMode::Maximized | WindowMode::Fullscreen | WindowMode::Hidden
                 ) {
-                    window.scene_geometry.width = size.width.max(1);
-                    window.scene_geometry.height = size.height.max(1);
-                    if *window.layout == WindowLayout::Floating
-                        && (window.placement.floating_size.is_some() || window.pending_resize.is_some())
-                    {
-                        window.placement.floating_size = Some(WindowSize {
-                            width: size.width.max(1),
-                            height: size.height.max(1),
-                        });
-                    }
                     let committed_width = size.width.max(1);
                     let committed_height = size.height.max(1);
                     if let Some(mut pending_resize) = window.pending_resize {
-                        let matched_inflight = pending_resize
-                            .inflight_geometry
-                            .as_ref()
-                            .is_some_and(|inflight| {
-                                inflight.width == committed_width && inflight.height == committed_height
-                            });
-                        if matched_inflight {
-                            let inflight = pending_resize
-                                .inflight_geometry
-                                .clone()
-                                .expect("matched inflight resize above");
-                            window.scene_geometry.x = inflight.x;
-                            window.scene_geometry.y = inflight.y;
+                        let inflight = pending_resize.inflight_geometry.clone();
+                        if let Some(inflight) = inflight {
+                            let committed_geometry = anchored_resize_commit_geometry(
+                                &inflight,
+                                committed_width,
+                                committed_height,
+                                pending_resize.edges,
+                            );
+                            window.scene_geometry.x = committed_geometry.x;
+                            window.scene_geometry.y = committed_geometry.y;
+                            window.scene_geometry.width = committed_geometry.width;
+                            window.scene_geometry.height = committed_geometry.height;
                             window.placement.set_explicit_position(WindowPosition {
-                                x: inflight.x,
-                                y: inflight.y,
+                                x: committed_geometry.x,
+                                y: committed_geometry.y,
+                            });
+                            window.placement.floating_size = Some(WindowSize {
+                                width: committed_geometry.width,
+                                height: committed_geometry.height,
                             });
                             if pending_resize.requested_geometry == inflight {
                                 commands.entity(entity).remove::<PendingInteractiveResize>();
                             } else {
                                 pending_resize.inflight_geometry = None;
                             }
-                        } else if pending_resize.requested_geometry.width == committed_width
-                            && pending_resize.requested_geometry.height == committed_height
-                        {
-                            window.scene_geometry.x = pending_resize.requested_geometry.x;
-                            window.scene_geometry.y = pending_resize.requested_geometry.y;
+                        } else {
+                            let committed_geometry = anchored_resize_commit_geometry(
+                                &pending_resize.requested_geometry,
+                                committed_width,
+                                committed_height,
+                                pending_resize.edges,
+                            );
+                            window.scene_geometry.x = committed_geometry.x;
+                            window.scene_geometry.y = committed_geometry.y;
+                            window.scene_geometry.width = committed_geometry.width;
+                            window.scene_geometry.height = committed_geometry.height;
                             window.placement.set_explicit_position(WindowPosition {
-                                x: pending_resize.requested_geometry.x,
-                                y: pending_resize.requested_geometry.y,
+                                x: committed_geometry.x,
+                                y: committed_geometry.y,
                             });
-                            commands.entity(entity).remove::<PendingInteractiveResize>();
+                            window.placement.floating_size = Some(WindowSize {
+                                width: committed_geometry.width,
+                                height: committed_geometry.height,
+                            });
+                            if pending_resize.requested_geometry.width == committed_width
+                                && pending_resize.requested_geometry.height == committed_height
+                            {
+                                commands.entity(entity).remove::<PendingInteractiveResize>();
+                            }
+                        }
+                    } else {
+                        window.scene_geometry.width = committed_width;
+                        window.scene_geometry.height = committed_height;
+                        if *window.layout == WindowLayout::Floating
+                            && window.placement.floating_size.is_some()
+                        {
+                            window.placement.floating_size = Some(WindowSize {
+                                width: committed_width,
+                                height: committed_height,
+                            });
                         }
                     }
                 } else if let Some(restored) = window.restore.snapshot.as_mut() {
@@ -407,6 +425,28 @@ fn placement_area_for_workspace(
     )
 }
 
+fn anchored_resize_commit_geometry(
+    target_geometry: &WindowSceneGeometry,
+    committed_width: u32,
+    committed_height: u32,
+    edges: ResizeEdges,
+) -> WindowSceneGeometry {
+    let right = target_geometry.x.saturating_add(target_geometry.width as isize);
+    let bottom = target_geometry.y.saturating_add(target_geometry.height as isize);
+    let x = if edges.has_left() {
+        right.saturating_sub(committed_width as isize)
+    } else {
+        target_geometry.x
+    };
+    let y = if edges.has_top() {
+        bottom.saturating_sub(committed_height as isize)
+    } else {
+        target_geometry.y
+    };
+
+    WindowSceneGeometry { x, y, width: committed_width, height: committed_height }
+}
+
 /// Debug helper kept around for tracing deferred protocol requests while the lifecycle systems are
 /// still growing new request kinds.
 #[allow(dead_code)]
@@ -534,14 +574,15 @@ mod tests {
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
         BufferState, OutputCurrentWorkspace, OutputDevice, OutputKind, OutputProperties,
-        OutputWorkArea, SurfaceGeometry, WindowAnimation, WindowLayout, WindowMode,
-        WindowRestoreSnapshot, WindowRestoreState, WindowSceneGeometry, WlSurfaceHandle, Workspace,
-        WorkspaceId, XdgPopup, XdgWindow,
+        OutputWorkArea, PendingInteractiveResize, SurfaceGeometry, WindowAnimation, WindowLayout,
+        WindowMode, WindowPlacement, WindowPosition, WindowRestoreSnapshot, WindowRestoreState,
+        WindowSceneGeometry, WindowSize,
+        WlSurfaceHandle, Workspace, WorkspaceId, XdgPopup, XdgWindow,
     };
     use nekoland_ecs::events::{WindowClosed, WindowCreated};
     use nekoland_ecs::resources::{
         EntityIndex, FocusedOutputState, PendingPopupServerRequests, PopupServerAction,
-        SurfaceExtent, WaylandIngress, WindowLifecycleAction,
+        ResizeEdges, SurfaceExtent, WaylandIngress, WindowLifecycleAction,
         WindowLifecycleRequest, WorkArea, XdgSurfaceRole, rebuild_entity_index_system,
     };
 
@@ -856,5 +897,236 @@ mod tests {
         };
         assert_eq!(*layout, WindowLayout::Tiled);
         assert_eq!(*mode, WindowMode::Normal);
+    }
+
+    #[test]
+    fn mismatched_committed_resize_does_not_leave_resize_stuck() {
+        let mut app = NekolandApp::new("toplevel-resize-mismatch-test");
+        app.insert_resource(CompositorConfig::default())
+            .insert_resource(WorkArea::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(DeferredXdgRequests::default())
+            .insert_resource(PendingPopupServerRequests::default())
+            .insert_resource(EntityIndex::default())
+            .insert_resource(WaylandIngress::default());
+        app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_systems(
+            LayoutSchedule,
+            (rebuild_entity_index_system, toplevel_lifecycle_system).chain(),
+        );
+
+        app.inner_mut().world_mut().spawn(Workspace {
+            id: WorkspaceId(1),
+            name: "1".to_owned(),
+            active: true,
+        });
+        let entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                WindowBundle {
+                    surface: WlSurfaceHandle { id: 61 },
+                    geometry: SurfaceGeometry { x: 10, y: 20, width: 800, height: 600 },
+                    scene_geometry: WindowSceneGeometry { x: 10, y: 20, width: 800, height: 600 },
+                    viewport_visibility: Default::default(),
+                    buffer: BufferState { attached: true, scale: 1 },
+                    content_version: Default::default(),
+                    window: XdgWindow::default(),
+                    layout: WindowLayout::Floating,
+                    mode: WindowMode::Normal,
+                    decoration: Default::default(),
+                    border_theme: Default::default(),
+                    animation: WindowAnimation::default(),
+                },
+                PendingInteractiveResize {
+                    requested_geometry: WindowSceneGeometry { x: 10, y: 20, width: 1200, height: 900 },
+                    inflight_geometry: Some(WindowSceneGeometry {
+                        x: 10,
+                        y: 20,
+                        width: 1200,
+                        height: 900,
+                    }),
+                    edges: ResizeEdges::BottomRight,
+                },
+            ))
+            .id();
+
+        app.inner_mut().world_mut().resource_mut::<DeferredXdgRequests>().push(
+            WindowLifecycleRequest {
+                surface_id: 61,
+                action: WindowLifecycleAction::Committed {
+                    role: XdgSurfaceRole::Toplevel,
+                    size: Some(SurfaceExtent { width: 1024, height: 768 }),
+                },
+            },
+        );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner();
+        assert!(world.world().get::<PendingInteractiveResize>(entity).is_none());
+        assert_eq!(
+            world.world().get::<WindowSceneGeometry>(entity),
+            Some(&WindowSceneGeometry { x: 10, y: 20, width: 1024, height: 768 })
+        );
+    }
+
+    #[test]
+    fn mismatched_committed_resize_keeps_newer_requested_target() {
+        let mut app = NekolandApp::new("toplevel-resize-mismatch-newer-request-test");
+        app.insert_resource(CompositorConfig::default())
+            .insert_resource(WorkArea::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(DeferredXdgRequests::default())
+            .insert_resource(PendingPopupServerRequests::default())
+            .insert_resource(EntityIndex::default())
+            .insert_resource(WaylandIngress::default());
+        app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_systems(
+            LayoutSchedule,
+            (rebuild_entity_index_system, toplevel_lifecycle_system).chain(),
+        );
+
+        app.inner_mut().world_mut().spawn(Workspace {
+            id: WorkspaceId(1),
+            name: "1".to_owned(),
+            active: true,
+        });
+        let entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                WindowBundle {
+                    surface: WlSurfaceHandle { id: 62 },
+                    geometry: SurfaceGeometry { x: 10, y: 20, width: 800, height: 600 },
+                    scene_geometry: WindowSceneGeometry { x: 10, y: 20, width: 800, height: 600 },
+                    viewport_visibility: Default::default(),
+                    buffer: BufferState { attached: true, scale: 1 },
+                    content_version: Default::default(),
+                    window: XdgWindow::default(),
+                    layout: WindowLayout::Floating,
+                    mode: WindowMode::Normal,
+                    decoration: Default::default(),
+                    border_theme: Default::default(),
+                    animation: WindowAnimation::default(),
+                },
+                PendingInteractiveResize {
+                    requested_geometry: WindowSceneGeometry { x: 10, y: 20, width: 1400, height: 1000 },
+                    inflight_geometry: Some(WindowSceneGeometry {
+                        x: 10,
+                        y: 20,
+                        width: 1200,
+                        height: 900,
+                    }),
+                    edges: ResizeEdges::BottomRight,
+                },
+            ))
+            .id();
+
+        app.inner_mut().world_mut().resource_mut::<DeferredXdgRequests>().push(
+            WindowLifecycleRequest {
+                surface_id: 62,
+                action: WindowLifecycleAction::Committed {
+                    role: XdgSurfaceRole::Toplevel,
+                    size: Some(SurfaceExtent { width: 1024, height: 768 }),
+                },
+            },
+        );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner();
+        assert_eq!(
+            world.world().get::<PendingInteractiveResize>(entity),
+            Some(&PendingInteractiveResize {
+                requested_geometry: WindowSceneGeometry { x: 10, y: 20, width: 1400, height: 1000 },
+                inflight_geometry: None,
+                edges: ResizeEdges::BottomRight,
+            })
+        );
+        assert_eq!(
+            world.world().get::<WindowSceneGeometry>(entity),
+            Some(&WindowSceneGeometry { x: 10, y: 20, width: 1024, height: 768 })
+        );
+    }
+
+    #[test]
+    fn top_edge_resize_reanchors_position_when_client_commits_constrained_height() {
+        let mut app = NekolandApp::new("toplevel-top-resize-anchor-test");
+        app.insert_resource(CompositorConfig::default())
+            .insert_resource(WorkArea::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(DeferredXdgRequests::default())
+            .insert_resource(PendingPopupServerRequests::default())
+            .insert_resource(EntityIndex::default())
+            .insert_resource(WaylandIngress::default());
+        app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_systems(
+            LayoutSchedule,
+            (rebuild_entity_index_system, toplevel_lifecycle_system).chain(),
+        );
+
+        app.inner_mut().world_mut().spawn(Workspace {
+            id: WorkspaceId(1),
+            name: "1".to_owned(),
+            active: true,
+        });
+        let entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn((
+                WindowBundle {
+                    surface: WlSurfaceHandle { id: 63 },
+                    geometry: SurfaceGeometry { x: 10, y: 20, width: 800, height: 600 },
+                    scene_geometry: WindowSceneGeometry { x: 10, y: 20, width: 800, height: 600 },
+                    viewport_visibility: Default::default(),
+                    buffer: BufferState { attached: true, scale: 1 },
+                    content_version: Default::default(),
+                    window: XdgWindow::default(),
+                    layout: WindowLayout::Floating,
+                    mode: WindowMode::Normal,
+                    decoration: Default::default(),
+                    border_theme: Default::default(),
+                    animation: WindowAnimation::default(),
+                },
+                PendingInteractiveResize {
+                    requested_geometry: WindowSceneGeometry { x: 10, y: 120, width: 800, height: 500 },
+                    inflight_geometry: Some(WindowSceneGeometry {
+                        x: 10,
+                        y: 120,
+                        width: 800,
+                        height: 500,
+                    }),
+                    edges: ResizeEdges::Top,
+                },
+            ))
+            .id();
+
+        app.inner_mut().world_mut().resource_mut::<DeferredXdgRequests>().push(
+            WindowLifecycleRequest {
+                surface_id: 63,
+                action: WindowLifecycleAction::Committed {
+                    role: XdgSurfaceRole::Toplevel,
+                    size: Some(SurfaceExtent { width: 800, height: 520 }),
+                },
+            },
+        );
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner();
+        assert_eq!(
+            world.world().get::<WindowSceneGeometry>(entity),
+            Some(&WindowSceneGeometry { x: 10, y: 100, width: 800, height: 520 })
+        );
+        assert_eq!(
+            world.world().get::<WindowPlacement>(entity),
+            Some(&WindowPlacement {
+                floating_position: Some(
+                    nekoland_ecs::components::FloatingPosition::Explicit(WindowPosition {
+                        x: 10,
+                        y: 100,
+                    }),
+                ),
+                floating_size: Some(WindowSize { width: 800, height: 520 }),
+            })
+        );
     }
 }

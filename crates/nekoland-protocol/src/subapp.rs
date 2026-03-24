@@ -720,6 +720,7 @@ mod tests {
                 size: Some(SurfaceExtent { width: 800, height: 600 }),
                 fullscreen: false,
                 maximized: false,
+                resizing: false,
             },
         });
         main_world.insert_resource(WaylandCommands {

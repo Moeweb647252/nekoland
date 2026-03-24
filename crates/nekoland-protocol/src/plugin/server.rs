@@ -450,13 +450,14 @@ impl SmithayProtocolServer {
         size: Option<nekoland_ecs::resources::SurfaceExtent>,
         fullscreen: bool,
         maximized: bool,
+        resizing: bool,
     ) -> bool {
         self.runtime
             .as_ref()
             .map(|runtime| {
                 runtime
                     .borrow_mut()
-                    .sync_xdg_toplevel_state(surface_id, size, fullscreen, maximized)
+                    .sync_xdg_toplevel_state(surface_id, size, fullscreen, maximized, resizing)
             })
             .unwrap_or(false)
     }
@@ -1066,6 +1067,7 @@ impl SmithayProtocolRuntime {
         size: Option<nekoland_ecs::resources::SurfaceExtent>,
         fullscreen: bool,
         maximized: bool,
+        resizing: bool,
     ) -> bool {
         let handled = if let Some(toplevel) = self.state.toplevels.get(&surface_id).cloned() {
             toplevel.with_pending_state(|state| {
@@ -1091,6 +1093,15 @@ impl SmithayProtocolRuntime {
                 } else {
                     state.states.unset(
                         smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Maximized,
+                    );
+                }
+                if resizing {
+                    state.states.set(
+                        smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Resizing,
+                    );
+                } else {
+                    state.states.unset(
+                        smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Resizing,
                     );
                 }
             });

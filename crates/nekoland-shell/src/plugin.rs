@@ -159,16 +159,31 @@ fn sync_shell_render_boundary_system(
 
 #[cfg(test)]
 mod tests {
+    use bevy_ecs::schedule::IntoScheduleConfigs;
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::{IntoSystem, System};
+    use nekoland_core::prelude::NekolandApp;
+    use nekoland_core::schedules::LayoutSchedule;
+    use nekoland_ecs::bundles::WindowBundle;
+    use nekoland_ecs::components::{
+        BufferState, WindowLayout, WindowMode, WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
+    };
+    use nekoland_ecs::events::{PointerButton, WindowMoved};
+    use nekoland_ecs::resources::{
+        EntityIndex, GlobalPointerPosition, KeyboardFocusState, WorkArea,
+        WindowStackingState, register_entity_index_hooks,
+    };
     use nekoland_ecs::components::OutputId;
     use nekoland_ecs::resources::{
-        CursorImageSnapshot, GlobalPointerPosition, OutputOverlayState, PendingScreenshotRequests,
+        CursorImageSnapshot, OutputOverlayState, PendingScreenshotRequests,
         PendingOutputControls, PendingOutputOverlayControls, PendingOutputServerRequests,
         PendingPopupServerRequests, PendingWindowServerRequests, ShellRenderInput, SurfaceExtent,
         SurfacePresentationSnapshot, WaylandCommands, WaylandFeedback, WaylandIngress,
         WindowServerAction, WindowServerRequest,
     };
+
+    use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab, window_grab_system};
+    use crate::presentation::window_presentation_sync_system;
 
     use super::{sync_shell_render_boundary_system, sync_wayland_commands_boundary_system};
 
@@ -215,6 +230,7 @@ mod tests {
                 size: Some(SurfaceExtent { width: 800, height: 600 }),
                 fullscreen: false,
                 maximized: false,
+                resizing: false,
             },
         });
         world.insert_resource(PendingOutputControls::default());
@@ -230,5 +246,99 @@ mod tests {
 
         assert!(world.resource::<PendingWindowServerRequests>().is_empty());
         assert_eq!(world.resource::<WaylandCommands>().pending_window_server_requests.len(), 1);
+    }
+
+    #[test]
+    fn native_xdg_resize_flows_into_wayland_commands_boundary() {
+        let mut app = NekolandApp::new("native-xdg-resize-boundary-test");
+        register_entity_index_hooks(app.inner_mut().world_mut());
+        app.inner_mut()
+            .init_resource::<EntityIndex>()
+            .init_resource::<WaylandIngress>()
+            .init_resource::<PendingWindowServerRequests>()
+            .init_resource::<PendingOutputControls>()
+            .init_resource::<PendingOutputOverlayControls>()
+            .init_resource::<PendingOutputServerRequests>()
+            .init_resource::<PendingPopupServerRequests>()
+            .init_resource::<WaylandCommands>()
+            .init_resource::<KeyboardFocusState>()
+            .init_resource::<WindowStackingState>()
+            .init_resource::<WorkArea>()
+            .insert_resource(GlobalPointerPosition { x: 100.0, y: 100.0 })
+            .insert_resource(ActiveWindowGrab::default())
+            .add_message::<PointerButton>()
+            .add_message::<WindowMoved>()
+            .add_systems(
+                LayoutSchedule,
+                (
+                    nekoland_ecs::resources::rebuild_entity_index_system,
+                    window_grab_system,
+                    window_presentation_sync_system,
+                    sync_wayland_commands_boundary_system,
+                )
+                    .chain(),
+            );
+
+        let entity = app
+            .inner_mut()
+            .world_mut()
+            .spawn(WindowBundle {
+                surface: WlSurfaceHandle { id: 99 },
+                geometry: nekoland_ecs::components::SurfaceGeometry {
+                    x: 10,
+                    y: 20,
+                    width: 800,
+                    height: 600,
+                },
+                scene_geometry: WindowSceneGeometry { x: 10, y: 20, width: 800, height: 600 },
+                buffer: BufferState { attached: true, scale: 1 },
+                window: XdgWindow::default(),
+                layout: WindowLayout::Floating,
+                mode: WindowMode::Normal,
+                ..Default::default()
+            })
+            .id();
+
+        {
+            let world = app.inner_mut().world_mut();
+            let geometry = world
+                .get::<WindowSceneGeometry>(entity)
+                .cloned()
+                .expect("test window should expose scene geometry");
+            let pointer = world.resource::<GlobalPointerPosition>().clone();
+            begin_window_grab(
+                &mut world.resource_mut::<ActiveWindowGrab>(),
+                99,
+                WindowGrabMode::Resize {
+                    edges: nekoland_ecs::resources::ResizeEdges::BottomRight,
+                },
+                &pointer,
+                &geometry,
+            );
+        }
+        app.inner_mut().world_mut().resource_mut::<GlobalPointerPosition>().x = 140.0;
+        app.inner_mut().world_mut().resource_mut::<GlobalPointerPosition>().y = 140.0;
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let requests = app
+            .inner()
+            .world()
+            .resource::<WaylandCommands>()
+            .pending_window_server_requests
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].surface_id, 99);
+        assert_eq!(
+            requests[0].action,
+            WindowServerAction::SyncXdgToplevelState {
+                size: Some(SurfaceExtent { width: 840, height: 640 }),
+                fullscreen: false,
+                maximized: false,
+                resizing: true,
+            }
+        );
     }
 }

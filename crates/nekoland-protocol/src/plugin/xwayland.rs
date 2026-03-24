@@ -47,7 +47,9 @@ pub(crate) fn dispatch_window_server_requests_system(
                 size,
                 fullscreen,
                 maximized,
-            } => server.sync_xdg_toplevel_state(request.surface_id, size, fullscreen, maximized),
+                resizing,
+            } => server
+                .sync_xdg_toplevel_state(request.surface_id, size, fullscreen, maximized, resizing),
             nekoland_ecs::resources::WindowServerAction::SyncX11WindowPresentation {
                 geometry,
                 fullscreen,

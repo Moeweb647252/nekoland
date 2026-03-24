@@ -2,6 +2,7 @@ use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{OutputId, WorkspaceCoord};
+use crate::resources::ResizeEdges;
 use crate::selectors::OutputName;
 
 /// Metadata tracked for a mapped XDG toplevel surface.
@@ -41,6 +42,7 @@ pub struct WindowSceneGeometry {
 pub struct PendingInteractiveResize {
     pub requested_geometry: WindowSceneGeometry,
     pub inflight_geometry: Option<WindowSceneGeometry>,
+    pub edges: ResizeEdges,
 }
 
 /// Whether the current window scene geometry intersects the active output viewport.

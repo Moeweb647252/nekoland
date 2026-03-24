@@ -256,7 +256,12 @@ pub type PendingX11Requests = ProtocolEventQueue<X11LifecycleRequest>;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WindowServerAction {
     Close,
-    SyncXdgToplevelState { size: Option<SurfaceExtent>, fullscreen: bool, maximized: bool },
+    SyncXdgToplevelState {
+        size: Option<SurfaceExtent>,
+        fullscreen: bool,
+        maximized: bool,
+        resizing: bool,
+    },
     SyncX11WindowPresentation { geometry: X11WindowGeometry, fullscreen: bool, maximized: bool },
 }
 

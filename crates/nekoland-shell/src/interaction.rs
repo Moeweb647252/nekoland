@@ -95,12 +95,17 @@ pub fn window_grab_system(
         resized && window.xdg_window.is_some() && window.x11_window.is_none();
 
     if defer_native_xdg_resize {
+        let WindowGrabMode::Resize { edges } = grab_state.mode else {
+            unreachable!("native xdg resize deferral only applies to resize grabs");
+        };
         if let Some(mut pending_resize) = window.pending_resize {
             pending_resize.requested_geometry = next_geometry.clone();
+            pending_resize.edges = edges;
         } else {
             commands.entity(entity).insert(PendingInteractiveResize {
                 requested_geometry: next_geometry.clone(),
                 inflight_geometry: None,
+                edges,
             });
         }
     } else if moved || resized {
