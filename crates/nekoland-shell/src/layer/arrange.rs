@@ -236,11 +236,8 @@ pub fn layer_arrangement_system(
         })
         .collect::<Vec<_>>();
     let primary_output_id = crate::viewport::preferred_primary_output_id(Some(&wayland_ingress));
-    let Some(primary_output) = primary_output_from_state_or_sizes(
-        primary_output_id,
-        &output_sizes,
-        &outputs,
-    )
+    let Some(primary_output) =
+        primary_output_from_state_or_sizes(primary_output_id, &output_sizes, &outputs)
     else {
         return;
     };
@@ -324,11 +321,8 @@ pub fn work_area_system(
         })
         .collect::<Vec<_>>();
     let primary_output_id = crate::viewport::preferred_primary_output_id(Some(&wayland_ingress));
-    let Some((primary_output, output_width, output_height)) = primary_output_from_state_or_sizes(
-        primary_output_id,
-        &output_sizes,
-        &outputs,
-    )
+    let Some((primary_output, output_width, output_height)) =
+        primary_output_from_state_or_sizes(primary_output_id, &output_sizes, &outputs)
     else {
         return;
     };
@@ -505,7 +499,8 @@ mod tests {
     #[test]
     fn layer_creation_inserts_output_relationship_when_output_exists() {
         let mut app = NekolandApp::new("layer-output-relationship-test");
-        app.insert_resource(DeferredLayerRequests::default()).insert_resource(WaylandIngress::default());
+        app.insert_resource(DeferredLayerRequests::default())
+            .insert_resource(WaylandIngress::default());
         register_entity_index_hooks(app.inner_mut().world_mut());
         app.inner_mut().add_systems(
             LayoutSchedule,

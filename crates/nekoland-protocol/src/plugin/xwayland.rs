@@ -62,8 +62,13 @@ pub(crate) fn dispatch_window_server_requests_system(
                 fullscreen,
                 maximized,
                 resizing,
-            } => server
-                .sync_xdg_toplevel_state(request.surface_id, size, fullscreen, maximized, resizing),
+            } => server.sync_xdg_toplevel_state(
+                request.surface_id,
+                size,
+                fullscreen,
+                maximized,
+                resizing,
+            ),
             nekoland_ecs::resources::WindowServerAction::SyncX11WindowPresentation {
                 geometry,
                 fullscreen,
@@ -239,8 +244,8 @@ impl super::server::ProtocolRuntimeState {
         let geometry = Self::x11_geometry(&window);
         let popup = window.is_popup();
         let transient_for = window.is_transient_for();
-        let transient_parent_surface_id =
-            transient_for.and_then(|window_id| self.x11_surface_ids_by_window.get(&window_id).copied());
+        let transient_parent_surface_id = transient_for
+            .and_then(|window_id| self.x11_surface_ids_by_window.get(&window_id).copied());
         let window_type = Self::x11_window_type(&window);
         let popup_placement =
             self.x11_popup_placement(geometry, transient_for, transient_parent_surface_id);
@@ -300,11 +305,14 @@ impl super::server::ProtocolRuntimeState {
         };
         let popup = window.is_popup();
         let transient_for = window.is_transient_for();
-        let transient_parent_surface_id =
-            transient_for.and_then(|window_id| self.x11_surface_ids_by_window.get(&window_id).copied());
+        let transient_parent_surface_id = transient_for
+            .and_then(|window_id| self.x11_surface_ids_by_window.get(&window_id).copied());
         let window_type = Self::x11_window_type(&window);
-        let popup_placement =
-            self.x11_popup_placement(Self::x11_geometry(&window), transient_for, transient_parent_surface_id);
+        let popup_placement = self.x11_popup_placement(
+            Self::x11_geometry(&window),
+            transient_for,
+            transient_parent_surface_id,
+        );
 
         self.queue_event(crate::ProtocolEvent::X11WindowReconfigured {
             surface_id,

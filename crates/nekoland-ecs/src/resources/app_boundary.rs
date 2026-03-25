@@ -5,13 +5,14 @@ use crate::resources::{
     ClipboardSelectionState, CompletedScreenshotFrames, CursorImageSnapshot, DragAndDropState,
     GlobalPointerPosition, OutputOverlayState, OutputPresentationState, OutputSnapshotState,
     OverlayUiFrame, PendingLayerRequests, PendingOutputControls, PendingOutputEvents,
-    PendingOutputOverlayControls, PendingOutputServerRequests, PendingPlatformInputEvents, PendingPopupEvents,
-    PendingPopupServerRequests, PendingProtocolInputEvents, PendingScreenshotRequests,
-    PendingWindowControls, PendingWindowEvents, PendingWindowServerRequests, PendingXdgRequests,
-    PlatformBackendState, PlatformImportCapabilities, PlatformImportDiagnosticsState,
-    PlatformOutputMaterializationPlan, PlatformSurfaceSnapshotState, PresentAuditState,
-    PrimaryOutputState, PrimarySelectionState, ProtocolServerState, SeatRegistry,
-    SurfacePresentationSnapshot, VirtualOutputCaptureState, XWaylandServerState,
+    PendingOutputOverlayControls, PendingOutputServerRequests, PendingPlatformInputEvents,
+    PendingPopupEvents, PendingPopupServerRequests, PendingProtocolInputEvents,
+    PendingScreenshotRequests, PendingWindowControls, PendingWindowEvents,
+    PendingWindowServerRequests, PendingXdgRequests, PlatformBackendState,
+    PlatformImportCapabilities, PlatformImportDiagnosticsState, PlatformOutputMaterializationPlan,
+    PlatformSurfaceSnapshotState, PresentAuditState, PrimaryOutputState, PrimarySelectionState,
+    ProtocolServerState, SeatRegistry, SurfacePresentationSnapshot, VirtualOutputCaptureState,
+    XWaylandServerState,
 };
 
 /// Platform-to-shell boundary resource carrying normalized platform/runtime snapshots.

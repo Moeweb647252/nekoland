@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::components::OutputId;
 use crate::resources::{
     MaterialParamsId, PlatformDmabufFormat, PlatformSurfaceBufferSource,
-    PlatformSurfaceImportStrategy, PlatformSurfaceKind, ProcessShaderKey, RenderBindGroupLayoutKey,
-    QuadContent, RenderItemId, RenderMaterialDescriptor, RenderMaterialId,
+    PlatformSurfaceImportStrategy, PlatformSurfaceKind, ProcessShaderKey, QuadContent,
+    RenderBindGroupLayoutKey, RenderItemId, RenderMaterialDescriptor, RenderMaterialId,
     RenderMaterialParamBlock, RenderRect, RenderTargetId, RenderTargetKind,
 };
 

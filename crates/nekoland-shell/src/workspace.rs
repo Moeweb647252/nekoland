@@ -392,11 +392,8 @@ pub fn sync_active_workspace_marker_system(
 ) {
     let primary_output_id = crate::viewport::preferred_primary_output_id(Some(&wayland_ingress));
     let focused_output_id = focused_output.id;
-    let active_workspace_id = resolve_preferred_workspace_id(
-        &outputs,
-        focused_output_id,
-        primary_output_id,
-    );
+    let active_workspace_id =
+        resolve_preferred_workspace_id(&outputs, focused_output_id, primary_output_id);
     let active_workspace = active_workspace_id
         .and_then(|active_workspace_id| {
             workspaces
@@ -641,7 +638,8 @@ mod tests {
                     buffer: BufferState { attached: true, scale: 1 },
                     content_version: Default::default(),
                     window: XdgWindow::default(),
-                    management_hints: nekoland_ecs::components::WindowManagementHints::native_wayland(),
+                    management_hints:
+                        nekoland_ecs::components::WindowManagementHints::native_wayland(),
                     layout: WindowLayout::Tiled,
                     mode: WindowMode::Normal,
                     decoration: ServerDecoration::default(),
@@ -707,7 +705,8 @@ mod tests {
                     buffer: BufferState { attached: true, scale: 1 },
                     content_version: Default::default(),
                     window: XdgWindow::default(),
-                    management_hints: nekoland_ecs::components::WindowManagementHints::native_wayland(),
+                    management_hints:
+                        nekoland_ecs::components::WindowManagementHints::native_wayland(),
                     layout: WindowLayout::Tiled,
                     mode: WindowMode::Normal,
                     decoration: ServerDecoration::default(),

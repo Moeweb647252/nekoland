@@ -16,8 +16,8 @@ use nekoland::build_app;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_core::schedules::{LayoutSchedule, RenderSchedule};
 use nekoland_ecs::components::{
-    BufferState, OutputProperties, PopupGrab, SurfaceGeometry, WindowDisplayState, WindowLayout,
-    WindowMode, PopupSurface, WlSurfaceHandle, XdgWindow,
+    BufferState, OutputProperties, PopupGrab, PopupSurface, SurfaceGeometry, WindowDisplayState,
+    WindowLayout, WindowMode, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated};
 use nekoland_ecs::resources::{
@@ -178,9 +178,9 @@ fn render_plan_surface_ids(world: &mut bevy_ecs::world::World) -> Vec<u64> {
         .filter_map(|item| match item {
             RenderPlanItem::Surface(item) if item.surface_id != 0 => Some(item.surface_id),
             RenderPlanItem::Surface(_) => None,
-            RenderPlanItem::Quad(_)
-            | RenderPlanItem::Backdrop(_)
-            | RenderPlanItem::Cursor(_) => None,
+            RenderPlanItem::Quad(_) | RenderPlanItem::Backdrop(_) | RenderPlanItem::Cursor(_) => {
+                None
+            }
         })
         .collect()
 }

@@ -23,15 +23,15 @@ use nekoland_core::schedules::{ExtractSchedule, PresentSchedule, ProtocolSchedul
 use nekoland_ecs::resources::{
     ClipboardSelectionState, CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock,
     CursorImageSnapshot, DragAndDropState, FramePacingState, GlobalPointerPosition,
-    KeyboardFocusState,
-    OutputPresentationState, OutputSnapshotState, PendingLayerRequests, PendingOutputControls,
-    PendingOutputEvents, PendingOutputOverlayControls, PendingOutputServerRequests,
-    PendingPlatformInputEvents, PendingPopupEvents, PendingPopupServerRequests,
-    PendingProtocolInputEvents, PendingWindowControls, PendingWindowEvents,
-    PendingWindowServerRequests, PendingXdgRequests, PlatformSurfaceSnapshotState,
-    PresentAuditState, PrimarySelectionState, SeatRegistry, ProtocolServerState, RenderPlan,
-    ShellRenderInput, SurfaceContentVersionSnapshot,
-    VirtualOutputCaptureState, WaylandCommands, WaylandFeedback, WaylandIngress, XWaylandServerState,
+    KeyboardFocusState, OutputPresentationState, OutputSnapshotState, PendingLayerRequests,
+    PendingOutputControls, PendingOutputEvents, PendingOutputOverlayControls,
+    PendingOutputServerRequests, PendingPlatformInputEvents, PendingPopupEvents,
+    PendingPopupServerRequests, PendingProtocolInputEvents, PendingWindowControls,
+    PendingWindowEvents, PendingWindowServerRequests, PendingXdgRequests,
+    PlatformSurfaceSnapshotState, PresentAuditState, PrimarySelectionState, ProtocolServerState,
+    RenderPlan, SeatRegistry, ShellRenderInput, SurfaceContentVersionSnapshot,
+    VirtualOutputCaptureState, WaylandCommands, WaylandFeedback, WaylandIngress,
+    XWaylandServerState,
 };
 
 /// Entrypoint for the dedicated wayland subapp boundary.
@@ -399,13 +399,17 @@ fn sync_wayland_ingress_boundary_system(mut params: WaylandIngressSyncParams<'_>
         pointer_focus_surface,
         seat_registry: params.seat_registry.clone(),
         cursor_image: params.cursor_image.clone(),
-        platform_input_events: PendingPlatformInputEvents::from_items(params.platform_input_events.take()),
+        platform_input_events: PendingPlatformInputEvents::from_items(
+            params.platform_input_events.take(),
+        ),
         output_snapshots: params.output_snapshots.clone(),
         surface_snapshots: params.surface_snapshots.clone(),
         pending_window_events: PendingWindowEvents::from_items(params.pending_window_events.take()),
         pending_popup_events: PendingPopupEvents::from_items(params.pending_popup_events.take()),
         pending_xdg_requests: PendingXdgRequests::from_items(params.pending_xdg_requests.take()),
-        pending_layer_requests: PendingLayerRequests::from_items(params.pending_layer_requests.take()),
+        pending_layer_requests: PendingLayerRequests::from_items(
+            params.pending_layer_requests.take(),
+        ),
         pending_window_controls: pending_window_controls_boundary,
         pending_output_events: PendingOutputEvents::from_items(params.pending_output_events.take()),
         output_materialization,
@@ -435,9 +439,8 @@ fn ingest_protocol_wayland_commands_system(
     mut pending_window_requests: ResMut<'_, PendingWindowServerRequests>,
     mut pending_popup_requests: ResMut<'_, PendingPopupServerRequests>,
 ) {
-    pending_protocol_inputs.extend(
-        wayland_commands.pending_protocol_input_events.as_slice().iter().cloned(),
-    );
+    pending_protocol_inputs
+        .extend(wayland_commands.pending_protocol_input_events.as_slice().iter().cloned());
     *pending_window_requests = wayland_commands.pending_window_server_requests.clone();
     *pending_popup_requests = wayland_commands.pending_popup_server_requests.clone();
 }
@@ -472,6 +475,7 @@ fn sync_wayland_feedback_boundary_system(
 
 #[cfg(test)]
 mod tests {
+    use crate::plugin::feedback::WorkspaceVisibilitySnapshot;
     use bevy_app::SubApp;
     use bevy_ecs::hierarchy::ChildOf;
     use bevy_ecs::schedule::ScheduleLabel;
@@ -490,19 +494,17 @@ mod tests {
         DragAndDropDrop, DragAndDropSession, DragAndDropState, GlobalPointerPosition,
         OutputGeometrySnapshot, OutputPresentationState, OutputPresentationTimeline,
         OutputSnapshotState, PendingLayerRequests, PendingOutputControls, PendingOutputEvents,
-        PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
-        PendingPopupEvents, PendingProtocolInputEvents, PendingScreenshotRequests,
-        PendingWindowControls, PendingWindowServerRequests,
-        PendingXdgRequests, PlatformSurfaceKind,
-        PlatformSurfaceSnapshot, PlatformSurfaceSnapshotState, PresentAuditElement,
-        PresentAuditElementKind, PresentAuditState, PrimarySelection, PrimarySelectionState,
-        ProtocolServerState, ScreenshotFrame, SelectionOwner, ShellRenderInput, SurfaceExtent,
-        SurfacePresentationRole, SurfacePresentationSnapshot,
+        PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupEvents,
+        PendingPopupServerRequests, PendingProtocolInputEvents, PendingScreenshotRequests,
+        PendingWindowControls, PendingWindowServerRequests, PendingXdgRequests,
+        PlatformSurfaceKind, PlatformSurfaceSnapshot, PlatformSurfaceSnapshotState,
+        PresentAuditElement, PresentAuditElementKind, PresentAuditState, PrimarySelection,
+        PrimarySelectionState, ProtocolServerState, ScreenshotFrame, SelectionOwner,
+        ShellRenderInput, SurfaceExtent, SurfacePresentationRole, SurfacePresentationSnapshot,
         SurfacePresentationState, VirtualOutputCaptureState, VirtualOutputElement,
         VirtualOutputElementKind, VirtualOutputFrame, WaylandCommands, WaylandFeedback,
         WaylandIngress, WindowServerAction, WindowServerRequest, XWaylandServerState,
     };
-    use crate::plugin::feedback::WorkspaceVisibilitySnapshot;
 
     use super::{
         WaylandSubAppPlugin, configure_wayland_subapp, extract_workspace_visibility_snapshot,
@@ -518,10 +520,7 @@ mod tests {
             pending_protocol_input_events: PendingProtocolInputEvents::from_items(vec![
                 BackendInputEvent {
                     device: "test-seat".to_owned(),
-                    action: BackendInputAction::PointerButton {
-                        button_code: 0x110,
-                        pressed: true,
-                    },
+                    action: BackendInputAction::PointerButton { button_code: 0x110, pressed: true },
                 },
             ]),
             ..Default::default()
@@ -722,10 +721,7 @@ mod tests {
             pending_protocol_input_events: PendingProtocolInputEvents::from_items(vec![
                 BackendInputEvent {
                     device: "test-seat".to_owned(),
-                    action: BackendInputAction::PointerButton {
-                        button_code: 0x110,
-                        pressed: true,
-                    },
+                    action: BackendInputAction::PointerButton { button_code: 0x110, pressed: true },
                 },
             ]),
             ..WaylandCommands::default()
@@ -738,17 +734,11 @@ mod tests {
         );
 
         assert!(
-            main_world
-                .resource::<WaylandCommands>()
-                .pending_window_server_requests
-                .is_empty(),
+            main_world.resource::<WaylandCommands>().pending_window_server_requests.is_empty(),
             "extract schedule sync-back should clear one-shot window server commands after handoff",
         );
         assert!(
-            main_world
-                .resource::<WaylandCommands>()
-                .pending_protocol_input_events
-                .is_empty(),
+            main_world.resource::<WaylandCommands>().pending_protocol_input_events.is_empty(),
             "extract schedule sync-back should clear one-shot protocol input commands after handoff",
         );
     }

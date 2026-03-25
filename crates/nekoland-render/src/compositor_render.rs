@@ -687,17 +687,20 @@ mod tests {
             .get::<nekoland_ecs::components::OutputId>(output)
             .copied()
             .map(|output_id| {
-                app.inner_mut().world_mut().resource_mut::<WaylandIngress>().output_snapshots.outputs =
-                    vec![nekoland_ecs::resources::OutputGeometrySnapshot {
-                        output_id,
-                        name: "Virtual-1".to_owned(),
-                        x: 0,
-                        y: 0,
-                        width: 1280,
-                        height: 720,
-                        scale: 1,
-                        refresh_millihz: 60_000,
-                    }];
+                app.inner_mut()
+                    .world_mut()
+                    .resource_mut::<WaylandIngress>()
+                    .output_snapshots
+                    .outputs = vec![nekoland_ecs::resources::OutputGeometrySnapshot {
+                    output_id,
+                    name: "Virtual-1".to_owned(),
+                    x: 0,
+                    y: 0,
+                    width: 1280,
+                    height: 720,
+                    scale: 1,
+                    refresh_millihz: 60_000,
+                }];
                 output_id
             })
             .expect("output id should exist")
@@ -773,18 +776,12 @@ mod tests {
 
         app.inner_mut().world_mut().spawn(WindowBundle {
             surface: WlSurfaceHandle { id: 11 },
-            window: XdgWindow {
-                app_id: "org.nekoland.test".to_owned(),
-                title: "front".to_owned(),
-            },
+            window: XdgWindow { app_id: "org.nekoland.test".to_owned(), title: "front".to_owned() },
             ..Default::default()
         });
         app.inner_mut().world_mut().spawn(WindowBundle {
             surface: WlSurfaceHandle { id: 22 },
-            window: XdgWindow {
-                app_id: "org.nekoland.test".to_owned(),
-                title: "back".to_owned(),
-            },
+            window: XdgWindow { app_id: "org.nekoland.test".to_owned(), title: "back".to_owned() },
             ..Default::default()
         });
         spawn_default_output(&mut app);
@@ -834,10 +831,7 @@ mod tests {
         ));
         app.inner_mut().world_mut().spawn(WindowBundle {
             surface: WlSurfaceHandle { id: 22 },
-            window: XdgWindow {
-                app_id: "org.nekoland.test".to_owned(),
-                title: "front".to_owned(),
-            },
+            window: XdgWindow { app_id: "org.nekoland.test".to_owned(), title: "front".to_owned() },
             ..Default::default()
         });
         set_surface_states(

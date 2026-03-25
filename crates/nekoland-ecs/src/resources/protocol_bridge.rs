@@ -4,8 +4,7 @@ use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    SeatId,
-    LayerAnchor, LayerLevel, LayerMargins, SurfaceGeometry, WindowManagementHints,
+    LayerAnchor, LayerLevel, LayerMargins, SeatId, SurfaceGeometry, WindowManagementHints,
     WindowSceneGeometry, X11WindowType,
 };
 use crate::kinds::{
@@ -40,21 +39,10 @@ pub struct PopupPlacement {
 /// Popup lifecycle actions buffered between platform callbacks and shell systems.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PopupEvent {
-    Created {
-        parent_surface_id: u64,
-        placement: PopupPlacement,
-    },
-    Repositioned {
-        placement: PopupPlacement,
-    },
-    Committed {
-        size: Option<SurfaceExtent>,
-        attached: bool,
-    },
-    Grab {
-        seat_id: SeatId,
-        serial: u32,
-    },
+    Created { parent_surface_id: u64, placement: PopupPlacement },
+    Repositioned { placement: PopupPlacement },
+    Committed { size: Option<SurfaceExtent>, attached: bool },
+    Grab { seat_id: SeatId, serial: u32 },
     Closed,
 }
 
@@ -349,7 +337,11 @@ pub enum WindowServerAction {
         maximized: bool,
         resizing: bool,
     },
-    SyncX11WindowPresentation { geometry: X11WindowGeometry, fullscreen: bool, maximized: bool },
+    SyncX11WindowPresentation {
+        geometry: X11WindowGeometry,
+        fullscreen: bool,
+        maximized: bool,
+    },
 }
 
 /// One low-level window request targeted at a surface id.

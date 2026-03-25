@@ -218,7 +218,9 @@ pub fn set_requested_backend_override(requested: Option<String>) -> Option<Strin
 pub fn requested_backend_kinds() -> Vec<BackendKind> {
     let requested = REQUESTED_BACKEND_OVERRIDE
         .with(|override_cell| override_cell.borrow().clone())
-        .unwrap_or_else(|| std::env::var("NEKOLAND_BACKEND").unwrap_or_else(|_| "winit".to_owned()));
+        .unwrap_or_else(|| {
+            std::env::var("NEKOLAND_BACKEND").unwrap_or_else(|_| "winit".to_owned())
+        });
     let mut kinds = Vec::new();
 
     for raw_kind in requested.split(',') {

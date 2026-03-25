@@ -139,7 +139,7 @@ pub fn cursor_motion_system(
         focused_output.id,
         &wayland_ingress.output_snapshots,
     )
-        .unwrap_or((next_x, next_y));
+    .unwrap_or((next_x, next_y));
 
     pointer.x = clamped_x;
     pointer.y = clamped_y;
@@ -184,9 +184,7 @@ fn clamp_pointer_to_active_output(
     outputs: &OutputSnapshotState,
 ) -> Option<(f64, f64)> {
     let output = focused_output_id
-        .and_then(|output_id| {
-            outputs.outputs.iter().find(|output| output.output_id == output_id)
-        })
+        .and_then(|output_id| outputs.outputs.iter().find(|output| output.output_id == output_id))
         .or_else(|| {
             outputs.outputs.iter().find(|output| {
                 pointer_within_output((current_pointer.x, current_pointer.y), output)

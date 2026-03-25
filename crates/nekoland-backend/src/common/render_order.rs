@@ -321,12 +321,10 @@ fn output_record_from_plan_item(item: &RenderPlanItem) -> OutputRenderRecord {
             surface_id: item.surface_id,
             instance: item.instance,
         }),
-        RenderPlanItem::Quad(item) => {
-            OutputRenderRecord::Quad(OutputQuadRenderRecord {
-                content: item.content.clone(),
-                instance: item.instance,
-            })
-        }
+        RenderPlanItem::Quad(item) => OutputRenderRecord::Quad(OutputQuadRenderRecord {
+            content: item.content.clone(),
+            instance: item.instance,
+        }),
         RenderPlanItem::Backdrop(item) => {
             OutputRenderRecord::Backdrop(OutputBackdropRenderRecord { instance: item.instance })
         }
@@ -363,14 +361,14 @@ mod tests {
     use nekoland_ecs::resources::{
         CompiledOutputFrame, CompiledOutputFrames, CursorRenderItem, CursorRenderSource,
         OutputDamageRegions, OutputExecutionPlan, OutputProcessPlan, OutputRenderPlan,
-        PresentAuditElementKind, QuadContent, QuadRenderItem, RenderColor,
-        RenderFinalOutputPlan, RenderItemId, RenderItemIdentity, RenderItemInstance,
-        RenderMaterialDescriptor, RenderMaterialFrameState, RenderMaterialId, RenderMaterialKind,
-        RenderMaterialParamBlock, RenderMaterialPipelineKey, RenderPassGraph, RenderPassId,
-        RenderPassNode, RenderPipelineStage, RenderPlan, RenderPlanItem, RenderProcessPlan,
-        RenderReadbackPlan, RenderRect, RenderSceneRole, RenderSourceId, RenderSurfaceRole,
-        RenderSurfaceSnapshot, RenderTargetAllocationPlan, RenderTargetId, RenderTargetKind,
-        SurfaceRenderItem, SurfaceTextureBridgePlan,
+        PresentAuditElementKind, QuadContent, QuadRenderItem, RenderColor, RenderFinalOutputPlan,
+        RenderItemId, RenderItemIdentity, RenderItemInstance, RenderMaterialDescriptor,
+        RenderMaterialFrameState, RenderMaterialId, RenderMaterialKind, RenderMaterialParamBlock,
+        RenderMaterialPipelineKey, RenderPassGraph, RenderPassId, RenderPassNode,
+        RenderPipelineStage, RenderPlan, RenderPlanItem, RenderProcessPlan, RenderReadbackPlan,
+        RenderRect, RenderSceneRole, RenderSourceId, RenderSurfaceRole, RenderSurfaceSnapshot,
+        RenderTargetAllocationPlan, RenderTargetId, RenderTargetKind, SurfaceRenderItem,
+        SurfaceTextureBridgePlan,
     };
 
     use super::{

@@ -15,15 +15,14 @@ use nekoland_ecs::resources::{
     PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
     PendingWindowControls, PendingWindowServerRequests, PendingWorkspaceControls, ShellRenderInput,
     SurfacePresentationSnapshot, WaylandCommands, WaylandFeedback, WaylandIngress,
-    WindowStackingState, WorkArea,
-    WorkspaceTilingState,
+    WindowStackingState, WorkArea, WorkspaceTilingState,
 };
 
 use crate::{
     commands, decorations, focus,
     interaction::{self, ActiveWindowGrab},
-    layer, layout, presentation, surface_presentation, viewport, window_control, workspace, xdg,
-    window_lifecycle,
+    layer, layout, presentation, surface_presentation, viewport, window_control, window_lifecycle,
+    workspace, xdg,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -172,8 +171,8 @@ fn clear_overlay_ui_frame_system(mut overlay_ui: ResMut<'_, OverlayUiFrame>) {
 
 #[cfg(test)]
 mod tests {
-    use bevy_ecs::schedule::IntoScheduleConfigs;
     use bevy_ecs::prelude::World;
+    use bevy_ecs::schedule::IntoScheduleConfigs;
     use bevy_ecs::system::{IntoSystem, System};
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
@@ -193,7 +192,9 @@ mod tests {
         WindowStackingState, WorkArea, register_entity_index_hooks,
     };
 
-    use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab, window_grab_system};
+    use crate::interaction::{
+        ActiveWindowGrab, WindowGrabMode, begin_window_grab, window_grab_system,
+    };
     use crate::presentation::window_presentation_sync_system;
 
     use super::{
@@ -364,9 +365,7 @@ mod tests {
             begin_window_grab(
                 &mut world.resource_mut::<ActiveWindowGrab>(),
                 99,
-                WindowGrabMode::Resize {
-                    edges: nekoland_ecs::resources::ResizeEdges::BottomRight,
-                },
+                WindowGrabMode::Resize { edges: nekoland_ecs::resources::ResizeEdges::BottomRight },
                 &pointer,
                 &geometry,
             );
@@ -395,12 +394,7 @@ mod tests {
                     width: 840,
                     height: 640,
                 },
-                scene_geometry: Some(WindowSceneGeometry {
-                    x: 10,
-                    y: 20,
-                    width: 840,
-                    height: 640,
-                }),
+                scene_geometry: Some(WindowSceneGeometry { x: 10, y: 20, width: 840, height: 640 }),
                 fullscreen: false,
                 maximized: false,
                 resizing: true,

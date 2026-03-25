@@ -109,7 +109,9 @@ pub struct CompositorSceneState {
 #[cfg(test)]
 mod tests {
     use crate::components::OutputId;
-    use crate::resources::{QuadContent, RenderColor, RenderItemInstance, RenderRect, RenderSceneRole};
+    use crate::resources::{
+        QuadContent, RenderColor, RenderItemInstance, RenderRect, RenderSceneRole,
+    };
 
     use super::{
         CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneItem, CompositorSceneState,

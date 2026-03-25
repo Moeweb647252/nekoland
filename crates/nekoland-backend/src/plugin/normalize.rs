@@ -4,8 +4,9 @@ use crate::common::outputs::{
 };
 use bevy_ecs::prelude::{Res, ResMut};
 use nekoland_ecs::resources::{
-    PendingBackendInputEvents, PendingPlatformInputEvents, RenderSurfaceRole, RenderSurfaceSnapshot,
-    ShellRenderInput, SurfacePresentationRole, SurfacePresentationSnapshot, WaylandIngress,
+    PendingBackendInputEvents, PendingPlatformInputEvents, RenderSurfaceRole,
+    RenderSurfaceSnapshot, ShellRenderInput, SurfacePresentationRole, SurfacePresentationSnapshot,
+    WaylandIngress,
 };
 
 use super::{BackendOutputQuery, BackendPresentInputs, BackendPresentSurfaceQuery};

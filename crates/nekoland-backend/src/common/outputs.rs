@@ -942,12 +942,11 @@ mod tests {
     use nekoland_ecs::events::{OutputConnected, OutputDisconnected};
     use nekoland_ecs::resources::{
         CompositorClock, EntityIndex, FocusedOutputState, OutputOverlayId, OutputOverlayState,
-        OutputServerAction, OutputServerRequest, OutputSnapshotState,
-        OutputViewportAnimationState, PendingOutputControls, PendingOutputOverlayControls,
-        PendingOutputServerRequests, PlatformOutputBlueprint, PlatformOutputLifecycleChange,
-        PlatformOutputLifecycleRecord, PlatformOutputMaterializationPlan,
-        PlatformOutputPropertyUpdate, PrimaryOutputState, RenderColor, RenderRect,
-        ViewportAnimationActivityState, WaylandIngress,
+        OutputServerAction, OutputServerRequest, OutputSnapshotState, OutputViewportAnimationState,
+        PendingOutputControls, PendingOutputOverlayControls, PendingOutputServerRequests,
+        PlatformOutputBlueprint, PlatformOutputLifecycleChange, PlatformOutputLifecycleRecord,
+        PlatformOutputMaterializationPlan, PlatformOutputPropertyUpdate, PrimaryOutputState,
+        RenderColor, RenderRect, ViewportAnimationActivityState, WaylandIngress,
     };
     use nekoland_ecs::selectors::{OutputName, OutputSelector, SurfaceId};
     use nekoland_ecs::views::OutputRuntime;
@@ -962,9 +961,8 @@ mod tests {
         PendingBackendOutputUpdates, RememberedOutputViewportState,
         advance_output_viewport_animations_system, apply_output_control_requests_system,
         apply_output_overlay_controls_system, apply_output_server_requests_system,
-        collect_output_snapshots, remember_output_viewports_system,
-        sync_configured_outputs_system, sync_output_snapshot_state_system,
-        synchronize_backend_outputs_system,
+        collect_output_snapshots, remember_output_viewports_system, sync_configured_outputs_system,
+        sync_output_snapshot_state_system, synchronize_backend_outputs_system,
     };
 
     #[derive(Debug, Default, bevy_ecs::prelude::Resource)]

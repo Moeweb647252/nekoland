@@ -27,8 +27,7 @@ use crate::common::outputs::{
     advance_output_viewport_animations_system, apply_output_control_requests_system,
     apply_output_overlay_controls_system, apply_output_server_requests_system,
     remember_output_viewports_system, sync_configured_outputs_system,
-    sync_output_layout_state_system,
-    sync_output_snapshot_state_from_present_inputs_system,
+    sync_output_layout_state_system, sync_output_snapshot_state_from_present_inputs_system,
 };
 use crate::common::presentation::apply_output_presentation_events_system;
 use crate::components::OutputBackend;

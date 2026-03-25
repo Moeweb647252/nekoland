@@ -280,8 +280,7 @@ mod tests {
     use crate::resources::{
         BackdropRenderItem, CursorRenderItem, CursorRenderSource, OutputRenderPlan, QuadContent,
         QuadRenderItem, RenderColor, RenderItemId, RenderItemIdentity, RenderItemInstance,
-        RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId,
-        SurfaceRenderItem,
+        RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId, SurfaceRenderItem,
     };
 
     #[test]

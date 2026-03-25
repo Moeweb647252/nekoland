@@ -518,7 +518,8 @@ fn build_scene_pass_elements(
             }
             PreparedSceneItem::Quad(item) => match &item.content {
                 nekoland_ecs::resources::QuadContent::SolidColor { color } => {
-                    let Some(visible_rect) = render_rect_to_physical(&item.visible_rect, output_scale)
+                    let Some(visible_rect) =
+                        render_rect_to_physical(&item.visible_rect, output_scale)
                     else {
                         continue;
                     };
@@ -554,7 +555,7 @@ fn build_scene_pass_elements(
                         }
                     }
                 }
-            }
+            },
             PreparedSceneItem::Backdrop(item) => {
                 let Some(visible_rect) = render_rect_to_physical(&item.visible_rect, output_scale)
                 else {

@@ -172,69 +172,60 @@ fn extract_desktop_surface_order_snapshot(main_world: &mut World, render_world: 
     let background_layer_surfaces = layers
         .iter(main_world)
         .filter(|layer| {
-            surface_presentation
-                .surfaces
-                .get(&layer.surface_id())
-                .map_or_else(
-                    || {
-                        layer.buffer.attached
-                            && nekoland_ecs::presentation_logic::is_background_band_layer(
-                                layer.layer_surface.layer,
-                            )
-                    },
-                    |state| {
-                        state.visible
-                            && state.role == nekoland_ecs::resources::SurfacePresentationRole::Layer
-                            && nekoland_ecs::presentation_logic::is_background_band_layer(
-                                layer.layer_surface.layer,
-                            )
-                    },
-                )
+            surface_presentation.surfaces.get(&layer.surface_id()).map_or_else(
+                || {
+                    layer.buffer.attached
+                        && nekoland_ecs::presentation_logic::is_background_band_layer(
+                            layer.layer_surface.layer,
+                        )
+                },
+                |state| {
+                    state.visible
+                        && state.role == nekoland_ecs::resources::SurfacePresentationRole::Layer
+                        && nekoland_ecs::presentation_logic::is_background_band_layer(
+                            layer.layer_surface.layer,
+                        )
+                },
+            )
         })
         .map(|layer| layer.surface_id())
         .collect::<Vec<_>>();
     let popup_surfaces = popups
         .iter(main_world)
         .filter(|popup| {
-            surface_presentation
-                .surfaces
-                .get(&popup.surface_id())
-                .map_or_else(
-                    || {
-                        nekoland_ecs::presentation_logic::popup_visible(
-                            popup.buffer.attached,
-                            active_window_entities.contains(&popup.child_of.parent()),
-                        )
-                    },
-                    |state| {
-                        state.visible
-                            && state.role == nekoland_ecs::resources::SurfacePresentationRole::Popup
-                    },
-                )
+            surface_presentation.surfaces.get(&popup.surface_id()).map_or_else(
+                || {
+                    nekoland_ecs::presentation_logic::popup_visible(
+                        popup.buffer.attached,
+                        active_window_entities.contains(&popup.child_of.parent()),
+                    )
+                },
+                |state| {
+                    state.visible
+                        && state.role == nekoland_ecs::resources::SurfacePresentationRole::Popup
+                },
+            )
         })
         .map(|popup| popup.surface_id())
         .collect::<Vec<_>>();
     let foreground_layer_surfaces = layers
         .iter(main_world)
         .filter(|layer| {
-            surface_presentation
-                .surfaces
-                .get(&layer.surface_id())
-                .map_or_else(
-                    || {
-                        layer.buffer.attached
-                            && nekoland_ecs::presentation_logic::is_foreground_band_layer(
-                                layer.layer_surface.layer,
-                            )
-                    },
-                    |state| {
-                        state.visible
-                            && state.role == nekoland_ecs::resources::SurfacePresentationRole::Layer
-                            && nekoland_ecs::presentation_logic::is_foreground_band_layer(
-                                layer.layer_surface.layer,
-                            )
-                    },
-                )
+            surface_presentation.surfaces.get(&layer.surface_id()).map_or_else(
+                || {
+                    layer.buffer.attached
+                        && nekoland_ecs::presentation_logic::is_foreground_band_layer(
+                            layer.layer_surface.layer,
+                        )
+                },
+                |state| {
+                    state.visible
+                        && state.role == nekoland_ecs::resources::SurfacePresentationRole::Layer
+                        && nekoland_ecs::presentation_logic::is_foreground_band_layer(
+                            layer.layer_surface.layer,
+                        )
+                },
+            )
         })
         .map(|layer| layer.surface_id())
         .collect::<Vec<_>>();
@@ -290,10 +281,7 @@ fn extract_surface_buffer_attachment_snapshot(main_world: &mut World, render_wor
         .map(|(surface_id, surface)| {
             (
                 *surface_id,
-                SurfaceBufferAttachmentState {
-                    attached: surface.attached,
-                    scale: surface.scale,
-                },
+                SurfaceBufferAttachmentState { attached: surface.attached, scale: surface.scale },
             )
         })
         .collect();
