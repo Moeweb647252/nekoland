@@ -1,3 +1,7 @@
+//! Shell-owned surface presentation snapshots used by render and backend extraction.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;

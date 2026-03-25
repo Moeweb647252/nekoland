@@ -1,9 +1,12 @@
+//! Per-workspace managed window stacking order snapshots.
+
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
+/// Synthetic workspace bucket used before a window is assigned to a real workspace.
 pub const UNASSIGNED_WORKSPACE_STACK_ID: u32 = 0;
 
 /// Back-to-front z-order of managed windows, tracked independently per workspace.

@@ -1,3 +1,7 @@
+//! Post-process execution units compiled from the render graph.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;
@@ -80,6 +84,7 @@ pub struct OutputProcessPlan {
 }
 
 impl OutputProcessPlan {
+    /// Iterates process units associated with one render pass.
     pub fn units_for_pass(&self, pass_id: RenderPassId) -> impl Iterator<Item = &ProcessUnit> {
         self.pass_units
             .get(&pass_id)

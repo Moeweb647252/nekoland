@@ -1,3 +1,7 @@
+//! Authoritative output viewport animation state mirrored into shell policy.
+
+#![allow(missing_docs)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::prelude::Resource;
@@ -15,6 +19,7 @@ pub struct OutputViewportAnimation {
 }
 
 impl OutputViewportAnimation {
+    /// Samples the interpolated viewport at the given compositor uptime.
     pub fn sample(&self, current_uptime_millis: u128) -> OutputViewport {
         let duration = u128::from(self.duration_millis.max(1));
         let elapsed = current_uptime_millis.saturating_sub(self.start_uptime_millis).min(duration);
@@ -27,6 +32,7 @@ impl OutputViewportAnimation {
         }
     }
 
+    /// Returns whether the animation has reached its end time.
     pub fn is_complete(&self, current_uptime_millis: u128) -> bool {
         current_uptime_millis
             >= self.start_uptime_millis.saturating_add(u128::from(self.duration_millis.max(1)))
@@ -40,10 +46,12 @@ pub struct OutputViewportAnimationState {
 }
 
 impl OutputViewportAnimationState {
+    /// Returns the active animation for one output, if any.
     pub fn animation_for(&self, output_id: OutputId) -> Option<&OutputViewportAnimation> {
         self.outputs.get(&output_id)
     }
 
+    /// Returns the current sampled viewport for one output.
     pub fn sampled_viewport(
         &self,
         output_id: OutputId,
@@ -55,14 +63,17 @@ impl OutputViewportAnimationState {
             .unwrap_or_else(|| current.clone())
     }
 
+    /// Starts or replaces the active animation for one output.
     pub fn start(&mut self, output_id: OutputId, animation: OutputViewportAnimation) {
         self.outputs.insert(output_id, animation);
     }
 
+    /// Cancels any active animation for one output.
     pub fn cancel(&mut self, output_id: OutputId) {
         self.outputs.remove(&output_id);
     }
 
+    /// Returns the ids of outputs that currently have active animations.
     pub fn output_ids(&self) -> Vec<OutputId> {
         self.outputs.keys().copied().collect()
     }
@@ -75,6 +86,7 @@ pub struct ViewportAnimationActivityState {
 }
 
 impl ViewportAnimationActivityState {
+    /// Returns whether the given output currently has an in-flight viewport animation.
     pub fn is_output_active(&self, output_id: OutputId) -> bool {
         self.active_outputs.contains(&output_id)
     }

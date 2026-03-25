@@ -1,3 +1,7 @@
+//! Compositor-owned scene entries emitted alongside client surfaces.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;
@@ -29,14 +33,17 @@ pub struct CompositorSceneEntry {
 }
 
 impl CompositorSceneEntry {
+    /// Builds a compositor scene entry backed by arbitrary quad content.
     pub fn quad(content: QuadContent, instance: RenderItemInstance) -> Self {
         Self { item: CompositorSceneItem::Quad { content }, instance }
     }
 
+    /// Builds a solid-color quad compositor entry.
     pub fn solid_color(color: RenderColor, instance: RenderItemInstance) -> Self {
         Self::quad(QuadContent::SolidColor { color }, instance)
     }
 
+    /// Builds a backdrop sampling entry.
     pub fn backdrop(instance: RenderItemInstance) -> Self {
         Self { item: CompositorSceneItem::Backdrop, instance }
     }
@@ -50,6 +57,7 @@ pub struct OutputCompositorScene {
 }
 
 impl OutputCompositorScene {
+    /// Builds an output-local scene from stable ids and entries, then sorts by z-index.
     pub fn from_entries(
         entries: impl IntoIterator<Item = (CompositorSceneEntryId, CompositorSceneEntry)>,
     ) -> Self {
@@ -61,6 +69,7 @@ impl OutputCompositorScene {
         scene
     }
 
+    /// Inserts or replaces one compositor-owned scene entry.
     pub fn insert(&mut self, entry_id: CompositorSceneEntryId, entry: CompositorSceneEntry) {
         debug_assert!(
             matches!(
@@ -76,21 +85,25 @@ impl OutputCompositorScene {
         }
     }
 
+    /// Removes one compositor scene entry and its ordering reference.
     pub fn remove(&mut self, entry_id: CompositorSceneEntryId) -> Option<CompositorSceneEntry> {
         self.ordered_items.retain(|ordered| *ordered != entry_id);
         self.items.remove(&entry_id)
     }
 
+    /// Recomputes ordered ids from the entry z-index values.
     pub fn sort_by_z_index(&mut self) {
         self.ordered_items.sort_by_key(|entry_id| {
             self.items.get(entry_id).map(|entry| entry.instance.z_index).unwrap_or(i32::MAX)
         });
     }
 
+    /// Returns one compositor entry by stable id.
     pub fn entry(&self, entry_id: CompositorSceneEntryId) -> Option<&CompositorSceneEntry> {
         self.items.get(&entry_id)
     }
 
+    /// Iterates entries in deterministic z-index order.
     pub fn iter_ordered(
         &self,
     ) -> impl Iterator<Item = (CompositorSceneEntryId, &CompositorSceneEntry)> {

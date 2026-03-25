@@ -1,3 +1,7 @@
+//! Minimal present-time surface snapshots shared with backend code.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;

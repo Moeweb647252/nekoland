@@ -1,3 +1,7 @@
+//! Output-local damage rectangles and coarse redraw mode state.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;

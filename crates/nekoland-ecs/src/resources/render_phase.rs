@@ -1,3 +1,7 @@
+//! Intermediate render-phase plans built before graph compilation.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;

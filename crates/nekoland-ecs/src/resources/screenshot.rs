@@ -1,3 +1,7 @@
+//! Screenshot request queues and completed readback frame storage.
+
+#![allow(missing_docs)]
+
 use std::collections::VecDeque;
 
 use bevy_ecs::prelude::Resource;
@@ -27,6 +31,7 @@ pub struct PendingScreenshotRequests {
 }
 
 impl PendingScreenshotRequests {
+    /// Enqueues one screenshot request for the given output and returns its stable id.
     pub fn request_output(&mut self, output_id: OutputId) -> ScreenshotRequestId {
         let id = ScreenshotRequestId(self.next_id.max(1));
         self.next_id = id.0.saturating_add(1);
@@ -34,10 +39,12 @@ impl PendingScreenshotRequests {
         id
     }
 
+    /// Returns pending screenshot requests targeting one output.
     pub fn requests_for_output(&self, output_id: OutputId) -> Vec<OutputScreenshotRequest> {
         self.requests.iter().filter(|request| request.output_id == output_id).cloned().collect()
     }
 
+    /// Returns pending requests whose ids are present in the provided slice.
     pub fn requests_by_ids(
         &self,
         request_ids: &[ScreenshotRequestId],
@@ -49,6 +56,7 @@ impl PendingScreenshotRequests {
         self.requests.iter().filter(|request| request_ids.contains(&request.id)).cloned().collect()
     }
 
+    /// Removes completed requests from the pending queue.
     pub fn finish_requests(&mut self, completed_ids: &[ScreenshotRequestId]) {
         if completed_ids.is_empty() {
             return;
@@ -85,6 +93,7 @@ impl Default for CompletedScreenshotFrames {
 }
 
 impl CompletedScreenshotFrames {
+    /// Pushes one completed screenshot frame, trimming the ring buffer to its configured limit.
     pub fn push_frame(&mut self, frame: ScreenshotFrame) {
         self.frames.push_back(frame);
         while self.frames.len() > self.frame_limit.max(1) {

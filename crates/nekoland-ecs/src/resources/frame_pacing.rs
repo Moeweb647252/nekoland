@@ -1,3 +1,7 @@
+//! Frame pacing diagnostics collected from callback and presentation bookkeeping.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 

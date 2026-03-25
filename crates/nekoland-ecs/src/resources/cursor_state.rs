@@ -1,3 +1,7 @@
+//! Cursor scene snapshots and cursor image state mirrored out of protocol code.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 

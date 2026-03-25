@@ -1,3 +1,7 @@
+//! Output presentation timelines and backend-emitted presentation events.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 

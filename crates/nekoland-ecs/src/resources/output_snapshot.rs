@@ -1,3 +1,7 @@
+//! Normalized output geometry snapshots shared with shell and input code.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +27,7 @@ pub struct OutputGeometrySnapshot {
 }
 
 impl OutputGeometrySnapshot {
+    /// Returns whether the given global coordinate lies inside this output rectangle.
     pub fn contains_point(&self, x: f64, y: f64) -> bool {
         let left = self.x as f64;
         let top = self.y as f64;

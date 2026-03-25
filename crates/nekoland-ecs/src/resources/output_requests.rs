@@ -1,3 +1,7 @@
+//! Backend-facing output request queue used after high-level control resolution.
+
+#![allow(missing_docs)]
+
 use crate::kinds::CompositorRequestQueue;
 use serde::{Deserialize, Serialize};
 

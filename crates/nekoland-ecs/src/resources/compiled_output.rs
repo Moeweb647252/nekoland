@@ -1,3 +1,7 @@
+//! Fully compiled per-output frame payloads exported from the render sub-app.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;
@@ -45,6 +49,7 @@ pub struct CompiledOutputFrames {
 }
 
 impl CompiledOutputFrames {
+    /// Returns the compiled frame payload for one output.
     pub fn output(&self, output_id: OutputId) -> Option<&CompiledOutputFrame> {
         self.outputs.get(&output_id)
     }

@@ -1,3 +1,7 @@
+//! Backend-neutral execution graphs compiled from output-local render plans.
+
+#![allow(missing_docs)]
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use bevy_ecs::prelude::Resource;
@@ -105,6 +109,7 @@ pub struct RenderPassNode {
 }
 
 impl RenderPassNode {
+    /// Builds a scene pass that directly rasterizes ordered render items.
     pub fn scene(
         scene_role: RenderSceneRole,
         output_target: RenderTargetId,
@@ -121,6 +126,7 @@ impl RenderPassNode {
         }
     }
 
+    /// Builds a composite pass that copies one target into another target.
     pub fn composite(
         scene_role: RenderSceneRole,
         source_target: RenderTargetId,
@@ -137,6 +143,7 @@ impl RenderPassNode {
         }
     }
 
+    /// Builds a post-process pass driven by one material descriptor and optional params.
     pub fn post_process(
         scene_role: RenderSceneRole,
         source_target: RenderTargetId,
@@ -161,6 +168,7 @@ impl RenderPassNode {
         }
     }
 
+    /// Builds a readback pass that exposes one target to screenshot capture.
     pub fn readback(
         scene_role: RenderSceneRole,
         source_target: RenderTargetId,
@@ -178,6 +186,7 @@ impl RenderPassNode {
         }
     }
 
+    /// Returns render-plan item ids only for scene passes.
     pub fn item_ids(&self) -> &[RenderItemId] {
         match &self.payload {
             RenderPassPayload::Scene(config) => &config.item_ids,
@@ -198,6 +207,7 @@ pub struct OutputExecutionPlan {
 }
 
 impl OutputExecutionPlan {
+    /// Validates that the output-local pass graph contains no cycles.
     pub fn validate_acyclic(&self) -> bool {
         let mut indegree = self
             .passes
@@ -249,6 +259,7 @@ impl OutputExecutionPlan {
         visited == self.passes.len()
     }
 
+    /// Returns the set of passes reachable from terminal passes.
     pub fn reachable_passes(&self) -> BTreeSet<RenderPassId> {
         let mut reachable = BTreeSet::new();
         let mut stack = self.terminal_passes.clone();
@@ -265,6 +276,7 @@ impl OutputExecutionPlan {
         reachable
     }
 
+    /// Returns reachable passes filtered into deterministic execution order.
     pub fn reachable_passes_in_order(&self) -> Vec<RenderPassId> {
         let reachable = self.reachable_passes();
         self.ordered_passes
@@ -282,6 +294,7 @@ pub struct RenderPassGraph {
 }
 
 impl RenderPassGraph {
+    /// Validates that every output-local execution graph is acyclic.
     pub fn validate_acyclic(&self) -> bool {
         self.outputs.values().all(OutputExecutionPlan::validate_acyclic)
     }

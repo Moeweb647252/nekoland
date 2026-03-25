@@ -1,3 +1,7 @@
+//! Monotonic compositor clock snapshots shared across worlds and history resources.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 

@@ -1,3 +1,7 @@
+//! Primary-output selection state used when routing should not depend on iteration order.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 

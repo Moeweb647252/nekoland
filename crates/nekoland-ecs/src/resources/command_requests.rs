@@ -1,3 +1,7 @@
+//! Pending external command launch requests collected during the frame.
+
+#![allow(missing_docs)]
+
 use crate::kinds::CompositorRequestQueue;
 use serde::{Deserialize, Serialize};
 
