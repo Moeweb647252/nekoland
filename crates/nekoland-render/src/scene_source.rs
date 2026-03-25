@@ -1,3 +1,9 @@
+//! Stable scene-contribution keys and conversion into render-plan items.
+//!
+//! Scene producers emit contributions keyed by render-local source and instance identifiers. This
+//! module resolves those keys into stable ECS-facing ids when the final render plan is assembled.
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::{Res, ResMut, Resource};
@@ -20,34 +26,42 @@ pub struct RenderSourceKey {
 }
 
 impl RenderSourceKey {
+    /// Creates a source key inside the provided namespace.
     pub fn new(namespace: impl Into<String>, local_key: impl Into<String>) -> Self {
         Self { namespace: namespace.into(), local_key: local_key.into() }
     }
 
+    /// Creates a generic surface key.
     pub fn surface(surface_id: u64) -> Self {
         Self::new("surface", surface_id.to_string())
     }
 
+    /// Creates a source key for a managed window surface.
     pub fn window(surface_id: u64) -> Self {
         Self::new("window", surface_id.to_string())
     }
 
+    /// Creates a source key for a popup surface.
     pub fn popup(surface_id: u64) -> Self {
         Self::new("popup", surface_id.to_string())
     }
 
+    /// Creates a source key for a layer-shell surface.
     pub fn layer(surface_id: u64) -> Self {
         Self::new("layer", surface_id.to_string())
     }
 
+    /// Creates a source key for an output-background window.
     pub fn output_background(surface_id: u64) -> Self {
         Self::new("output_background", surface_id.to_string())
     }
 
+    /// Creates the singleton source key used by the primary cursor contribution.
     pub fn cursor_primary() -> Self {
         Self::new("cursor", "primary")
     }
 
+    /// Chooses a source-key namespace based on the provided presentation role.
     pub fn surface_for_role(surface_id: u64, role: SurfacePresentationRole) -> Self {
         match role {
             SurfacePresentationRole::Window => Self::window(surface_id),
@@ -57,6 +71,7 @@ impl RenderSourceKey {
         }
     }
 
+    /// Creates a source key for a compositor-owned scene entry.
     pub fn compositor(entry_id: nekoland_ecs::resources::CompositorSceneEntryId) -> Self {
         Self::new("compositor", entry_id.0.to_string())
     }
@@ -71,10 +86,12 @@ pub struct RenderInstanceKey {
 }
 
 impl RenderInstanceKey {
+    /// Creates an output-local instance key for the provided source.
     pub fn new(source_key: RenderSourceKey, output_id: OutputId, instance_slot: u32) -> Self {
         Self { source_key, output_id, instance_slot }
     }
 
+    /// Creates the canonical output-local key for one compositor-owned scene entry.
     pub fn compositor(
         entry_id: nekoland_ecs::resources::CompositorSceneEntryId,
         output_id: OutputId,
@@ -101,6 +118,7 @@ pub struct RenderSceneContribution {
 }
 
 impl RenderSceneContribution {
+    /// Creates a surface contribution.
     pub fn surface(
         output_id: OutputId,
         source_key: RenderSourceKey,
@@ -115,6 +133,7 @@ impl RenderSceneContribution {
         }
     }
 
+    /// Creates a quad contribution.
     pub fn quad(
         key: RenderInstanceKey,
         content: QuadContent,
@@ -123,10 +142,12 @@ impl RenderSceneContribution {
         Self { key, instance, payload: RenderSceneContributionPayload::Quad { content } }
     }
 
+    /// Creates a backdrop contribution.
     pub fn backdrop(key: RenderInstanceKey, instance: RenderItemInstance) -> Self {
         Self { key, instance, payload: RenderSceneContributionPayload::Backdrop }
     }
 
+    /// Creates a cursor contribution.
     pub fn cursor(
         output_id: OutputId,
         source: CursorRenderSource,
@@ -156,6 +177,7 @@ pub struct RenderSceneIdentityRegistry {
 }
 
 impl RenderSceneIdentityRegistry {
+    /// Returns the stable source id for the provided render-local source key.
     pub fn source_id_for(&mut self, key: &RenderSourceKey) -> RenderSourceId {
         if let Some(id) = self.source_ids.get(key).copied() {
             return id;
@@ -167,6 +189,7 @@ impl RenderSceneIdentityRegistry {
         id
     }
 
+    /// Returns the stable item id for the provided render-local instance key.
     pub fn item_id_for(&mut self, key: &RenderInstanceKey) -> RenderItemId {
         if let Some(id) = self.item_ids.get(key).copied() {
             return id;
@@ -178,6 +201,7 @@ impl RenderSceneIdentityRegistry {
         id
     }
 
+    /// Resolves both the source id and item id for one contribution instance.
     pub fn identity_for(&mut self, key: &RenderInstanceKey) -> RenderItemIdentity {
         RenderItemIdentity {
             source_id: self.source_id_for(&key.source_key),
@@ -238,6 +262,7 @@ pub fn emit_compositor_scene_contributions_system(
     }
 }
 
+/// Converts one scene contribution into the final render-plan item form.
 pub fn contribution_to_plan_item(
     contribution: &RenderSceneContribution,
     identity_registry: &mut RenderSceneIdentityRegistry,

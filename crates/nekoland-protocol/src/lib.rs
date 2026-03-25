@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 //! Protocol-facing event types and the bridge that moves them into ECS-owned pending resources.
 //!
 //! Smithay callbacks enqueue `ProtocolEvent`s here first; later, `ProtocolState::flush_into_ecs`
@@ -5,24 +7,41 @@
 
 use std::collections::BTreeSet;
 
+/// `wl_compositor` surface registration and commit tracking.
 pub mod compositor;
+/// Clipboard, drag-and-drop, and `wl_data_device` integration.
 pub mod data_device;
+/// Linux dma-buf protocol support and capability bookkeeping.
 pub mod dmabuf;
+/// Export of compositor toplevel metadata to external protocol clients.
 pub mod foreign_toplevel_list;
+/// Fractional-scale negotiation for surfaces and outputs.
 pub mod fractional_scale;
+/// Idle-notify protocol state and request handling.
 pub mod idle_notify;
+/// Layer-shell surface lifecycle and request translation.
 pub mod layer_shell;
+/// Output-management protocol integration and request forwarding.
 pub mod output_management;
 pub mod plugin;
+/// Presentation-time feedback protocol support.
 pub mod presentation_time;
+/// Primary-selection protocol integration.
 pub mod primary_selection;
+/// Protocol-owned resources and re-exports consumed by the rest of the compositor.
 pub mod resources;
+/// Screencopy protocol requests and capture bookkeeping.
 pub mod screencopy;
+/// Session-lock protocol surface handling.
 pub mod session_lock;
 pub mod subapp;
+/// `wp_viewporter` source/destination crop support.
 pub mod viewporter;
+/// Activation-token handling for focus/raise requests.
 pub mod xdg_activation;
+/// XDG decoration negotiation and mode tracking.
 pub mod xdg_decoration;
+/// XDG shell toplevel/popup lifecycle handling.
 pub mod xdg_shell;
 
 use bevy_ecs::prelude::Resource;
@@ -58,8 +77,10 @@ pub use subapp::{
 
 /// Trait implemented by protocol-state marker types that advertise one or more Wayland globals.
 pub trait ProtocolGlobals {
+    /// Names of Wayland globals contributed by this protocol-state marker.
     const GLOBALS: &'static [&'static str];
 
+    /// Returns the globals advertised by this protocol-state marker.
     fn globals(&self) -> &'static [&'static str] {
         Self::GLOBALS
     }
@@ -67,6 +88,7 @@ pub trait ProtocolGlobals {
 
 /// High-level protocol notifications that need to cross from callback-driven Smithay code into
 /// the compositor's scheduled ECS world.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProtocolEvent {
     SurfaceCommitted {
@@ -454,6 +476,7 @@ mod tests {
 
 /// Aggregates per-protocol Smithay state together with the bridge that buffers protocol events
 /// until the protocol schedule flushes them into ECS resources.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, Resource)]
 pub struct ProtocolState {
     pub compositor: compositor::CompositorProtocolState,
@@ -989,6 +1012,7 @@ impl ProtocolState {
         }
     }
 
+    /// Returns the list of Wayland globals enabled by the current protocol-state set.
     pub fn supported_globals(&self) -> Vec<&'static str> {
         let mut globals = Vec::new();
         globals.extend_from_slice(self.compositor.globals());
@@ -1022,6 +1046,11 @@ fn x11_helper_surface(popup: bool, window_type: Option<X11WindowType>) -> bool {
         )
 }
 
+/// Mutable ECS sinks that receive normalized protocol output during `flush_into_ecs`.
+///
+/// Grouping these references keeps the protocol bridge explicit without forcing an extremely long
+/// function parameter list at every call site.
+#[allow(missing_docs)]
 pub struct ProtocolFlushTargets<'a> {
     pub pending_xdg_requests: &'a mut PendingXdgRequests,
     pub pending_window_events: &'a mut PendingWindowEvents,
@@ -1047,30 +1076,39 @@ impl WaylandBridge for ProtocolState {
     }
 }
 
+/// Snapshot of the protocol globals the compositor intends to advertise.
 #[derive(Debug, Clone, Default, Resource)]
 pub struct ProtocolRegistry {
+    /// Wayland global interface names currently enabled.
     pub globals: Vec<&'static str>,
 }
 
 /// One compositor-managed surface tracked by the protocol runtime.
 #[derive(Debug, Clone)]
 pub struct ProtocolSurfaceEntry {
+    /// Surface role classification used by protocol/runtime code.
     pub kind: ProtocolSurfaceKind,
+    /// Live Smithay handle for the surface.
     pub surface: WlSurface,
 }
 
 /// Surface classes the protocol runtime distinguishes when registering surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolSurfaceKind {
+    /// A regular XDG toplevel window.
     Toplevel,
+    /// An XDG popup surface.
     Popup,
+    /// A layer-shell surface.
     Layer,
+    /// A cursor image surface.
     Cursor,
 }
 
 /// Lookup table from compositor surface id to live Smithay surface handle.
 #[derive(Debug, Clone, Default)]
 pub struct ProtocolSurfaceRegistry {
+    /// Entries keyed by compositor surface id.
     pub surfaces: std::collections::HashMap<u64, ProtocolSurfaceEntry>,
 }
 

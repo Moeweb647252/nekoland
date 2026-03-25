@@ -1,3 +1,10 @@
+//! Overlay-UI scene synchronization and text rasterization.
+//!
+//! This module bridges shell-owned overlay UI frames into compositor-owned scene entries. It is
+//! intentionally state-heavy, so field-level rustdoc is kept minimal in favor of module and
+//! function-level documentation.
+#![allow(missing_docs)]
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs;
@@ -133,6 +140,7 @@ impl OverlayTextRasterizerState {
     }
 }
 
+/// Synchronizes shell-owned overlay UI primitives into compositor-scene entries.
 pub fn sync_overlay_ui_scene_state_system(
     shell_render_input: Res<'_, ShellRenderInput>,
     outputs: Query<'_, '_, (&'static OutputId, &'static OutputProperties)>,

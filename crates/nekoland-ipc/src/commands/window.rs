@@ -1,3 +1,7 @@
+//! Window-management commands accepted over IPC.
+
+#![allow(missing_docs)]
+
 pub use nekoland_ecs::resources::SplitAxis;
 use serde::{Deserialize, Serialize};
 

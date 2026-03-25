@@ -150,6 +150,7 @@ impl NekolandPlugin for WaylandSubAppPlugin {
     }
 }
 
+/// Install the extractor used to copy main-world boundary resources into the Wayland sub-app.
 pub fn configure_wayland_subapp(sub_app: &mut SubApp) {
     sub_app.set_extract(extract_wayland_subapp_inputs);
 }

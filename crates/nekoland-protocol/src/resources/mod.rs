@@ -1,5 +1,10 @@
+//! Protocol-owned resource modules and re-exports shared with the main compositor world.
+
+/// Clipboard selection resources and helpers.
 pub mod clipboard;
+/// Drag-and-drop resources and event snapshots.
 pub mod dnd;
+/// Output presentation snapshots mirrored out of protocol feedback.
 pub mod output_presentation;
 
 pub use clipboard::*;

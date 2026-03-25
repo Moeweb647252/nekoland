@@ -1,3 +1,5 @@
+//! Projection of render-graph readback passes into backend readback work.
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::{Res, ResMut};
@@ -5,6 +7,10 @@ use nekoland_ecs::resources::{
     OutputReadbackPlan, RenderPassGraph, RenderPassPayload, RenderReadbackPlan,
 };
 
+/// Extract output-local screenshot/readback requests from the compiled render graph.
+///
+/// Backend execution only needs to know which target to copy and which pending request ids should
+/// receive the result, so this system condenses the readback pass payload into that smaller plan.
 pub fn build_render_readback_plan_system(
     render_graph: Res<'_, RenderPassGraph>,
     mut readback_plan: ResMut<'_, RenderReadbackPlan>,

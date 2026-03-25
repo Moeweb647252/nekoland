@@ -1,3 +1,10 @@
+//! Typed render-material registry and per-frame material request projection.
+//!
+//! The registry and request queue form the contract between effect adapters and graph compilation.
+//! This module is intentionally data-heavy, so per-field rustdoc is omitted where the surrounding
+//! type documentation already defines the shape.
+#![allow(missing_docs)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 
@@ -10,6 +17,7 @@ use nekoland_ecs::resources::{
     RenderSceneRole,
 };
 
+/// Trait implemented by typed render features that participate in material registration and queueing.
 pub trait RenderMaterialSpec {
     type Params;
 
@@ -50,12 +58,14 @@ pub trait RenderMaterialSpec {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Typed handle returned when a material specification is registered.
 pub struct RegisteredMaterial<M> {
     pub material_id: RenderMaterialId,
     _marker: PhantomData<M>,
 }
 
 impl<M> RegisteredMaterial<M> {
+    /// Returns the opaque material id assigned by the registry.
     pub fn id(self) -> RenderMaterialId {
         self.material_id
     }
@@ -80,6 +90,7 @@ pub struct RenderMaterialRegistry {
 }
 
 impl RenderMaterialRegistry {
+    /// Registers a generic material by debug name.
     pub fn register_named(&mut self, debug_name: &str) -> RenderMaterialId {
         self.register_named_with_pipeline_key(
             debug_name,
@@ -87,6 +98,7 @@ impl RenderMaterialRegistry {
         )
     }
 
+    /// Registers a generic material with the provided specialized pipeline key.
     pub fn register_named_with_pipeline_key(
         &mut self,
         debug_name: &str,
@@ -104,6 +116,7 @@ impl RenderMaterialRegistry {
         )
     }
 
+    /// Inserts a fully described material definition if it is not already present.
     pub fn register_definition(
         &mut self,
         debug_name: &str,
@@ -120,6 +133,7 @@ impl RenderMaterialRegistry {
         id
     }
 
+    /// Registers a typed material specification and returns a typed handle.
     pub fn register_typed<M>(&mut self) -> RegisteredMaterial<M>
     where
         M: RenderMaterialSpec,
@@ -139,6 +153,7 @@ impl RenderMaterialRegistry {
         }
     }
 
+    /// Returns the material definition for the provided id.
     pub fn definition(&self, id: RenderMaterialId) -> Option<&RenderMaterialDefinition> {
         self.definitions.get(&id)
     }
@@ -152,6 +167,7 @@ pub struct RenderMaterialParamsStore {
 }
 
 impl RenderMaterialParamsStore {
+    /// Inserts a raw parameter block and returns its frame-local id.
     pub fn insert(&mut self, params: RenderMaterialParamBlock) -> MaterialParamsId {
         let id = MaterialParamsId(self.next_id.max(1));
         self.next_id = id.0.saturating_add(1);
@@ -159,10 +175,12 @@ impl RenderMaterialParamsStore {
         id
     }
 
+    /// Returns the parameter block stored for the provided id.
     pub fn get(&self, id: MaterialParamsId) -> Option<&RenderMaterialParamBlock> {
         self.params.get(&id)
     }
 
+    /// Inserts typed material parameters after converting them into a generic param block.
     pub fn insert_typed<M>(&mut self, params: M::Params) -> MaterialParamsId
     where
         M: RenderMaterialSpec,
@@ -170,6 +188,7 @@ impl RenderMaterialParamsStore {
         self.insert(M::to_param_block(params))
     }
 
+    /// Clears all frame-local parameter payloads.
     pub fn clear_frame(&mut self) {
         self.next_id = 1;
         self.params.clear();
@@ -200,6 +219,7 @@ pub fn clear_material_requests_system(
     params.clear_frame();
 }
 
+/// Queues a typed material request with explicit process regions.
 pub fn queue_typed_material_request<M>(
     output_id: OutputId,
     scene_role: RenderSceneRole,
@@ -220,6 +240,7 @@ where
 }
 
 /// Projects render-local material requests into backend-readable ECS frame state.
+/// Projects registered materials, parameter blocks, and queued requests into the frame state.
 pub fn project_material_frame_state_system(
     registry: Res<'_, RenderMaterialRegistry>,
     params_store: Res<'_, RenderMaterialParamsStore>,

@@ -7,6 +7,7 @@ use nekoland_ecs::resources::{
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Marker type documenting the render-graph compilation stage.
 pub struct RenderGraphBuilder;
 
 /// Projects the current output-local render plan into a backend-neutral execution graph.

@@ -1,3 +1,6 @@
+//! Fade-animation integration between shell-owned window animation state and render timelines.
+#![allow(missing_docs)]
+
 use bevy_app::App;
 use bevy_ecs::prelude::{Query, Res, ResMut};
 use nekoland_core::plugin::NekolandPlugin;
@@ -12,6 +15,7 @@ use crate::animation::{
 use crate::scene_source::RenderSourceKey;
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Feature plugin that drives fade timelines during `PreRenderSchedule`.
 pub struct FadeEffectPlugin;
 
 impl NekolandPlugin for FadeEffectPlugin {

@@ -1,10 +1,16 @@
 //! IPC command and snapshot types shared by the server and the `nekoland-msg` CLI.
 
+/// Shell-style imperative actions.
 pub mod action;
+/// Output-management commands.
 pub mod output;
+/// Popup-management commands.
 pub mod popup;
+/// Read-only query commands and snapshot payloads.
 pub mod query;
+/// Window-management commands.
 pub mod window;
+/// Workspace-management commands.
 pub mod workspace;
 
 pub use action::{ActionCommand, FpsHudMode};

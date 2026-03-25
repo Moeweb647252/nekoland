@@ -24,6 +24,11 @@ use nekoland_ecs::resources::{
 use crate::compositor_render::RenderViewSnapshot;
 use crate::material::RenderMaterialRequestQueue;
 
+/// Snapshot each surface's current buffer attachment state for later import planning.
+///
+/// The render plan only references surfaces by id. This system captures whether a buffer is
+/// currently attached, plus the scale that buffer advertises, so later preparation stages can
+/// decide whether an import can be scheduled.
 pub fn sync_surface_buffer_attachment_snapshot_system(
     surfaces: bevy_ecs::prelude::Query<
         '_,
@@ -43,6 +48,10 @@ pub fn sync_surface_buffer_attachment_snapshot_system(
         .collect();
 }
 
+/// Derive per-output render target sizes from the compiled pass graph and current output views.
+///
+/// Targets stay backend-neutral here. The plan only states which targets each output needs and the
+/// dimensions they must match for the current frame.
 pub fn build_render_target_allocation_plan_system(
     views: Res<'_, RenderViewSnapshot>,
     render_graph: Res<'_, RenderPassGraph>,
@@ -74,6 +83,10 @@ pub fn build_render_target_allocation_plan_system(
         .collect();
 }
 
+/// Gather all surfaces referenced by the render plan into one import descriptor table.
+///
+/// This bridges shell presentation state, platform surface snapshots, and render-plan usage into a
+/// single backend-facing description of how each surface should be imported for the frame.
 pub fn build_surface_texture_bridge_plan_system(
     render_plan: Res<'_, RenderPlan>,
     shell_render_input: Res<'_, ShellRenderInput>,
@@ -124,6 +137,10 @@ pub fn build_surface_texture_bridge_plan_system(
     bridge.surfaces = surfaces;
 }
 
+/// Convert ordered render-plan items into backend-neutral scene descriptors.
+///
+/// The result keeps per-output draw ordering while replacing world-facing item variants with
+/// stable prepared forms that the backend can consume directly.
 pub fn build_prepared_scene_resources_system(
     views: Res<'_, RenderViewSnapshot>,
     render_plan: Res<'_, RenderPlan>,
@@ -211,6 +228,10 @@ fn prepare_scene_item_descriptor(
     }
 }
 
+/// Assemble prepared GPU-side resources for each output from the frame's planning state.
+///
+/// This stage resolves render-target allocations, surface imports, material bindings, and custom
+/// process shaders into one cache-friendly descriptor set without touching live backend objects.
 pub fn build_prepared_gpu_resources_system(
     render_target_allocation: Res<'_, RenderTargetAllocationPlan>,
     surface_bridge: Res<'_, SurfaceTextureBridgePlan>,

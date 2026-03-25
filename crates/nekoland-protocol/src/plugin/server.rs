@@ -9,6 +9,8 @@ use bevy_ecs::change_detection::DetectChanges;
 use nekoland_core::bridge::WaylandBridge;
 use smithay::reexports::wayland_server::Display;
 
+/// Aggregated dma-buf capabilities observed from the active protocol/runtime stack.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, bevy_ecs::prelude::Resource)]
 pub struct ProtocolDmabufSupport {
     pub formats: Vec<smithay::backend::allocator::Format>,
@@ -17,6 +19,7 @@ pub struct ProtocolDmabufSupport {
 }
 
 impl ProtocolDmabufSupport {
+    /// Merge newly discovered dma-buf formats into the runtime capability snapshot.
     pub fn merge_formats(
         &mut self,
         formats: impl IntoIterator<Item = smithay::backend::allocator::Format>,
@@ -36,15 +39,19 @@ impl ProtocolDmabufSupport {
         self.importable |= importable;
     }
 
+    /// Returns whether the given format can be imported by the compositor.
     pub fn importable_format(&self, format: smithay::backend::allocator::Format) -> bool {
         self.formats.contains(&format)
     }
 
+    /// Returns whether the given format can be rendered to by the compositor.
     pub fn renderable_format(&self, format: smithay::backend::allocator::Format) -> bool {
         self.renderable_formats.contains(&format)
     }
 }
 
+/// Cursor image variants produced by the Wayland protocol runtime.
+#[allow(missing_docs)]
 #[derive(Debug, Clone)]
 pub enum ProtocolCursorImage {
     Hidden,
@@ -56,6 +63,8 @@ pub enum ProtocolCursorImage {
     },
 }
 
+/// Mutable cursor snapshot exported from the protocol runtime.
+#[allow(missing_docs)]
 #[derive(Debug, Clone)]
 pub struct ProtocolCursorState {
     pub image: ProtocolCursorImage,

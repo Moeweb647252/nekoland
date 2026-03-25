@@ -1,3 +1,9 @@
+//! Render-side appearance and projection snapshots derived from shell presentation state.
+//!
+//! These snapshots are the bridge between shell-owned animation/presentation semantics and the
+//! render-world scene contributions that later become render-plan items.
+#![allow(missing_docs)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::prelude::{Query, Res, ResMut, Resource, With};
@@ -82,6 +88,7 @@ struct BindingSamples {
     clip_rect: Option<RenderRect>,
 }
 
+/// Clears render-world appearance and projection snapshots before extraction rebuilds them.
 pub fn clear_scene_process_snapshots_system(
     mut appearance: ResMut<'_, AppearanceSnapshot>,
     mut projection: ResMut<'_, ProjectionSnapshot>,
@@ -92,6 +99,7 @@ pub fn clear_scene_process_snapshots_system(
     projection.instances.clear();
 }
 
+/// Extracts appearance and projection overrides for surface-backed scene items.
 pub fn surface_scene_process_snapshot_system(
     windows: SurfaceAnimationQuery<'_, '_>,
     popups: PopupAnimationQuery<'_, '_>,
@@ -208,6 +216,7 @@ fn snapshot_surface_process_entry(
     }
 }
 
+/// Extracts appearance and projection overrides for compositor-owned scene items.
 pub fn compositor_scene_process_snapshot_system(
     compositor_scene: Option<Res<'_, CompositorSceneState>>,
     timelines: Res<'_, AnimationTimelineStore>,
@@ -245,6 +254,7 @@ pub fn compositor_scene_process_snapshot_system(
     }
 }
 
+/// Pulls scene-process inputs out of the main world into the render sub-app.
 pub fn extract_scene_process_snapshots(main_world: &mut World, render_world: &mut World) {
     let mut appearance = AppearanceSnapshot::default();
     let mut projection = ProjectionSnapshot::default();
@@ -353,6 +363,7 @@ pub fn extract_scene_process_snapshots(main_world: &mut World, render_world: &mu
     render_world.insert_resource(projection);
 }
 
+/// Drops compositor-only animation tracks whose bindings are no longer live.
 pub fn prune_stale_compositor_animation_tracks_system(
     compositor_scene: Option<Res<'_, CompositorSceneState>>,
     mut timelines: ResMut<'_, AnimationTimelineStore>,
@@ -379,6 +390,7 @@ pub fn prune_stale_compositor_animation_tracks_system(
     });
 }
 
+/// Applies a sampled appearance override to the provided opacity value.
 pub fn apply_appearance_snapshot(
     opacity: &mut f32,
     source_key: &RenderSourceKey,
@@ -397,6 +409,7 @@ pub fn apply_appearance_snapshot(
     }
 }
 
+/// Applies sampled projection overrides to the provided rect and clip rect.
 pub fn apply_projection_snapshot(
     rect: &mut RenderRect,
     clip_rect: &mut Option<RenderRect>,

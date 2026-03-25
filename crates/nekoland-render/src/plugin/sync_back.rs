@@ -1,3 +1,5 @@
+//! Sync-back helpers that mirror render-world products into the main world.
+
 use bevy_ecs::prelude::{Res, ResMut};
 use bevy_ecs::schedule::InternedScheduleLabel;
 use bevy_ecs::world::World;
@@ -7,6 +9,7 @@ use nekoland_ecs::resources::{
     RenderProcessPlan, RenderReadbackPlan, RenderTargetAllocationPlan, SurfaceTextureBridgePlan,
 };
 
+/// Mirrors render-world resources back into the main world after the render sub-app runs.
 pub(super) fn sync_render_subapp_back(
     main_world: &mut World,
     render_world: &mut World,
@@ -31,6 +34,7 @@ pub(super) fn sync_render_subapp_back(
     super::clone_resource_into::<SurfaceTextureBridgePlan>(render_world, main_world);
 }
 
+/// Rebuilds the aggregated `CompiledOutputFrames` resource from render-world sub-results.
 pub(super) fn sync_compiled_output_frames_system(
     output_damage_regions: Res<'_, OutputDamageRegions>,
     prepared_scene: Res<'_, PreparedSceneResources>,

@@ -1,3 +1,7 @@
+//! Shell-style imperative action commands accepted over IPC.
+
+#![allow(missing_docs)]
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

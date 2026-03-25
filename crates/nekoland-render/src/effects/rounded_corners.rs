@@ -1,3 +1,6 @@
+//! Rounded-corner effect feature registration and request emission.
+#![allow(missing_docs)]
+
 use bevy_app::App;
 use bevy_ecs::prelude::{Res, ResMut, Resource};
 use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -34,13 +37,16 @@ impl RenderMaterialSpec for RoundedCornerMaskMaterial {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Feature plugin that wires rounded-corner config and request emission into the render pipeline.
 pub struct RoundedCornerEffectPlugin;
 
 impl RoundedCornerEffectPlugin {
+    /// Installs the shared rounded-corner configuration resource on the main world.
     pub fn init_config(app: &mut App) {
         app.init_resource::<RoundedCornerEffectConfig>();
     }
 
+    /// Installs rounded-corner request emitters inside the render sub-app.
     pub fn install_render_subapp(app: &mut App) {
         app.init_resource::<RoundedCornerEffectConfig>()
             .add_systems(RenderSchedule, rounded_corner_effect_system.in_set(RenderPrepareSystems));
