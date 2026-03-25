@@ -1,3 +1,6 @@
+//! Shared surface identity, geometry, and content-version components.
+#![allow(missing_docs)]
+
 use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 

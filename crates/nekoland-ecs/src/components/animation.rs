@@ -1,3 +1,6 @@
+//! Animation-related window components consumed by shell policy and render extraction.
+#![allow(missing_docs)]
+
 use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 

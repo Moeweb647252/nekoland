@@ -1,3 +1,6 @@
+//! Output identity, placement, viewport, and property components.
+#![allow(missing_docs)]
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy_ecs::component::Component;

@@ -1,5 +1,6 @@
 //! Shell-side state transitions: workspace management, focus, layout, decorations, and protocol
 //! lifecycle handling for XDG/X11 surfaces.
+#![warn(missing_docs)]
 
 /// Startup actions, external command dispatch, and command-history bookkeeping.
 pub mod commands;

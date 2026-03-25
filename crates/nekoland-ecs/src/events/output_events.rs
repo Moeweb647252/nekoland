@@ -1,3 +1,6 @@
+//! Output lifecycle messages emitted when outputs are materialized or removed.
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Message;
 use serde::{Deserialize, Serialize};
 

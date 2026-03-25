@@ -21,7 +21,9 @@ impl DeferredXdgRequests {
     }
 }
 
+/// Configure sequencing for XDG toplevel lifecycle requests.
 pub mod configure;
+/// Popup lifecycle and popup projection for XDG popups.
 pub mod popup;
 #[cfg(test)]
 pub mod toplevel;

@@ -22,19 +22,25 @@ use nekoland_ecs::views::{OutputRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_in_workspace;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Marker type documenting the shell workspace subsystem.
 pub struct WorkspaceManager;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
+/// Remembers which workspace last belonged to each output across output lifecycle changes.
 pub struct RememberedOutputWorkspaceState {
+    /// Mapping from runtime output id to its last assigned workspace id.
     pub by_id: std::collections::BTreeMap<OutputId, WorkspaceId>,
+    /// Mapping from output name to runtime output id for reconnect-friendly lookup.
     pub ids_by_name: std::collections::BTreeMap<String, OutputId>,
 }
 
 impl RememberedOutputWorkspaceState {
+    /// Returns the remembered workspace for the provided output name, when one exists.
     pub fn workspace_for_output_name(&self, output_name: &str) -> Option<WorkspaceId> {
         self.ids_by_name.get(output_name).and_then(|output_id| self.by_id.get(output_id)).copied()
     }
 
+    /// Records the most recent workspace assignment for one output.
     pub fn remember(
         &mut self,
         output_id: OutputId,
@@ -69,6 +75,7 @@ type WorkspaceOutputRouteChanges<'w, 's> = Query<
 >;
 
 #[derive(SystemParam)]
+/// System parameters required to apply staged workspace controls.
 pub struct WorkspaceCommandParams<'w, 's> {
     pending_workspace_controls: ResMut<'w, PendingWorkspaceControls>,
     wayland_ingress: Res<'w, WaylandIngress>,
@@ -366,6 +373,7 @@ pub fn output_workspace_housekeeping_system(
     }
 }
 
+/// Persists the current output-to-workspace mapping for later reconnect or re-enable flows.
 pub fn remember_output_workspace_routes_system(
     outputs: Query<(&OutputId, &OutputDevice, Option<&OutputCurrentWorkspace>)>,
     mut remembered_outputs: ResMut<RememberedOutputWorkspaceState>,

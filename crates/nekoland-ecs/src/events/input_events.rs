@@ -1,3 +1,6 @@
+//! Input-facing ECS messages emitted by the normalized input pipeline.
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Message;
 use serde::{Deserialize, Serialize};
 

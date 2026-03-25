@@ -24,6 +24,7 @@ type GrabOutputs<'w, 's> = Query<'w, 's, (bevy_ecs::prelude::Entity, OutputRunti
 type GrabWorkspaces<'w, 's> = Query<'w, 's, (bevy_ecs::prelude::Entity, WorkspaceRuntime)>;
 
 #[derive(SystemParam)]
+/// System parameters required to drive interactive floating-window move and resize grabs.
 pub struct WindowGrabParams<'w, 's> {
     entity_index: Res<'w, EntityIndex>,
     pointer: Res<'w, GlobalPointerPosition>,
@@ -40,23 +41,34 @@ pub struct WindowGrabParams<'w, 's> {
 /// Interactive grab mode currently applied to a floating window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowGrabMode {
+    /// Reposition the window while preserving its current size.
     Move,
-    Resize { edges: ResizeEdges },
+    /// Resize the window using the provided active resize edges.
+    Resize {
+        /// Active resize edges captured when the grab started.
+        edges: ResizeEdges,
+    },
 }
 
 /// Snapshot captured when an interactive move/resize grab begins.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowGrabState {
+    /// Stable surface id of the grabbed window.
     pub surface_id: u64,
+    /// Grab behavior currently being applied.
     pub mode: WindowGrabMode,
+    /// Pointer x position captured when the grab started.
     pub start_pointer_x: f64,
+    /// Pointer y position captured when the grab started.
     pub start_pointer_y: f64,
+    /// Window scene geometry captured when the grab started.
     pub start_scene_geometry: WindowSceneGeometry,
 }
 
 /// Current interactive window grab, if any.
 #[derive(Debug, Clone, Default, PartialEq, Resource)]
 pub struct ActiveWindowGrab {
+    /// Active grab state, or `None` when no interactive grab is in progress.
     pub state: Option<WindowGrabState>,
 }
 

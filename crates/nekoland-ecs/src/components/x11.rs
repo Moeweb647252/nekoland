@@ -1,3 +1,6 @@
+//! XWayland-specific window metadata components.
+#![allow(missing_docs)]
+
 use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 

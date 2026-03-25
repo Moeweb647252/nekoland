@@ -30,6 +30,7 @@ const MIN_FLOATING_WINDOW_SIZE: u32 = 32;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FloatingLayout;
 
+/// Applies floating-window placement, clamping, and viewport projection.
 pub fn floating_layout_system(
     mut previous_work_area: Local<Option<WorkArea>>,
     mut windows: Query<WindowRuntime, With<XdgWindow>>,

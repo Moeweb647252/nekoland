@@ -1,3 +1,6 @@
+//! Seat identity and seat-facing components.
+#![allow(missing_docs)]
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy_ecs::component::Component;

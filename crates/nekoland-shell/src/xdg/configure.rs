@@ -21,6 +21,7 @@ type XdgWindows<'w, 's> =
     Query<'w, 's, (Entity, WindowRuntime), (With<XdgWindow>, Allow<Disabled>)>;
 
 #[derive(SystemParam)]
+/// System parameters required to translate XDG configure requests into shell state changes.
 pub struct ConfigureSequenceParams<'w, 's> {
     pending_xdg_requests: ResMut<'w, crate::xdg::DeferredXdgRequests>,
     wayland_ingress: Res<'w, WaylandIngress>,
