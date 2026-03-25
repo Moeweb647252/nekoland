@@ -79,6 +79,8 @@ pub mod screenshot;
 pub mod seat_registry;
 /// Clipboard, drag-and-drop, and primary-selection state.
 pub mod selection_state;
+/// High-level tiling control queues and staged handles.
+pub mod tiling_control;
 /// Surface content-version snapshots.
 pub mod surface_content;
 /// Shell-owned surface presentation snapshots.
@@ -137,6 +139,7 @@ pub use render_readback::*;
 pub use screenshot::*;
 pub use seat_registry::*;
 pub use selection_state::*;
+pub use tiling_control::*;
 pub use surface_content::*;
 pub use surface_presentation::*;
 pub use surface_snapshot::*;

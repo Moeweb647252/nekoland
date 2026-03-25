@@ -182,7 +182,13 @@ The following action objects are accepted in `startup.actions` and regular keybi
 | close | `{ close = true }` | Boolean must be `true` |
 | move | `{ move = [x, y] }` | Signed integers |
 | resize | `{ resize = [width, height] }` | Unsigned integers |
-| split | `{ split = "horizontal" }` | Allowed: `horizontal`, `vertical` |
+| tiling_focus_column | `{ tiling_focus_column = "left" }` | Allowed: `left`, `right` |
+| tiling_focus_window | `{ tiling_focus_window = "up" }` | Allowed: `up`, `down` |
+| tiling_move_column | `{ tiling_move_column = "left" }` | Allowed: `left`, `right` |
+| tiling_move_window | `{ tiling_move_window = "up" }` | Allowed: `up`, `down` |
+| tiling_consume | `{ tiling_consume = "left" }` | Allowed: `left`, `right` |
+| tiling_expel | `{ tiling_expel = "right" }` | Allowed: `left`, `right` |
+| tiling_pan | `{ tiling_pan = "left" }` | Allowed: `left`, `right`, `up`, `down` |
 | background | `{ background = "eDP-1" }` | Output name |
 | clear_background | `{ clear_background = true }` | Boolean must be `true` |
 | workspace | `{ workspace = 1 }` or `{ workspace = "web" }` | Switch/create workspace by id or name |
@@ -285,6 +291,7 @@ The main `nekoland` binary currently has no user-facing CLI flags. Runtime contr
 - `popup`
 - `workspace`
 - `output`
+- `tiling`
 - `action`
 - `completion`
 - `subscribe`
@@ -326,9 +333,20 @@ Supported actions:
 - `close <surface_id>`
 - `move <surface_id> <x> <y>`
 - `resize <surface_id> <width> <height>`
-- `split <surface_id> <horizontal|vertical>`
 - `background <surface_id> <output>`
 - `clear-background <surface_id>`
+
+### `tiling`
+
+Supported actions:
+
+- `focus-column <left|right>`
+- `focus-window <up|down>`
+- `move-column <left|right>`
+- `move-window <up|down>`
+- `consume <left|right>`
+- `expel <left|right>`
+- `pan <left|right|up|down>`
 
 ### `popup`
 

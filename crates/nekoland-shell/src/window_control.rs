@@ -7,8 +7,8 @@ use nekoland_ecs::components::{Window, WindowLayout, WindowMode, WindowPosition,
 use nekoland_ecs::events::WindowMoved;
 use nekoland_ecs::resources::{
     EntityIndex, KeyboardFocusState, PendingWindowControls, PendingWindowServerRequests,
-    UNASSIGNED_WORKSPACE_STACK_ID, UNASSIGNED_WORKSPACE_TILING_ID, WaylandIngress,
-    WindowServerAction, WindowServerRequest, WindowStackingState, WorkspaceTilingState,
+    UNASSIGNED_WORKSPACE_STACK_ID, WaylandIngress, WindowServerAction, WindowServerRequest,
+    WindowStackingState,
 };
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
@@ -33,7 +33,6 @@ pub struct WindowControlParams<'w, 's> {
     pending_window_requests: ResMut<'w, PendingWindowServerRequests>,
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
     stacking: ResMut<'w, WindowStackingState>,
-    tiling: ResMut<'w, WorkspaceTilingState>,
     wayland_ingress: Option<bevy_ecs::prelude::Res<'w, WaylandIngress>>,
     window_moved: MessageWriter<'w, WindowMoved>,
     windows: ControlledWindows<'w, 's>,
@@ -177,19 +176,6 @@ pub fn window_control_request_system(
             }
         }
 
-        if let Some(axis) = control.split_axis {
-            *window.layout = WindowLayout::Tiled;
-            *window.mode = WindowMode::Normal;
-            lock_window_policy(*window.layout, *window.mode, &mut window.policy_state);
-            let tiling_workspace_id = if workspace_id == UNASSIGNED_WORKSPACE_STACK_ID {
-                UNASSIGNED_WORKSPACE_TILING_ID
-            } else {
-                workspace_id
-            };
-            controls.tiling.ensure_surface(tiling_workspace_id, window.surface_id());
-            controls.tiling.set_surface_split_axis(tiling_workspace_id, window.surface_id(), axis);
-        }
-
         if control.focus
             && *window.mode != WindowMode::Hidden
             && !window.management_hints.helper_surface
@@ -261,7 +247,7 @@ mod tests {
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
         OutputBackgroundWindow, OutputDevice, OutputProperties, WindowLayout, WindowMode,
-        WindowPlacement, WlSurfaceHandle, Workspace, WorkspaceId,
+        WindowPlacement, WlSurfaceHandle,
     };
     use nekoland_ecs::events::WindowMoved;
     use nekoland_ecs::resources::{
@@ -415,99 +401,6 @@ mod tests {
             .expect("scene geometry should exist");
         assert_eq!((scene_geometry.x, scene_geometry.y), (40, 60));
         assert!(world.resource::<PendingWindowControls>().is_empty());
-    }
-
-    #[test]
-    fn split_controls_switch_window_to_tiled_geometry() {
-        let mut app = NekolandApp::new("window-control-split-test");
-        app.inner_mut()
-            .init_resource::<PendingWindowControls>()
-            .init_resource::<PendingWindowServerRequests>()
-            .init_resource::<KeyboardFocusState>()
-            .init_resource::<EntityIndex>()
-            .init_resource::<WindowStackingState>()
-            .init_resource::<WorkspaceTilingState>()
-            .insert_resource(WaylandIngress::default())
-            .insert_resource(WorkArea { x: 0, y: 0, width: 1200, height: 800 })
-            .add_message::<WindowMoved>()
-            .add_systems(
-                LayoutSchedule,
-                (rebuild_entity_index_system, window_control_request_system, tiling_layout_system)
-                    .chain(),
-            );
-
-        let workspace = app
-            .inner_mut()
-            .world_mut()
-            .spawn(Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true })
-            .id();
-        let left = app
-            .inner_mut()
-            .world_mut()
-            .spawn((
-                WindowBundle {
-                    surface: WlSurfaceHandle { id: 17 },
-                    geometry: nekoland_ecs::components::SurfaceGeometry {
-                        x: 80,
-                        y: 60,
-                        width: 320,
-                        height: 240,
-                    },
-                    buffer: nekoland_ecs::components::BufferState { attached: true, scale: 1 },
-                    layout: WindowLayout::Tiled,
-                    mode: WindowMode::Normal,
-                    ..Default::default()
-                },
-                bevy_ecs::hierarchy::ChildOf(workspace),
-            ))
-            .id();
-        let right = app
-            .inner_mut()
-            .world_mut()
-            .spawn((
-                WindowBundle {
-                    surface: WlSurfaceHandle { id: 18 },
-                    geometry: nekoland_ecs::components::SurfaceGeometry {
-                        x: 420,
-                        y: 60,
-                        width: 320,
-                        height: 240,
-                    },
-                    buffer: nekoland_ecs::components::BufferState { attached: true, scale: 1 },
-                    layout: WindowLayout::Tiled,
-                    mode: WindowMode::Normal,
-                    ..Default::default()
-                },
-                bevy_ecs::hierarchy::ChildOf(workspace),
-            ))
-            .id();
-
-        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
-        app.inner_mut()
-            .world_mut()
-            .resource_mut::<PendingWindowControls>()
-            .surface(SurfaceId(17))
-            .split_vertical();
-        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
-
-        let world = app.inner().world();
-        let Some(left_geometry) = world.get::<nekoland_ecs::components::SurfaceGeometry>(left)
-        else {
-            panic!("left tiled window should exist");
-        };
-        let Some(right_geometry) = world.get::<nekoland_ecs::components::SurfaceGeometry>(right)
-        else {
-            panic!("right tiled window should exist");
-        };
-
-        assert_eq!(
-            (left_geometry.x, left_geometry.y, left_geometry.width, left_geometry.height),
-            (0, 0, 1200, 400)
-        );
-        assert_eq!(
-            (right_geometry.x, right_geometry.y, right_geometry.width, right_geometry.height),
-            (0, 400, 1200, 400)
-        );
     }
 
     #[test]

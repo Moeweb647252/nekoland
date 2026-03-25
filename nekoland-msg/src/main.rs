@@ -11,8 +11,8 @@ use std::process::ExitCode;
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use clap_complete::{Shell, generate};
 use nekoland_ipc::commands::{
-    ActionCommand, FpsHudMode, OutputCommand, PopupCommand, QueryCommand, SplitAxis, WindowCommand,
-    WorkspaceCommand,
+    ActionCommand, FpsHudMode, HorizontalDirection, OutputCommand, PopupCommand, QueryCommand,
+    TilingCommand, TilingPanDirection, VerticalDirection, WindowCommand, WorkspaceCommand,
 };
 use nekoland_ipc::{
     IpcCommand, IpcRequest, IpcSubscription, KNOWN_SUBSCRIPTION_EVENT_NAMES,
@@ -21,7 +21,7 @@ use nekoland_ipc::{
 };
 
 const USAGE: &str = "usage:
-  nekoland-msg <query|window|popup|workspace|output|action> ...
+  nekoland-msg <query|window|popup|workspace|output|tiling|action> ...
   nekoland-msg subscribe <window|popup|workspace|output|command|config|keyboard-layout|clipboard|primary-selection|present-audit|focus|tree|all> [--pretty|--jsonl] [--no-payloads] [--event <name|prefix*>]...";
 const SUBSCRIPTION_HELP_EXAMPLES: &[&str] = &[
     "nekoland-msg subscribe workspace",
@@ -47,6 +47,7 @@ enum RootCommand {
     Popup(PopupArgs),
     Workspace(WorkspaceArgs),
     Output(OutputArgs),
+    Tiling(TilingArgs),
     Action(ActionArgs),
     Completion(CompletionArgs),
     Subscribe(SubscribeArgs),
@@ -125,10 +126,6 @@ enum WindowAction {
         width: u32,
         height: u32,
     },
-    Split {
-        surface_id: u64,
-        axis: SplitAxisArg,
-    },
     Background {
         surface_id: u64,
         output: String,
@@ -139,18 +136,71 @@ enum WindowAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum SplitAxisArg {
-    Horizontal,
-    Vertical,
+enum HorizontalDirectionArg {
+    Left,
+    Right,
 }
 
-impl From<SplitAxisArg> for SplitAxis {
-    fn from(value: SplitAxisArg) -> Self {
+impl From<HorizontalDirectionArg> for HorizontalDirection {
+    fn from(value: HorizontalDirectionArg) -> Self {
         match value {
-            SplitAxisArg::Horizontal => Self::Horizontal,
-            SplitAxisArg::Vertical => Self::Vertical,
+            HorizontalDirectionArg::Left => Self::Left,
+            HorizontalDirectionArg::Right => Self::Right,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum VerticalDirectionArg {
+    Up,
+    Down,
+}
+
+impl From<VerticalDirectionArg> for VerticalDirection {
+    fn from(value: VerticalDirectionArg) -> Self {
+        match value {
+            VerticalDirectionArg::Up => Self::Up,
+            VerticalDirectionArg::Down => Self::Down,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum TilingPanDirectionArg {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl From<TilingPanDirectionArg> for TilingPanDirection {
+    fn from(value: TilingPanDirectionArg) -> Self {
+        match value {
+            TilingPanDirectionArg::Left => Self::Left,
+            TilingPanDirectionArg::Right => Self::Right,
+            TilingPanDirectionArg::Up => Self::Up,
+            TilingPanDirectionArg::Down => Self::Down,
+        }
+    }
+}
+
+/// Arguments for the `tiling` subcommand family.
+#[derive(Args, Debug)]
+struct TilingArgs {
+    #[command(subcommand)]
+    action: TilingAction,
+}
+
+/// Tiling-management actions supported by the CLI.
+#[derive(Subcommand, Debug)]
+enum TilingAction {
+    FocusColumn { direction: HorizontalDirectionArg },
+    FocusWindow { direction: VerticalDirectionArg },
+    MoveColumn { direction: HorizontalDirectionArg },
+    MoveWindow { direction: VerticalDirectionArg },
+    Consume { direction: HorizontalDirectionArg },
+    Expel { direction: HorizontalDirectionArg },
+    Pan { direction: TilingPanDirectionArg },
 }
 
 /// Arguments for the `popup` subcommand family.
@@ -451,9 +501,6 @@ where
             WindowAction::Resize { surface_id, width, height } => {
                 IpcCommand::Window(WindowCommand::Resize { surface_id, width, height })
             }
-            WindowAction::Split { surface_id, axis } => {
-                IpcCommand::Window(WindowCommand::Split { surface_id, axis: axis.into() })
-            }
             WindowAction::Background { surface_id, output } => {
                 IpcCommand::Window(WindowCommand::Background { surface_id, output })
             }
@@ -461,6 +508,29 @@ where
                 IpcCommand::Window(WindowCommand::ClearBackground { surface_id })
             }
         })),
+        RootCommand::Tiling(tiling) => Ok(ParsedAction::Request(IpcCommand::Tiling(match tiling.action {
+            TilingAction::FocusColumn { direction } => {
+                TilingCommand::FocusColumn { direction: direction.into() }
+            }
+            TilingAction::FocusWindow { direction } => {
+                TilingCommand::FocusWindow { direction: direction.into() }
+            }
+            TilingAction::MoveColumn { direction } => {
+                TilingCommand::MoveColumn { direction: direction.into() }
+            }
+            TilingAction::MoveWindow { direction } => {
+                TilingCommand::MoveWindow { direction: direction.into() }
+            }
+            TilingAction::Consume { direction } => {
+                TilingCommand::ConsumeIntoColumn { direction: direction.into() }
+            }
+            TilingAction::Expel { direction } => {
+                TilingCommand::ExpelFromColumn { direction: direction.into() }
+            }
+            TilingAction::Pan { direction } => {
+                TilingCommand::PanViewport { direction: direction.into() }
+            }
+        }))),
         RootCommand::Popup(popup) => Ok(ParsedAction::Request(match popup.action {
             PopupAction::Dismiss { surface_id } => {
                 IpcCommand::Popup(PopupCommand::Dismiss { surface_id })
@@ -779,11 +849,12 @@ fn send_ipc_command(command: IpcCommand) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        CompletionShellArg, HelpOutputMode, ParsedAction, SplitAxis, SubscriptionCommand,
+        CompletionShellArg, HelpOutputMode, ParsedAction, SubscriptionCommand,
         SubscriptionOutputMode, parse_cli_from, render_completion, render_subscription_help,
     };
     use nekoland_ipc::commands::{
-        ActionCommand, FpsHudMode, OutputCommand, PopupCommand, QueryCommand, WindowCommand,
+        ActionCommand, FpsHudMode, HorizontalDirection, OutputCommand, PopupCommand,
+        QueryCommand, TilingCommand, TilingPanDirection, WindowCommand,
     };
     use nekoland_ipc::{IpcCommand, IpcSubscription, SubscriptionTopic};
     use serde_json::Value;
@@ -938,12 +1009,21 @@ mod tests {
     }
 
     #[test]
-    fn parses_window_split() {
+    fn parses_tiling_pan() {
         assert_eq!(
-            parse_ok(["nekoland-msg", "window", "split", "7", "vertical"]),
-            ParsedAction::Request(IpcCommand::Window(WindowCommand::Split {
-                surface_id: 7,
-                axis: SplitAxis::Vertical,
+            parse_ok(["nekoland-msg", "tiling", "pan", "right"]),
+            ParsedAction::Request(IpcCommand::Tiling(TilingCommand::PanViewport {
+                direction: TilingPanDirection::Right,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_tiling_consume() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "tiling", "consume", "left"]),
+            ParsedAction::Request(IpcCommand::Tiling(TilingCommand::ConsumeIntoColumn {
+                direction: HorizontalDirection::Left,
             }))
         );
     }
