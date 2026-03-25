@@ -1,3 +1,7 @@
+//! Prepared scene and GPU resource descriptors derived from render plans.
+
+#![allow(missing_docs)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::prelude::Resource;
@@ -11,6 +15,7 @@ use crate::resources::{
     RenderMaterialParamBlock, RenderRect, RenderTargetId, RenderTargetKind,
 };
 
+/// Snapshot of whether each surface currently has an attached buffer.
 #[derive(Resource, Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SurfaceBufferAttachmentSnapshot {
     pub surfaces: BTreeMap<u64, SurfaceBufferAttachmentState>,
@@ -22,6 +27,7 @@ pub struct SurfaceBufferAttachmentState {
     pub scale: i32,
 }
 
+/// Backend-neutral render target allocation plan keyed by output.
 #[derive(Resource, Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RenderTargetAllocationPlan {
     pub outputs: BTreeMap<OutputId, OutputTargetAllocationPlan>,
@@ -39,6 +45,7 @@ pub struct RenderTargetAllocationSpec {
     pub height: u32,
 }
 
+/// Surface import bridge produced from render-plan usage and platform snapshots.
 #[derive(Resource, Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SurfaceTextureBridgePlan {
     pub surfaces: BTreeMap<u64, SurfaceTextureImportDescriptor>,
@@ -57,6 +64,7 @@ pub struct SurfaceTextureImportDescriptor {
     pub scale: i32,
 }
 
+/// Prepared scene descriptors grouped by output.
 #[derive(Resource, Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct PreparedSceneResources {
     pub outputs: BTreeMap<OutputId, OutputPreparedSceneResources>,
@@ -68,6 +76,7 @@ pub struct OutputPreparedSceneResources {
     pub ordered_items: Vec<RenderItemId>,
 }
 
+/// Prepared GPU resource descriptors grouped by output plus shared caches.
 #[derive(Resource, Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct PreparedGpuResources {
     pub outputs: BTreeMap<OutputId, OutputPreparedGpuResources>,

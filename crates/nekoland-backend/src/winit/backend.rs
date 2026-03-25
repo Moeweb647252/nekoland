@@ -47,6 +47,8 @@ use crate::winit::host::{
     init_host_winit,
 };
 
+/// Public snapshot of the nested host window owned by the `winit` backend.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Resource, PartialEq, Eq)]
 pub struct WinitWindowState {
     pub driver: String,

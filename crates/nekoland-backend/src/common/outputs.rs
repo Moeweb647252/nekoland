@@ -1,3 +1,5 @@
+//! Backend-side output materialization, snapshotting, and viewport control helpers.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::entity::Entity;
@@ -34,6 +36,7 @@ use crate::traits::{BackendId, BackendOutputId, OutputSnapshot};
 const OUTPUT_VIEWPORT_ANIMATION_DURATION_MS: u32 = 180;
 
 /// Remembers output-local viewport origins across output disable/enable and reconnect cycles.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, Resource, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RememberedOutputViewportState {
     pub by_id: BTreeMap<OutputId, OutputViewport>,
@@ -42,22 +45,26 @@ pub struct RememberedOutputViewportState {
 }
 
 impl RememberedOutputViewportState {
+    /// Returns the last remembered viewport for an ECS output id.
     pub fn viewport_for_output_id(&self, output_id: OutputId) -> Option<&OutputViewport> {
         self.by_id.get(&output_id)
     }
 
+    /// Returns the last remembered viewport for a human-readable output name.
     pub fn viewport_for_output_name(&self, output_name: &str) -> Option<&OutputViewport> {
         self.by_name.get(output_name).or_else(|| {
             self.ids_by_name.get(output_name).and_then(|output_id| self.by_id.get(output_id))
         })
     }
 
+    /// Records the latest authoritative viewport for an output under both id and name lookups.
     pub fn remember(&mut self, output_id: OutputId, output_name: String, viewport: OutputViewport) {
         self.ids_by_name.insert(output_name.clone(), output_id);
         self.by_name.insert(output_name, viewport.clone());
         self.by_id.insert(output_id, viewport);
     }
 
+    /// Drops any name-based lookup state for an output that no longer exists.
     pub fn forget_name(&mut self, output_name: &str) {
         if let Some(output_id) = self.ids_by_name.remove(output_name) {
             self.by_id.remove(&output_id);
@@ -90,6 +97,7 @@ pub struct BackendOutputEventRecord {
 }
 
 /// Output connect/disconnect lifecycle, expressed in backend-normalized form.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BackendOutputChange {
     Connected(BackendOutputBlueprint),
@@ -129,6 +137,7 @@ pub type PendingBackendOutputUpdates =
 /// Unlike the raw backend extract queues, this plan is an ordinary snapshot payload with no
 /// frame-queue behavior. The wayland subapp owns the raw queues; the main world only applies the
 /// already-normalized materialization operations.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackendOutputMaterializationPlan {
     pub lifecycle: Vec<BackendOutputEventRecord>,
@@ -136,6 +145,7 @@ pub struct BackendOutputMaterializationPlan {
 }
 
 impl BackendOutputMaterializationPlan {
+    /// Copies the current backend frame queues into a stable snapshot payload.
     pub fn from_pending_queues(
         pending_output_events: &PendingBackendOutputEvents,
         pending_output_updates: &PendingBackendOutputUpdates,
@@ -542,6 +552,10 @@ pub(crate) fn apply_output_overlay_controls_system(
     }
 }
 
+/// Converts normalized output config into backend-facing enable/configure requests.
+///
+/// Invalid mode strings are skipped and returned to the caller so config sync can surface one
+/// aggregated error while still applying the valid requests.
 pub fn enqueue_configured_output_requests(
     config: &CompositorConfig,
     existing_outputs: &BTreeMap<String, OutputProperties>,
@@ -817,6 +831,7 @@ pub(crate) fn apply_output_server_requests_system(ctx: OutputServerRequestCtx<'_
     pending_output_requests.replace(deferred);
 }
 
+/// Stores the latest live output viewports so reconnects can restore the previous origin.
 pub fn remember_output_viewports_system(
     outputs: Query<(&OutputId, &OutputDevice, &OutputViewport)>,
     mut remembered_viewports: ResMut<RememberedOutputViewportState>,
@@ -826,6 +841,7 @@ pub fn remember_output_viewports_system(
     }
 }
 
+/// Mirrors normalized backend-present inputs into the public output snapshot resource.
 pub fn sync_output_snapshot_state_from_present_inputs_system(
     outputs: Res<'_, BackendPresentInputs>,
     mut snapshots: ResMut<'_, OutputSnapshotState>,
@@ -846,6 +862,7 @@ pub fn sync_output_snapshot_state_from_present_inputs_system(
         .collect();
 }
 
+/// Collects ECS output runtimes into the compact snapshot form exposed to backend code.
 pub fn collect_output_snapshots(
     outputs: &Query<(Entity, OutputRuntime, Option<&OutputBackend>)>,
 ) -> Vec<OutputSnapshot> {
@@ -861,6 +878,7 @@ pub fn collect_output_snapshots(
         .collect()
 }
 
+/// Rebuilds the public output snapshot state from live ECS output runtimes.
 pub fn sync_output_snapshot_state_system(
     outputs: Query<OutputRuntime>,
     mut snapshots: ResMut<'_, OutputSnapshotState>,
@@ -893,6 +911,7 @@ fn center_viewport_on_scene_geometry(
     viewport.origin_y = target_y.saturating_sub(half_height);
 }
 
+/// Returns whether live output properties already satisfy a configured output stanza.
 pub fn output_matches_config(
     properties: &OutputProperties,
     configured_output: &ConfiguredOutput,
@@ -905,6 +924,8 @@ pub fn output_matches_config(
     })
 }
 
+/// Parsed `WIDTHxHEIGHT@HZ` mode specification used by output config reconciliation.
+#[allow(missing_docs)]
 #[derive(Clone, Copy)]
 pub struct ParsedOutputMode {
     pub width: u32,
@@ -912,6 +933,7 @@ pub struct ParsedOutputMode {
     pub refresh_millihz: u32,
 }
 
+/// Parses a textual output mode such as `1920x1080@60` into normalized dimensions and refresh.
 pub fn parse_output_mode(mode: &str) -> Option<ParsedOutputMode> {
     let (dimensions, refresh_hz) = match mode.split_once('@') {
         Some((dimensions, refresh_hz)) => (dimensions, refresh_hz.parse::<u32>().ok()?),

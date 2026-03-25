@@ -1,3 +1,7 @@
+//! External command execution history retained for IPC and diagnostics.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 

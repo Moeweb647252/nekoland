@@ -1,3 +1,7 @@
+//! Platform-owned surface snapshots exported without live protocol handles.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;
@@ -65,30 +69,37 @@ pub struct PlatformSurfaceSnapshotState {
 }
 
 impl PlatformSurfaceSnapshotState {
+    /// Returns the surface kind for one surface id, defaulting to `Unknown`.
     pub fn kind(&self, surface_id: u64) -> PlatformSurfaceKind {
         self.surfaces.get(&surface_id).map(|snapshot| snapshot.kind).unwrap_or_default()
     }
 
+    /// Returns the buffer source for one surface id, defaulting to `Unknown`.
     pub fn buffer_source(&self, surface_id: u64) -> PlatformSurfaceBufferSource {
         self.surfaces.get(&surface_id).map(|snapshot| snapshot.buffer_source).unwrap_or_default()
     }
 
+    /// Returns the optional dma-buf format for one surface id.
     pub fn dmabuf_format(&self, surface_id: u64) -> Option<PlatformDmabufFormat> {
         self.surfaces.get(&surface_id).and_then(|snapshot| snapshot.dmabuf_format)
     }
 
+    /// Returns whether the surface currently has an attached buffer.
     pub fn attached(&self, surface_id: u64) -> bool {
         self.surfaces.get(&surface_id).is_some_and(|snapshot| snapshot.attached)
     }
 
+    /// Returns the import strategy for one surface id.
     pub fn import_strategy(&self, surface_id: u64) -> PlatformSurfaceImportStrategy {
         self.surfaces.get(&surface_id).map(|snapshot| snapshot.import_strategy).unwrap_or_default()
     }
 
+    /// Returns the exported surface scale, defaulting to `1`.
     pub fn scale(&self, surface_id: u64) -> i32 {
         self.surfaces.get(&surface_id).map(|snapshot| snapshot.scale).unwrap_or(1)
     }
 
+    /// Returns the exported content-version counter for one surface id.
     pub fn content_version(&self, surface_id: u64) -> u64 {
         self.surfaces.get(&surface_id).map(|snapshot| snapshot.content_version).unwrap_or_default()
     }

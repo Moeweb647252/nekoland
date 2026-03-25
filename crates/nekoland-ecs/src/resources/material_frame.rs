@@ -1,3 +1,7 @@
+//! Typed material descriptors and parameter blocks used by render planning.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;
@@ -39,14 +43,17 @@ pub struct RenderMaterialPipelineKey {
 }
 
 impl RenderMaterialPipelineKey {
+    /// Builds a pipeline key from an explicit material family and pipeline stage.
     pub const fn new(material: RenderMaterialKind, stage: RenderPipelineStage) -> Self {
         Self { material, stage }
     }
 
+    /// Builds a post-process pipeline key for the given material family.
     pub const fn post_process(material: RenderMaterialKind) -> Self {
         Self::new(material, RenderPipelineStage::PostProcess)
     }
 
+    /// Returns a stable debug-oriented material family name.
     pub fn debug_name(&self) -> &'static str {
         match self.material {
             RenderMaterialKind::Generic => "generic",
@@ -133,18 +140,22 @@ pub enum RenderMaterialParamBlock {
 }
 
 impl RenderMaterialParamBlock {
+    /// Builds a blur parameter block.
     pub fn blur(radius: f32) -> Self {
         Self::Blur(BlurMaterialParams { radius })
     }
 
+    /// Builds a shadow parameter block.
     pub fn shadow(spread: f32, offset_x: f32, offset_y: f32, color: [f32; 4]) -> Self {
         Self::Shadow(ShadowMaterialParams { spread, offset: [offset_x, offset_y], color })
     }
 
+    /// Builds a rounded-corner parameter block.
     pub fn rounded_corners(radius: f32) -> Self {
         Self::RoundedCorners(RoundedCornerMaterialParams { radius })
     }
 
+    /// Returns the radius-like scalar when the block has one.
     pub fn radius(&self) -> Option<f32> {
         match self {
             Self::Blur(params) => Some(params.radius),
@@ -162,10 +173,12 @@ pub struct RenderMaterialFrameState {
 }
 
 impl RenderMaterialFrameState {
+    /// Returns the registered descriptor for a material id.
     pub fn descriptor(&self, material_id: RenderMaterialId) -> Option<&RenderMaterialDescriptor> {
         self.descriptors.get(&material_id)
     }
 
+    /// Returns the typed parameter block for a params id.
     pub fn params(&self, params_id: MaterialParamsId) -> Option<&RenderMaterialParamBlock> {
         self.params.get(&params_id)
     }

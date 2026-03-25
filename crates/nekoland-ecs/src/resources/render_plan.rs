@@ -1,3 +1,7 @@
+//! Ordered scene plans emitted by render extraction before graph compilation.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;
@@ -27,6 +31,7 @@ pub struct RenderItemIdentity {
 }
 
 impl RenderItemIdentity {
+    /// Creates a stable output-local identity from a source id and item id pair.
     pub const fn new(source_id: RenderSourceId, item_id: RenderItemId) -> Self {
         Self { source_id, item_id }
     }
@@ -48,10 +53,12 @@ impl From<&crate::components::SurfaceGeometry> for RenderRect {
 }
 
 impl RenderRect {
+    /// Returns whether the rectangle covers no pixels.
     pub const fn is_empty(self) -> bool {
         self.width == 0 || self.height == 0
     }
 
+    /// Computes the overlapping region between two rectangles.
     pub fn intersection(self, other: Self) -> Option<Self> {
         let left = self.x.max(other.x);
         let top = self.y.max(other.y);
@@ -97,6 +104,7 @@ pub struct RenderItemInstance {
 }
 
 impl RenderItemInstance {
+    /// Returns the visible rectangle after applying any clip rectangle.
     pub fn visible_rect(self) -> Option<RenderRect> {
         match self.clip_rect {
             Some(clip_rect) => self.rect.intersection(clip_rect),
@@ -182,6 +190,7 @@ pub enum RenderPlanItem {
 }
 
 impl RenderPlanItem {
+    /// Returns the stable source/item identity carried by this plan item.
     pub fn identity(&self) -> RenderItemIdentity {
         match self {
             Self::Surface(item) => item.identity,
@@ -191,14 +200,17 @@ impl RenderPlanItem {
         }
     }
 
+    /// Returns the output-local item id.
     pub fn item_id(&self) -> RenderItemId {
         self.identity().item_id
     }
 
+    /// Returns the stable logical source id behind this item.
     pub fn source_id(&self) -> RenderSourceId {
         self.identity().source_id
     }
 
+    /// Returns the shared instance metadata for this item.
     pub fn instance(&self) -> &RenderItemInstance {
         match self {
             Self::Surface(item) => &item.instance,
@@ -208,10 +220,12 @@ impl RenderPlanItem {
         }
     }
 
+    /// Returns the z-index used for output-local ordering.
     pub fn z_index(&self) -> i32 {
         self.instance().z_index
     }
 
+    /// Returns the underlying surface id for surface-backed items when one exists.
     pub fn surface_id(&self) -> Option<u64> {
         match self {
             Self::Surface(item) => Some(item.surface_id),
@@ -232,6 +246,7 @@ pub struct OutputRenderPlan {
 }
 
 impl OutputRenderPlan {
+    /// Builds an output plan from items and sorts them by z-index.
     pub fn from_items(items: impl IntoIterator<Item = RenderPlanItem>) -> Self {
         let mut plan = Self::default();
         for item in items {
@@ -241,6 +256,7 @@ impl OutputRenderPlan {
         plan
     }
 
+    /// Inserts or replaces one render item in the output-local item table.
     pub fn insert(&mut self, item: RenderPlanItem) {
         let item_id = item.item_id();
         let is_new = self.items.insert(item_id, item).is_none();
@@ -249,20 +265,24 @@ impl OutputRenderPlan {
         }
     }
 
+    /// Recomputes ordered item ids from the current z-index values.
     pub fn sort_by_z_index(&mut self) {
         self.ordered_items.sort_by_key(|item_id| {
             self.items.get(item_id).map(RenderPlanItem::z_index).unwrap_or(i32::MAX)
         });
     }
 
+    /// Returns the ordered item-id list for this output.
     pub fn ordered_item_ids(&self) -> &[RenderItemId] {
         &self.ordered_items
     }
 
+    /// Returns one item by output-local id.
     pub fn item(&self, item_id: RenderItemId) -> Option<&RenderPlanItem> {
         self.items.get(&item_id)
     }
 
+    /// Iterates items in deterministic render order.
     pub fn iter_ordered(&self) -> impl Iterator<Item = &RenderPlanItem> {
         self.ordered_items.iter().filter_map(|item_id| self.items.get(item_id))
     }

@@ -1,3 +1,7 @@
+//! Output materialization status and platform-boundary output lifecycle payloads.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
@@ -15,16 +19,19 @@ pub struct BackendOutputRegistry {
 }
 
 impl BackendOutputRegistry {
+    /// Remembers that an output name is physically/backend connected.
     pub fn remember_connected(&mut self, output_id: OutputId, output_name: String) {
         self.ids_by_name.insert(output_name.clone(), output_id);
         self.connected_by_id.insert(output_id, output_name);
     }
 
+    /// Remembers that an output name is currently materialized as enabled.
     pub fn remember_enabled(&mut self, output_id: OutputId, output_name: String) {
         self.ids_by_name.insert(output_name.clone(), output_id);
         self.enabled_by_id.insert(output_id, output_name);
     }
 
+    /// Removes one output name from the enabled set.
     pub fn forget_enabled_name(&mut self, output_name: &str) {
         if let Some(output_id) = self.ids_by_name.get(output_name).copied() {
             self.enabled_by_id.remove(&output_id);
@@ -33,6 +40,7 @@ impl BackendOutputRegistry {
         }
     }
 
+    /// Removes one output name from the connected set and any enabled mirror state.
     pub fn forget_connected_name(&mut self, output_name: &str) {
         if let Some(output_id) = self.ids_by_name.remove(output_name) {
             self.connected_by_id.remove(&output_id);
@@ -43,6 +51,7 @@ impl BackendOutputRegistry {
         }
     }
 
+    /// Returns whether the named output is currently enabled.
     pub fn has_enabled_name(&self, output_name: &str) -> bool {
         self.ids_by_name
             .get(output_name)
@@ -50,6 +59,7 @@ impl BackendOutputRegistry {
             || self.enabled_by_id.values().any(|candidate_name| candidate_name == output_name)
     }
 
+    /// Returns whether the named output is currently connected.
     pub fn has_connected_name(&self, output_name: &str) -> bool {
         self.ids_by_name
             .get(output_name)

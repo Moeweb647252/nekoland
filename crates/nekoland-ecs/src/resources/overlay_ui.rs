@@ -1,3 +1,7 @@
+//! Frame-local overlay UI primitives emitted by compositor-owned HUD systems.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;
@@ -12,6 +16,7 @@ use crate::resources::{RenderColor, RenderRect};
 pub struct OverlayUiPrimitiveId(pub String);
 
 impl OverlayUiPrimitiveId {
+    /// Returns the caller-defined primitive id as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -40,6 +45,7 @@ pub enum OverlayUiLayer {
 }
 
 impl OverlayUiLayer {
+    /// Returns the coarse z-index bias assigned to this overlay layer.
     pub const fn z_index_bias(self) -> i32 {
         match self {
             Self::Background => -1_000_000,
@@ -85,6 +91,7 @@ pub enum OverlayUiPrimitive {
 }
 
 impl OverlayUiPrimitive {
+    /// Returns the stable primitive id.
     pub fn id(&self) -> &OverlayUiPrimitiveId {
         match self {
             Self::Panel(panel) => &panel.id,
@@ -92,6 +99,7 @@ impl OverlayUiPrimitive {
         }
     }
 
+    /// Returns the coarse overlay layer for this primitive.
     pub fn layer(&self) -> OverlayUiLayer {
         match self {
             Self::Panel(panel) => panel.layer,
@@ -99,6 +107,7 @@ impl OverlayUiPrimitive {
         }
     }
 
+    /// Returns the primitive-local z-index within its layer band.
     pub fn z_index(&self) -> i32 {
         match self {
             Self::Panel(panel) => panel.z_index,
@@ -120,21 +129,25 @@ pub struct OverlayUiFrame {
 }
 
 impl OverlayUiFrame {
+    /// Clears all frame-local overlay UI output state.
     pub fn clear(&mut self) {
         self.outputs.clear();
     }
 
+    /// Returns a builder used to append or replace primitives for one output.
     pub fn output(&mut self, output_id: OutputId) -> OverlayUiOutputBuilder<'_> {
         let output = self.outputs.entry(output_id).or_default();
         OverlayUiOutputBuilder { primitives: &mut output.primitives }
     }
 }
 
+/// Builder used to emit overlay UI primitives for one output frame.
 pub struct OverlayUiOutputBuilder<'a> {
     primitives: &'a mut Vec<OverlayUiPrimitive>,
 }
 
 impl OverlayUiOutputBuilder<'_> {
+    /// Upserts one panel primitive.
     pub fn panel(
         &mut self,
         id: impl Into<OverlayUiPrimitiveId>,
@@ -157,6 +170,7 @@ impl OverlayUiOutputBuilder<'_> {
         self
     }
 
+    /// Upserts one text primitive.
     pub fn text(
         &mut self,
         id: impl Into<OverlayUiPrimitiveId>,
@@ -185,6 +199,7 @@ impl OverlayUiOutputBuilder<'_> {
         self
     }
 
+    /// Replaces any previous primitive with the same stable id.
     fn upsert(&mut self, primitive: OverlayUiPrimitive) {
         let primitive_id = primitive.id().clone();
         self.primitives.retain(|existing| existing.id() != &primitive_id);

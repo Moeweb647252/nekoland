@@ -1,3 +1,5 @@
+//! Extraction of backend-facing resources into the Wayland sub-app.
+
 use std::marker::PhantomData;
 
 use bevy_ecs::error::Result as BevyResult;
@@ -90,6 +92,7 @@ pub(super) fn backend_extract_system(
     manager.borrow_mut().extract_all(&mut ctx).map_err(Into::into)
 }
 
+/// Copies main-world backend inputs into the Wayland sub-app for the current frame.
 pub fn extract_backend_wayland_subapp_inputs(main_world: &mut World, wayland_world: &mut World) {
     clone_resource_into::<AppMetadata>(main_world, wayland_world);
     clone_resource_into::<CompiledOutputFrames>(main_world, wayland_world);

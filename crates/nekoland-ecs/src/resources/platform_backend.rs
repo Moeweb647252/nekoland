@@ -1,3 +1,7 @@
+//! Platform-facing backend descriptors and import diagnostics shared across boundaries.
+
+#![allow(missing_docs)]
+
 use crate::resources::PlatformSurfaceImportStrategy;
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
@@ -38,6 +42,7 @@ pub struct PlatformBackendState {
 }
 
 impl PlatformBackendState {
+    /// Returns the first backend acting as a display-producing runtime.
     pub fn primary_display(&self) -> Option<&PlatformBackendDescriptor> {
         self.active.iter().find(|descriptor| {
             descriptor.role == PlatformBackendRole::PrimaryDisplay
@@ -79,10 +84,12 @@ pub struct PlatformImportDiagnosticsState {
 }
 
 impl PlatformImportDiagnosticsState {
+    /// Clears all retained diagnostics.
     pub fn clear(&mut self) {
         self.entries.clear();
     }
 
+    /// Records a surface-import failure diagnostic.
     pub fn push_surface_import_failure(
         &mut self,
         output_name: impl Into<String>,
@@ -99,6 +106,7 @@ impl PlatformImportDiagnosticsState {
         });
     }
 
+    /// Records a final-present failure diagnostic.
     pub fn push_present_failure(
         &mut self,
         output_name: impl Into<String>,
@@ -113,6 +121,7 @@ impl PlatformImportDiagnosticsState {
         });
     }
 
+    /// Pushes one diagnostic while keeping the retained list bounded.
     fn push(&mut self, diagnostic: PlatformImportDiagnostic) {
         const MAX_ENTRIES: usize = 64;
         self.entries.push(diagnostic);

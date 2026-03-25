@@ -1,3 +1,5 @@
+//! Backend runtime installation, selection, and status snapshotting.
+
 use bevy_app::App;
 use bevy_ecs::prelude::Resource;
 use nekoland_ecs::resources::{
@@ -36,6 +38,7 @@ impl BackendStatus {
         })
     }
 
+    /// Converts the backend snapshot into the platform-facing resource mirrored through ECS.
     pub fn platform_state(&self) -> PlatformBackendState {
         PlatformBackendState {
             active: self
@@ -63,6 +66,7 @@ impl BackendStatus {
     }
 }
 
+/// Result of asking installed backends to materialize a named output template.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SeededBackendOutput {
     /// Backend that can materialize the requested output blueprint.
@@ -79,18 +83,22 @@ pub struct BackendManager {
     backends: Vec<Box<dyn Backend>>,
 }
 
+/// Shared interior-mutable handle used by ECS systems to access the backend manager.
 #[derive(Clone, Default)]
 pub struct SharedBackendManager(Rc<RefCell<BackendManager>>);
 
 impl SharedBackendManager {
+    /// Wraps a concrete backend manager in shared interior mutability.
     pub fn new(manager: BackendManager) -> Self {
         Self(Rc::new(RefCell::new(manager)))
     }
 
+    /// Borrows the backend manager immutably.
     pub fn borrow(&self) -> Ref<'_, BackendManager> {
         self.0.borrow()
     }
 
+    /// Borrows the backend manager mutably.
     pub fn borrow_mut(&self) -> RefMut<'_, BackendManager> {
         self.0.borrow_mut()
     }
@@ -192,6 +200,7 @@ impl BackendManager {
         Ok(())
     }
 
+    /// Aggregates dma-buf protocol support advertised by all installed backends.
     pub fn collect_protocol_dmabuf_support(
         &mut self,
         support: &mut ProtocolDmabufSupport,

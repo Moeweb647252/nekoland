@@ -1,3 +1,7 @@
+//! Output work-area rectangles after exclusive surfaces reserve edges.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 

@@ -1,3 +1,7 @@
+//! Low-level backend input records and the queues that carry them across boundaries.
+
+#![allow(missing_docs)]
+
 use crate::kinds::FrameQueue;
 use serde::{Deserialize, Serialize};
 

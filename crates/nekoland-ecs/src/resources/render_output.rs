@@ -1,3 +1,7 @@
+//! Final present-target summaries exported by the render pipeline.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;

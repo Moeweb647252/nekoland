@@ -1,3 +1,7 @@
+//! Screenshot/readback execution plans derived from the render graph.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;

@@ -1,3 +1,7 @@
+//! Pointer position and viewport-pan state shared across input and shell systems.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 

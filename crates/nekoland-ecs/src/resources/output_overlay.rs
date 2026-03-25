@@ -1,3 +1,7 @@
+//! Persistent output-local overlays and the control queue used to update them.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;
@@ -12,6 +16,7 @@ use crate::resources::{CompositorSceneEntryId, QuadContent, RenderColor, RenderR
 pub struct OutputOverlayId(pub String);
 
 impl OutputOverlayId {
+    /// Returns the stable overlay id as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -41,6 +46,7 @@ pub struct OutputOverlaySpec {
 }
 
 impl OutputOverlaySpec {
+    /// Builds a solid-color overlay specification.
     pub fn solid_color(
         overlay_id: impl Into<OutputOverlayId>,
         rect: RenderRect,
@@ -59,6 +65,7 @@ impl OutputOverlaySpec {
         }
     }
 
+    /// Clamps user-provided values into the normalized runtime range.
     pub fn normalized(mut self) -> Self {
         self.opacity = self.opacity.clamp(0.0, 1.0);
         self
@@ -74,6 +81,7 @@ pub enum OutputOverlayUpdate {
 }
 
 impl OutputOverlayUpdate {
+    /// Returns the stable overlay id affected by this update.
     pub fn overlay_id(&self) -> &OutputOverlayId {
         match self {
             Self::Set(spec) => &spec.overlay_id,
@@ -102,6 +110,7 @@ pub struct PendingOutputOverlayControls {
 }
 
 impl PendingOutputOverlayControls {
+    /// Returns a mutable handle for queueing overlay updates for one output.
     pub fn output(&mut self, output_id: OutputId) -> OutputOverlayControlHandle<'_> {
         let control = self.controls.entry(output_id).or_insert_with(|| {
             PendingOutputOverlayControl { output_id, ..PendingOutputOverlayControl::default() }
@@ -110,16 +119,19 @@ impl PendingOutputOverlayControls {
         OutputOverlayControlHandle { control }
     }
 
+    /// Drains all queued overlay controls for the frame.
     pub fn take(&mut self) -> Vec<PendingOutputOverlayControl> {
         std::mem::take(&mut self.controls).into_values().collect()
     }
 
+    /// Returns whether no overlay control updates are currently queued.
     pub fn is_empty(&self) -> bool {
         self.controls.is_empty()
     }
 }
 
 impl OutputOverlayControlHandle<'_> {
+    /// Queues an upsert for one overlay id.
     pub fn set_overlay(&mut self, spec: OutputOverlaySpec) -> &mut Self {
         let overlay_id = spec.overlay_id.clone();
         self.control.overlay_updates.retain(|update| update.overlay_id() != &overlay_id);
@@ -127,6 +139,7 @@ impl OutputOverlayControlHandle<'_> {
         self
     }
 
+    /// Queues removal of one overlay id.
     pub fn remove_overlay(&mut self, overlay_id: impl Into<OutputOverlayId>) -> &mut Self {
         let overlay_id = overlay_id.into();
         self.control.overlay_updates.retain(|update| update.overlay_id() != &overlay_id);
@@ -134,6 +147,7 @@ impl OutputOverlayControlHandle<'_> {
         self
     }
 
+    /// Clears all overlays for the output and discards previously queued updates.
     pub fn clear_overlays(&mut self) -> &mut Self {
         self.control.clear_overlays = true;
         self.control.overlay_updates.clear();
@@ -159,6 +173,7 @@ pub struct OutputOverlayCollection {
 }
 
 impl OutputOverlayCollection {
+    /// Iterates persistent overlays sorted by z-index and stable overlay id.
     pub fn iter_sorted(&self) -> impl Iterator<Item = (&OutputOverlayId, &OutputOverlayEntry)> {
         let mut ordered = self.overlays.iter().collect::<Vec<_>>();
         ordered.sort_by_key(|(overlay_id, entry)| (entry.z_index, (*overlay_id).clone()));
@@ -174,6 +189,7 @@ pub struct OutputOverlayState {
 }
 
 impl OutputOverlayState {
+    /// Inserts or updates one persistent overlay entry and returns its compositor scene id.
     pub fn upsert(
         &mut self,
         output_id: OutputId,
@@ -207,6 +223,7 @@ impl OutputOverlayState {
         entry_id
     }
 
+    /// Removes one persistent overlay entry by stable overlay id.
     pub fn remove(
         &mut self,
         output_id: OutputId,
@@ -220,6 +237,7 @@ impl OutputOverlayState {
         removed
     }
 
+    /// Clears all persistent overlays for one output.
     pub fn clear_output(&mut self, output_id: OutputId) {
         self.outputs.remove(&output_id);
     }
