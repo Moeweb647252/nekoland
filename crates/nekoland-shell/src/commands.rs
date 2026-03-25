@@ -4,14 +4,15 @@ use bevy_ecs::message::{MessageReader, MessageWriter};
 use bevy_ecs::prelude::{Res, ResMut, Resource};
 use bevy_ecs::system::SystemParam;
 use nekoland_config::resources::{CompositorConfig, ConfiguredAction};
+use nekoland_core::lifecycle::AppLifecycleState;
 use nekoland_ecs::control::{
     OutputControlApi, OutputOps, WindowControlApi, WindowOps, WorkspaceControlApi, WorkspaceOps,
 };
 use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
 use nekoland_ecs::resources::{
     CommandExecutionRecord, CommandExecutionStatus, CommandHistoryState, CompositorClock,
-    ExternalCommandRequest, InputEventRecord, PendingExternalCommandRequests, PendingInputEvents,
-    WaylandIngress,
+    ExternalCommandRequest, InputEventRecord, ModifierMask, PendingExternalCommandRequests,
+    PendingInputEvents, PressedKeys, WaylandIngress,
 };
 
 /// Tracks whether startup actions have already been applied for this session.
@@ -20,6 +21,9 @@ pub struct StartupActionState {
     /// Set after startup actions have been evaluated so they only run once per session.
     pub queued: bool,
 }
+
+const QUIT_SHORTCUT_MODIFIERS: ModifierMask = ModifierMask::new(false, false, true, true);
+const Q_KEYCODE: u32 = 24;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ChildCommandEnvironment {
@@ -76,6 +80,26 @@ impl<'a, 'ops> ActionDispatchContext<'a, 'ops> {
         });
         None
     }
+}
+
+/// Triggers orderly compositor shutdown when `Mod+Shift+Q` is pressed.
+pub fn quit_shortcut_system(
+    pressed_keys: Res<'_, PressedKeys>,
+    mut app_lifecycle: ResMut<'_, AppLifecycleState>,
+    mut pending_input_events: ResMut<'_, PendingInputEvents>,
+) {
+    if app_lifecycle.quit_requested
+        || !QUIT_SHORTCUT_MODIFIERS.matches_required(pressed_keys.modifiers())
+        || !pressed_keys.was_key_just_pressed(Q_KEYCODE)
+    {
+        return;
+    }
+
+    app_lifecycle.quit_requested = true;
+    pending_input_events.push(InputEventRecord {
+        source: "keyboard:shortcut".to_owned(),
+        detail: "Mod+Shift+Q -> requested compositor quit".to_owned(),
+    });
 }
 
 /// Attempts to launch queued external commands and records the result as both ECS messages and
@@ -444,17 +468,58 @@ mod tests {
 
     use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_config::resources::{CompositorConfig, ConfiguredAction};
+    use nekoland_core::lifecycle::AppLifecycleState;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
     use nekoland_ecs::resources::PendingInputEvents;
     use nekoland_ecs::resources::{
         CommandHistoryState, CompositorClock, KeyboardFocusState, PendingExternalCommandRequests,
-        PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
+        PendingOutputControls, PendingWindowControls, PendingWorkspaceControls, PressedKeys,
         ProtocolServerState, WaylandIngress, XWaylandServerState,
     };
 
-    use super::{StartupActionState, startup_action_queue_system};
+    use super::{StartupActionState, quit_shortcut_system, startup_action_queue_system};
+
+    #[test]
+    fn mod_shift_q_requests_quit_once() {
+        let mut app = NekolandApp::new("quit-shortcut-test");
+        app.insert_resource(AppLifecycleState::default())
+            .insert_resource(PressedKeys::default())
+            .insert_resource(PendingInputEvents::default())
+            .inner_mut()
+            .add_systems(LayoutSchedule, quit_shortcut_system);
+
+        {
+            let mut pressed_keys = app.inner_mut().world_mut().resource_mut::<PressedKeys>();
+            pressed_keys.record_key(133, true);
+            pressed_keys.record_key(50, true);
+            pressed_keys.record_key(24, true);
+        }
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        assert!(world.resource::<AppLifecycleState>().quit_requested);
+        assert_eq!(world.resource::<PendingInputEvents>().iter().count(), 1);
+    }
+
+    #[test]
+    fn plain_q_does_not_request_quit() {
+        let mut app = NekolandApp::new("quit-shortcut-negative-test");
+        app.insert_resource(AppLifecycleState::default())
+            .insert_resource(PressedKeys::default())
+            .insert_resource(PendingInputEvents::default())
+            .inner_mut()
+            .add_systems(LayoutSchedule, quit_shortcut_system);
+
+        app.inner_mut().world_mut().resource_mut::<PressedKeys>().record_key(24, true);
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner().world();
+        assert!(!world.resource::<AppLifecycleState>().quit_requested);
+        assert_eq!(world.resource::<PendingInputEvents>().iter().count(), 0);
+    }
 
     #[test]
     fn nested_wayland_env_scrubs_host_display_leaks_without_xwayland() {
