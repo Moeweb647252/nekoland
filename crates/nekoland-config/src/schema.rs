@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use crate::resources::{
     CompositorConfig, ConfiguredAction, ConfiguredKeyboardLayout, ConfiguredOutput,
-    ConfiguredWindowRule, DEFAULT_COMMAND_HISTORY_LIMIT, DefaultLayout, XWaylandConfig,
+    ConfiguredWindowRule, DEFAULT_COMMAND_HISTORY_LIMIT, DebugConfig, DefaultLayout,
+    XWaylandConfig,
 };
 use nekoland_ecs::resources::ModifierMask;
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,8 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NekolandConfigFile {
     pub theme: Theme,
+    #[serde(default)]
+    pub debug: DebugSection,
     pub input: InputConfig,
     #[serde(default = "default_layout_name")]
     pub default_layout: DefaultLayout,
@@ -50,6 +53,7 @@ impl Default for NekolandConfigFile {
 
         Self {
             theme: Theme::default(),
+            debug: DebugSection::default(),
             input: InputConfig::default(),
             default_layout: default_layout_name(),
             window_rules: Vec::new(),
@@ -60,6 +64,13 @@ impl Default for NekolandConfigFile {
             keybinds: KeybindConfig { bindings },
         }
     }
+}
+
+/// Debug-only config loaded from disk before normalization.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DebugSection {
+    #[serde(default)]
+    pub fps_hud: bool,
 }
 
 /// Startup actions applied after the compositor finishes initialization.
@@ -201,6 +212,7 @@ impl TryFrom<NekolandConfigFile> for CompositorConfig {
             cursor_theme: value.theme.cursor_theme,
             border_color: value.theme.border_color,
             background_color: value.theme.background_color,
+            debug: DebugConfig { fps_hud: value.debug.fps_hud },
             default_layout: value.default_layout,
             window_rules: value.window_rules,
             focus_follows_mouse: value.input.focus_follows_mouse,
@@ -326,6 +338,9 @@ cursor_theme = "breeze"
 border_color = "#112233"
 background_color = "#ffffff"
 
+[debug]
+fps_hud = true
+
 [input]
 focus_follows_mouse = true
 repeat_rate = 30
@@ -360,6 +375,7 @@ enabled = true
             panic!("config should normalize");
         };
         assert_eq!(runtime.window_rules.len(), 3);
+        assert!(runtime.debug.fps_hud);
         assert_eq!(
             runtime.resolve_window_policy("org.nekoland.rules", "Notes", false),
             WindowPolicy::new(WindowLayout::Tiled, WindowMode::Normal)

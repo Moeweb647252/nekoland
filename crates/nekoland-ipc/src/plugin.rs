@@ -6,8 +6,8 @@ use nekoland_config::resources::KeyboardLayoutState;
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, RenderSchedule};
 use nekoland_ecs::resources::{
-    PendingExternalCommandRequests, PendingOutputControls, PendingPopupServerRequests,
-    PendingWindowControls, PendingWorkspaceControls,
+    FpsHudRuntimeState, PendingExternalCommandRequests, PendingOutputControls,
+    PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls,
 };
 
 use crate::{server, subscribe};
@@ -32,6 +32,7 @@ impl NekolandPlugin for IpcPlugin {
             .init_resource::<PendingWindowControls>()
             .init_resource::<PendingWorkspaceControls>()
             .init_resource::<PendingOutputControls>()
+            .init_resource::<FpsHudRuntimeState>()
             // Accept/process IPC input during Extract, then rebuild query snapshots and emit
             // subscription diffs after the render tree for the frame is known.
             .add_systems(ExtractSchedule, server::accept_connections_system)

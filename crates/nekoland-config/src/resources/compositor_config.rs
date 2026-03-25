@@ -163,6 +163,12 @@ impl Default for XWaylandConfig {
     }
 }
 
+/// Debug-only runtime config for compositor-owned instrumentation.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DebugConfig {
+    pub fps_hud: bool,
+}
+
 pub const DEFAULT_COMMAND_HISTORY_LIMIT: usize = 64;
 
 /// Default layout policy selected for newly managed windows.
@@ -237,6 +243,7 @@ pub struct CompositorConfig {
     pub cursor_theme: String,
     pub border_color: String,
     pub background_color: String,
+    pub debug: DebugConfig,
     pub default_layout: DefaultLayout,
     pub window_rules: Vec<ConfiguredWindowRule>,
     pub focus_follows_mouse: bool,
@@ -260,6 +267,7 @@ impl Default for CompositorConfig {
             cursor_theme: "default".to_owned(),
             border_color: "#5c7cfa".to_owned(),
             background_color: "#f5f7ff".to_owned(),
+            debug: DebugConfig::default(),
             default_layout: DefaultLayout::Floating,
             window_rules: Vec::new(),
             focus_follows_mouse: true,

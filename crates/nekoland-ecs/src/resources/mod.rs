@@ -23,6 +23,8 @@ pub mod damage;
 pub mod entity_index;
 /// Focused-output selection state.
 pub mod focused_output;
+/// Runtime state for the compositor-owned FPS HUD.
+pub mod fps_hud;
 /// Frame pacing, callback selection, and presentation bookkeeping.
 pub mod frame_pacing;
 /// Keyboard focus, modifiers, and pressed-key state.
@@ -107,6 +109,7 @@ pub use cursor_state::*;
 pub use damage::*;
 pub use entity_index::*;
 pub use focused_output::*;
+pub use fps_hud::*;
 pub use frame_pacing::*;
 pub use keyboard_state::*;
 pub use material_frame::*;

@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FpsHudMode {
+    On,
+    Off,
+    Toggle,
+}
+
 /// Higher-level shell-style actions accepted by the IPC server.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ActionCommand {
@@ -11,6 +18,7 @@ pub enum ActionCommand {
     SwitchKeyboardLayoutPrev,
     SwitchKeyboardLayoutByName { name: String },
     SwitchKeyboardLayoutByIndex { index: usize },
+    FpsHud { mode: FpsHudMode },
     ReloadConfig,
     Quit,
     PowerOffMonitors,

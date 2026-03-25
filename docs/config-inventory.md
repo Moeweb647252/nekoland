@@ -28,6 +28,7 @@ Primary source files:
   - if the configured file is missing or invalid, the compositor falls back to built-in defaults
   - config hot reload is enabled
   - config reload can also be forced through IPC with `nekoland-msg action reload-config`
+  - the FPS HUD can be temporarily overridden through `nekoland-msg action fps-hud <on|off|toggle>`
 
 ## Disk Config Schema
 
@@ -35,6 +36,7 @@ Top-level keys:
 
 - `default_layout`
 - `[theme]`
+- `[debug]`
 - `[input]`
 - `[[window_rules]]`
 - `[ipc]`
@@ -61,6 +63,12 @@ Notes:
 | `theme.cursor_theme` | string | `default` | Cursor theme name |
 | `theme.border_color` | string | `#5c7cfa` | Hex color string |
 | `theme.background_color` | string | `#f5f7ff` | Hex color string |
+
+### `[debug]`
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `debug.fps_hud` | bool | `false` | Default visibility for the compositor-owned FPS HUD on the current primary output |
 
 ### `[input]`
 
@@ -359,6 +367,7 @@ Supported actions:
 - `switch-keyboard-layout-prev`
 - `switch-keyboard-layout-name <name>`
 - `switch-keyboard-layout-index <index>`
+- `fps-hud <on|off|toggle>`
 - `reload-config`
 - `quit`
 - `power-off-monitors`

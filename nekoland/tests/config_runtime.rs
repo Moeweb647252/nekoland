@@ -60,6 +60,9 @@ cursor_theme = "capitaine"
 border_color = "#445566"
 background_color = "#101010"
 
+[debug]
+fps_hud = true
+
 [input]
 focus_follows_mouse = true
 repeat_rate = 45
@@ -155,6 +158,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
             panic!("config should exist");
         };
         let configured_outputs = config.outputs.clone();
+        let fps_hud_enabled = config.debug.fps_hud;
         let viewport_pan_modifiers = config.viewport_pan_modifiers;
         let border_colors = world
             .query::<&BorderTheme>()
@@ -171,6 +175,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
         assert_eq!(configured_outputs[0].name, "eDP-1");
         assert_eq!(configured_outputs[0].mode.as_str(), "1920x1080@60");
         assert_eq!(configured_outputs[0].scale, 1);
+        assert!(!fps_hud_enabled);
         assert_eq!(history_limit, 7);
         assert_eq!(viewport_pan_modifiers, ModifierMask::new(false, true, false, true));
         assert!(
@@ -202,6 +207,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
             panic!("config should exist");
         };
         let configured_outputs = config.outputs.clone();
+        let fps_hud_enabled = config.debug.fps_hud;
         let viewport_pan_modifiers = config.viewport_pan_modifiers;
         let border_colors = world
             .query::<&BorderTheme>()
@@ -218,6 +224,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
         assert_eq!(configured_outputs[0].name, "HDMI-A-1");
         assert_eq!(configured_outputs[0].mode.as_str(), "2560x1440@75");
         assert_eq!(configured_outputs[0].scale, 2);
+        assert!(fps_hud_enabled);
         assert_eq!(history_limit, 3);
         assert_eq!(viewport_pan_modifiers, ModifierMask::new(true, false, true, false));
         assert!(

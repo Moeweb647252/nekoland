@@ -7,7 +7,7 @@ pub mod query;
 pub mod window;
 pub mod workspace;
 
-pub use action::ActionCommand;
+pub use action::{ActionCommand, FpsHudMode};
 pub use output::OutputCommand;
 pub use popup::PopupCommand;
 pub use query::{

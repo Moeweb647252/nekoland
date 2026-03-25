@@ -6,6 +6,9 @@ cursor_theme = "Bibata-Modern-Ice"
 border_color = "#81a1c1"
 background_color = "#e5e9f0"
 
+[debug]
+fps_hud = false
+
 [input]
 focus_follows_mouse = false
 repeat_rate = 40

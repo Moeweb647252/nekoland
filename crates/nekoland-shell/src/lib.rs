@@ -8,6 +8,7 @@ pub mod commands;
 pub mod decorations;
 /// Keyboard and pointer focus policy derived from visible shell state.
 pub mod focus;
+mod fps_hud;
 /// Interactive move/resize grabs driven by pointer input.
 pub mod interaction;
 /// Layer-shell lifecycle and arrangement policy.
