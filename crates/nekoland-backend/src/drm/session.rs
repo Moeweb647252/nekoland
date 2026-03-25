@@ -1,3 +1,7 @@
+//! libseat session lifecycle management for the DRM backend.
+
+#![allow(missing_docs)]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 

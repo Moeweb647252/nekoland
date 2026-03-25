@@ -1,3 +1,10 @@
+#![warn(missing_docs)]
+
+//! Top-level application wiring for the `nekoland` compositor executable.
+//!
+//! This crate stitches together the workspace plugins and the Wayland/render sub-app boundaries
+//! into the default runnable compositor application.
+
 use std::env;
 use std::path::PathBuf;
 

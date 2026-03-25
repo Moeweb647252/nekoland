@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 //! Backend selection and runtime integrations for DRM, nested winit, and virtual output modes.
 
 /// Shared backend-side helpers such as output materialization and presentation timelines.

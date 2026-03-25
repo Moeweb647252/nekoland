@@ -1,3 +1,7 @@
+//! Core backend contracts shared by DRM, nested `winit`, and virtual runtimes.
+
+#![allow(missing_docs)]
+
 use nekoland_config::resources::CompositorConfig;
 use serde::{Deserialize, Serialize};
 
@@ -148,20 +152,29 @@ pub struct BackendShutdownCtx;
 
 /// Functionally meaningful backend contract used by the manager.
 pub trait Backend {
+    /// Returns the stable runtime id assigned by the backend manager.
     fn id(&self) -> BackendId;
+    /// Returns a human-readable descriptor of the backend instance.
     fn descriptor(&self) -> BackendDescriptor;
+    /// Returns the capability bitset supported by the backend.
     fn capabilities(&self) -> BackendCapabilities;
+    /// Returns an output blueprint if the backend can seed the named output.
     fn seed_output(&self, output_name: &str) -> Option<BackendOutputBlueprint>;
 
+    /// Runs the backend extract phase.
     fn extract(&mut self, cx: &mut BackendExtractCtx<'_>) -> Result<(), NekolandError>;
+    /// Runs the backend apply phase.
     fn apply(&mut self, cx: &mut BackendApplyCtx<'_>) -> Result<(), NekolandError>;
+    /// Runs the backend present phase.
     fn present(&mut self, cx: &mut BackendPresentCtx<'_>) -> Result<(), NekolandError>;
+    /// Lets the backend contribute dma-buf protocol support information.
     fn collect_protocol_dmabuf_support(
         &mut self,
         _support: &mut ProtocolDmabufSupport,
     ) -> Result<(), NekolandError> {
         Ok(())
     }
+    /// Runs backend shutdown cleanup when the lifecycle eventually supports it.
     fn shutdown(&mut self, _cx: &mut BackendShutdownCtx) -> Result<(), NekolandError> {
         Ok(())
     }

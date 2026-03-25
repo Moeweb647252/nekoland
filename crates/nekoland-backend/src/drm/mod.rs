@@ -1,10 +1,15 @@
 //! DRM backend integrations split by session handling, libinput, device discovery, GBM, and
 //! surface rendering.
 
+/// DRM node discovery and connector snapshotting.
 pub mod device;
+/// GBM allocator initialization used by the DRM renderer.
 pub mod gbm;
+/// libinput event ingestion for DRM sessions.
 pub mod input;
+/// libseat session setup and tty focus tracking.
 pub mod session;
+/// DRM render-surface setup and present execution.
 pub mod surface;
 
 use bevy_app::App;

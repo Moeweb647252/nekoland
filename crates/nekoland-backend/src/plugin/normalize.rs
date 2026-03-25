@@ -1,3 +1,5 @@
+//! Projection of backend-owned queues and snapshots into shared ECS boundary resources.
+
 use crate::common::outputs::{
     BackendOutputMaterializationPlan, PendingBackendOutputEvents, PendingBackendOutputUpdates,
     collect_output_snapshots,
@@ -64,6 +66,7 @@ pub(super) fn sync_platform_input_events_from_backend_inputs_system(
         PendingPlatformInputEvents::from_items(pending_backend_inputs.as_slice().to_vec());
 }
 
+/// Rebuilds backend present inputs and present-surface snapshots from live ECS state.
 pub fn sync_backend_present_inputs_system(
     outputs: BackendOutputQuery<'_, '_>,
     surfaces: BackendPresentSurfaceQuery<'_, '_>,

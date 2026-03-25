@@ -1,3 +1,7 @@
+//! DRM device discovery and connector snapshot extraction.
+
+#![allow(missing_docs)]
+
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;

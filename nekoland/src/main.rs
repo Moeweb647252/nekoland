@@ -1,3 +1,7 @@
+#![warn(missing_docs)]
+
+//! Binary entry point for launching the default `nekoland` compositor process.
+
 use std::process::ExitCode;
 
 use nekoland::build_default_app;

@@ -1,3 +1,7 @@
+//! GBM allocator setup layered on top of an opened DRM device.
+
+#![allow(missing_docs)]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 

@@ -33,10 +33,15 @@ use crate::common::presentation::apply_output_presentation_events_system;
 use crate::components::OutputBackend;
 use crate::manager::{BackendManager, BackendStatus, SharedBackendManager};
 
+/// Wayland-subapp apply phase for backend runtimes.
 pub mod apply;
+/// Main-world to Wayland-subapp extraction helpers for backend resources.
 pub mod extract;
+/// Backend status and feedback synchronization helpers.
 pub mod feedback;
+/// Normalization of backend-owned state into shared ECS resources.
 pub mod normalize;
+/// Final backend present execution.
 pub mod present;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -56,6 +61,7 @@ type BackendOutputQuery<'w, 's> =
 type BackendPresentSurfaceQuery<'w, 's> = Query<'w, 's, (Entity, BackendPresentSurfaceRuntime)>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
+/// Normalized output snapshots exposed to backend extract and present systems.
 pub struct BackendPresentInputs {
     outputs: Vec<crate::traits::OutputSnapshot>,
 }
