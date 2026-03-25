@@ -17,6 +17,7 @@ use nekoland_ecs::resources::{
 /// Tracks whether startup actions have already been applied for this session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
 pub struct StartupActionState {
+    /// Set after startup actions have been evaluated so they only run once per session.
     pub queued: bool,
 }
 
@@ -38,6 +39,7 @@ impl ChildCommandEnvironment {
 }
 
 #[derive(SystemParam)]
+/// System parameters required to evaluate config-driven startup actions.
 pub struct StartupActionDispatch<'w, 's> {
     config: Res<'w, CompositorConfig>,
     wayland_ingress: Res<'w, WaylandIngress>,
@@ -266,6 +268,7 @@ pub fn queue_exec_command(
     pending_external_commands.push(ExternalCommandRequest { origin, candidates: vec![argv] });
 }
 
+/// Validates one configured action list before it is compiled into runtime behavior.
 pub fn validate_action_sequence(actions: &[ConfiguredAction]) -> Result<(), String> {
     if actions.is_empty() {
         return Err("action sequence must contain at least one action".to_owned());

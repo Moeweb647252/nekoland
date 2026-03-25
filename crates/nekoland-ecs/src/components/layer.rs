@@ -1,3 +1,6 @@
+//! Layer-shell components and output-binding markers.
+#![allow(missing_docs)]
+
 use bevy_ecs::component::Component;
 use bevy_ecs::prelude::Entity;
 use serde::{Deserialize, Serialize};

@@ -26,6 +26,7 @@ type ControlOutputs<'w, 's> = Query<'w, 's, (bevy_ecs::prelude::Entity, OutputRu
 type ControlWorkspaces<'w, 's> = Query<'w, 's, (bevy_ecs::prelude::Entity, WorkspaceRuntime)>;
 
 #[derive(SystemParam)]
+/// System parameters required to apply staged window controls.
 pub struct WindowControlParams<'w, 's> {
     pending_window_controls: ResMut<'w, PendingWindowControls>,
     entity_index: bevy_ecs::prelude::Res<'w, EntityIndex>,

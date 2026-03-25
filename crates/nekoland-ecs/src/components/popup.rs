@@ -1,3 +1,6 @@
+//! Popup-surface and popup-grab components shared by Wayland and XWayland flows.
+#![allow(missing_docs)]
+
 use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 

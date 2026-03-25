@@ -31,6 +31,7 @@ impl DeferredPopupEvents {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Marker type documenting the popup-management subsystem.
 pub struct PopupManager;
 
 type PopupParentGeometries<'w, 's> = Query<
@@ -221,6 +222,7 @@ pub(crate) fn popup_management_system(
     tracing::trace!(count = known_popups.len(), "popup system tick");
 }
 
+/// Recomputes popup geometry after parent surface geometry changes.
 pub fn popup_projection_system(
     parent_geometries: PopupProjectionParents<'_, '_>,
     mut popups: PopupProjectionQuery<'_, '_>,

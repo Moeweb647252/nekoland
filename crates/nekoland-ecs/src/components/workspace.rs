@@ -1,3 +1,6 @@
+//! Workspace identity and active-state components.
+#![allow(missing_docs)]
+
 use bevy_ecs::component::Component;
 use serde::{Deserialize, Serialize};
 

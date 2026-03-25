@@ -171,6 +171,9 @@ pub(crate) fn layer_lifecycle_system(
 }
 
 /// Keeps each layer surface attached to the output entity named in its protocol state.
+///
+/// This runs before arrangement so geometry and work-area calculations see resolved output
+/// ownership instead of protocol-level string names.
 pub(crate) fn layer_output_relationship_reconciliation_needed(
     layer_output_changes: LayerOutputRelationshipChanges<'_, '_>,
     output_changes: LayerOutputDeviceChanges<'_, '_>,
@@ -183,6 +186,7 @@ pub(crate) fn layer_output_relationship_reconciliation_needed(
         || !removed_outputs.is_empty()
 }
 
+/// Applies the resolved output relationship for each layer-shell entity.
 pub fn sync_layer_output_relationships_system(
     mut commands: Commands,
     entity_index: bevy_ecs::prelude::Res<EntityIndex>,

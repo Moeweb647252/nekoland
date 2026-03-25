@@ -1,6 +1,12 @@
+//! Layout strategy modules and the legacy trait used by tests/documentation.
+
+/// Floating-window layout and auto-placement policy.
 pub mod floating;
+/// Fullscreen and maximized geometry overrides.
 pub mod fullscreen;
+/// Workspace-local z-order bookkeeping.
 pub mod stacking;
+/// Tiling-tree based workspace layout.
 pub mod tiling;
 
 use bevy_ecs::prelude::Query;

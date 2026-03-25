@@ -12,6 +12,7 @@ use crate::viewport::{
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Marker type documenting fullscreen/maximize layout policy.
 pub struct FullscreenLayout;
 
 /// Applies fullscreen and maximized geometry after layout/work-area state has been updated.

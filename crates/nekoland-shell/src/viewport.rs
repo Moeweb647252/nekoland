@@ -149,6 +149,7 @@ pub(crate) fn resolve_output_state_for_window<'w, 's>(
     resolve_output_state_for_workspace(outputs, workspace_id, primary_output_id)
 }
 
+/// Projects authoritative scene-space window geometry into output-local surface coordinates.
 pub fn window_viewport_projection_system(
     outputs: Query<(Entity, OutputRuntime)>,
     wayland_ingress: Res<WaylandIngress>,

@@ -17,9 +17,11 @@ use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 use crate::interaction::ActiveWindowGrab;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Marker type documenting the shell focus subsystem.
 pub struct FocusManager;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Local hover-tracking state used by focus-follows-mouse policy.
 pub struct FocusHoverState {
     initialized: bool,
     hovered_surface: Option<u64>,
@@ -29,6 +31,7 @@ type FocusWindows<'w, 's> = Query<'w, 's, WindowFocusRuntime, With<Window>>;
 type FocusWorkspaces<'w, 's> = Query<'w, 's, (Entity, WorkspaceRuntime)>;
 
 #[derive(SystemParam)]
+/// System parameters required by the shell's focus-management pass.
 pub struct FocusManagementParams<'w, 's> {
     active_grab: Option<Res<'w, ActiveWindowGrab>>,
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
@@ -92,6 +95,7 @@ pub fn pointer_button_focus_system(
     }
 }
 
+/// Reconciles keyboard focus after grabs, hover policy, and visibility changes are considered.
 pub fn focus_management_system(
     config: Res<CompositorConfig>,
     pointer: Res<GlobalPointerPosition>,

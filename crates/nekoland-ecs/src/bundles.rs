@@ -1,3 +1,9 @@
+//! Canonical bundle groupings used when materializing common compositor entities.
+//!
+//! The bundle type describes the intent; individual field names already mirror the contained
+//! component types, so field-level rustdoc would add little beyond noise here.
+#![allow(missing_docs)]
+
 use bevy_ecs::bundle::Bundle;
 
 use crate::components::{
@@ -68,6 +74,7 @@ pub struct LayerSurfaceBundle {
     pub animation: WindowAnimation,
 }
 
+/// Input data used to build a [`LayerSurfaceBundle`] directly from protocol lifecycle events.
 #[derive(Clone, Debug)]
 pub struct LayerSurfaceBundleSpec {
     pub surface_id: u64,

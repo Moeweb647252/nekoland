@@ -1,3 +1,6 @@
+//! Window lifecycle messages emitted by shell policy systems.
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Message;
 use serde::{Deserialize, Serialize};
 

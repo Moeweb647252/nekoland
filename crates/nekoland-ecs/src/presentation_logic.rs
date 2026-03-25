@@ -1,9 +1,11 @@
 use crate::components::{LayerLevel, WindowMode, WindowRole};
 
+/// Returns whether a managed window should contribute to the visible desktop scene.
 pub fn managed_window_visible(mode: WindowMode, viewport_visible: bool, role: WindowRole) -> bool {
     mode != WindowMode::Hidden && viewport_visible && role.is_managed()
 }
 
+/// Returns whether an output-background window should be treated as visible.
 pub fn output_background_window_visible(
     mode: WindowMode,
     has_target_output: bool,
@@ -12,18 +14,22 @@ pub fn output_background_window_visible(
     mode != WindowMode::Hidden && has_target_output && role.is_output_background()
 }
 
+/// Returns whether a popup should be considered visible given attachment and parent visibility.
 pub fn popup_visible(attached: bool, parent_visible: bool) -> bool {
     attached && parent_visible
 }
 
+/// Returns whether a layer-shell surface should be considered visible for layout/render.
 pub fn layer_visible(attached: bool, has_target_output: bool) -> bool {
     attached && has_target_output
 }
 
+/// Returns whether a layer belongs to the background half of the layer stack.
 pub fn is_background_band_layer(level: LayerLevel) -> bool {
     matches!(level, LayerLevel::Background | LayerLevel::Bottom)
 }
 
+/// Returns whether a layer belongs to the foreground half of the layer stack.
 pub fn is_foreground_band_layer(level: LayerLevel) -> bool {
     matches!(level, LayerLevel::Top | LayerLevel::Overlay)
 }
