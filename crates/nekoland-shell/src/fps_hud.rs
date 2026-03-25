@@ -6,20 +6,25 @@ use nekoland_ecs::resources::{
 };
 
 const HUD_PANEL_ID: &str = "fps_hud.panel";
+const HUD_PRESENT_SHADOW_ID: &str = "fps_hud.present_shadow";
 const HUD_PRESENT_ID: &str = "fps_hud.present";
+const HUD_LOOP_SHADOW_ID: &str = "fps_hud.loop_shadow";
 const HUD_LOOP_ID: &str = "fps_hud.loop";
 const HUD_X: i32 = 16;
 const HUD_Y: i32 = 16;
-const HUD_WIDTH: u32 = 164;
-const HUD_HEIGHT: u32 = 56;
-const HUD_TEXT_X: i32 = 28;
-const HUD_PRESENT_Y: i32 = 24;
-const HUD_LOOP_Y: i32 = 42;
-const HUD_FONT_SIZE: f32 = 14.0;
+const HUD_WIDTH: u32 = 192;
+const HUD_HEIGHT: u32 = 66;
+const HUD_TEXT_X: i32 = 26;
+const HUD_PRESENT_Y: i32 = 28;
+const HUD_LOOP_Y: i32 = 50;
+const HUD_SHADOW_OFFSET: i32 = 1;
+const HUD_FONT_SIZE: f32 = 17.0;
 const HUD_Z_INDEX: i32 = 10_000;
 const HUD_PANEL_OPACITY: f32 = 0.72;
 const HUD_TEXT_OPACITY: f32 = 1.0;
+const HUD_TEXT_SHADOW_OPACITY: f32 = 0.65;
 const HUD_PANEL_COLOR: RenderColor = RenderColor { r: 12, g: 14, b: 18, a: 255 };
+const HUD_TEXT_SHADOW_COLOR: RenderColor = RenderColor { r: 0, g: 0, b: 0, a: 255 };
 const HUD_TEXT_COLOR: RenderColor = RenderColor { r: 244, g: 245, b: 246, a: 255 };
 
 pub fn emit_fps_hud_system(
@@ -63,6 +68,18 @@ pub fn emit_fps_hud_system(
             HUD_Z_INDEX,
         )
         .text(
+            HUD_PRESENT_SHADOW_ID,
+            OverlayUiLayer::Foreground,
+            HUD_TEXT_X + HUD_SHADOW_OFFSET,
+            HUD_PRESENT_Y + HUD_SHADOW_OFFSET,
+            None,
+            present_label.clone(),
+            HUD_FONT_SIZE,
+            HUD_TEXT_SHADOW_COLOR,
+            HUD_TEXT_SHADOW_OPACITY,
+            HUD_Z_INDEX + 1,
+        )
+        .text(
             HUD_PRESENT_ID,
             OverlayUiLayer::Foreground,
             HUD_TEXT_X,
@@ -72,6 +89,18 @@ pub fn emit_fps_hud_system(
             HUD_FONT_SIZE,
             HUD_TEXT_COLOR,
             HUD_TEXT_OPACITY,
+            HUD_Z_INDEX + 2,
+        )
+        .text(
+            HUD_LOOP_SHADOW_ID,
+            OverlayUiLayer::Foreground,
+            HUD_TEXT_X + HUD_SHADOW_OFFSET,
+            HUD_LOOP_Y + HUD_SHADOW_OFFSET,
+            None,
+            loop_label.clone(),
+            HUD_FONT_SIZE,
+            HUD_TEXT_SHADOW_COLOR,
+            HUD_TEXT_SHADOW_OPACITY,
             HUD_Z_INDEX + 1,
         )
         .text(
@@ -84,7 +113,7 @@ pub fn emit_fps_hud_system(
             HUD_FONT_SIZE,
             HUD_TEXT_COLOR,
             HUD_TEXT_OPACITY,
-            HUD_Z_INDEX + 1,
+            HUD_Z_INDEX + 2,
         );
 }
 
@@ -158,7 +187,7 @@ mod tests {
             .outputs
             .get(&OutputId(7))
             .expect("HUD should target the primary output");
-        assert_eq!(output.primitives.len(), 3);
+        assert_eq!(output.primitives.len(), 5);
 
         let mut texts = output
             .primitives
@@ -169,7 +198,15 @@ mod tests {
             })
             .collect::<Vec<_>>();
         texts.sort();
-        assert_eq!(texts, vec!["Loop 60".to_owned(), "Present 60".to_owned()]);
+        assert_eq!(
+            texts,
+            vec![
+                "Loop 60".to_owned(),
+                "Loop 60".to_owned(),
+                "Present 60".to_owned(),
+                "Present 60".to_owned(),
+            ]
+        );
     }
 
     #[test]
