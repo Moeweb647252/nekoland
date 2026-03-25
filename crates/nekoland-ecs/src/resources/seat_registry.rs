@@ -1,3 +1,7 @@
+//! Stable seat-id registry bridging Wayland/backend seat names into ECS.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;
@@ -5,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::SeatId;
 
+/// Default Wayland seat name used when the registry is first initialized.
 pub const DEFAULT_WAYLAND_SEAT_NAME: &str = "seat-0";
 
 /// Human-readable names associated with one logical seat.
@@ -15,6 +20,7 @@ pub struct SeatMetadata {
 }
 
 impl SeatMetadata {
+    /// Returns the preferred user-facing seat name, preferring the Wayland name.
     pub fn display_name(&self) -> Option<&str> {
         self.wayland_name.as_deref().or(self.backend_name.as_deref())
     }
@@ -43,34 +49,42 @@ impl Default for SeatRegistry {
 }
 
 impl SeatRegistry {
+    /// Returns the primary seat id used by the compositor.
     pub fn primary_seat_id(&self) -> SeatId {
         self.primary_seat_id
     }
 
+    /// Returns metadata for one seat id.
     pub fn seat(&self, seat_id: SeatId) -> Option<&SeatMetadata> {
         self.seats.get(&seat_id)
     }
 
+    /// Returns the preferred display name for one seat id.
     pub fn seat_name(&self, seat_id: SeatId) -> Option<&str> {
         self.seat(seat_id).and_then(SeatMetadata::display_name)
     }
 
+    /// Returns the Wayland seat name for one seat id.
     pub fn wayland_name(&self, seat_id: SeatId) -> Option<&str> {
         self.seat(seat_id).and_then(|seat| seat.wayland_name.as_deref())
     }
 
+    /// Returns the backend seat name for one seat id.
     pub fn backend_name(&self, seat_id: SeatId) -> Option<&str> {
         self.seat(seat_id).and_then(|seat| seat.backend_name.as_deref())
     }
 
+    /// Returns the seat id associated with a Wayland seat name.
     pub fn seat_id_for_wayland_name(&self, wayland_name: &str) -> Option<SeatId> {
         self.wayland_names.get(wayland_name).copied()
     }
 
+    /// Returns the seat id associated with a backend seat name.
     pub fn seat_id_for_backend_name(&self, backend_name: &str) -> Option<SeatId> {
         self.backend_names.get(backend_name).copied()
     }
 
+    /// Returns an existing seat id for the Wayland name or allocates one.
     pub fn ensure_wayland_name(&mut self, wayland_name: impl AsRef<str>) -> SeatId {
         let wayland_name = wayland_name.as_ref();
         if let Some(seat_id) = self.seat_id_for_wayland_name(wayland_name) {
@@ -82,6 +96,7 @@ impl SeatRegistry {
         seat_id
     }
 
+    /// Binds a backend-facing seat name to the given seat id.
     pub fn bind_backend_name(&mut self, seat_id: SeatId, backend_name: impl Into<String>) {
         let backend_name = backend_name.into();
         if let Some(previous) =
@@ -92,6 +107,7 @@ impl SeatRegistry {
         self.backend_names.insert(backend_name, seat_id);
     }
 
+    /// Binds a Wayland-facing seat name to the given seat id.
     pub fn bind_wayland_name(&mut self, seat_id: SeatId, wayland_name: impl Into<String>) {
         let wayland_name = wayland_name.into();
         if let Some(previous) =

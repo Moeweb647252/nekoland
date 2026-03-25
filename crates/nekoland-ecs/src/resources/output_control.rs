@@ -1,3 +1,7 @@
+//! High-level output control queues used by IPC, keybindings, and tests.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +72,7 @@ impl Default for PendingOutputControl {
 }
 
 impl PendingOutputControls {
+    /// Returns a mutable control handle for the given selector, creating it if needed.
     pub fn select(&mut self, selector: OutputSelector) -> OutputControlHandle<'_> {
         let index = self.controls.iter().position(|control| control.selector == selector);
         let control = if let Some(index) = index {
@@ -82,56 +87,68 @@ impl PendingOutputControls {
         OutputControlHandle { control }
     }
 
+    /// Returns a mutable control handle targeting an output by name.
     pub fn named(&mut self, output: OutputName) -> OutputControlHandle<'_> {
         self.select(OutputSelector::Name(output))
     }
 
+    /// Returns a mutable control handle targeting the primary output.
     pub fn primary(&mut self) -> OutputControlHandle<'_> {
         self.select(OutputSelector::Primary)
     }
 
+    /// Drains all staged output controls for the frame.
     pub fn take(&mut self) -> Vec<PendingOutputControl> {
         std::mem::take(&mut self.controls)
     }
 
+    /// Replaces the staged output control list.
     pub fn replace(&mut self, controls: Vec<PendingOutputControl>) {
         self.controls = controls;
     }
 
+    /// Returns the staged controls as a slice.
     pub fn as_slice(&self) -> &[PendingOutputControl] {
         &self.controls
     }
 
+    /// Clears all staged output controls.
     pub fn clear(&mut self) {
         self.controls.clear();
     }
 
+    /// Returns whether no output controls are currently staged.
     pub fn is_empty(&self) -> bool {
         self.controls.is_empty()
     }
 }
 
 impl OutputControlHandle<'_> {
+    /// Marks the selected output for enabling.
     pub fn enable(&mut self) -> &mut Self {
         self.control.enabled = Some(true);
         self
     }
 
+    /// Marks the selected output for disabling.
     pub fn disable(&mut self) -> &mut Self {
         self.control.enabled = Some(false);
         self
     }
 
+    /// Stages an output mode and optional scale configuration change.
     pub fn configure(&mut self, mode: impl Into<String>, scale: Option<u32>) -> &mut Self {
         self.control.configuration = Some(OutputControlConfiguration { mode: mode.into(), scale });
         self
     }
 
+    /// Stages an absolute viewport move.
     pub fn move_viewport_to(&mut self, x: WorkspaceCoord, y: WorkspaceCoord) -> &mut Self {
         self.control.viewport_origin = Some(OutputViewportOrigin { x, y });
         self
     }
 
+    /// Accumulates a relative viewport pan delta.
     pub fn pan_viewport_by(
         &mut self,
         delta_x: WorkspaceCoord,
@@ -143,11 +160,13 @@ impl OutputControlHandle<'_> {
         self
     }
 
+    /// Requests that the output viewport be centered on the given surface.
     pub fn center_viewport_on_window(&mut self, surface_id: SurfaceId) -> &mut Self {
         self.control.center_viewport_on = Some(surface_id);
         self
     }
 
+    /// Upserts a solid-color overlay rectangle for the selected output.
     pub fn set_overlay_rect(
         &mut self,
         overlay_id: impl Into<OutputOverlayId>,
@@ -171,6 +190,7 @@ impl OutputControlHandle<'_> {
         self
     }
 
+    /// Removes one overlay from the selected output.
     pub fn remove_overlay(&mut self, overlay_id: impl Into<OutputOverlayId>) -> &mut Self {
         let overlay_id = overlay_id.into();
         self.control.overlay_updates.retain(|update| update.overlay_id() != &overlay_id);
@@ -178,6 +198,7 @@ impl OutputControlHandle<'_> {
         self
     }
 
+    /// Clears all overlays for the selected output and discards staged overlay updates.
     pub fn clear_overlays(&mut self) -> &mut Self {
         self.control.clear_overlays = true;
         self.control.overlay_updates.clear();

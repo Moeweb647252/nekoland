@@ -1,3 +1,7 @@
+//! FPS HUD sampling state derived from compositor clocks and presentation timelines.
+
+#![allow(missing_docs)]
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use bevy_ecs::prelude::Resource;
@@ -40,20 +44,24 @@ pub struct FpsHudRuntimeState {
 }
 
 impl FpsHudRuntimeState {
+    /// Returns whether the HUD should be considered enabled after applying the runtime override.
     pub fn effective_enabled(&self, config_enabled: bool) -> bool {
         self.override_enabled.unwrap_or(config_enabled)
     }
 
+    /// Forces a concrete enabled/disabled override.
     pub fn set_enabled_override(&mut self, enabled: bool) {
         self.override_enabled = Some(enabled);
     }
 
+    /// Toggles the runtime override relative to the currently effective state.
     pub fn toggle_enabled_override(&mut self, config_enabled: bool) -> bool {
         let next = !self.effective_enabled(config_enabled);
         self.override_enabled = Some(next);
         next
     }
 
+    /// Adds one compositor clock sample to the loop-FPS sliding window.
     pub fn observe_loop_clock(&mut self, clock: &CompositorClock) {
         if self.loop_samples.back().is_some_and(|sample| sample.frame == clock.frame) {
             return;
@@ -64,6 +72,7 @@ impl FpsHudRuntimeState {
         prune_loop_samples(&mut self.loop_samples, clock.uptime_millis);
     }
 
+    /// Adds output presentation samples to the present-FPS sliding windows.
     pub fn observe_output_presentation(
         &mut self,
         presentation: &OutputPresentationState,
@@ -94,11 +103,13 @@ impl FpsHudRuntimeState {
         self.outputs_with_valid_present_fps.retain(|output_id| known_outputs.contains(output_id));
     }
 
+    /// Returns the sampled compositor loop FPS.
     pub fn loop_fps(&self) -> FpsHudMetricValue {
         rounded_loop_fps(&self.loop_samples)
             .map_or(FpsHudMetricValue::Unavailable, FpsHudMetricValue::Fps)
     }
 
+    /// Returns the sampled presentation FPS for one output.
     pub fn present_fps(&self, output_id: OutputId, now_uptime_millis: u128) -> FpsHudMetricValue {
         let Some(samples) = self.present_samples.get(&output_id) else {
             return FpsHudMetricValue::Unavailable;

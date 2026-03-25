@@ -1,3 +1,7 @@
+//! Clipboard, primary-selection, and drag-and-drop state mirrored into ECS.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 

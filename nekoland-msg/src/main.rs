@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 //! CLI front-end for the compositor IPC socket.
 //!
 //! Argument parsing normalizes modern subcommands, hidden compatibility aliases, completion
