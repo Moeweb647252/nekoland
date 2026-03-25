@@ -189,6 +189,7 @@ mod tests {
                 OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
                     identity: identity(11),
                     surface_id: 11,
+                    mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                     instance: RenderItemInstance {
                         rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
                         opacity: 1.0,
@@ -204,6 +205,7 @@ mod tests {
                     RenderPlanItem::Surface(SurfaceRenderItem {
                         identity: identity(22),
                         surface_id: 22,
+                        mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                         instance: RenderItemInstance {
                             rect: RenderRect { x: 10, y: 10, width: 80, height: 80 },
                             opacity: 1.0,
@@ -296,6 +298,7 @@ mod tests {
                 OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
                     identity: identity(11),
                     surface_id: 11,
+                    mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                     instance: RenderItemInstance {
                         rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
                         opacity: 1.0,
@@ -366,6 +369,7 @@ mod tests {
                 OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
                     identity: identity(11),
                     surface_id: 11,
+                    mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                     instance: RenderItemInstance {
                         rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
                         opacity: 1.0,

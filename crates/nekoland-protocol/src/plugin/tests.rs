@@ -341,6 +341,7 @@ fn pointer_hit_test_prefers_layer_surfaces_above_windows() {
                 RenderPlanItem::Surface(SurfaceRenderItem {
                     identity: identity(11),
                     surface_id: 11,
+                    mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                     instance: RenderItemInstance {
                         rect: RenderRect { x: 0, y: 0, width: 320, height: 64 },
                         opacity: 1.0,
@@ -352,6 +353,7 @@ fn pointer_hit_test_prefers_layer_surfaces_above_windows() {
                 RenderPlanItem::Surface(SurfaceRenderItem {
                     identity: identity(22),
                     surface_id: 22,
+                    mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                     instance: RenderItemInstance {
                         rect: RenderRect { x: 0, y: 0, width: 320, height: 64 },
                         opacity: 1.0,
@@ -422,6 +424,7 @@ fn pointer_hit_test_offsets_output_local_window_geometry_by_output_placement() {
             OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
                 identity: identity(42),
                 surface_id: 42,
+                mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                 instance: RenderItemInstance {
                     rect: RenderRect { x: 0, y: 0, width: 80, height: 80 },
                     opacity: 1.0,
@@ -503,6 +506,7 @@ fn pointer_hit_test_respects_render_item_clip_rect() {
             OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
                 identity: identity(77),
                 surface_id: 77,
+                mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                 instance: RenderItemInstance {
                     rect: RenderRect { x: 0, y: 0, width: 80, height: 80 },
                     opacity: 1.0,

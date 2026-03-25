@@ -21,6 +21,7 @@ pub struct CompositorSceneEntryId(pub u64);
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum CompositorSceneItem {
+    Surface { surface_id: u64 },
     Quad { content: QuadContent },
     Backdrop,
 }
@@ -33,6 +34,11 @@ pub struct CompositorSceneEntry {
 }
 
 impl CompositorSceneEntry {
+    /// Builds a compositor scene entry backed by one surface item.
+    pub fn surface(surface_id: u64, instance: RenderItemInstance) -> Self {
+        Self { item: CompositorSceneItem::Surface { surface_id }, instance }
+    }
+
     /// Builds a compositor scene entry backed by arbitrary quad content.
     pub fn quad(content: QuadContent, instance: RenderItemInstance) -> Self {
         Self { item: CompositorSceneItem::Quad { content }, instance }
@@ -172,6 +178,19 @@ mod tests {
         assert!(removed.is_some());
         assert!(scene.ordered_items.is_empty());
         assert!(scene.items.is_empty());
+    }
+
+    #[test]
+    fn surface_entries_keep_surface_payload() {
+        let scene = OutputCompositorScene::from_entries([(
+            CompositorSceneEntryId(3),
+            CompositorSceneEntry::surface(88, overlay_instance(2)),
+        )]);
+
+        assert!(matches!(
+            scene.entry(CompositorSceneEntryId(3)).map(|entry| &entry.item),
+            Some(CompositorSceneItem::Surface { surface_id: 88 })
+        ));
     }
 
     #[test]

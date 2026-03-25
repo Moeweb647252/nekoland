@@ -217,6 +217,20 @@ fn overlay_ui_scene_entry(
     text_rasterizer: &mut OverlayTextRasterizerState,
 ) -> Option<(CompositorSceneEntryId, CompositorSceneEntry)> {
     match primitive {
+        OverlayUiPrimitive::Surface(surface) => {
+            let entry_id = overlay_ui_entry_id(output_id, &surface.id);
+            let entry = CompositorSceneEntry::surface(
+                surface.surface_id,
+                RenderItemInstance {
+                    rect: surface.rect,
+                    opacity: surface.opacity,
+                    clip_rect: surface.clip_rect,
+                    z_index: surface.layer.z_index_bias().saturating_add(surface.z_index),
+                    scene_role: RenderSceneRole::Overlay,
+                },
+            );
+            Some((entry_id, entry))
+        }
         OverlayUiPrimitive::Panel(panel) => {
             let entry_id = overlay_ui_entry_id(output_id, &panel.id);
             let entry = CompositorSceneEntry::quad(
@@ -545,6 +559,55 @@ mod tests {
         };
         assert_eq!(image.scale, 2);
         assert_eq!(entry.instance.rect.x, 10);
+    }
+
+    #[test]
+    fn surface_primitives_sync_into_overlay_scene_entries() {
+        let mut app = NekolandApp::new("overlay-ui-surface-sync-test");
+        app.inner_mut().world_mut().spawn((
+            nekoland_ecs::components::OutputId(4),
+            OutputDevice { name: "Virtual-1".to_owned(), ..OutputDevice::default() },
+            OutputProperties { scale: 1, ..OutputProperties::default() },
+            OutputViewport::default(),
+            OutputPlacement::default(),
+            OutputWorkArea::default(),
+        ));
+        app.inner_mut()
+            .init_resource::<ShellRenderInput>()
+            .init_resource::<CompositorSceneState>()
+            .init_resource::<OverlayUiSceneSyncState>()
+            .init_resource::<OverlayTextRasterizerState>()
+            .add_systems(RenderSchedule, sync_overlay_ui_scene_state_system);
+
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<ShellRenderInput>()
+            .overlay_ui
+            .output(OutputId(4))
+            .surface(
+                "thumbnail",
+                OverlayUiLayer::Foreground,
+                91,
+                RenderRect { x: 30, y: 40, width: 120, height: 80 },
+                None,
+                0.9,
+                3,
+            );
+
+        app.inner_mut().world_mut().run_schedule(RenderSchedule);
+
+        let scene = &app.inner().world().resource::<CompositorSceneState>().outputs[&OutputId(4)];
+        let entry = scene
+            .iter_ordered()
+            .next()
+            .map(|(_, entry)| entry)
+            .expect("expected one surface overlay entry");
+        let nekoland_ecs::resources::CompositorSceneItem::Surface { surface_id } = &entry.item
+        else {
+            panic!("expected surface scene item");
+        };
+        assert_eq!(*surface_id, 91);
+        assert_eq!(entry.instance.rect.height, 80);
     }
 
     #[test]

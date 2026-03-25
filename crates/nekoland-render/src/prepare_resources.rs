@@ -15,10 +15,10 @@ use nekoland_ecs::resources::{
     PreparedQuadSceneItem, PreparedRenderTargetCacheKey, PreparedRenderTargetResource,
     PreparedSceneItem, PreparedSceneResources, PreparedSurfaceCursorSceneItem,
     PreparedSurfaceImport, PreparedSurfaceImportCacheKey, PreparedSurfaceImportStrategy,
-    PreparedSurfaceSceneItem, RenderMaterialFrameState, RenderPassGraph, RenderPlan,
-    RenderProcessPlan, RenderTargetAllocationPlan, RenderTargetAllocationSpec, ShellRenderInput,
-    SurfaceBufferAttachmentSnapshot, SurfaceBufferAttachmentState, SurfaceTextureBridgePlan,
-    SurfaceTextureImportDescriptor,
+    PreparedSurfaceSceneItem, PreparedSurfaceThumbnailSceneItem, RenderMaterialFrameState,
+    RenderPassGraph, RenderPlan, RenderProcessPlan, RenderTargetAllocationPlan,
+    RenderTargetAllocationSpec, ShellRenderInput, SurfaceBufferAttachmentSnapshot,
+    SurfaceBufferAttachmentState, SurfaceTextureBridgePlan, SurfaceTextureImportDescriptor,
 };
 
 use crate::compositor_render::RenderViewSnapshot;
@@ -177,17 +177,27 @@ fn prepare_scene_item_descriptor(
 ) -> Option<PreparedSceneItem> {
     match item {
         nekoland_ecs::resources::RenderPlanItem::Surface(item) => {
-            let visible_rect = item.instance.visible_rect()?;
             let bridge = surface_bridge.surfaces.get(&item.surface_id);
-            Some(PreparedSceneItem::Surface(PreparedSurfaceSceneItem {
-                surface_id: item.surface_id,
-                surface_kind: bridge.map(|bridge| bridge.surface_kind).unwrap_or_default(),
-                x: item.instance.rect.x,
-                y: item.instance.rect.y,
-                visible_rect,
-                opacity: item.instance.opacity,
-                import_ready: bridge.is_some_and(|bridge| bridge.attached),
-            }))
+            if item.mode == nekoland_ecs::resources::SurfaceRenderMode::Thumbnail {
+                Some(PreparedSceneItem::SurfaceThumbnail(PreparedSurfaceThumbnailSceneItem {
+                    surface_id: item.surface_id,
+                    surface_kind: bridge.map(|bridge| bridge.surface_kind).unwrap_or_default(),
+                    target_rect: item.instance.rect,
+                    opacity: item.instance.opacity,
+                    import_ready: bridge.is_some_and(|bridge| bridge.attached),
+                }))
+            } else {
+                let visible_rect = item.instance.visible_rect()?;
+                Some(PreparedSceneItem::Surface(PreparedSurfaceSceneItem {
+                    surface_id: item.surface_id,
+                    surface_kind: bridge.map(|bridge| bridge.surface_kind).unwrap_or_default(),
+                    x: item.instance.rect.x,
+                    y: item.instance.rect.y,
+                    visible_rect,
+                    opacity: item.instance.opacity,
+                    import_ready: bridge.is_some_and(|bridge| bridge.attached),
+                }))
+            }
         }
         nekoland_ecs::resources::RenderPlanItem::Quad(item) => {
             let visible_rect = item.instance.visible_rect()?;
@@ -487,6 +497,7 @@ mod tests {
                 OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
                     identity: identity(11),
                     surface_id: 11,
+                    mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                     instance: RenderItemInstance {
                         rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
                         opacity: 1.0,
@@ -662,6 +673,7 @@ mod tests {
                 OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
                     identity: identity(11),
                     surface_id: 11,
+                    mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                     instance: RenderItemInstance {
                         rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
                         opacity: 1.0,
@@ -759,12 +771,25 @@ mod tests {
                     RenderPlanItem::Surface(SurfaceRenderItem {
                         identity: identity(11),
                         surface_id: 11,
+                        mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                         instance: RenderItemInstance {
                             rect: RenderRect { x: 10, y: 20, width: 100, height: 120 },
                             opacity: 0.5,
                             clip_rect: Some(RenderRect { x: 20, y: 30, width: 40, height: 50 }),
                             z_index: 0,
                             scene_role: RenderSceneRole::Desktop,
+                        },
+                    }),
+                    RenderPlanItem::Surface(SurfaceRenderItem {
+                        identity: identity(14),
+                        surface_id: 14,
+                        mode: nekoland_ecs::resources::SurfaceRenderMode::Thumbnail,
+                        instance: RenderItemInstance {
+                            rect: RenderRect { x: 200, y: 30, width: 80, height: 60 },
+                            opacity: 0.9,
+                            clip_rect: None,
+                            z_index: 2,
+                            scene_role: RenderSceneRole::Overlay,
                         },
                     }),
                     RenderPlanItem::Quad(QuadRenderItem {
@@ -821,9 +846,10 @@ mod tests {
         let output = &prepared.outputs[&OutputId(7)];
         assert_eq!(
             output.ordered_items,
-            vec![RenderItemId(11), RenderItemId(12), RenderItemId(13)]
+            vec![RenderItemId(11), RenderItemId(12), RenderItemId(14), RenderItemId(13)]
         );
         assert!(matches!(output.items[&RenderItemId(11)], PreparedSceneItem::Surface(_)));
+        assert!(matches!(output.items[&RenderItemId(14)], PreparedSceneItem::SurfaceThumbnail(_)));
         assert!(matches!(output.items[&RenderItemId(12)], PreparedSceneItem::Quad(_)));
         assert!(matches!(output.items[&RenderItemId(13)], PreparedSceneItem::CursorNamed(_)));
     }

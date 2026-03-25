@@ -352,6 +352,7 @@ fn compiled_output_frames_include_per_output_frames() {
             OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
                 identity: RenderItemIdentity::new(RenderSourceId(1), RenderItemId(1)),
                 surface_id: 11,
+                mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                 instance: RenderItemInstance {
                     rect: RenderRect { x: 0, y: 0, width: 100, height: 100 },
                     opacity: 1.0,
@@ -501,6 +502,7 @@ fn stable_ids_flow_from_platform_boundaries_into_compiled_output_frames() {
             OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
                 identity: RenderItemIdentity::new(RenderSourceId(surface_id), RenderItemId(1)),
                 surface_id,
+                mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                 instance: RenderItemInstance {
                     rect: RenderRect { x: 10, y: 20, width: 100, height: 80 },
                     opacity: 1.0,
