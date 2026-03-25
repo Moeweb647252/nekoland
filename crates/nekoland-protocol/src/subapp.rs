@@ -28,8 +28,8 @@ use nekoland_ecs::resources::{
     PendingOutputServerRequests, PendingPlatformInputEvents, PendingPopupEvents,
     PendingPopupServerRequests, PendingProtocolInputEvents, PendingWindowControls,
     PendingWindowEvents, PendingWindowServerRequests, PendingXdgRequests,
-    PlatformSurfaceSnapshotState, PresentAuditState, PrimarySelectionState, ProtocolServerState,
-    RenderPlan, SeatRegistry, ShellRenderInput, SurfaceContentVersionSnapshot,
+    PlatformSurfaceSnapshotState, PresentAuditState, PrimaryOutputState, PrimarySelectionState,
+    ProtocolServerState, RenderPlan, SeatRegistry, ShellRenderInput, SurfaceContentVersionSnapshot,
     VirtualOutputCaptureState, WaylandCommands, WaylandFeedback, WaylandIngress,
     XWaylandServerState,
 };
@@ -377,7 +377,13 @@ struct WaylandIngressSyncParams<'w> {
 
 fn sync_wayland_ingress_boundary_system(mut params: WaylandIngressSyncParams<'_>) {
     let output_materialization = params.wayland_ingress.output_materialization.clone();
-    let primary_output = params.wayland_ingress.primary_output.clone();
+    let mapped_primary_output_name =
+        params.server.as_deref().and_then(protocol_primary_output_name);
+    let primary_output = resolve_primary_output_state(
+        mapped_primary_output_name.as_deref(),
+        &params.output_snapshots,
+        &params.wayland_ingress.primary_output,
+    );
     let pointer_focus_surface = seat::pointer_focus_target(
         params.pointer.x,
         params.pointer.y,
@@ -420,6 +426,27 @@ fn sync_wayland_ingress_boundary_system(mut params: WaylandIngressSyncParams<'_>
                 .is_some_and(|support| support.importable),
         },
     };
+}
+
+fn protocol_primary_output_name(server: &server::SmithayProtocolServer) -> Option<String> {
+    let runtime = server.runtime.as_ref()?;
+    Some(runtime.borrow().state.mapped_primary_output_name.clone())
+}
+
+fn resolve_primary_output_state(
+    mapped_primary_output_name: Option<&str>,
+    output_snapshots: &OutputSnapshotState,
+    previous: &PrimaryOutputState,
+) -> PrimaryOutputState {
+    mapped_primary_output_name
+        .and_then(|output_name| {
+            output_snapshots
+                .outputs
+                .iter()
+                .find(|output| output.name == output_name)
+                .map(|output| PrimaryOutputState { id: Some(output.output_id) })
+        })
+        .unwrap_or_else(|| previous.clone())
 }
 
 fn ingest_backend_wayland_commands_system(
@@ -625,6 +652,55 @@ mod tests {
             PlatformSurfaceKind::Toplevel
         );
         assert!(sub_app.world().resource::<WaylandIngress>().pending_window_controls.is_empty());
+    }
+
+    #[test]
+    fn wayland_ingress_derives_primary_output_id_from_protocol_runtime_name() {
+        let mut sub_app = SubApp::new();
+        install_core_schedules_sub_app(&mut sub_app);
+        sub_app.add_plugins(NekolandAppPlugin::new(WaylandSubAppPlugin));
+        configure_wayland_subapp(&mut sub_app);
+
+        sub_app.world_mut().insert_resource(GlobalPointerPosition::default());
+        sub_app.world_mut().insert_resource(SurfacePresentationSnapshot::default());
+        sub_app.world_mut().insert_resource(ProtocolServerState {
+            socket_name: Some("wayland-1".to_owned()),
+            ..Default::default()
+        });
+        sub_app.world_mut().insert_resource(XWaylandServerState::default());
+        sub_app.world_mut().insert_resource(OutputSnapshotState {
+            outputs: vec![OutputGeometrySnapshot {
+                output_id: nekoland_ecs::components::OutputId(11),
+                name: "Virtual-1".to_owned(),
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 720,
+                scale: 1,
+                refresh_millihz: 60_000,
+            }],
+        });
+
+        {
+            let Some(server) = sub_app
+                .world_mut()
+                .get_non_send_resource_mut::<crate::plugin::server::SmithayProtocolServer>()
+            else {
+                panic!("wayland subapp should have a protocol server");
+            };
+            let Some(runtime) = server.runtime.as_ref() else {
+                panic!("protocol server should have a runtime");
+            };
+            runtime.borrow_mut().state.mapped_primary_output_name = "Virtual-1".to_owned();
+        }
+
+        sub_app.world_mut().run_schedule(ExtractSchedule);
+        sub_app.world_mut().run_schedule(ProtocolSchedule);
+
+        assert_eq!(
+            sub_app.world().resource::<WaylandIngress>().primary_output.id,
+            Some(nekoland_ecs::components::OutputId(11))
+        );
     }
 
     #[test]

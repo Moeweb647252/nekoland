@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -11,6 +11,8 @@ use nekoland_ecs::resources::{
     OverlayUiPrimitiveId, QuadContent, QuadRasterImage, RenderColor, RenderItemInstance,
     RenderRect, RenderSceneRole, ShellRenderInput,
 };
+
+const OVERLAY_TEXT_CACHE_LIMIT: usize = 256;
 
 #[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
 pub struct OverlayUiSceneSyncState {
@@ -45,6 +47,7 @@ pub struct OverlayTextRasterizerState {
     font_path: Option<PathBuf>,
     attempted_load: bool,
     cache: BTreeMap<OverlayTextCacheKey, QuadRasterImage>,
+    cache_order: VecDeque<OverlayTextCacheKey>,
     test_pattern: Option<QuadRasterImage>,
 }
 
@@ -81,8 +84,24 @@ impl OverlayTextRasterizerState {
 
         let font = self.ensure_font_loaded()?;
         let image = rasterize_text_image(font, text, font_size, scale, color)?;
-        self.cache.insert(key, image.clone());
+        self.insert_cached_image(key, image.clone());
         Some(image)
+    }
+
+    fn insert_cached_image(&mut self, key: OverlayTextCacheKey, image: QuadRasterImage) {
+        if self.cache.contains_key(&key) {
+            self.cache.insert(key, image);
+            return;
+        }
+
+        self.cache.insert(key.clone(), image);
+        self.cache_order.push_back(key);
+        while self.cache_order.len() > OVERLAY_TEXT_CACHE_LIMIT {
+            let Some(oldest) = self.cache_order.pop_front() else {
+                break;
+            };
+            self.cache.remove(&oldest);
+        }
     }
 
     fn ensure_font_loaded(&mut self) -> Option<&fontdue::Font> {
@@ -509,5 +528,38 @@ mod tests {
         };
         assert_eq!(image.scale, 2);
         assert_eq!(entry.instance.rect.x, 10);
+    }
+
+    #[test]
+    fn rasterized_text_cache_is_fifo_bounded() {
+        let mut state = OverlayTextRasterizerState::default();
+        let image = QuadRasterImage { width: 1, height: 1, scale: 1, pixels_rgba: vec![255; 4] };
+
+        for index in 0..=super::OVERLAY_TEXT_CACHE_LIMIT {
+            state.insert_cached_image(
+                super::OverlayTextCacheKey {
+                    text: format!("text-{index}"),
+                    font_size_bits: 14.0_f32.to_bits(),
+                    scale: 1,
+                    color: [255, 255, 255, 255],
+                },
+                image.clone(),
+            );
+        }
+
+        assert_eq!(state.cache.len(), super::OVERLAY_TEXT_CACHE_LIMIT);
+        assert_eq!(state.cache_order.len(), super::OVERLAY_TEXT_CACHE_LIMIT);
+        assert!(!state.cache.contains_key(&super::OverlayTextCacheKey {
+            text: "text-0".to_owned(),
+            font_size_bits: 14.0_f32.to_bits(),
+            scale: 1,
+            color: [255, 255, 255, 255],
+        }));
+        assert!(state.cache.contains_key(&super::OverlayTextCacheKey {
+            text: format!("text-{}", super::OVERLAY_TEXT_CACHE_LIMIT),
+            font_size_bits: 14.0_f32.to_bits(),
+            scale: 1,
+            color: [255, 255, 255, 255],
+        }));
     }
 }

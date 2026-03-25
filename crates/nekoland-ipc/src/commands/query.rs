@@ -168,6 +168,7 @@ pub struct ConfigSnapshot {
     pub cursor_theme: String,
     pub border_color: String,
     pub background_color: String,
+    pub fps_hud_enabled: bool,
     pub default_layout: String,
     pub focus_follows_mouse: bool,
     pub repeat_rate: u16,

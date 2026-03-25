@@ -335,6 +335,9 @@ cursor_theme = "capitaine"
 border_color = "#222222"
 background_color = "#101010"
 
+[debug]
+fps_hud = true
+
 [input]
 focus_follows_mouse = false
 repeat_rate = 45
@@ -445,6 +448,7 @@ cursor_theme = "default"
 
             assert_eq!(config.theme, "frappe");
             assert_eq!(config.cursor_theme, "capitaine");
+            assert!(config.debug.fps_hud);
             assert_eq!(
                 config.viewport_pan_modifiers,
                 nekoland_ecs::resources::ModifierMask::new(true, false, true, false)

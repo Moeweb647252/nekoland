@@ -22,7 +22,7 @@ use nekoland_ecs::control::{OutputControlApi, WindowControlApi, WorkspaceControl
 use nekoland_ecs::resources::SelectionOwner;
 use nekoland_ecs::resources::{
     CommandExecutionStatus, CommandHistoryState, CompositorClock, EntityIndex,
-    ExternalCommandRequest, KeyboardFocusState, PendingExternalCommandRequests,
+    ExternalCommandRequest, FpsHudRuntimeState, KeyboardFocusState, PendingExternalCommandRequests,
     PendingOutputControls, PendingPopupServerRequests, PendingWindowControls,
     PendingWorkspaceControls, PopupServerAction, PopupServerRequest, PresentAuditElementKind,
     RenderPlan, RenderPlanItem, SeatRegistry, WaylandFeedback, WaylandIngress,
@@ -40,7 +40,7 @@ use crate::commands::query::{
     WorkspaceSnapshot,
 };
 use crate::commands::{
-    ActionCommand, OutputCommand, PopupCommand, WindowCommand, WorkspaceCommand,
+    ActionCommand, FpsHudMode, OutputCommand, PopupCommand, WindowCommand, WorkspaceCommand,
 };
 use crate::subscribe::{
     IpcSubscription, IpcSubscriptionEvent, PendingSubscriptionEvents, SubscriptionTopic,
@@ -114,9 +114,11 @@ type IpcSurfaceQuery<'w, 's> = Query<'w, 's, &'static WlSurfaceHandle, Allow<Dis
 
 struct IpcRequestDispatchCtx<'a> {
     query_cache: &'a IpcQueryCache,
+    config: &'a CompositorConfig,
     app_lifecycle: &'a mut AppLifecycleState,
     config_reload: &'a mut ConfigReloadRequest,
     keyboard_layout_state: &'a mut KeyboardLayoutState,
+    fps_hud_state: &'a mut FpsHudRuntimeState,
     pending_external_commands: &'a mut PendingExternalCommandRequests,
     pending_popup_requests: &'a mut PendingPopupServerRequests,
     pending_window_controls: &'a mut PendingWindowControls,
@@ -128,9 +130,11 @@ struct IpcRequestDispatchCtx<'a> {
 pub(crate) struct IpcPumpParams<'w, 's> {
     server_state: ResMut<'w, IpcServerState>,
     query_cache: Res<'w, IpcQueryCache>,
+    config: Res<'w, CompositorConfig>,
     app_lifecycle: ResMut<'w, AppLifecycleState>,
     config_reload: Option<ResMut<'w, ConfigReloadRequest>>,
     keyboard_layout_state: ResMut<'w, KeyboardLayoutState>,
+    fps_hud_state: ResMut<'w, FpsHudRuntimeState>,
     pending_subscription_events: ResMut<'w, PendingSubscriptionEvents>,
     pending_external_commands: ResMut<'w, PendingExternalCommandRequests>,
     pending_popup_requests: ResMut<'w, PendingPopupServerRequests>,
@@ -507,9 +511,11 @@ pub(crate) fn accept_connections_system(
     let IpcPumpParams {
         mut server_state,
         query_cache,
+        config,
         mut app_lifecycle,
         mut config_reload,
         mut keyboard_layout_state,
+        mut fps_hud_state,
         mut pending_subscription_events,
         mut pending_external_commands,
         mut pending_popup_requests,
@@ -524,9 +530,11 @@ pub(crate) fn accept_connections_system(
     };
     let mut request_ctx = IpcRequestDispatchCtx {
         query_cache: &query_cache,
+        config: &config,
         app_lifecycle: &mut app_lifecycle,
         config_reload,
         keyboard_layout_state: &mut keyboard_layout_state,
+        fps_hud_state: &mut fps_hud_state,
         pending_external_commands: &mut pending_external_commands,
         pending_popup_requests: &mut pending_popup_requests,
         pending_window_controls: &mut pending_window_controls,
@@ -801,6 +809,7 @@ pub(crate) fn refresh_query_cache_system(
         cursor_theme: config.cursor_theme.clone(),
         border_color: config.border_color.clone(),
         background_color: config.background_color.clone(),
+        fps_hud_enabled: config.debug.fps_hud,
         default_layout: config.default_layout.to_string(),
         focus_follows_mouse: config.focus_follows_mouse,
         repeat_rate: config.repeat_rate,
@@ -1158,9 +1167,11 @@ fn reply_for_request(
 ) -> RequestDisposition {
     let IpcRequestDispatchCtx {
         query_cache,
+        config,
         app_lifecycle,
         config_reload,
         keyboard_layout_state,
+        fps_hud_state,
         pending_external_commands,
         pending_popup_requests,
         pending_window_controls,
@@ -1284,6 +1295,28 @@ fn reply_for_request(
                     payload: None,
                 })
             }
+        }
+        IpcCommand::Action(ActionCommand::FpsHud { mode }) => {
+            let enabled = match mode {
+                FpsHudMode::On => {
+                    fps_hud_state.set_enabled_override(true);
+                    true
+                }
+                FpsHudMode::Off => {
+                    fps_hud_state.set_enabled_override(false);
+                    false
+                }
+                FpsHudMode::Toggle => fps_hud_state.toggle_enabled_override(config.debug.fps_hud),
+            };
+            RequestDisposition::Reply(IpcReply {
+                ok: true,
+                message: if enabled {
+                    "enabled FPS HUD override".to_owned()
+                } else {
+                    "disabled FPS HUD override".to_owned()
+                },
+                payload: None,
+            })
         }
         IpcCommand::Action(ActionCommand::ReloadConfig) => {
             config_reload.requested = true;
@@ -1512,18 +1545,47 @@ mod tests {
     use nekoland_ecs::resources::PendingPopupServerRequests;
     use nekoland_ecs::resources::SplitAxis;
     use nekoland_ecs::resources::{
-        CompositorClock, EntityIndex, KeyboardFocusState, PendingExternalCommandRequests,
-        PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
-        PresentAuditElement, PresentAuditElementKind, RenderPlan, WaylandFeedback,
+        CompositorClock, EntityIndex, FpsHudRuntimeState, KeyboardFocusState,
+        PendingExternalCommandRequests, PendingOutputControls, PendingWindowControls,
+        PendingWorkspaceControls, PresentAuditElement, PresentAuditElementKind, RenderPlan,
+        WaylandFeedback,
     };
 
     use super::{
         IpcRequestDispatchCtx, RequestDisposition, refresh_query_cache_system, reply_for_request,
     };
     use super::{event_filter_matches, subscription_matches};
-    use crate::commands::{ActionCommand, WindowCommand};
+    use crate::commands::{ActionCommand, FpsHudMode, WindowCommand};
     use crate::subscribe::{IpcSubscription, IpcSubscriptionEvent, SubscriptionTopic};
     use crate::{IpcCommand, IpcQueryCache, IpcReply, IpcRequest};
+
+    fn request_dispatch_ctx<'a>(
+        query_cache: &'a IpcQueryCache,
+        config: &'a CompositorConfig,
+        app_lifecycle: &'a mut AppLifecycleState,
+        config_reload: &'a mut ConfigReloadRequest,
+        keyboard_layout_state: &'a mut KeyboardLayoutState,
+        fps_hud_state: &'a mut FpsHudRuntimeState,
+        pending_external_commands: &'a mut PendingExternalCommandRequests,
+        pending_popup_requests: &'a mut PendingPopupServerRequests,
+        pending_window_controls: &'a mut PendingWindowControls,
+        pending_workspace_controls: &'a mut PendingWorkspaceControls,
+        pending_output_controls: &'a mut PendingOutputControls,
+    ) -> IpcRequestDispatchCtx<'a> {
+        IpcRequestDispatchCtx {
+            query_cache,
+            config,
+            app_lifecycle,
+            config_reload,
+            keyboard_layout_state,
+            fps_hud_state,
+            pending_external_commands,
+            pending_popup_requests,
+            pending_window_controls,
+            pending_workspace_controls,
+            pending_output_controls,
+        }
+    }
 
     #[test]
     fn event_filter_matches_exact_names() {
@@ -1662,26 +1724,30 @@ mod tests {
 
     #[test]
     fn reply_for_request_stages_window_split_control() {
+        let config = CompositorConfig::default();
         let mut pending_popup_requests = PendingPopupServerRequests::default();
         let mut app_lifecycle = AppLifecycleState::default();
         let mut config_reload = ConfigReloadRequest::default();
         let mut keyboard_layout_state = KeyboardLayoutState::default();
+        let mut fps_hud_state = FpsHudRuntimeState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
         let query_cache = IpcQueryCache::default();
-        let mut request_ctx = IpcRequestDispatchCtx {
-            query_cache: &query_cache,
-            app_lifecycle: &mut app_lifecycle,
-            config_reload: &mut config_reload,
-            keyboard_layout_state: &mut keyboard_layout_state,
-            pending_external_commands: &mut pending_external_commands,
-            pending_popup_requests: &mut pending_popup_requests,
-            pending_window_controls: &mut pending_window_controls,
-            pending_workspace_controls: &mut pending_workspace_controls,
-            pending_output_controls: &mut pending_output_controls,
-        };
+        let mut request_ctx = request_dispatch_ctx(
+            &query_cache,
+            &config,
+            &mut app_lifecycle,
+            &mut config_reload,
+            &mut keyboard_layout_state,
+            &mut fps_hud_state,
+            &mut pending_external_commands,
+            &mut pending_popup_requests,
+            &mut pending_window_controls,
+            &mut pending_workspace_controls,
+            &mut pending_output_controls,
+        );
 
         let disposition = reply_for_request(
             IpcRequest {
@@ -1708,26 +1774,30 @@ mod tests {
 
     #[test]
     fn reply_for_request_stages_window_background_control() {
+        let config = CompositorConfig::default();
         let mut pending_popup_requests = PendingPopupServerRequests::default();
         let mut app_lifecycle = AppLifecycleState::default();
         let mut config_reload = ConfigReloadRequest::default();
         let mut keyboard_layout_state = KeyboardLayoutState::default();
+        let mut fps_hud_state = FpsHudRuntimeState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
         let query_cache = IpcQueryCache::default();
-        let mut request_ctx = IpcRequestDispatchCtx {
-            query_cache: &query_cache,
-            app_lifecycle: &mut app_lifecycle,
-            config_reload: &mut config_reload,
-            keyboard_layout_state: &mut keyboard_layout_state,
-            pending_external_commands: &mut pending_external_commands,
-            pending_popup_requests: &mut pending_popup_requests,
-            pending_window_controls: &mut pending_window_controls,
-            pending_workspace_controls: &mut pending_workspace_controls,
-            pending_output_controls: &mut pending_output_controls,
-        };
+        let mut request_ctx = request_dispatch_ctx(
+            &query_cache,
+            &config,
+            &mut app_lifecycle,
+            &mut config_reload,
+            &mut keyboard_layout_state,
+            &mut fps_hud_state,
+            &mut pending_external_commands,
+            &mut pending_popup_requests,
+            &mut pending_window_controls,
+            &mut pending_workspace_controls,
+            &mut pending_output_controls,
+        );
 
         let disposition = reply_for_request(
             IpcRequest {
@@ -1757,26 +1827,30 @@ mod tests {
 
     #[test]
     fn reply_for_request_stages_spawn_action() {
+        let config = CompositorConfig::default();
         let mut pending_popup_requests = PendingPopupServerRequests::default();
         let mut app_lifecycle = AppLifecycleState::default();
         let mut config_reload = ConfigReloadRequest::default();
         let mut keyboard_layout_state = KeyboardLayoutState::default();
+        let mut fps_hud_state = FpsHudRuntimeState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
         let query_cache = IpcQueryCache::default();
-        let mut request_ctx = IpcRequestDispatchCtx {
-            query_cache: &query_cache,
-            app_lifecycle: &mut app_lifecycle,
-            config_reload: &mut config_reload,
-            keyboard_layout_state: &mut keyboard_layout_state,
-            pending_external_commands: &mut pending_external_commands,
-            pending_popup_requests: &mut pending_popup_requests,
-            pending_window_controls: &mut pending_window_controls,
-            pending_workspace_controls: &mut pending_workspace_controls,
-            pending_output_controls: &mut pending_output_controls,
-        };
+        let mut request_ctx = request_dispatch_ctx(
+            &query_cache,
+            &config,
+            &mut app_lifecycle,
+            &mut config_reload,
+            &mut keyboard_layout_state,
+            &mut fps_hud_state,
+            &mut pending_external_commands,
+            &mut pending_popup_requests,
+            &mut pending_window_controls,
+            &mut pending_workspace_controls,
+            &mut pending_output_controls,
+        );
 
         let disposition = reply_for_request(
             IpcRequest {
@@ -1804,27 +1878,31 @@ mod tests {
 
     #[test]
     fn reply_for_request_marks_reload_and_quit_actions() {
+        let config = CompositorConfig::default();
         let mut pending_popup_requests = PendingPopupServerRequests::default();
         let mut app_lifecycle = AppLifecycleState::default();
         let mut config_reload = ConfigReloadRequest::default();
         let mut keyboard_layout_state = KeyboardLayoutState::default();
+        let mut fps_hud_state = FpsHudRuntimeState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
         let query_cache = IpcQueryCache::default();
         let reload = {
-            let mut request_ctx = IpcRequestDispatchCtx {
-                query_cache: &query_cache,
-                app_lifecycle: &mut app_lifecycle,
-                config_reload: &mut config_reload,
-                keyboard_layout_state: &mut keyboard_layout_state,
-                pending_external_commands: &mut pending_external_commands,
-                pending_popup_requests: &mut pending_popup_requests,
-                pending_window_controls: &mut pending_window_controls,
-                pending_workspace_controls: &mut pending_workspace_controls,
-                pending_output_controls: &mut pending_output_controls,
-            };
+            let mut request_ctx = request_dispatch_ctx(
+                &query_cache,
+                &config,
+                &mut app_lifecycle,
+                &mut config_reload,
+                &mut keyboard_layout_state,
+                &mut fps_hud_state,
+                &mut pending_external_commands,
+                &mut pending_popup_requests,
+                &mut pending_window_controls,
+                &mut pending_workspace_controls,
+                &mut pending_output_controls,
+            );
             reply_for_request(
                 IpcRequest {
                     correlation_id: 4,
@@ -1838,17 +1916,19 @@ mod tests {
         assert!(!app_lifecycle.quit_requested);
 
         let quit = {
-            let mut request_ctx = IpcRequestDispatchCtx {
-                query_cache: &query_cache,
-                app_lifecycle: &mut app_lifecycle,
-                config_reload: &mut config_reload,
-                keyboard_layout_state: &mut keyboard_layout_state,
-                pending_external_commands: &mut pending_external_commands,
-                pending_popup_requests: &mut pending_popup_requests,
-                pending_window_controls: &mut pending_window_controls,
-                pending_workspace_controls: &mut pending_workspace_controls,
-                pending_output_controls: &mut pending_output_controls,
-            };
+            let mut request_ctx = request_dispatch_ctx(
+                &query_cache,
+                &config,
+                &mut app_lifecycle,
+                &mut config_reload,
+                &mut keyboard_layout_state,
+                &mut fps_hud_state,
+                &mut pending_external_commands,
+                &mut pending_popup_requests,
+                &mut pending_window_controls,
+                &mut pending_workspace_controls,
+                &mut pending_output_controls,
+            );
             reply_for_request(
                 IpcRequest { correlation_id: 5, command: IpcCommand::Action(ActionCommand::Quit) },
                 &mut request_ctx,
@@ -1859,7 +1939,74 @@ mod tests {
     }
 
     #[test]
+    fn reply_for_request_sets_fps_hud_override() {
+        let mut config = CompositorConfig::default();
+        config.debug.fps_hud = false;
+        let mut pending_popup_requests = PendingPopupServerRequests::default();
+        let mut app_lifecycle = AppLifecycleState::default();
+        let mut config_reload = ConfigReloadRequest::default();
+        let mut keyboard_layout_state = KeyboardLayoutState::default();
+        let mut fps_hud_state = FpsHudRuntimeState::default();
+        let mut pending_external_commands = PendingExternalCommandRequests::default();
+        let mut pending_window_controls = PendingWindowControls::default();
+        let mut pending_workspace_controls = PendingWorkspaceControls::default();
+        let mut pending_output_controls = PendingOutputControls::default();
+        let query_cache = IpcQueryCache::default();
+
+        let on = {
+            let mut request_ctx = request_dispatch_ctx(
+                &query_cache,
+                &config,
+                &mut app_lifecycle,
+                &mut config_reload,
+                &mut keyboard_layout_state,
+                &mut fps_hud_state,
+                &mut pending_external_commands,
+                &mut pending_popup_requests,
+                &mut pending_window_controls,
+                &mut pending_workspace_controls,
+                &mut pending_output_controls,
+            );
+            reply_for_request(
+                IpcRequest {
+                    correlation_id: 6,
+                    command: IpcCommand::Action(ActionCommand::FpsHud { mode: FpsHudMode::On }),
+                },
+                &mut request_ctx,
+            )
+        };
+        assert!(matches!(on, RequestDisposition::Reply(IpcReply { ok: true, .. })));
+        assert_eq!(fps_hud_state.override_enabled, Some(true));
+
+        let toggle = {
+            let mut request_ctx = request_dispatch_ctx(
+                &query_cache,
+                &config,
+                &mut app_lifecycle,
+                &mut config_reload,
+                &mut keyboard_layout_state,
+                &mut fps_hud_state,
+                &mut pending_external_commands,
+                &mut pending_popup_requests,
+                &mut pending_window_controls,
+                &mut pending_workspace_controls,
+                &mut pending_output_controls,
+            );
+            reply_for_request(
+                IpcRequest {
+                    correlation_id: 7,
+                    command: IpcCommand::Action(ActionCommand::FpsHud { mode: FpsHudMode::Toggle }),
+                },
+                &mut request_ctx,
+            )
+        };
+        assert!(matches!(toggle, RequestDisposition::Reply(IpcReply { ok: true, .. })));
+        assert_eq!(fps_hud_state.override_enabled, Some(false));
+    }
+
+    #[test]
     fn reply_for_request_switches_keyboard_layout_state() {
+        let config = CompositorConfig::default();
         let mut pending_popup_requests = PendingPopupServerRequests::default();
         let mut app_lifecycle = AppLifecycleState::default();
         let mut config_reload = ConfigReloadRequest::default();
@@ -1874,23 +2021,26 @@ mod tests {
             ],
             "us",
         );
+        let mut fps_hud_state = FpsHudRuntimeState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
         let query_cache = IpcQueryCache::default();
         let next = {
-            let mut request_ctx = IpcRequestDispatchCtx {
-                query_cache: &query_cache,
-                app_lifecycle: &mut app_lifecycle,
-                config_reload: &mut config_reload,
-                keyboard_layout_state: &mut keyboard_layout_state,
-                pending_external_commands: &mut pending_external_commands,
-                pending_popup_requests: &mut pending_popup_requests,
-                pending_window_controls: &mut pending_window_controls,
-                pending_workspace_controls: &mut pending_workspace_controls,
-                pending_output_controls: &mut pending_output_controls,
-            };
+            let mut request_ctx = request_dispatch_ctx(
+                &query_cache,
+                &config,
+                &mut app_lifecycle,
+                &mut config_reload,
+                &mut keyboard_layout_state,
+                &mut fps_hud_state,
+                &mut pending_external_commands,
+                &mut pending_popup_requests,
+                &mut pending_window_controls,
+                &mut pending_workspace_controls,
+                &mut pending_output_controls,
+            );
             reply_for_request(
                 IpcRequest {
                     correlation_id: 6,
@@ -1903,17 +2053,19 @@ mod tests {
         assert_eq!(keyboard_layout_state.active_name(), "de");
 
         let by_name = {
-            let mut request_ctx = IpcRequestDispatchCtx {
-                query_cache: &query_cache,
-                app_lifecycle: &mut app_lifecycle,
-                config_reload: &mut config_reload,
-                keyboard_layout_state: &mut keyboard_layout_state,
-                pending_external_commands: &mut pending_external_commands,
-                pending_popup_requests: &mut pending_popup_requests,
-                pending_window_controls: &mut pending_window_controls,
-                pending_workspace_controls: &mut pending_workspace_controls,
-                pending_output_controls: &mut pending_output_controls,
-            };
+            let mut request_ctx = request_dispatch_ctx(
+                &query_cache,
+                &config,
+                &mut app_lifecycle,
+                &mut config_reload,
+                &mut keyboard_layout_state,
+                &mut fps_hud_state,
+                &mut pending_external_commands,
+                &mut pending_popup_requests,
+                &mut pending_window_controls,
+                &mut pending_workspace_controls,
+                &mut pending_output_controls,
+            );
             reply_for_request(
                 IpcRequest {
                     correlation_id: 7,
@@ -1928,17 +2080,19 @@ mod tests {
         assert_eq!(keyboard_layout_state.active_name(), "us");
 
         let invalid = {
-            let mut request_ctx = IpcRequestDispatchCtx {
-                query_cache: &query_cache,
-                app_lifecycle: &mut app_lifecycle,
-                config_reload: &mut config_reload,
-                keyboard_layout_state: &mut keyboard_layout_state,
-                pending_external_commands: &mut pending_external_commands,
-                pending_popup_requests: &mut pending_popup_requests,
-                pending_window_controls: &mut pending_window_controls,
-                pending_workspace_controls: &mut pending_workspace_controls,
-                pending_output_controls: &mut pending_output_controls,
-            };
+            let mut request_ctx = request_dispatch_ctx(
+                &query_cache,
+                &config,
+                &mut app_lifecycle,
+                &mut config_reload,
+                &mut keyboard_layout_state,
+                &mut fps_hud_state,
+                &mut pending_external_commands,
+                &mut pending_popup_requests,
+                &mut pending_window_controls,
+                &mut pending_workspace_controls,
+                &mut pending_output_controls,
+            );
             reply_for_request(
                 IpcRequest {
                     correlation_id: 8,

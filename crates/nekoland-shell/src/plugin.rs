@@ -10,8 +10,8 @@ use nekoland_ecs::events::{
 };
 use nekoland_ecs::resources::register_entity_index_hooks;
 use nekoland_ecs::resources::{
-    CommandHistoryState, FocusedOutputState, GlobalPointerPosition, OutputOverlayState,
-    OverlayUiFrame, PendingExternalCommandRequests, PendingOutputControls,
+    CommandHistoryState, FocusedOutputState, FpsHudRuntimeState, GlobalPointerPosition,
+    OutputOverlayState, OverlayUiFrame, PendingExternalCommandRequests, PendingOutputControls,
     PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
     PendingWindowControls, PendingWindowServerRequests, PendingWorkspaceControls, ShellRenderInput,
     SurfacePresentationSnapshot, WaylandCommands, WaylandFeedback, WaylandIngress,
@@ -19,7 +19,7 @@ use nekoland_ecs::resources::{
 };
 
 use crate::{
-    commands, decorations, focus,
+    commands, decorations, focus, fps_hud,
     interaction::{self, ActiveWindowGrab},
     layer, layout, presentation, surface_presentation, viewport, window_control, window_lifecycle,
     workspace, xdg,
@@ -45,6 +45,7 @@ impl NekolandPlugin for ShellPlugin {
             .init_resource::<WindowStackingState>()
             .init_resource::<WorkspaceTilingState>()
             .init_resource::<OutputOverlayState>()
+            .init_resource::<FpsHudRuntimeState>()
             .init_resource::<OverlayUiFrame>()
             .init_resource::<SurfacePresentationSnapshot>()
             .init_resource::<WaylandCommands>()
@@ -112,6 +113,7 @@ impl NekolandPlugin for ShellPlugin {
                         presentation::window_presentation_sync_system,
                         focus::focus_management_system,
                         decorations::server_decoration_system,
+                        fps_hud::emit_fps_hud_system,
                         sync_shell_render_boundary_system,
                         sync_wayland_commands_boundary_system,
                     )

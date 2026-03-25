@@ -40,6 +40,14 @@ border_color = "#81a1c1"
 # Clear/background color as a hex string.
 background_color = "#e5e9f0"
 
+[debug]
+# Whether the compositor-owned FPS HUD is visible on the current primary output.
+#
+# Runtime note:
+# - this is only the default
+# - `nekoland-msg action fps-hud <on|off|toggle>` can override it until restart
+fps_hud = false
+
 [input]
 # Whether pointer motion can move focus.
 #

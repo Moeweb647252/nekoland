@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use clap_complete::{Shell, generate};
 use nekoland_ipc::commands::{
-    ActionCommand, OutputCommand, PopupCommand, QueryCommand, SplitAxis, WindowCommand,
+    ActionCommand, FpsHudMode, OutputCommand, PopupCommand, QueryCommand, SplitAxis, WindowCommand,
     WorkspaceCommand,
 };
 use nekoland_ipc::{
@@ -253,10 +253,30 @@ enum ActionAction {
     SwitchKeyboardLayoutIndex {
         index: usize,
     },
+    FpsHud {
+        mode: FpsHudModeArg,
+    },
     ReloadConfig,
     Quit,
     PowerOffMonitors,
     PowerOnMonitors,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum FpsHudModeArg {
+    On,
+    Off,
+    Toggle,
+}
+
+impl From<FpsHudModeArg> for FpsHudMode {
+    fn from(value: FpsHudModeArg) -> Self {
+        match value {
+            FpsHudModeArg::On => Self::On,
+            FpsHudModeArg::Off => Self::Off,
+            FpsHudModeArg::Toggle => Self::Toggle,
+        }
+    }
 }
 
 /// Arguments for shell-completion generation.
@@ -495,6 +515,9 @@ where
             }
             ActionAction::SwitchKeyboardLayoutIndex { index } => {
                 IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutByIndex { index })
+            }
+            ActionAction::FpsHud { mode } => {
+                IpcCommand::Action(ActionCommand::FpsHud { mode: mode.into() })
             }
             ActionAction::ReloadConfig => IpcCommand::Action(ActionCommand::ReloadConfig),
             ActionAction::Quit => IpcCommand::Action(ActionCommand::Quit),
@@ -758,7 +781,7 @@ mod tests {
         SubscriptionOutputMode, parse_cli_from, render_completion, render_subscription_help,
     };
     use nekoland_ipc::commands::{
-        ActionCommand, OutputCommand, PopupCommand, QueryCommand, WindowCommand,
+        ActionCommand, FpsHudMode, OutputCommand, PopupCommand, QueryCommand, WindowCommand,
     };
     use nekoland_ipc::{IpcCommand, IpcSubscription, SubscriptionTopic};
     use serde_json::Value;
@@ -971,6 +994,28 @@ mod tests {
             parse_ok(["nekoland-msg", "action", "switch-keyboard-layout-index", "2"]),
             ParsedAction::Request(IpcCommand::Action(ActionCommand::SwitchKeyboardLayoutByIndex {
                 index: 2,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_action_fps_hud_modes() {
+        assert_eq!(
+            parse_ok(["nekoland-msg", "action", "fps-hud", "on"]),
+            ParsedAction::Request(IpcCommand::Action(ActionCommand::FpsHud {
+                mode: FpsHudMode::On,
+            }))
+        );
+        assert_eq!(
+            parse_ok(["nekoland-msg", "action", "fps-hud", "off"]),
+            ParsedAction::Request(IpcCommand::Action(ActionCommand::FpsHud {
+                mode: FpsHudMode::Off,
+            }))
+        );
+        assert_eq!(
+            parse_ok(["nekoland-msg", "action", "fps-hud", "toggle"]),
+            ParsedAction::Request(IpcCommand::Action(ActionCommand::FpsHud {
+                mode: FpsHudMode::Toggle,
             }))
         );
     }

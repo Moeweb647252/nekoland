@@ -23,14 +23,14 @@ pub mod damage;
 pub mod entity_index;
 /// Focused-output selection state.
 pub mod focused_output;
+/// Runtime state for the compositor-owned FPS HUD.
+pub mod fps_hud;
 /// Frame pacing, callback selection, and presentation bookkeeping.
 pub mod frame_pacing;
 /// Keyboard focus, modifiers, and pressed-key state.
 pub mod keyboard_state;
 /// Typed render-material frame state.
 pub mod material_frame;
-/// Overlay UI state used by compositor-owned status or debug overlays.
-pub mod overlay_ui;
 /// Output viewport animation state mirrored into shell policy.
 pub mod output_animation;
 /// High-level output control queues and staged handles.
@@ -45,6 +45,8 @@ pub mod output_requests;
 pub mod output_snapshot;
 /// Backend/public output status snapshots.
 pub mod output_status;
+/// Overlay UI state used by compositor-owned status or debug overlays.
+pub mod overlay_ui;
 /// Backend descriptors and import-capability snapshots.
 pub mod platform_backend;
 /// Pointer position, deltas, and pan-mode state.
@@ -107,6 +109,7 @@ pub use cursor_state::*;
 pub use damage::*;
 pub use entity_index::*;
 pub use focused_output::*;
+pub use fps_hud::*;
 pub use frame_pacing::*;
 pub use keyboard_state::*;
 pub use material_frame::*;

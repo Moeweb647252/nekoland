@@ -64,6 +64,9 @@ cursor_theme = "capitaine"
 border_color = "#445566"
 background_color = "#101010"
 
+[debug]
+fps_hud = true
+
 [input]
 focus_follows_mouse = true
 repeat_rate = 45
@@ -186,6 +189,7 @@ fn config_subscription_reports_hot_reloaded_runtime_config() {
     };
     assert_eq!(config.default_layout, "floating");
     assert_eq!(config.command_history_limit, 3);
+    assert!(config.fps_hud_enabled);
     assert!(!config.xwayland_enabled);
     assert_eq!(config.configured_keyboard_layout, "de");
     assert_eq!(config.keyboard_layouts.len(), 2);
