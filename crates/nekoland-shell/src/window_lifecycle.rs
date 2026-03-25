@@ -230,15 +230,14 @@ fn upsert_window(
         return Err(());
     };
 
-    let resolved_title = title.unwrap_or_else(|| format!("Window {surface_id}"));
-    let resolved_app_id = app_id.unwrap_or_default();
-    let context = window_rule_context(&resolved_app_id, &resolved_title, &hints);
-    let policy = config.resolve_window_policy_with_context(context);
-    let background = config.resolve_window_background_with_context(context);
-
     if let Some(entity) = resolve_window_entity(surface_id, entity_index, windows)
         && let Ok((entity, mut window)) = windows.get_mut(entity)
     {
+        let resolved_title = title.unwrap_or_else(|| window.window.title.clone());
+        let resolved_app_id = app_id.unwrap_or_else(|| window.window.app_id.clone());
+        let context = window_rule_context(&resolved_app_id, &resolved_title, &hints);
+        let policy = config.resolve_window_policy_with_context(context);
+        let background = config.resolve_window_background_with_context(context);
         let moved = window.scene_geometry.x != geometry.x || window.scene_geometry.y != geometry.y;
         let allow_geometry_update =
             !window.management_hints.client_driven_resize || window.content_version.value == 0;
@@ -319,6 +318,12 @@ fn upsert_window(
         known_surfaces.insert(surface_id);
         return Ok(());
     }
+
+    let resolved_title = title.unwrap_or_default();
+    let resolved_app_id = app_id.unwrap_or_default();
+    let context = window_rule_context(&resolved_app_id, &resolved_title, &hints);
+    let policy = config.resolve_window_policy_with_context(context);
+    let background = config.resolve_window_background_with_context(context);
 
     let mut placement = WindowPlacement::default();
     if hints.prefer_floating || matches!(policy.layout, WindowLayout::Floating) {
@@ -959,5 +964,82 @@ mod tests {
                 floating_size: Some(WindowSize { width: 800, height: 520 }),
             })
         );
+    }
+
+    #[test]
+    fn geometry_upserts_do_not_overwrite_existing_window_metadata() {
+        let mut app = NekolandApp::new("window-lifecycle-metadata-preserve-test");
+        app.insert_resource(nekoland_config::resources::CompositorConfig::default())
+            .insert_resource(WorkArea::default())
+            .insert_resource(FocusedOutputState::default())
+            .insert_resource(DeferredWindowEvents::default())
+            .insert_resource(PendingPopupServerRequests::default())
+            .insert_resource(EntityIndex::default())
+            .insert_resource(GlobalPointerPosition::default())
+            .insert_resource(ActiveWindowGrab::default())
+            .insert_resource(KeyboardFocusState::default())
+            .insert_resource(WaylandIngress::default());
+        app.inner_mut()
+            .add_message::<WindowCreated>()
+            .add_message::<WindowClosed>()
+            .add_message::<WindowMoved>()
+            .add_systems(
+                LayoutSchedule,
+                (rebuild_entity_index_system, window_lifecycle_system).chain(),
+            );
+
+        app.inner_mut().world_mut().spawn(Workspace {
+            id: WorkspaceId(1),
+            name: "1".to_owned(),
+            active: true,
+        });
+        app.inner_mut().world_mut().resource_mut::<DeferredWindowEvents>().replace(vec![
+            WindowEventRequest {
+                surface_id: 51,
+                action: WindowEvent::Upsert {
+                    title: Some("Firefox".to_owned()),
+                    app_id: Some("org.mozilla.firefox".to_owned()),
+                    hints: WindowManagementHints::native_wayland(),
+                    scene_geometry: Some(WindowSceneGeometry {
+                        x: 10,
+                        y: 20,
+                        width: 800,
+                        height: 600,
+                    }),
+                    attached: true,
+                },
+            },
+        ]);
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        app.inner_mut().world_mut().resource_mut::<DeferredWindowEvents>().replace(vec![
+            WindowEventRequest {
+                surface_id: 51,
+                action: WindowEvent::Upsert {
+                    title: None,
+                    app_id: None,
+                    hints: WindowManagementHints::native_wayland(),
+                    scene_geometry: Some(WindowSceneGeometry {
+                        x: 30,
+                        y: 40,
+                        width: 1024,
+                        height: 768,
+                    }),
+                    attached: true,
+                },
+            },
+        ]);
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let world = app.inner_mut().world_mut();
+        let mut windows = world.query::<(&WlSurfaceHandle, &Window, &WindowSceneGeometry)>();
+        let Some((_, window, geometry)) =
+            windows.iter(world).find(|(surface, _, _)| surface.id == 51)
+        else {
+            panic!("window should still exist");
+        };
+        assert_eq!(window.title, "Firefox");
+        assert_eq!(window.app_id, "org.mozilla.firefox");
+        assert_eq!(*geometry, WindowSceneGeometry { x: 30, y: 40, width: 1024, height: 768 });
     }
 }

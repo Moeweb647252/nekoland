@@ -19,7 +19,22 @@ use crate::viewport::{preferred_primary_output_id, resolve_output_state_for_work
 
 const TAB_KEYCODE: u32 = 23;
 const ALT_REQUIRED_MODIFIERS: ModifierMask = ModifierMask::new(false, true, false, false);
-const MAX_VISIBLE_SWITCHER_ITEMS: usize = 7;
+const SWITCHER_PANEL_SCREEN_MARGIN: u32 = 24;
+const SWITCHER_PANEL_PADDING: u32 = 18;
+const SWITCHER_HEADER_HEIGHT: u32 = 28;
+const SWITCHER_HEADER_GRID_GAP: u32 = 16;
+const SWITCHER_CARD_WIDTH: u32 = 220;
+const SWITCHER_CARD_HEIGHT: u32 = 176;
+const SWITCHER_CARD_GAP_X: u32 = 12;
+const SWITCHER_CARD_GAP_Y: u32 = 16;
+const SWITCHER_CARD_PADDING: u32 = 12;
+const SWITCHER_CARD_TITLE_HEIGHT: u32 = 34;
+const SWITCHER_CARD_TITLE_LINE_HEIGHT: i32 = 16;
+const SWITCHER_CARD_TITLE_FONT_SIZE: f32 = 13.0;
+const SWITCHER_CARD_TITLE_GAP: u32 = 8;
+const SWITCHER_CARD_TITLE_MAX_UNITS: usize = 30;
+const SWITCHER_THUMBNAIL_FRAME_WIDTH: u32 = 196;
+const SWITCHER_THUMBNAIL_FRAME_HEIGHT: u32 = 110;
 
 /// Session state for the shell-local Alt+Tab style window switcher.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
@@ -79,7 +94,6 @@ impl WindowSwitcherState {
 struct WindowSwitcherCandidate {
     surface_id: SurfaceId,
     title: String,
-    app_id: String,
     width: u32,
     height: u32,
 }
@@ -88,6 +102,31 @@ struct SwitcherContext {
     workspace_id: u32,
     output_id: OutputId,
     viewport: OutputViewport,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SwitcherGridLayout {
+    panel_rect: RenderRect,
+    columns: usize,
+    visible_capacity: usize,
+    grid_origin_x: i32,
+    grid_origin_y: i32,
+}
+
+impl SwitcherGridLayout {
+    fn card_rect(self, slot_index: usize) -> RenderRect {
+        let column = slot_index % self.columns;
+        let row = slot_index / self.columns;
+        let stride_x = (SWITCHER_CARD_WIDTH + SWITCHER_CARD_GAP_X) as i32;
+        let stride_y = (SWITCHER_CARD_HEIGHT + SWITCHER_CARD_GAP_Y) as i32;
+
+        RenderRect {
+            x: self.grid_origin_x + column as i32 * stride_x,
+            y: self.grid_origin_y + row as i32 * stride_y,
+            width: SWITCHER_CARD_WIDTH,
+            height: SWITCHER_CARD_HEIGHT,
+        }
+    }
 }
 
 type SwitcherWindows<'w, 's> = Query<'w, 's, WindowFocusRuntime, (With<Window>, Allow<Disabled>)>;
@@ -199,26 +238,16 @@ pub fn window_switcher_overlay_system(
         .iter()
         .position(|candidate| Some(candidate.surface_id) == switcher.selected_surface)
         .unwrap_or_else(|| switcher.selected_index.min(candidates.len().saturating_sub(1)));
-    let (start, end) = visible_candidate_window(candidates.len(), selected_index);
+    let Some(layout) =
+        switcher_grid_layout(output.properties.width, output.properties.height, candidates.len())
+    else {
+        return;
+    };
+    let (start, end) =
+        visible_candidate_page(candidates.len(), selected_index, layout.visible_capacity);
     let visible = &candidates[start..end];
 
-    let row_height = 70_i32;
-    let row_spacing = 10_i32;
-    let padding = 18_i32;
-    let header_height = 28_i32;
-    let thumbnail_width = 96_u32;
-    let thumbnail_height = 54_u32;
-    let panel_width = output.properties.width.saturating_sub(120).min(760).max(420);
-    let content_rows = visible.len() as i32;
-    let panel_height = (padding * 2
-        + header_height
-        + content_rows * row_height
-        + (content_rows.saturating_sub(1) * row_spacing))
-        .max(120) as u32;
-    let panel_x = ((output.properties.width.saturating_sub(panel_width)) / 2) as i32;
-    let panel_y = ((output.properties.height.saturating_sub(panel_height)) / 3).max(24) as i32;
-    let panel_rect =
-        RenderRect { x: panel_x, y: panel_y, width: panel_width, height: panel_height };
+    let panel_rect = layout.panel_rect;
     let mut output_overlay = overlay_ui.output(output_id);
 
     output_overlay
@@ -234,8 +263,8 @@ pub fn window_switcher_overlay_system(
         .text(
             "window_switcher.header",
             OverlayUiLayer::Foreground,
-            panel_x + padding,
-            panel_y + padding,
+            panel_rect.x + SWITCHER_PANEL_PADDING as i32,
+            panel_rect.y + SWITCHER_PANEL_PADDING as i32,
             Some(panel_rect),
             "Switch Windows",
             18.0,
@@ -244,36 +273,62 @@ pub fn window_switcher_overlay_system(
             20,
         );
 
-    let mut cursor_y = panel_y + padding + header_height;
-    for candidate in visible {
-        let item_rect = RenderRect {
-            x: panel_x + 10,
-            y: cursor_y - 4,
-            width: panel_width.saturating_sub(20),
-            height: row_height as u32,
+    for (slot_index, candidate) in visible.iter().enumerate() {
+        let item_rect = layout.card_rect(slot_index);
+        let selected = Some(candidate.surface_id) == switcher.selected_surface;
+        output_overlay.panel(
+            format!("window_switcher.item.{}", candidate.surface_id.0),
+            OverlayUiLayer::Foreground,
+            item_rect,
+            Some(panel_rect),
+            if selected {
+                RenderColor { r: 76, g: 110, b: 245, a: 255 }
+            } else {
+                RenderColor { r: 30, g: 36, b: 48, a: 255 }
+            },
+            if selected { 0.85 } else { 0.72 },
+            if selected { 15 } else { 14 },
+        );
+
+        let title_rect = RenderRect {
+            x: item_rect.x + SWITCHER_CARD_PADDING as i32,
+            y: item_rect.y + SWITCHER_CARD_PADDING as i32,
+            width: item_rect.width.saturating_sub(SWITCHER_CARD_PADDING * 2),
+            height: SWITCHER_CARD_TITLE_HEIGHT,
         };
-        if Some(candidate.surface_id) == switcher.selected_surface {
-            output_overlay.panel(
-                format!("window_switcher.item.{}", candidate.surface_id.0),
+        for (line_index, line) in
+            wrap_switcher_title(&candidate_title(candidate), SWITCHER_CARD_TITLE_MAX_UNITS)
+                .into_iter()
+                .enumerate()
+        {
+            output_overlay.text(
+                format!("window_switcher.title.{}.{}", candidate.surface_id.0, line_index),
                 OverlayUiLayer::Foreground,
-                item_rect,
-                Some(panel_rect),
-                RenderColor { r: 76, g: 110, b: 245, a: 255 },
-                0.85,
-                15,
+                title_rect.x,
+                title_rect.y + line_index as i32 * SWITCHER_CARD_TITLE_LINE_HEIGHT,
+                Some(title_rect),
+                line,
+                SWITCHER_CARD_TITLE_FONT_SIZE,
+                RenderColor { r: 247, g: 250, b: 255, a: 255 },
+                1.0,
+                25,
             );
         }
+
         let thumbnail_frame = RenderRect {
-            x: item_rect.x + 12,
-            y: item_rect.y + ((row_height - thumbnail_height as i32) / 2),
-            width: thumbnail_width,
-            height: thumbnail_height,
+            x: item_rect.x + SWITCHER_CARD_PADDING as i32,
+            y: item_rect.y
+                + SWITCHER_CARD_PADDING as i32
+                + SWITCHER_CARD_TITLE_HEIGHT as i32
+                + SWITCHER_CARD_TITLE_GAP as i32,
+            width: SWITCHER_THUMBNAIL_FRAME_WIDTH,
+            height: SWITCHER_THUMBNAIL_FRAME_HEIGHT,
         };
         output_overlay.panel(
             format!("window_switcher.thumb_frame.{}", candidate.surface_id.0),
             OverlayUiLayer::Foreground,
             thumbnail_frame,
-            Some(panel_rect),
+            Some(item_rect),
             RenderColor { r: 11, g: 15, b: 22, a: 255 },
             0.95,
             18,
@@ -287,35 +342,6 @@ pub fn window_switcher_overlay_system(
             1.0,
             19,
         );
-        let title_x = thumbnail_frame.x + thumbnail_frame.width as i32 + 16;
-        let title_clip = Some(panel_rect);
-        output_overlay.text(
-            format!("window_switcher.title.{}", candidate.surface_id.0),
-            OverlayUiLayer::Foreground,
-            title_x,
-            item_rect.y + 18,
-            title_clip,
-            candidate_title(candidate),
-            15.0,
-            RenderColor { r: 247, g: 250, b: 255, a: 255 },
-            1.0,
-            25,
-        );
-        if let Some(app_label) = candidate_app_label(candidate) {
-            output_overlay.text(
-                format!("window_switcher.app.{}", candidate.surface_id.0),
-                OverlayUiLayer::Foreground,
-                title_x,
-                item_rect.y + 40,
-                title_clip,
-                app_label,
-                12.0,
-                RenderColor { r: 173, g: 181, b: 197, a: 255 },
-                1.0,
-                24,
-            );
-        }
-        cursor_y += row_height + row_spacing;
     }
 }
 
@@ -440,7 +466,6 @@ fn switcher_candidates(
             WindowSwitcherCandidate {
                 surface_id: SurfaceId(window.surface_id()),
                 title: window.window.title.clone(),
-                app_id: window.window.app_id.clone(),
                 width: window.geometry.width.max(1),
                 height: window.geometry.height.max(1),
             },
@@ -486,31 +511,28 @@ fn next_candidate_index(
     }
 }
 
-fn visible_candidate_window(candidate_count: usize, selected_index: usize) -> (usize, usize) {
-    if candidate_count <= MAX_VISIBLE_SWITCHER_ITEMS {
-        return (0, candidate_count);
+fn visible_candidate_page(
+    candidate_count: usize,
+    selected_index: usize,
+    visible_capacity: usize,
+) -> (usize, usize) {
+    if candidate_count == 0 {
+        return (0, 0);
     }
 
-    let half = MAX_VISIBLE_SWITCHER_ITEMS / 2;
-    let mut start = selected_index.saturating_sub(half);
-    let mut end = start + MAX_VISIBLE_SWITCHER_ITEMS;
-    if end > candidate_count {
-        end = candidate_count;
-        start = end - MAX_VISIBLE_SWITCHER_ITEMS;
-    }
+    let visible_capacity = visible_capacity.max(1);
+    let start = selected_index / visible_capacity * visible_capacity;
+    let end = (start + visible_capacity).min(candidate_count);
     (start, end)
 }
 
 fn candidate_title(candidate: &WindowSwitcherCandidate) -> String {
-    if candidate.title.is_empty() {
-        format!("Window {}", candidate.surface_id.0)
-    } else {
-        candidate.title.clone()
+    let title = candidate.title.trim();
+    if !title.is_empty() {
+        return title.to_owned();
     }
-}
 
-fn candidate_app_label(candidate: &WindowSwitcherCandidate) -> Option<String> {
-    (!candidate.app_id.is_empty()).then(|| candidate.app_id.clone())
+    "Untitled window".to_owned()
 }
 
 fn fit_rect_within(frame: RenderRect, content_width: u32, content_height: u32) -> RenderRect {
@@ -538,8 +560,142 @@ fn fit_rect_within(frame: RenderRect, content_width: u32, content_height: u32) -
     }
 }
 
+fn switcher_grid_layout(
+    output_width: u32,
+    output_height: u32,
+    candidate_count: usize,
+) -> Option<SwitcherGridLayout> {
+    if candidate_count == 0 {
+        return None;
+    }
+
+    let max_panel_width = output_width.saturating_sub(SWITCHER_PANEL_SCREEN_MARGIN * 2);
+    let max_panel_height = output_height.saturating_sub(SWITCHER_PANEL_SCREEN_MARGIN * 2);
+    let content_max_width = max_panel_width.saturating_sub(SWITCHER_PANEL_PADDING * 2);
+    let content_max_height = max_panel_height.saturating_sub(
+        SWITCHER_PANEL_PADDING * 2 + SWITCHER_HEADER_HEIGHT + SWITCHER_HEADER_GRID_GAP,
+    );
+    let max_columns =
+        grid_axis_capacity(content_max_width, SWITCHER_CARD_WIDTH, SWITCHER_CARD_GAP_X).max(1);
+    let max_rows =
+        grid_axis_capacity(content_max_height, SWITCHER_CARD_HEIGHT, SWITCHER_CARD_GAP_Y).max(1);
+    let columns = candidate_count.min(max_columns).max(1);
+    let rows = candidate_count.div_ceil(columns).min(max_rows).max(1);
+    let panel_width = SWITCHER_PANEL_PADDING * 2
+        + columns as u32 * SWITCHER_CARD_WIDTH
+        + columns.saturating_sub(1) as u32 * SWITCHER_CARD_GAP_X;
+    let panel_height = SWITCHER_PANEL_PADDING * 2
+        + SWITCHER_HEADER_HEIGHT
+        + SWITCHER_HEADER_GRID_GAP
+        + rows as u32 * SWITCHER_CARD_HEIGHT
+        + rows.saturating_sub(1) as u32 * SWITCHER_CARD_GAP_Y;
+    let panel_x = (output_width.saturating_sub(panel_width) / 2) as i32;
+    let panel_y =
+        ((output_height.saturating_sub(panel_height) / 3).max(SWITCHER_PANEL_SCREEN_MARGIN)) as i32;
+
+    Some(SwitcherGridLayout {
+        panel_rect: RenderRect { x: panel_x, y: panel_y, width: panel_width, height: panel_height },
+        columns,
+        visible_capacity: columns.saturating_mul(rows).max(1),
+        grid_origin_x: panel_x + SWITCHER_PANEL_PADDING as i32,
+        grid_origin_y: panel_y
+            + SWITCHER_PANEL_PADDING as i32
+            + SWITCHER_HEADER_HEIGHT as i32
+            + SWITCHER_HEADER_GRID_GAP as i32,
+    })
+}
+
+fn grid_axis_capacity(available: u32, item_extent: u32, gap: u32) -> usize {
+    ((available.saturating_add(gap)) / item_extent.saturating_add(gap)) as usize
+}
+
+fn wrap_switcher_title(title: &str, max_units_per_line: usize) -> Vec<String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+    let mut remaining = title;
+    while !remaining.is_empty() && lines.len() < 2 {
+        let (line, rest) = take_title_line(remaining, max_units_per_line);
+        if line.is_empty() {
+            break;
+        }
+        lines.push(line);
+        remaining = rest.trim_start();
+    }
+
+    if !remaining.is_empty() && !lines.is_empty() {
+        let last_index = lines.len() - 1;
+        lines[last_index] = append_ellipsis(&lines[last_index], max_units_per_line);
+    }
+
+    lines
+}
+
+fn take_title_line(text: &str, max_units_per_line: usize) -> (String, &str) {
+    let mut units = 0;
+    let mut last_break = None;
+    let mut end = 0;
+
+    for (index, ch) in text.char_indices() {
+        let next_units = units + switcher_title_char_units(ch);
+        if next_units > max_units_per_line {
+            break;
+        }
+        units = next_units;
+        end = index + ch.len_utf8();
+        if ch.is_whitespace() || matches!(ch, '-' | '_' | '/' | ':' | '.' | '|') {
+            last_break = Some(end);
+        }
+    }
+
+    if end == 0 {
+        let mut chars = text.chars();
+        let Some(ch) = chars.next() else {
+            return (String::new(), "");
+        };
+        let end = ch.len_utf8();
+        return (text[..end].to_owned(), &text[end..]);
+    }
+
+    let split_at = last_break.filter(|break_index| *break_index < end).unwrap_or(end);
+    let line = text[..split_at].trim().to_owned();
+    let rest = &text[split_at..];
+    (line, rest)
+}
+
+fn append_ellipsis(line: &str, max_units_per_line: usize) -> String {
+    const ELLIPSIS: &str = "...";
+    let ellipsis_units = ELLIPSIS.chars().map(switcher_title_char_units).sum::<usize>();
+    let mut trimmed = String::new();
+    let mut units = 0;
+
+    for ch in line.chars() {
+        let next_units = units + switcher_title_char_units(ch);
+        if next_units + ellipsis_units > max_units_per_line {
+            break;
+        }
+        units = next_units;
+        trimmed.push(ch);
+    }
+
+    if trimmed.is_empty() {
+        ELLIPSIS.to_owned()
+    } else {
+        format!("{}{}", trimmed.trim_end(), ELLIPSIS)
+    }
+}
+
+fn switcher_title_char_units(ch: char) -> usize {
+    if ch.is_ascii() { 1 } else { 2 }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use bevy_ecs::hierarchy::ChildOf;
     use bevy_ecs::prelude::World;
     use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -548,20 +704,32 @@ mod tests {
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
         OutputCurrentWorkspace, OutputDevice, OutputId, OutputKind, OutputProperties,
-        OutputViewport, WindowLayout, WindowMode, WindowSceneGeometry, WlSurfaceHandle, Workspace,
-        WorkspaceId,
+        OutputViewport, Window, WindowLayout, WindowMode, WindowSceneGeometry, WlSurfaceHandle,
+        Workspace, WorkspaceId,
     };
     use nekoland_ecs::resources::{
-        KeyboardFocusState, OverlayUiFrame, OverlayUiPrimitive, PendingOutputControls,
-        PendingWindowControls, WaylandIngress, WindowStackingState, register_entity_index_hooks,
+        KeyboardFocusState, OverlayUiFrame, OverlayUiOutputFrame, OverlayUiPrimitive,
+        PendingOutputControls, PendingWindowControls, WaylandIngress, WindowStackingState,
+        register_entity_index_hooks,
     };
     use nekoland_ecs::selectors::{OutputSelector, SurfaceId};
 
     use super::{
-        WindowSwitcherState, window_switcher_input_system, window_switcher_overlay_system,
+        WindowSwitcherState, switcher_grid_layout, visible_candidate_page,
+        window_switcher_input_system, window_switcher_overlay_system, wrap_switcher_title,
     };
 
     fn build_switcher_test_app() -> (NekolandApp, OutputId) {
+        build_switcher_test_app_with_windows(&[11, 22], 1280, 720)
+    }
+
+    fn build_switcher_test_app_with_windows(
+        surface_ids: &[u64],
+        output_width: u32,
+        output_height: u32,
+    ) -> (NekolandApp, OutputId) {
+        assert!(!surface_ids.is_empty(), "switcher test app needs at least one window");
+
         let mut app = NekolandApp::new("window-switcher-test");
         register_entity_index_hooks(app.inner_mut().world_mut());
         app.inner_mut()
@@ -594,8 +762,8 @@ mod tests {
                     model: "test".to_owned(),
                 },
                 properties: OutputProperties {
-                    width: 1280,
-                    height: 720,
+                    width: output_width,
+                    height: output_height,
                     refresh_millihz: 60_000,
                     scale: 1,
                 },
@@ -605,16 +773,21 @@ mod tests {
             OutputCurrentWorkspace { workspace: WorkspaceId(1) },
         ));
 
-        spawn_window(app.inner_mut().world_mut(), workspace, 11, "back");
-        spawn_window(app.inner_mut().world_mut(), workspace, 22, "front");
-        app.inner_mut().world_mut().resource_mut::<KeyboardFocusState>().focused_surface = Some(22);
+        for surface_id in surface_ids {
+            let title = format!("window-{surface_id}");
+            spawn_window(app.inner_mut().world_mut(), workspace, *surface_id, &title);
+        }
+        let focused_surface =
+            *surface_ids.last().expect("switcher test app needs a focused window");
+        app.inner_mut().world_mut().resource_mut::<KeyboardFocusState>().focused_surface =
+            Some(focused_surface);
         app.inner_mut().world_mut().resource_mut::<WaylandIngress>().primary_output.id =
             Some(output_id);
         app.inner_mut()
             .world_mut()
             .resource_mut::<WindowStackingState>()
             .workspaces
-            .insert(1, vec![11, 22]);
+            .insert(1, surface_ids.to_vec());
         (app, output_id)
     }
 
@@ -671,6 +844,31 @@ mod tests {
         pressed.record_key(23, false);
         pressed.record_key(50, false);
         pressed.record_key(64, false);
+    }
+
+    fn hold_alt_without_tab(world: &mut World) {
+        let mut pressed = world.resource_mut::<nekoland_ecs::resources::PressedKeys>();
+        pressed.clear_frame_transitions();
+        pressed.record_key(23, false);
+    }
+
+    fn overlay_output(app: &NekolandApp, output_id: OutputId) -> &OverlayUiOutputFrame {
+        app.inner()
+            .world()
+            .resource::<OverlayUiFrame>()
+            .outputs
+            .get(&output_id)
+            .expect("switcher overlay should target the origin output")
+    }
+
+    fn set_window_title(world: &mut World, surface_id: u64, title: &str) {
+        let mut windows = world.query::<(&WlSurfaceHandle, &mut Window)>();
+        let Some((_, mut window)) =
+            windows.iter_mut(world).find(|(surface, _)| surface.id == surface_id)
+        else {
+            panic!("window should exist");
+        };
+        window.title = title.to_owned();
     }
 
     #[test]
@@ -750,18 +948,148 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let overlay = app
-            .inner()
-            .world()
-            .resource::<OverlayUiFrame>()
-            .outputs
-            .get(&output_id)
-            .expect("switcher overlay should target the origin output");
+        let overlay = overlay_output(&app, output_id);
         assert!(overlay.primitives.iter().any(|primitive| {
             matches!(
                 primitive,
                 OverlayUiPrimitive::Surface(surface) if surface.surface_id == 11
             )
         }));
+    }
+
+    #[test]
+    fn switcher_overlay_places_titles_above_thumbnails_without_app_labels() {
+        let (mut app, output_id) = build_switcher_test_app();
+        press_alt_tab(app.inner_mut().world_mut());
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let overlay = overlay_output(&app, output_id);
+        let title_y = overlay
+            .primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                OverlayUiPrimitive::Text(text)
+                    if text.id.as_str().starts_with("window_switcher.title.11.") =>
+                {
+                    Some(text.y)
+                }
+                _ => None,
+            })
+            .expect("title primitive should exist for the selected candidate");
+        let thumbnail_y = overlay
+            .primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                OverlayUiPrimitive::Surface(surface) if surface.surface_id == 11 => {
+                    Some(surface.rect.y)
+                }
+                _ => None,
+            })
+            .expect("thumbnail primitive should exist for the selected candidate");
+
+        assert!(title_y < thumbnail_y);
+        assert!(!overlay.primitives.iter().any(|primitive| match primitive {
+            OverlayUiPrimitive::Text(text) => text.id.as_str().starts_with("window_switcher.app."),
+            _ => false,
+        }));
+    }
+
+    #[test]
+    fn switcher_overlay_shows_later_words_from_long_window_titles() {
+        let (mut app, output_id) = build_switcher_test_app();
+        set_window_title(app.inner_mut().world_mut(), 11, "Window 1 Terminal Project README.md");
+        press_alt_tab(app.inner_mut().world_mut());
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let title_lines = overlay_output(&app, output_id)
+            .primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                OverlayUiPrimitive::Text(text)
+                    if text.id.as_str().starts_with("window_switcher.title.11.") =>
+                {
+                    Some(text.text.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(title_lines.len(), 2);
+        let joined = title_lines.join(" ");
+        assert!(joined.contains("README"), "title lines should keep later title words");
+        assert!(joined.contains("Terminal"), "title lines should keep the true window title");
+    }
+
+    #[test]
+    fn switcher_overlay_wraps_cards_into_multiple_rows() {
+        let surface_ids = (11_u64..=18).collect::<Vec<_>>();
+        let (mut app, output_id) = build_switcher_test_app_with_windows(&surface_ids, 1280, 720);
+        press_alt_tab(app.inner_mut().world_mut());
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let overlay = overlay_output(&app, output_id);
+        let positions = overlay
+            .primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                OverlayUiPrimitive::Surface(surface) => Some((surface.rect.x, surface.rect.y)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let unique_x = positions.iter().map(|(x, _)| *x).collect::<BTreeSet<_>>();
+        let unique_y = positions.iter().map(|(_, y)| *y).collect::<BTreeSet<_>>();
+
+        assert!(unique_x.len() > 1, "wrapped grid should use multiple columns");
+        assert!(unique_y.len() > 1, "wrapped grid should use multiple rows");
+    }
+
+    #[test]
+    fn switcher_overlay_pages_visible_cards_around_the_selected_window() {
+        let surface_ids = (11_u64..=40).collect::<Vec<_>>();
+        let (mut app, output_id) = build_switcher_test_app_with_windows(&surface_ids, 1280, 720);
+        press_alt_tab(app.inner_mut().world_mut());
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        hold_alt_without_tab(app.inner_mut().world_mut());
+        let selected_index = 25;
+        let candidate_order = surface_ids.iter().copied().rev().collect::<Vec<_>>();
+        let selected_surface = candidate_order[selected_index];
+        {
+            let mut switcher = app.inner_mut().world_mut().resource_mut::<WindowSwitcherState>();
+            switcher.selected_index = selected_index;
+            switcher.selected_surface = Some(SurfaceId(selected_surface));
+        }
+        app.inner_mut().world_mut().resource_mut::<OverlayUiFrame>().clear();
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let layout = switcher_grid_layout(1280, 720, candidate_order.len())
+            .expect("grid layout should exist");
+        let (start, end) =
+            visible_candidate_page(candidate_order.len(), selected_index, layout.visible_capacity);
+        let expected_visible = candidate_order[start..end].iter().copied().collect::<BTreeSet<_>>();
+        let actual_visible = overlay_output(&app, output_id)
+            .primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                OverlayUiPrimitive::Surface(surface) => Some(surface.surface_id),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(actual_visible, expected_visible);
+        assert!(actual_visible.contains(&selected_surface));
+        assert_eq!(actual_visible.len(), end - start);
+    }
+
+    #[test]
+    fn wrap_switcher_title_uses_two_lines_before_truncating() {
+        let lines = wrap_switcher_title("Window 1 Terminal Project README.md", 18);
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Window"));
+        assert!(lines[1].contains("Project") || lines[1].contains("README"));
     }
 }
