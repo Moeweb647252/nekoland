@@ -16,6 +16,7 @@ pub struct ProtocolDmabufSupport {
     pub formats: Vec<smithay::backend::allocator::Format>,
     pub renderable_formats: Vec<smithay::backend::allocator::Format>,
     pub importable: bool,
+    pub main_device: Option<u64>,
 }
 
 impl ProtocolDmabufSupport {
@@ -25,6 +26,7 @@ impl ProtocolDmabufSupport {
         formats: impl IntoIterator<Item = smithay::backend::allocator::Format>,
         renderable_formats: impl IntoIterator<Item = smithay::backend::allocator::Format>,
         importable: bool,
+        main_device: Option<u64>,
     ) {
         for format in formats {
             if !self.formats.contains(&format) {
@@ -37,6 +39,9 @@ impl ProtocolDmabufSupport {
             }
         }
         self.importable |= importable;
+        if self.main_device.is_none() {
+            self.main_device = main_device;
+        }
     }
 
     /// Returns whether the given format can be imported by the compositor.
@@ -642,8 +647,11 @@ impl ProtocolRuntimeState {
         let primary_selection_state =
             super::SmithayPrimarySelectionState::new::<Self>(display_handle);
         let mut dmabuf_state = super::SmithayDmabufState::new();
-        let dmabuf_global =
-            dmabuf_state.create_global::<Self>(display_handle, Vec::<super::DmabufFormat>::new());
+        let dmabuf_global = create_dmabuf_global(
+            &mut dmabuf_state,
+            display_handle,
+            &ProtocolDmabufSupport::default(),
+        );
         let viewporter_state = super::SmithayViewporterState::new::<Self>(display_handle);
         let fractional_scale_state =
             super::FractionalScaleManagerState::new::<Self>(display_handle);
@@ -750,8 +758,7 @@ impl ProtocolRuntimeState {
 
         self.dmabuf_state.disable_global::<Self>(display_handle, &self._dmabuf_global);
         self.dmabuf_state.destroy_global::<Self>(display_handle, self._dmabuf_global);
-        self._dmabuf_global =
-            self.dmabuf_state.create_global::<Self>(display_handle, support.formats.clone());
+        self._dmabuf_global = create_dmabuf_global(&mut self.dmabuf_state, display_handle, support);
         self.dmabuf_support = support.clone();
     }
 
@@ -920,6 +927,36 @@ impl ProtocolRuntimeState {
             app_id,
         });
     }
+}
+
+fn create_dmabuf_global(
+    dmabuf_state: &mut smithay::wayland::dmabuf::DmabufState,
+    display_handle: &smithay::reexports::wayland_server::DisplayHandle,
+    support: &ProtocolDmabufSupport,
+) -> smithay::wayland::dmabuf::DmabufGlobal {
+    if let Some(main_device) = support.main_device {
+        match smithay::wayland::dmabuf::DmabufFeedbackBuilder::new(
+            main_device as _,
+            support.formats.clone(),
+        )
+        .build()
+        {
+            Ok(default_feedback) => {
+                return dmabuf_state.create_global_with_default_feedback::<ProtocolRuntimeState>(
+                    display_handle,
+                    &default_feedback,
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to build dmabuf default feedback; falling back to format-only global"
+                );
+            }
+        }
+    }
+
+    dmabuf_state.create_global::<ProtocolRuntimeState>(display_handle, support.formats.clone())
 }
 
 impl SmithayProtocolRuntime {

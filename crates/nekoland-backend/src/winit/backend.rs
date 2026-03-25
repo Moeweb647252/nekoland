@@ -629,8 +629,10 @@ impl Backend for WinitRuntime {
             .as_ref()
             .map(|backend| backend.dmabuf_render_formats())
             .unwrap_or_default();
+        let main_device =
+            self.shared.borrow().backend.as_ref().and_then(|backend| backend.dmabuf_main_device());
         if !formats.is_empty() {
-            support.merge_formats(formats, renderable_formats, true);
+            support.merge_formats(formats, renderable_formats, true, main_device);
         }
         Ok(())
     }
