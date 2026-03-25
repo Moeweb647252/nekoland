@@ -1,3 +1,7 @@
+//! Workspace-local tiling trees and geometry arrangement helpers.
+
+#![allow(missing_docs)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::prelude::Resource;
@@ -7,6 +11,7 @@ use crate::components::SurfaceGeometry;
 
 use super::WorkArea;
 
+/// Synthetic workspace bucket used before a surface belongs to a concrete workspace.
 pub const UNASSIGNED_WORKSPACE_TILING_ID: u32 = 0;
 
 /// Split axis for one internal tiling-tree node.
@@ -19,6 +24,7 @@ pub enum SplitAxis {
 }
 
 impl SplitAxis {
+    /// Returns the opposite split axis.
     pub const fn alternate(self) -> Self {
         match self {
             Self::Horizontal => Self::Vertical,
@@ -55,6 +61,7 @@ pub struct WorkspaceTileTree {
 }
 
 impl WorkspaceTileTree {
+    /// Ensures the given surface participates in the workspace tile tree.
     pub fn ensure_surface(&mut self, surface_id: u64) {
         if self.surface_nodes.contains_key(&surface_id) {
             return;
@@ -64,6 +71,7 @@ impl WorkspaceTileTree {
         self.insert_surface_node(surface_id);
     }
 
+    /// Removes surfaces that no longer belong to the workspace.
     pub fn retain_surfaces(&mut self, known_surfaces: &BTreeSet<u64>) {
         let removed = self
             .leaf_surfaces
@@ -76,10 +84,12 @@ impl WorkspaceTileTree {
         }
     }
 
+    /// Returns whether the tile tree contains no surfaces.
     pub fn is_empty(&self) -> bool {
         self.leaf_surfaces.is_empty()
     }
 
+    /// Sets the split axis of the root split node, if one exists.
     pub fn set_root_axis(&mut self, axis: SplitAxis) {
         self.root_axis = axis;
         if let Some(root) = self.root
@@ -89,6 +99,7 @@ impl WorkspaceTileTree {
         }
     }
 
+    /// Sets the parent split axis for the given surface.
     pub fn set_surface_split_axis(&mut self, surface_id: u64, axis: SplitAxis) {
         let Some(node_id) = self.surface_nodes.get(&surface_id).copied() else {
             return;
@@ -102,6 +113,7 @@ impl WorkspaceTileTree {
         }
     }
 
+    /// Arranges all leaf surfaces into geometry inside the provided work area.
     pub fn arranged_geometry(&self, work_area: &WorkArea) -> BTreeMap<u64, SurfaceGeometry> {
         let Some(root) = self.root else {
             return BTreeMap::new();
@@ -121,6 +133,7 @@ impl WorkspaceTileTree {
         geometry
     }
 
+    /// Returns the split axis currently governing the given surface, if any.
     pub fn split_axis_for_surface(&self, surface_id: u64) -> Option<SplitAxis> {
         let node_id = self.surface_nodes.get(&surface_id).copied()?;
         let parent_id = self.parents.get(&node_id).copied()?;
@@ -230,6 +243,7 @@ impl WorkspaceTileTree {
         TileNodeId(next)
     }
 
+    /// Rebuilds the tree structure while preserving the current leaf order and root axis.
     pub fn rebuild_from_leaf_order(&mut self) {
         let leaf_surfaces = self.leaf_surfaces.clone();
         let root_axis = self.root_axis;
@@ -269,18 +283,22 @@ pub struct WorkspaceTilingState {
 }
 
 impl WorkspaceTilingState {
+    /// Ensures the given surface participates in the target workspace tile tree.
     pub fn ensure_surface(&mut self, workspace_id: u32, surface_id: u64) {
         self.workspaces.entry(workspace_id).or_default().ensure_surface(surface_id);
     }
 
+    /// Sets the root split axis for one workspace.
     pub fn set_root_axis(&mut self, workspace_id: u32, axis: SplitAxis) {
         self.workspaces.entry(workspace_id).or_default().set_root_axis(axis);
     }
 
+    /// Sets the split axis associated with a surface in one workspace.
     pub fn set_surface_split_axis(&mut self, workspace_id: u32, surface_id: u64, axis: SplitAxis) {
         self.workspaces.entry(workspace_id).or_default().set_surface_split_axis(surface_id, axis);
     }
 
+    /// Removes unknown surfaces and prunes empty workspaces.
     pub fn retain_known(&mut self, known_surfaces: &BTreeMap<u64, u32>) {
         let mut known_by_workspace = BTreeMap::<u32, BTreeSet<u64>>::new();
         for (surface_id, workspace_id) in known_surfaces {
@@ -301,6 +319,7 @@ impl WorkspaceTilingState {
         }
     }
 
+    /// Arranges tiled window geometry for all workspaces into one aggregated map.
     pub fn arranged_geometry(&self, work_area: &WorkArea) -> BTreeMap<u64, SurfaceGeometry> {
         let mut geometry = BTreeMap::new();
         for tree in self.workspaces.values() {

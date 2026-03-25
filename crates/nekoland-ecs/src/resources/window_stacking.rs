@@ -1,5 +1,7 @@
 //! Per-workspace managed window stacking order snapshots.
 
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 

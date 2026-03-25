@@ -1,3 +1,8 @@
+//! Protocol bridge payloads and boundary resources exchanged between callback-driven platform
+//! code and scheduled ECS systems.
+
+#![allow(missing_docs)]
+
 use std::fmt;
 
 use bevy_ecs::prelude::Resource;
@@ -73,18 +78,22 @@ pub enum ResizeEdges {
 }
 
 impl ResizeEdges {
+    /// Returns whether the edge set includes the left edge.
     pub fn has_left(self) -> bool {
         matches!(self, Self::Left | Self::TopLeft | Self::BottomLeft)
     }
 
+    /// Returns whether the edge set includes the right edge.
     pub fn has_right(self) -> bool {
         matches!(self, Self::Right | Self::TopRight | Self::BottomRight)
     }
 
+    /// Returns whether the edge set includes the top edge.
     pub fn has_top(self) -> bool {
         matches!(self, Self::Top | Self::TopLeft | Self::TopRight)
     }
 
+    /// Returns whether the edge set includes the bottom edge.
     pub fn has_bottom(self) -> bool {
         matches!(self, Self::Bottom | Self::BottomLeft | Self::BottomRight)
     }

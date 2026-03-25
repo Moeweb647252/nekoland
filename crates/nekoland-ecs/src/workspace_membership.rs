@@ -1,3 +1,5 @@
+//! Helpers for resolving workspace/output relationships from shared runtime views.
+
 use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::prelude::{Entity, Query};
 use bevy_ecs::query::QueryFilter;
@@ -90,6 +92,7 @@ pub fn window_workspace_runtime_id(
     })
 }
 
+/// Resolves the output name currently hosting the given workspace id.
 pub fn output_name_for_workspace_runtime_id(
     workspace_id: Option<u32>,
     outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
@@ -104,6 +107,7 @@ pub fn output_name_for_workspace_runtime_id(
     })
 }
 
+/// Resolves an output name from a stable output id.
 pub fn output_name_for_output_id(
     output_id: OutputId,
     outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
@@ -114,6 +118,7 @@ pub fn output_name_for_output_id(
         .map(|(_, output)| output.name().to_owned())
 }
 
+/// Returns the focused output name, then the primary output name, then the first available output.
 pub fn focused_or_primary_output_name(
     outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
     focused_output_id: Option<OutputId>,
@@ -134,6 +139,7 @@ pub fn focused_or_primary_output_name(
     outputs.iter().next().map(|(_, output)| output.name().to_owned())
 }
 
+/// Resolves the current workspace entity associated with the named output.
 pub fn current_workspace_runtime_target_for_output_name(
     output_name: &str,
     outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
@@ -151,6 +157,7 @@ pub fn current_workspace_runtime_target_for_output_name(
         .or_else(|| entity_index.entity_for_workspace_id(fallback_workspace_id))
 }
 
+/// Resolves the current workspace entity associated with the given output id.
 pub fn current_workspace_runtime_target_for_output_id(
     output_id: OutputId,
     outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
@@ -168,6 +175,7 @@ pub fn current_workspace_runtime_target_for_output_id(
         .or_else(|| entity_index.entity_for_workspace_id(fallback_workspace_id))
 }
 
+/// Resolves the focused output's workspace target, falling back to primary or a configured default.
 pub fn focused_or_primary_workspace_runtime_target(
     outputs: &Query<(Entity, OutputRuntime), impl QueryFilter>,
     focused_output_id: Option<OutputId>,

@@ -1,3 +1,7 @@
+//! High-level window control queues used by IPC, keybindings, and shell systems.
+
+#![allow(missing_docs)]
+
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 

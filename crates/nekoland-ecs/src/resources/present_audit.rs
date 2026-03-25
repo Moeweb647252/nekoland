@@ -1,3 +1,7 @@
+//! Present-time audit snapshots captured by backend execution for debugging and IPC.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::Resource;

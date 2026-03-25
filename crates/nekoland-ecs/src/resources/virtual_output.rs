@@ -1,3 +1,7 @@
+//! Virtual-output capture snapshots used by tests, tooling, and offscreen backends.
+
+#![allow(missing_docs)]
+
 use std::collections::VecDeque;
 
 use bevy_ecs::prelude::Resource;

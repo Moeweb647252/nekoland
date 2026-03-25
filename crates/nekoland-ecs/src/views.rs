@@ -1,5 +1,7 @@
 //! QueryData views that bundle commonly co-accessed ECS state into reusable runtime projections.
 
+#![allow(missing_docs)]
+
 use bevy_ecs::hierarchy::ChildOf;
 use bevy_ecs::query::QueryData;
 

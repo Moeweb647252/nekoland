@@ -1,3 +1,7 @@
+//! Keyboard focus, modifier, and pressed-key snapshots used by input-driven systems.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeSet;
 
 use bevy_ecs::prelude::Resource;
@@ -44,10 +48,12 @@ pub struct ModifierMask {
 }
 
 impl ModifierMask {
+    /// Builds a typed modifier mask from explicit booleans.
     pub const fn new(ctrl: bool, alt: bool, shift: bool, logo: bool) -> Self {
         Self { ctrl, alt, shift, logo }
     }
 
+    /// Returns whether the currently held modifiers satisfy this required mask.
     pub fn matches_required(&self, modifiers: &ModifierState) -> bool {
         (!self.ctrl || modifiers.ctrl)
             && (!self.alt || modifiers.alt)
@@ -55,10 +61,12 @@ impl ModifierMask {
             && (!self.logo || modifiers.logo)
     }
 
+    /// Returns whether the mask requires no modifiers.
     pub fn is_empty(&self) -> bool {
         !self.ctrl && !self.alt && !self.shift && !self.logo
     }
 
+    /// Parses a modifier mask from config-style tokens such as `Ctrl` or `Super`.
     pub fn from_config_tokens<'a>(
         tokens: impl IntoIterator<Item = &'a str>,
     ) -> Result<Self, String> {
@@ -82,6 +90,7 @@ impl ModifierMask {
         Ok(mask)
     }
 
+    /// Serializes the mask back into user-facing config tokens.
     pub fn config_tokens(&self) -> Vec<String> {
         let mut tokens = Vec::new();
 
@@ -103,11 +112,13 @@ impl ModifierMask {
 }
 
 impl PressedKeys {
+    /// Clears the per-frame transition sets while keeping held keys intact.
     pub fn clear_frame_transitions(&mut self) {
         self.just_pressed.clear();
         self.just_released.clear();
     }
 
+    /// Clears all held keys and modifier state.
     pub fn reset_all(&mut self) {
         self.held.clear();
         self.just_pressed.clear();
@@ -115,6 +126,7 @@ impl PressedKeys {
         self.modifiers = ModifierState::default();
     }
 
+    /// Records one key press or release and updates modifier state accordingly.
     pub fn record_key(&mut self, keycode: u32, pressed: bool) {
         if pressed {
             if self.held.insert(keycode) {
@@ -127,36 +139,44 @@ impl PressedKeys {
         update_modifier_state(&mut self.modifiers, keycode, pressed);
     }
 
+    /// Returns the current modifier snapshot.
     pub fn modifiers(&self) -> &ModifierState {
         &self.modifiers
     }
 
+    /// Returns the set of currently held keycodes.
     pub fn held(&self) -> &BTreeSet<u32> {
         &self.held
     }
 
+    /// Returns whether the given key is currently held.
     pub fn is_key_held(&self, keycode: u32) -> bool {
         self.held.contains(&keycode)
     }
 
+    /// Returns whether the key was first pressed during the current frame.
     pub fn was_key_just_pressed(&self, keycode: u32) -> bool {
         self.just_pressed.contains(&keycode)
     }
 
+    /// Returns whether the key was released during the current frame.
     pub fn was_key_just_released(&self, keycode: u32) -> bool {
         self.just_released.contains(&keycode)
     }
 
+    /// Returns whether a shortcut is currently active with an exact modifier match.
     pub fn is_pressed(&self, shortcut: &KeyShortcut) -> bool {
         shortcut.keycode.is_none_or(|keycode| self.held.contains(&keycode))
             && modifiers_match_exact(&self.modifiers, &shortcut.modifiers)
     }
 
+    /// Returns whether a shortcut was just pressed this frame.
     pub fn just_pressed(&self, shortcut: &KeyShortcut) -> bool {
         shortcut.keycode.is_some_and(|keycode| self.just_pressed.contains(&keycode))
             && modifiers_match_exact(&self.modifiers, &shortcut.modifiers)
     }
 
+    /// Returns whether a shortcut was just released this frame.
     pub fn just_released(&self, shortcut: &KeyShortcut) -> bool {
         shortcut.keycode.is_some_and(|keycode| self.just_released.contains(&keycode))
             && modifiers_match_exact(&self.modifiers, &shortcut.modifiers)
@@ -164,10 +184,12 @@ impl PressedKeys {
 }
 
 impl KeyShortcut {
+    /// Builds a typed shortcut from a modifier mask and optional keycode.
     pub const fn new(modifiers: ModifierMask, keycode: Option<u32>) -> Self {
         Self { modifiers, keycode }
     }
 
+    /// Builds a modifier-only shortcut with no keycode.
     pub const fn modifier_only(modifiers: ModifierMask) -> Self {
         Self::new(modifiers, None)
     }
@@ -180,6 +202,7 @@ fn modifiers_match_exact(current: &ModifierState, expected: &ModifierMask) -> bo
         && current.logo == expected.logo
 }
 
+/// Updates the coarse modifier snapshot for one raw key transition.
 pub fn update_modifier_state(modifiers: &mut ModifierState, keycode: u32, pressed: bool) {
     match keycode {
         37 | 105 => modifiers.ctrl = pressed,

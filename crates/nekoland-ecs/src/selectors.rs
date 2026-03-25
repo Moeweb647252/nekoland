@@ -1,3 +1,7 @@
+//! Typed selectors and stable user-facing ids used at control-plane boundaries.
+
+#![allow(missing_docs)]
+
 use serde::{Deserialize, Serialize};
 
 use crate::components::{OutputId, WorkspaceId};
@@ -27,6 +31,7 @@ impl From<SurfaceId> for u64 {
 pub struct WorkspaceName(pub String);
 
 impl WorkspaceName {
+    /// Returns the workspace name as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -50,6 +55,7 @@ impl From<&str> for WorkspaceName {
 pub struct OutputName(pub String);
 
 impl OutputName {
+    /// Returns the output name as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -89,6 +95,7 @@ pub enum WorkspaceLookup {
 }
 
 impl WorkspaceLookup {
+    /// Parses a workspace lookup from either a numeric id or a display name.
     pub fn parse(boundary: &str) -> Self {
         boundary
             .parse::<u32>()
@@ -120,6 +127,7 @@ pub enum WorkspaceSelector {
 }
 
 impl WorkspaceSelector {
+    /// Parses a workspace selector from either a numeric id or a display name.
     pub fn parse(boundary: &str) -> Self {
         match WorkspaceLookup::parse(boundary) {
             WorkspaceLookup::Id(id) => Self::Id(id),
@@ -150,6 +158,7 @@ pub enum OutputSelector {
 }
 
 impl OutputSelector {
+    /// Parses an output selector from `primary`, `focused`, or a display name.
     pub fn parse(boundary: &str) -> Self {
         if boundary.eq_ignore_ascii_case("primary") {
             Self::Primary

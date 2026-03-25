@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 //! Shared ECS-facing data model used across the workspace.
 //!
 //! This crate intentionally stays close to pure data definitions so backend, protocol, shell, and
