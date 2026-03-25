@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::io::Error as IoError;
+use std::ops::RangeInclusive;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,11 +30,24 @@ use smithay::reexports::winit::event_loop::{
 };
 use smithay::reexports::winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
 use smithay::reexports::winit::platform::scancode::PhysicalKeyExtScancode;
-use smithay::reexports::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use smithay::reexports::winit::raw_window_handle::{
+    HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle,
+};
 use smithay::reexports::winit::window::{
     CursorGrabMode, Window as HostWindow, WindowAttributes, WindowId,
 };
 use smithay::utils::{Physical, Rectangle, Size};
+use wayland_client::{
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop,
+    globals::{BindError, GlobalListContents, registry_queue_init},
+    protocol::{wl_registry, wl_seat, wl_surface},
+};
+use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
+    zwp_keyboard_shortcuts_inhibit_manager_v1::{
+        self, ZwpKeyboardShortcutsInhibitManagerV1,
+    },
+    zwp_keyboard_shortcuts_inhibitor_v1::ZwpKeyboardShortcutsInhibitorV1,
+};
 use wayland_egl as wegl;
 
 pub(crate) const HOST_WINIT_DEVICE: &str = "winit";
@@ -59,6 +73,7 @@ pub(crate) struct HostWinitGraphicsBackend {
     window: Arc<HostWindow>,
     damage_tracking: bool,
     bind_size: Option<Size<i32, Physical>>,
+    wayland_shortcuts_inhibit: Option<HostWaylandShortcutsInhibitState>,
 }
 
 impl HostWinitGraphicsBackend {
@@ -73,6 +88,21 @@ impl HostWinitGraphicsBackend {
 
     pub(crate) fn window(&self) -> &HostWindow {
         &self.window
+    }
+
+    pub(crate) fn sync_wayland_shortcuts_inhibitor(&mut self) {
+        let should_inhibit =
+            should_inhibit_host_wayland_shortcuts(self.window.fullscreen().is_some(), self.window.has_focus());
+        let Some(state) = self.wayland_shortcuts_inhibit.as_mut() else {
+            return;
+        };
+        if let Err(error) = state.sync(should_inhibit) {
+            tracing::warn!(
+                error = %error,
+                "failed to synchronize host Wayland keyboard shortcut inhibitor"
+            );
+            self.wayland_shortcuts_inhibit = None;
+        }
     }
 
     pub(crate) fn bind(
@@ -129,6 +159,215 @@ impl HostWinitGraphicsBackend {
             .map(|formats| formats.iter().copied().collect::<Vec<_>>())
             .unwrap_or_default()
     }
+}
+
+#[derive(Debug, Default)]
+struct HostWaylandShortcutDispatchState;
+
+impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for HostWaylandShortcutDispatchState {
+    fn event(
+        _: &mut Self,
+        _: &wl_registry::WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+delegate_noop!(HostWaylandShortcutDispatchState: ignore wl_seat::WlSeat);
+delegate_noop!(HostWaylandShortcutDispatchState: ignore zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1);
+delegate_noop!(HostWaylandShortcutDispatchState: ignore ZwpKeyboardShortcutsInhibitorV1);
+
+#[derive(Debug)]
+struct HostWaylandShortcutsInhibitState {
+    event_queue: EventQueue<HostWaylandShortcutDispatchState>,
+    dispatch_state: HostWaylandShortcutDispatchState,
+    manager: ZwpKeyboardShortcutsInhibitManagerV1,
+    seat: wl_seat::WlSeat,
+    surface: wl_surface::WlSurface,
+    inhibitor: Option<ZwpKeyboardShortcutsInhibitorV1>,
+}
+
+impl HostWaylandShortcutsInhibitState {
+    fn try_new(window: &HostWindow) -> Option<Self> {
+        let raw_display = match window.display_handle() {
+            Ok(handle) => handle.as_raw(),
+            Err(error) => {
+                tracing::debug!(error = %error, "host window did not expose a display handle");
+                return None;
+            }
+        };
+        let raw_window = match window.window_handle() {
+            Ok(handle) => handle.as_raw(),
+            Err(error) => {
+                tracing::debug!(error = %error, "host window did not expose a window handle");
+                return None;
+            }
+        };
+        let (display_ptr, surface_ptr) = match (raw_display, raw_window) {
+            (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(surface)) => {
+                (display.display.as_ptr().cast(), surface.surface.as_ptr().cast())
+            }
+            _ => return None,
+        };
+
+        let connection = Connection::from_backend(unsafe {
+            wayland_client::backend::Backend::from_foreign_display(display_ptr)
+        });
+        let (globals, event_queue) =
+            match registry_queue_init::<HostWaylandShortcutDispatchState>(&connection) {
+                Ok(state) => state,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "failed to initialize host Wayland registry queue for keyboard shortcut inhibitor"
+                    );
+                    return None;
+                }
+            };
+        let queue_handle = event_queue.handle();
+        let manager = match globals.bind::<ZwpKeyboardShortcutsInhibitManagerV1, _, _>(
+            &queue_handle,
+            1..=1,
+            (),
+        ) {
+            Ok(manager) => manager,
+            Err(BindError::NotPresent) => {
+                tracing::debug!(
+                    "host Wayland compositor does not advertise keyboard-shortcuts-inhibit"
+                );
+                return None;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to bind host Wayland keyboard shortcut inhibitor manager"
+                );
+                return None;
+            }
+        };
+        let seat = match bind_first_global::<wl_seat::WlSeat>(&globals, &queue_handle, 1..=1) {
+            Ok(seat) => seat,
+            Err(BindError::NotPresent) => {
+                tracing::debug!("host Wayland compositor did not advertise a wl_seat");
+                return None;
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to bind host Wayland wl_seat");
+                return None;
+            }
+        };
+        let surface_id = unsafe {
+            wayland_client::backend::ObjectId::from_ptr(wl_surface::WlSurface::interface(), surface_ptr)
+        };
+        let surface_id = match surface_id {
+            Ok(surface_id) => surface_id,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to wrap host Wayland surface pointer for keyboard shortcut inhibitor"
+                );
+                return None;
+            }
+        };
+        let surface = match wl_surface::WlSurface::from_id(&connection, surface_id) {
+            Ok(surface) => surface,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to construct host Wayland surface proxy for keyboard shortcut inhibitor"
+                );
+                return None;
+            }
+        };
+
+        Some(Self {
+            event_queue,
+            dispatch_state: HostWaylandShortcutDispatchState,
+            manager,
+            seat,
+            surface,
+            inhibitor: None,
+        })
+    }
+
+    fn sync(&mut self, should_inhibit: bool) -> Result<(), String> {
+        self.dispatch_pending()?;
+        match (self.inhibitor.is_some(), should_inhibit) {
+            (false, true) => self.create_inhibitor()?,
+            (true, false) => self.destroy_inhibitor()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn create_inhibitor(&mut self) -> Result<(), String> {
+        let queue_handle = self.event_queue.handle();
+        let inhibitor = self.manager.inhibit_shortcuts(&self.surface, &self.seat, &queue_handle, ());
+        self.inhibitor = Some(inhibitor);
+        self.flush_requests()
+    }
+
+    fn destroy_inhibitor(&mut self) -> Result<(), String> {
+        let Some(inhibitor) = self.inhibitor.take() else {
+            return Ok(());
+        };
+        inhibitor.destroy();
+        self.flush_requests()
+    }
+
+    fn dispatch_pending(&mut self) -> Result<(), String> {
+        self.event_queue
+            .dispatch_pending(&mut self.dispatch_state)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn flush_requests(&mut self) -> Result<(), String> {
+        self.event_queue.flush().map_err(|error| error.to_string())
+    }
+}
+
+impl Drop for HostWaylandShortcutsInhibitState {
+    fn drop(&mut self) {
+        let _ = self.destroy_inhibitor();
+        self.manager.destroy();
+        let _ = self.flush_requests();
+        let _ = self.dispatch_pending();
+    }
+}
+
+fn bind_first_global<I>(
+    globals: &wayland_client::globals::GlobalList,
+    queue_handle: &QueueHandle<HostWaylandShortcutDispatchState>,
+    version: RangeInclusive<u32>,
+) -> Result<I, BindError>
+where
+    I: Proxy + 'static,
+    HostWaylandShortcutDispatchState: Dispatch<I, ()> + 'static,
+{
+    let version_start = *version.start();
+    let version_end = *version.end();
+    let global = globals
+        .contents()
+        .clone_list()
+        .into_iter()
+        .find(|global| global.interface == I::interface().name)
+        .ok_or(BindError::NotPresent)?;
+
+    if global.version < version_start {
+        return Err(BindError::UnsupportedVersion);
+    }
+
+    Ok(globals
+        .registry()
+        .bind::<I, _, _>(global.name, global.version.min(version_end), queue_handle, ()))
+}
+
+fn should_inhibit_host_wayland_shortcuts(fullscreen: bool, focused: bool) -> bool {
+    fullscreen && focused
 }
 
 #[derive(Debug)]
@@ -362,6 +601,7 @@ pub(crate) fn init_host_winit(
         .map_err(|error| NekolandError::Runtime(error.to_string()))?;
     let damage_tracking = display.supports_damage();
     let capture_mode = Rc::new(Cell::new(None));
+    let wayland_shortcuts_inhibit = HostWaylandShortcutsInhibitState::try_new(window.as_ref());
 
     event_loop.set_control_flow(ControlFlow::Poll);
     let event_loop = Generic::new(event_loop, Interest::READ, calloop::Mode::Level);
@@ -374,6 +614,7 @@ pub(crate) fn init_host_winit(
             window: window.clone(),
             damage_tracking,
             bind_size: None,
+            wayland_shortcuts_inhibit,
         },
         HostWinitEventLoop {
             inner: HostWinitEventLoopInner {
@@ -524,7 +765,7 @@ mod tests {
     use smithay::reexports::winit::event::{DeviceEvent, MouseButton, MouseScrollDelta};
     use smithay::reexports::winit::window::CursorGrabMode;
 
-    use crate::winit::host::translate_device_mouse_motion;
+    use crate::winit::host::{should_inhibit_host_wayland_shortcuts, translate_device_mouse_motion};
 
     use super::{translate_button_code, translate_scroll_delta, xorg_mouse_to_libinput};
 
@@ -555,5 +796,12 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn host_wayland_shortcuts_are_only_inhibited_for_focused_fullscreen_windows() {
+        assert!(should_inhibit_host_wayland_shortcuts(true, true));
+        assert!(!should_inhibit_host_wayland_shortcuts(true, false));
+        assert!(!should_inhibit_host_wayland_shortcuts(false, true));
     }
 }

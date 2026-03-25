@@ -903,10 +903,13 @@ fn install_host_winit_source(
     }
     {
         let mut shared = shared.borrow_mut();
-        if let Some(backend) = shared.backend.as_ref() {
-            apply_window_spec(backend.window(), &shared.desired_window_spec);
-            set_host_cursor_capture(backend.window(), true, shared.capture_mode.as_ref());
-            let seed_event = locked_pointer_seed_event(backend.window(), shared.capture_mode.get());
+        let desired_window_spec = shared.desired_window_spec.clone();
+        let capture_mode = shared.capture_mode.clone();
+        if let Some(backend) = shared.backend.as_mut() {
+            apply_window_spec(backend.window(), &desired_window_spec);
+            set_host_cursor_capture(backend.window(), true, capture_mode.as_ref());
+            backend.sync_wayland_shortcuts_inhibitor();
+            let seed_event = locked_pointer_seed_event(backend.window(), capture_mode.get());
             if let Some(seed_event) = seed_event {
                 shared.pending_input_events.push(seed_event);
             }
@@ -924,14 +927,18 @@ fn install_host_winit_source(
                     if shared.active {
                         shared.pending_timestamps_nanos.push(monotonic_now_nanos(&monotonic_clock));
                     }
-                    if let Some(backend) = shared.backend.as_ref() {
+                    if let Some(backend) = shared.backend.as_mut() {
+                        backend.sync_wayland_shortcuts_inhibitor();
                         backend.window().request_redraw();
                     }
                 }
             }
             HostWinitEvent::Resized { size, scale_factor } => {
-                shared.borrow_mut().pending_window_state =
-                    Some(PendingWinitWindowState { size, scale_factor });
+                let mut shared = shared.borrow_mut();
+                shared.pending_window_state = Some(PendingWinitWindowState { size, scale_factor });
+                if let Some(backend) = shared.backend.as_mut() {
+                    backend.sync_wayland_shortcuts_inhibitor();
+                }
             }
             HostWinitEvent::Input(input_event) => {
                 let mut shared = shared.borrow_mut();
@@ -941,14 +948,11 @@ fn install_host_winit_source(
             }
             HostWinitEvent::Focus(focused) => {
                 let mut shared = shared.borrow_mut();
-                if let Some(backend) = shared.backend.as_ref() {
-                    set_host_cursor_capture(
-                        backend.window(),
-                        focused,
-                        shared.capture_mode.as_ref(),
-                    );
-                    let seed_event =
-                        locked_pointer_seed_event(backend.window(), shared.capture_mode.get());
+                let capture_mode = shared.capture_mode.clone();
+                if let Some(backend) = shared.backend.as_mut() {
+                    set_host_cursor_capture(backend.window(), focused, capture_mode.as_ref());
+                    backend.sync_wayland_shortcuts_inhibitor();
+                    let seed_event = locked_pointer_seed_event(backend.window(), capture_mode.get());
                     if let Some(seed_event) = seed_event {
                         shared.pending_input_events.push(seed_event);
                     }

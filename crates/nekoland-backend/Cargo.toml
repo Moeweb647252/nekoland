@@ -18,7 +18,9 @@ nekoland-protocol = { path = "../nekoland-protocol" }
 serde.workspace = true
 smithay.workspace = true
 tracing.workspace = true
+wayland-client = { version = "0.31.10", features = ["system"] }
 wayland-egl = "0.32"
+wayland-protocols = { version = "0.32.11", features = ["client", "unstable"] }
 xcursor = "0.3"
 
 [lints]
