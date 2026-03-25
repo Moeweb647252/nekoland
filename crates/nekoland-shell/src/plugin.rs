@@ -75,6 +75,7 @@ impl NekolandPlugin for ShellPlugin {
                 // normalized state to derive geometry, focus, and server-side decorations.
                 (
                     (
+                        commands::quit_shortcut_system,
                         commands::startup_action_queue_system,
                         commands::external_command_launch_system,
                         commands::command_history_system,
