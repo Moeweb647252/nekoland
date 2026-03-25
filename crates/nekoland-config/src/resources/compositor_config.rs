@@ -10,7 +10,9 @@ use std::fmt;
 
 use bevy_ecs::prelude::Resource;
 use nekoland_ecs::components::{WindowLayout, WindowMode, WindowPolicy};
-use nekoland_ecs::resources::{ModifierMask, SplitAxis};
+use nekoland_ecs::resources::{
+    HorizontalDirection, ModifierMask, TilingPanDirection, VerticalDirection,
+};
 use nekoland_ecs::selectors::{OutputName, WorkspaceLookup, WorkspaceSelector};
 use serde::{Deserialize, Serialize};
 
@@ -61,7 +63,13 @@ pub enum ConfiguredAction {
     CloseFocusedWindow,
     MoveFocusedWindow { x: isize, y: isize },
     ResizeFocusedWindow { width: u32, height: u32 },
-    SplitFocusedWindow { axis: SplitAxis },
+    FocusTilingColumn { direction: HorizontalDirection },
+    FocusTilingWindow { direction: VerticalDirection },
+    MoveTilingColumn { direction: HorizontalDirection },
+    MoveTilingWindow { direction: VerticalDirection },
+    ConsumeIntoTilingColumn { direction: HorizontalDirection },
+    ExpelFromTilingColumn { direction: HorizontalDirection },
+    PanTilingViewport { direction: TilingPanDirection },
     BackgroundFocusedWindow { output: OutputName },
     ClearFocusedWindowBackground,
     SwitchWorkspace { workspace: WorkspaceLookup },
@@ -85,8 +93,26 @@ impl ConfiguredAction {
             Self::ResizeFocusedWindow { width, height } => {
                 format!("resize-focused-window {width} {height}")
             }
-            Self::SplitFocusedWindow { axis } => {
-                format!("split-focused-window {}", split_axis_label(*axis))
+            Self::FocusTilingColumn { direction } => {
+                format!("focus-tiling-column {}", horizontal_direction_label(*direction))
+            }
+            Self::FocusTilingWindow { direction } => {
+                format!("focus-tiling-window {}", vertical_direction_label(*direction))
+            }
+            Self::MoveTilingColumn { direction } => {
+                format!("move-tiling-column {}", horizontal_direction_label(*direction))
+            }
+            Self::MoveTilingWindow { direction } => {
+                format!("move-tiling-window {}", vertical_direction_label(*direction))
+            }
+            Self::ConsumeIntoTilingColumn { direction } => {
+                format!("consume-into-tiling-column {}", horizontal_direction_label(*direction))
+            }
+            Self::ExpelFromTilingColumn { direction } => {
+                format!("expel-from-tiling-column {}", horizontal_direction_label(*direction))
+            }
+            Self::PanTilingViewport { direction } => {
+                format!("pan-tiling-viewport {}", tiling_pan_direction_label(*direction))
             }
             Self::BackgroundFocusedWindow { output } => {
                 format!("background-focused-window {}", output.as_str())
@@ -129,10 +155,26 @@ pub struct WindowRuleContext<'a> {
     pub prefer_floating: bool,
 }
 
-fn split_axis_label(axis: SplitAxis) -> &'static str {
-    match axis {
-        SplitAxis::Horizontal => "horizontal",
-        SplitAxis::Vertical => "vertical",
+fn horizontal_direction_label(direction: HorizontalDirection) -> &'static str {
+    match direction {
+        HorizontalDirection::Left => "left",
+        HorizontalDirection::Right => "right",
+    }
+}
+
+fn vertical_direction_label(direction: VerticalDirection) -> &'static str {
+    match direction {
+        VerticalDirection::Up => "up",
+        VerticalDirection::Down => "down",
+    }
+}
+
+fn tiling_pan_direction_label(direction: TilingPanDirection) -> &'static str {
+    match direction {
+        TilingPanDirection::Left => "left",
+        TilingPanDirection::Right => "right",
+        TilingPanDirection::Up => "up",
+        TilingPanDirection::Down => "down",
     }
 }
 

@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::commands::{
-    ActionCommand, OutputCommand, PopupCommand, QueryCommand, WindowCommand, WorkspaceCommand,
+    ActionCommand, OutputCommand, PopupCommand, QueryCommand, TilingCommand, WindowCommand,
+    WorkspaceCommand,
 };
 use crate::subscribe::IpcSubscription;
 
@@ -14,6 +15,7 @@ use crate::subscribe::IpcSubscription;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum IpcCommand {
     Action(ActionCommand),
+    Tiling(TilingCommand),
     Window(WindowCommand),
     Popup(PopupCommand),
     Subscribe(IpcSubscription),

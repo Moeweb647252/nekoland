@@ -1,4 +1,4 @@
-//! Workspace-local tiling trees and geometry arrangement helpers.
+//! Workspace-local column/row tiling state and geometry helpers.
 
 #![allow(missing_docs)]
 
@@ -14,263 +14,305 @@ use super::WorkArea;
 /// Synthetic workspace bucket used before a surface belongs to a concrete workspace.
 pub const UNASSIGNED_WORKSPACE_TILING_ID: u32 = 0;
 
-/// Split axis for one internal tiling-tree node.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum SplitAxis {
-    #[default]
-    Horizontal,
-    Vertical,
+pub enum HorizontalDirection {
+    Left,
+    Right,
 }
 
-impl SplitAxis {
-    /// Returns the opposite split axis.
-    pub const fn alternate(self) -> Self {
-        match self {
-            Self::Horizontal => Self::Vertical,
-            Self::Vertical => Self::Horizontal,
-        }
-    }
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VerticalDirection {
+    Up,
+    Down,
 }
 
-/// Stable identifier for one node inside a workspace tile tree.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TileNodeId(pub u64);
-
-/// One node in the binary tiling tree.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TileNode {
-    Leaf { surface_id: u64 },
-    Split { axis: SplitAxis, first: TileNodeId, second: TileNodeId },
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TilingPanDirection {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
-/// Workspace-local tiling tree plus stable leaf order.
-///
-/// The current implementation keeps insertion order stable and rebuilds a simple master/stack tree
-/// whenever the leaf set changes. That gives us a real tree-shaped runtime model now while still
-/// leaving room for explicit split manipulation later.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TilingCoordinates {
+    pub column_index: usize,
+    pub row_index: usize,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkspaceTileTree {
-    pub root: Option<TileNodeId>,
-    pub nodes: BTreeMap<TileNodeId, TileNode>,
-    pub parents: BTreeMap<TileNodeId, TileNodeId>,
-    pub surface_nodes: BTreeMap<u64, TileNodeId>,
-    pub root_axis: SplitAxis,
-    pub leaf_surfaces: Vec<u64>,
-    pub next_node_id: u64,
+pub struct TiledColumn {
+    pub surface_ids: Vec<u64>,
 }
 
-impl WorkspaceTileTree {
-    /// Ensures the given surface participates in the workspace tile tree.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceColumnLayout {
+    pub columns: Vec<TiledColumn>,
+}
+
+impl WorkspaceColumnLayout {
     pub fn ensure_surface(&mut self, surface_id: u64) {
-        if self.surface_nodes.contains_key(&surface_id) {
+        if self.coordinates_for_surface(surface_id).is_some() {
             return;
         }
 
-        self.leaf_surfaces.push(surface_id);
-        self.insert_surface_node(surface_id);
+        self.columns.push(TiledColumn { surface_ids: vec![surface_id] });
     }
 
-    /// Removes surfaces that no longer belong to the workspace.
     pub fn retain_surfaces(&mut self, known_surfaces: &BTreeSet<u64>) {
-        let removed = self
-            .leaf_surfaces
-            .iter()
-            .copied()
-            .filter(|surface_id| !known_surfaces.contains(surface_id))
-            .collect::<Vec<_>>();
-        for surface_id in removed {
-            self.remove_surface(surface_id);
+        for column in &mut self.columns {
+            column.surface_ids.retain(|surface_id| known_surfaces.contains(surface_id));
         }
+        self.columns.retain(|column| !column.surface_ids.is_empty());
     }
 
-    /// Returns whether the tile tree contains no surfaces.
     pub fn is_empty(&self) -> bool {
-        self.leaf_surfaces.is_empty()
+        self.columns.is_empty()
     }
 
-    /// Sets the split axis of the root split node, if one exists.
-    pub fn set_root_axis(&mut self, axis: SplitAxis) {
-        self.root_axis = axis;
-        if let Some(root) = self.root
-            && let Some(TileNode::Split { axis: split_axis, .. }) = self.nodes.get_mut(&root)
-        {
-            *split_axis = axis;
-        }
+    pub fn coordinates_for_surface(&self, surface_id: u64) -> Option<TilingCoordinates> {
+        self.columns.iter().enumerate().find_map(|(column_index, column)| {
+            column
+                .surface_ids
+                .iter()
+                .position(|candidate| *candidate == surface_id)
+                .map(|row_index| TilingCoordinates { column_index, row_index })
+        })
     }
 
-    /// Sets the parent split axis for the given surface.
-    pub fn set_surface_split_axis(&mut self, surface_id: u64, axis: SplitAxis) {
-        let Some(node_id) = self.surface_nodes.get(&surface_id).copied() else {
-            return;
-        };
-        let Some(parent_id) = self.parents.get(&node_id).copied() else {
-            self.set_root_axis(axis);
-            return;
-        };
-        if let Some(TileNode::Split { axis: split_axis, .. }) = self.nodes.get_mut(&parent_id) {
-            *split_axis = axis;
-        }
-    }
-
-    /// Arranges all leaf surfaces into geometry inside the provided work area.
     pub fn arranged_geometry(&self, work_area: &WorkArea) -> BTreeMap<u64, SurfaceGeometry> {
-        let Some(root) = self.root else {
-            return BTreeMap::new();
-        };
-
         let mut geometry = BTreeMap::new();
-        self.collect_geometry(
-            root,
-            TileRect {
-                x: work_area.x,
-                y: work_area.y,
-                width: work_area.width.max(1),
-                height: work_area.height.max(1),
-            },
-            &mut geometry,
-        );
+        for (column_index, column) in self.columns.iter().enumerate() {
+            let column_x = column_origin_x(work_area, column_index);
+            let row_count = column.surface_ids.len().max(1);
+            for (row_index, surface_id) in column.surface_ids.iter().copied().enumerate() {
+                let (row_y, row_height) = split_extent(work_area.y as isize, work_area.height, row_count, row_index);
+                geometry.insert(
+                    surface_id,
+                    SurfaceGeometry {
+                        x: saturating_isize_to_i32(column_x),
+                        y: saturating_isize_to_i32(row_y),
+                        width: work_area.width.max(1),
+                        height: row_height.max(1),
+                    },
+                );
+            }
+        }
         geometry
     }
 
-    /// Returns the split axis currently governing the given surface, if any.
-    pub fn split_axis_for_surface(&self, surface_id: u64) -> Option<SplitAxis> {
-        let node_id = self.surface_nodes.get(&surface_id).copied()?;
-        let parent_id = self.parents.get(&node_id).copied()?;
-        match self.nodes.get(&parent_id) {
-            Some(TileNode::Split { axis, .. }) => Some(*axis),
-            _ => None,
-        }
+    pub fn column_origins(&self, work_area: &WorkArea) -> Vec<isize> {
+        (0..self.columns.len()).map(|index| column_origin_x(work_area, index)).collect()
     }
 
-    fn insert_surface_node(&mut self, surface_id: u64) {
-        let new_leaf = self.alloc_node();
-        self.nodes.insert(new_leaf, TileNode::Leaf { surface_id });
-        self.surface_nodes.insert(surface_id, new_leaf);
-
-        let Some(existing_tail_surface) = self.leaf_surfaces.iter().rev().nth(1).copied() else {
-            self.root = Some(new_leaf);
-            return;
+    pub fn row_origins(&self, work_area: &WorkArea, column_index: usize) -> Vec<isize> {
+        let Some(column) = self.columns.get(column_index) else {
+            return Vec::new();
         };
-        let Some(tail_leaf) =
-            self.surface_nodes.get(&existing_tail_surface).copied().or_else(|| {
-                self.nodes.iter().find_map(|(node_id, node)| match node {
-                    TileNode::Leaf { surface_id } if *surface_id == existing_tail_surface => {
-                        Some(*node_id)
-                    }
-                    _ => None,
-                })
-            })
-        else {
-            self.root = Some(new_leaf);
-            return;
-        };
-        self.surface_nodes.entry(existing_tail_surface).or_insert(tail_leaf);
-        let parent = self.parents.get(&tail_leaf).copied();
-        let axis = parent
-            .and_then(|parent_id| match self.nodes.get(&parent_id) {
-                Some(TileNode::Split { axis, .. }) => Some(axis.alternate()),
-                _ => None,
-            })
-            .unwrap_or(self.root_axis);
-        let split = self.alloc_node();
-        self.nodes.insert(split, TileNode::Split { axis, first: tail_leaf, second: new_leaf });
-        self.parents.insert(tail_leaf, split);
-        self.parents.insert(new_leaf, split);
+        (0..column.surface_ids.len())
+            .map(|row_index| split_extent(work_area.y as isize, work_area.height, column.surface_ids.len(), row_index).0)
+            .collect()
+    }
 
-        match parent {
-            Some(parent_id) => {
-                self.parents.insert(split, parent_id);
-                match self.nodes.get_mut(&parent_id) {
-                    Some(TileNode::Split { first, second, .. }) if *first == tail_leaf => {
-                        *first = split;
-                    }
-                    Some(TileNode::Split { first: _, second, .. }) if *second == tail_leaf => {
-                        *second = split;
-                    }
-                    _ => {}
+    pub fn focus_column(&self, surface_id: u64, direction: HorizontalDirection) -> Option<u64> {
+        let coords = self.coordinates_for_surface(surface_id)?;
+        let target_column_index = match direction {
+            HorizontalDirection::Left => coords.column_index.checked_sub(1)?,
+            HorizontalDirection::Right => {
+                let next = coords.column_index.saturating_add(1);
+                (next < self.columns.len()).then_some(next)?
+            }
+        };
+        let target_column = self.columns.get(target_column_index)?;
+        let target_row_index = coords.row_index.min(target_column.surface_ids.len().saturating_sub(1));
+        target_column.surface_ids.get(target_row_index).copied()
+    }
+
+    pub fn focus_window(&self, surface_id: u64, direction: VerticalDirection) -> Option<u64> {
+        let coords = self.coordinates_for_surface(surface_id)?;
+        let column = self.columns.get(coords.column_index)?;
+        let target_row_index = match direction {
+            VerticalDirection::Up => coords.row_index.checked_sub(1)?,
+            VerticalDirection::Down => {
+                let next = coords.row_index.saturating_add(1);
+                (next < column.surface_ids.len()).then_some(next)?
+            }
+        };
+        column.surface_ids.get(target_row_index).copied()
+    }
+
+    pub fn move_column(&mut self, surface_id: u64, direction: HorizontalDirection) -> bool {
+        let Some(coords) = self.coordinates_for_surface(surface_id) else {
+            return false;
+        };
+        let swap_index = match direction {
+            HorizontalDirection::Left => match coords.column_index.checked_sub(1) {
+                Some(index) => index,
+                None => return false,
+            },
+            HorizontalDirection::Right => {
+                let next = coords.column_index.saturating_add(1);
+                if next >= self.columns.len() {
+                    return false;
                 }
+                next
             }
-            None => self.root = Some(split),
-        }
-    }
-
-    fn remove_surface(&mut self, surface_id: u64) {
-        let Some(node_id) = self.surface_nodes.remove(&surface_id) else {
-            return;
         };
-        self.leaf_surfaces.retain(|current| *current != surface_id);
-        let parent = self.parents.remove(&node_id);
+        self.columns.swap(coords.column_index, swap_index);
+        true
+    }
 
-        match parent {
-            None => {
-                self.nodes.remove(&node_id);
-                self.root = None;
-            }
-            Some(parent_id) => {
-                let (first, second) = match self.nodes.get(&parent_id) {
-                    Some(TileNode::Split { first, second, .. }) => (*first, *second),
-                    _ => return,
-                };
-                let sibling = if first == node_id { second } else { first };
-                let grandparent = self.parents.remove(&parent_id);
-
-                if let Some(grandparent_id) = grandparent {
-                    match self.nodes.get_mut(&grandparent_id) {
-                        Some(TileNode::Split { first, second, .. }) if *first == parent_id => {
-                            *first = sibling;
-                        }
-                        Some(TileNode::Split { first: _, second, .. }) if *second == parent_id => {
-                            *second = sibling;
-                        }
-                        _ => {}
-                    }
-                    self.parents.insert(sibling, grandparent_id);
-                } else {
-                    self.root = Some(sibling);
-                    self.parents.remove(&sibling);
+    pub fn move_window(&mut self, surface_id: u64, direction: VerticalDirection) -> bool {
+        let Some(coords) = self.coordinates_for_surface(surface_id) else {
+            return false;
+        };
+        let Some(column) = self.columns.get_mut(coords.column_index) else {
+            return false;
+        };
+        let swap_index = match direction {
+            VerticalDirection::Up => match coords.row_index.checked_sub(1) {
+                Some(index) => index,
+                None => return false,
+            },
+            VerticalDirection::Down => {
+                let next = coords.row_index.saturating_add(1);
+                if next >= column.surface_ids.len() {
+                    return false;
                 }
-
-                self.nodes.remove(&node_id);
-                self.nodes.remove(&parent_id);
+                next
             }
+        };
+        column.surface_ids.swap(coords.row_index, swap_index);
+        true
+    }
+
+    pub fn consume_into_column(
+        &mut self,
+        surface_id: u64,
+        direction: HorizontalDirection,
+    ) -> bool {
+        let Some(coords) = self.coordinates_for_surface(surface_id) else {
+            return false;
+        };
+        let target_column_index = match direction {
+            HorizontalDirection::Left => match coords.column_index.checked_sub(1) {
+                Some(index) => index,
+                None => return false,
+            },
+            HorizontalDirection::Right => {
+                let next = coords.column_index.saturating_add(1);
+                if next >= self.columns.len() {
+                    return false;
+                }
+                next
+            }
+        };
+        if coords.column_index == target_column_index {
+            return false;
         }
-    }
 
-    fn alloc_node(&mut self) -> TileNodeId {
-        let next = self.next_node_id.max(1);
-        self.next_node_id = next.saturating_add(1);
-        TileNodeId(next)
-    }
+        let surface_id = match self.columns.get_mut(coords.column_index) {
+            Some(column) if coords.row_index < column.surface_ids.len() => {
+                column.surface_ids.remove(coords.row_index)
+            }
+            _ => return false,
+        };
+        let source_column_was_emptied = self
+            .columns
+            .get(coords.column_index)
+            .is_some_and(|column| column.surface_ids.is_empty());
+        let adjusted_target_index = match direction {
+            HorizontalDirection::Left => target_column_index,
+            HorizontalDirection::Right if source_column_was_emptied => target_column_index.saturating_sub(1),
+            HorizontalDirection::Right => target_column_index,
+        };
 
-    /// Rebuilds the tree structure while preserving the current leaf order and root axis.
-    pub fn rebuild_from_leaf_order(&mut self) {
-        let leaf_surfaces = self.leaf_surfaces.clone();
-        let root_axis = self.root_axis;
-        *self = Self { root_axis, ..Self::default() };
-        for surface_id in leaf_surfaces {
-            self.ensure_surface(surface_id);
+        if source_column_was_emptied {
+            self.columns.remove(coords.column_index);
         }
+
+        let Some(target_column) = self.columns.get_mut(adjusted_target_index) else {
+            return false;
+        };
+        target_column.surface_ids.push(surface_id);
+        true
     }
 
-    fn collect_geometry(
+    pub fn expel_from_column(
+        &mut self,
+        surface_id: u64,
+        direction: HorizontalDirection,
+    ) -> bool {
+        let Some(coords) = self.coordinates_for_surface(surface_id) else {
+            return false;
+        };
+        let Some(source_column) = self.columns.get(coords.column_index) else {
+            return false;
+        };
+        if source_column.surface_ids.len() <= 1 {
+            return false;
+        }
+
+        let surface_id = self.columns[coords.column_index].surface_ids.remove(coords.row_index);
+        let insert_index = match direction {
+            HorizontalDirection::Left => coords.column_index,
+            HorizontalDirection::Right => coords.column_index.saturating_add(1),
+        };
+        self.columns.insert(insert_index, TiledColumn { surface_ids: vec![surface_id] });
+        true
+    }
+
+    pub fn snapped_viewport_for_surface(
         &self,
-        node_id: TileNodeId,
-        rect: TileRect,
-        geometry: &mut BTreeMap<u64, SurfaceGeometry>,
-    ) {
-        let Some(node) = self.nodes.get(&node_id) else {
-            return;
-        };
+        work_area: &WorkArea,
+        surface_id: u64,
+    ) -> Option<(isize, isize)> {
+        let coords = self.coordinates_for_surface(surface_id)?;
+        Some((
+            column_origin_x(work_area, coords.column_index),
+            self.row_origins(work_area, coords.column_index).get(coords.row_index).copied()?,
+        ))
+    }
 
-        match node {
-            TileNode::Leaf { surface_id } => {
-                geometry.insert(*surface_id, rect.into());
+    pub fn snapped_viewport_after_pan(
+        &self,
+        work_area: &WorkArea,
+        focused_surface: Option<u64>,
+        current_origin_x: isize,
+        current_origin_y: isize,
+        direction: TilingPanDirection,
+    ) -> Option<(isize, isize)> {
+        match direction {
+            TilingPanDirection::Left | TilingPanDirection::Right => {
+                let origins = self.column_origins(work_area);
+                let current_index = nearest_anchor_index(&origins, current_origin_x)?;
+                let target_index = match direction {
+                    TilingPanDirection::Left => current_index.checked_sub(1)?,
+                    TilingPanDirection::Right => {
+                        let next = current_index.saturating_add(1);
+                        (next < origins.len()).then_some(next)?
+                    }
+                    TilingPanDirection::Up | TilingPanDirection::Down => unreachable!(),
+                };
+                Some((origins[target_index], current_origin_y))
             }
-            TileNode::Split { axis, first, second } => {
-                let (first_rect, second_rect) = rect.split(*axis);
-                self.collect_geometry(*first, first_rect, geometry);
-                self.collect_geometry(*second, second_rect, geometry);
+            TilingPanDirection::Up | TilingPanDirection::Down => {
+                let focused_surface = focused_surface?;
+                let coords = self.coordinates_for_surface(focused_surface)?;
+                let origins = self.row_origins(work_area, coords.column_index);
+                let current_index = nearest_anchor_index(&origins, current_origin_y)?;
+                let target_index = match direction {
+                    TilingPanDirection::Up => current_index.checked_sub(1)?,
+                    TilingPanDirection::Down => {
+                        let next = current_index.saturating_add(1);
+                        (next < origins.len()).then_some(next)?
+                    }
+                    TilingPanDirection::Left | TilingPanDirection::Right => unreachable!(),
+                };
+                Some((current_origin_x, origins[target_index]))
             }
         }
     }
@@ -279,26 +321,14 @@ impl WorkspaceTileTree {
 /// Workspace-scoped tiling state used by the shell layout systems.
 #[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceTilingState {
-    pub workspaces: BTreeMap<u32, WorkspaceTileTree>,
+    pub workspaces: BTreeMap<u32, WorkspaceColumnLayout>,
 }
 
 impl WorkspaceTilingState {
-    /// Ensures the given surface participates in the target workspace tile tree.
     pub fn ensure_surface(&mut self, workspace_id: u32, surface_id: u64) {
         self.workspaces.entry(workspace_id).or_default().ensure_surface(surface_id);
     }
 
-    /// Sets the root split axis for one workspace.
-    pub fn set_root_axis(&mut self, workspace_id: u32, axis: SplitAxis) {
-        self.workspaces.entry(workspace_id).or_default().set_root_axis(axis);
-    }
-
-    /// Sets the split axis associated with a surface in one workspace.
-    pub fn set_surface_split_axis(&mut self, workspace_id: u32, surface_id: u64, axis: SplitAxis) {
-        self.workspaces.entry(workspace_id).or_default().set_surface_split_axis(surface_id, axis);
-    }
-
-    /// Removes unknown surfaces and prunes empty workspaces.
     pub fn retain_known(&mut self, known_surfaces: &BTreeMap<u64, u32>) {
         let mut known_by_workspace = BTreeMap::<u32, BTreeSet<u64>>::new();
         for (surface_id, workspace_id) in known_surfaces {
@@ -307,9 +337,9 @@ impl WorkspaceTilingState {
 
         let empty = BTreeSet::new();
         let mut empty_workspaces = Vec::new();
-        for (workspace_id, tree) in &mut self.workspaces {
-            tree.retain_surfaces(known_by_workspace.get(workspace_id).unwrap_or(&empty));
-            if tree.is_empty() {
+        for (workspace_id, layout) in &mut self.workspaces {
+            layout.retain_surfaces(known_by_workspace.get(workspace_id).unwrap_or(&empty));
+            if layout.is_empty() {
                 empty_workspaces.push(*workspace_id);
             }
         }
@@ -319,158 +349,238 @@ impl WorkspaceTilingState {
         }
     }
 
-    /// Arranges tiled window geometry for all workspaces into one aggregated map.
     pub fn arranged_geometry(&self, work_area: &WorkArea) -> BTreeMap<u64, SurfaceGeometry> {
         let mut geometry = BTreeMap::new();
-        for tree in self.workspaces.values() {
-            geometry.extend(tree.arranged_geometry(work_area));
+        for layout in self.workspaces.values() {
+            geometry.extend(layout.arranged_geometry(work_area));
         }
         geometry
     }
-}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TileRect {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
-impl TileRect {
-    fn split(self, axis: SplitAxis) -> (Self, Self) {
-        match axis {
-            SplitAxis::Horizontal => self.split_horizontal(),
-            SplitAxis::Vertical => self.split_vertical(),
-        }
+    pub fn coordinates_for_surface(
+        &self,
+        workspace_id: u32,
+        surface_id: u64,
+    ) -> Option<TilingCoordinates> {
+        self.workspaces.get(&workspace_id)?.coordinates_for_surface(surface_id)
     }
 
-    fn split_horizontal(self) -> (Self, Self) {
-        if self.width <= 1 {
-            return (self, self);
-        }
+    pub fn focus_column(
+        &self,
+        workspace_id: u32,
+        surface_id: u64,
+        direction: HorizontalDirection,
+    ) -> Option<u64> {
+        self.workspaces.get(&workspace_id)?.focus_column(surface_id, direction)
+    }
 
-        let first_width = self.width / 2;
-        let second_width = self.width.saturating_sub(first_width).max(1);
-        let first_width = self.width.saturating_sub(second_width);
+    pub fn focus_window(
+        &self,
+        workspace_id: u32,
+        surface_id: u64,
+        direction: VerticalDirection,
+    ) -> Option<u64> {
+        self.workspaces.get(&workspace_id)?.focus_window(surface_id, direction)
+    }
 
-        (
-            Self { width: first_width.max(1), ..self },
-            Self { x: self.x + first_width as i32, width: second_width, ..self },
+    pub fn move_column(
+        &mut self,
+        workspace_id: u32,
+        surface_id: u64,
+        direction: HorizontalDirection,
+    ) -> bool {
+        self.workspaces
+            .entry(workspace_id)
+            .or_default()
+            .move_column(surface_id, direction)
+    }
+
+    pub fn move_window(
+        &mut self,
+        workspace_id: u32,
+        surface_id: u64,
+        direction: VerticalDirection,
+    ) -> bool {
+        self.workspaces
+            .entry(workspace_id)
+            .or_default()
+            .move_window(surface_id, direction)
+    }
+
+    pub fn consume_into_column(
+        &mut self,
+        workspace_id: u32,
+        surface_id: u64,
+        direction: HorizontalDirection,
+    ) -> bool {
+        self.workspaces
+            .entry(workspace_id)
+            .or_default()
+            .consume_into_column(surface_id, direction)
+    }
+
+    pub fn expel_from_column(
+        &mut self,
+        workspace_id: u32,
+        surface_id: u64,
+        direction: HorizontalDirection,
+    ) -> bool {
+        self.workspaces
+            .entry(workspace_id)
+            .or_default()
+            .expel_from_column(surface_id, direction)
+    }
+
+    pub fn snapped_viewport_for_surface(
+        &self,
+        workspace_id: u32,
+        work_area: &WorkArea,
+        surface_id: u64,
+    ) -> Option<(isize, isize)> {
+        self.workspaces.get(&workspace_id)?.snapped_viewport_for_surface(work_area, surface_id)
+    }
+
+    pub fn snapped_viewport_after_pan(
+        &self,
+        workspace_id: u32,
+        work_area: &WorkArea,
+        focused_surface: Option<u64>,
+        current_origin_x: isize,
+        current_origin_y: isize,
+        direction: TilingPanDirection,
+    ) -> Option<(isize, isize)> {
+        self.workspaces.get(&workspace_id)?.snapped_viewport_after_pan(
+            work_area,
+            focused_surface,
+            current_origin_x,
+            current_origin_y,
+            direction,
         )
     }
-
-    fn split_vertical(self) -> (Self, Self) {
-        if self.height <= 1 {
-            return (self, self);
-        }
-
-        let first_height = self.height / 2;
-        let second_height = self.height.saturating_sub(first_height).max(1);
-        let first_height = self.height.saturating_sub(second_height);
-
-        (
-            Self { height: first_height.max(1), ..self },
-            Self { y: self.y + first_height as i32, height: second_height, ..self },
-        )
-    }
 }
 
-impl From<TileRect> for SurfaceGeometry {
-    fn from(value: TileRect) -> Self {
-        Self { x: value.x, y: value.y, width: value.width.max(1), height: value.height.max(1) }
-    }
+fn column_origin_x(work_area: &WorkArea, column_index: usize) -> isize {
+    let step = work_area.width.max(1) as isize;
+    (work_area.x as isize).saturating_add(step.saturating_mul(column_index as isize))
+}
+
+fn split_extent(origin: isize, total: u32, count: usize, index: usize) -> (isize, u32) {
+    let count = count.max(1) as u32;
+    let index = index.min(count.saturating_sub(1) as usize) as u32;
+    let base = total / count;
+    let remainder = total % count;
+    let size = base.saturating_add(u32::from(index < remainder)).max(1);
+    let offset = index
+        .saturating_mul(base)
+        .saturating_add(remainder.min(index)) as isize;
+    (origin.saturating_add(offset), size)
+}
+
+fn nearest_anchor_index(anchors: &[isize], current_origin: isize) -> Option<usize> {
+    anchors.iter().enumerate().min_by_key(|(_, anchor)| anchor.abs_diff(current_origin)).map(
+        |(index, _)| index,
+    )
+}
+
+fn saturating_isize_to_i32(value: isize) -> i32 {
+    value.clamp(i32::MIN as isize, i32::MAX as isize) as i32
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        SplitAxis, TileNode, UNASSIGNED_WORKSPACE_TILING_ID, WorkspaceTileTree,
+        HorizontalDirection, TilingCoordinates, TilingPanDirection,
+        UNASSIGNED_WORKSPACE_TILING_ID, VerticalDirection, WorkspaceColumnLayout,
         WorkspaceTilingState,
     };
     use crate::resources::WorkArea;
 
     #[test]
-    fn workspace_tile_tree_builds_master_stack_root_from_leaf_order() {
-        let mut tree = WorkspaceTileTree::default();
-        tree.ensure_surface(11);
-        tree.ensure_surface(22);
-        tree.ensure_surface(33);
+    fn ensure_surface_appends_new_columns_in_discovery_order() {
+        let mut layout = WorkspaceColumnLayout::default();
+        layout.ensure_surface(11);
+        layout.ensure_surface(22);
+        layout.ensure_surface(33);
 
-        assert_eq!(tree.leaf_surfaces, vec![11, 22, 33]);
-        let Some(root) = tree.root else {
-            panic!("tree root should exist");
-        };
-        let Some(node) = tree.nodes.get(&root) else {
-            panic!("root node should exist");
-        };
-        assert!(matches!(node, TileNode::Split { axis: SplitAxis::Horizontal, .. }));
+        assert_eq!(layout.columns.len(), 3);
+        assert_eq!(layout.columns[0].surface_ids, vec![11]);
+        assert_eq!(layout.columns[1].surface_ids, vec![22]);
+        assert_eq!(layout.columns[2].surface_ids, vec![33]);
     }
 
     #[test]
-    fn surface_split_axis_updates_parent_split_without_rebuilding_tree() {
-        let mut tree = WorkspaceTileTree::default();
-        tree.ensure_surface(11);
-        tree.ensure_surface(22);
-        tree.ensure_surface(33);
+    fn arranged_geometry_uses_full_width_columns_and_equal_rows() {
+        let mut layout = WorkspaceColumnLayout::default();
+        layout.ensure_surface(11);
+        layout.ensure_surface(22);
+        assert!(layout.consume_into_column(22, HorizontalDirection::Left));
+        layout.ensure_surface(33);
 
-        tree.set_surface_split_axis(22, SplitAxis::Horizontal);
-
-        assert_eq!(tree.split_axis_for_surface(22), Some(SplitAxis::Horizontal));
-        assert_eq!(tree.split_axis_for_surface(33), Some(SplitAxis::Horizontal));
-        assert_eq!(tree.split_axis_for_surface(11), Some(SplitAxis::Horizontal));
-    }
-
-    #[test]
-    fn arranged_geometry_splits_work_area_across_all_leaves() {
-        let mut tree = WorkspaceTileTree::default();
-        tree.ensure_surface(11);
-        tree.ensure_surface(22);
-        tree.ensure_surface(33);
-
-        let geometry = tree.arranged_geometry(&WorkArea { x: 0, y: 0, width: 1200, height: 900 });
-        assert_eq!(geometry.len(), 3);
-        assert_eq!(geometry[&11].x, 0);
-        assert_eq!(geometry[&11].width, 600);
-        assert_eq!(geometry[&22].x, 600);
+        let geometry = layout.arranged_geometry(&WorkArea { x: 10, y: 20, width: 1000, height: 900 });
+        assert_eq!(geometry[&11].x, 10);
+        assert_eq!(geometry[&11].y, 20);
+        assert_eq!(geometry[&11].width, 1000);
+        assert_eq!(geometry[&11].height, 450);
+        assert_eq!(geometry[&22].x, 10);
+        assert_eq!(geometry[&22].y, 470);
         assert_eq!(geometry[&22].height, 450);
-        assert_eq!(geometry[&33].x, 600);
-        assert_eq!(geometry[&33].y, 450);
+        assert_eq!(geometry[&33].x, 1010);
+        assert_eq!(geometry[&33].width, 1000);
     }
 
     #[test]
-    fn workspace_tiling_state_moves_surfaces_between_workspaces() {
+    fn focus_and_move_operations_follow_column_row_structure() {
+        let mut layout = WorkspaceColumnLayout::default();
+        layout.ensure_surface(11);
+        layout.ensure_surface(22);
+        layout.ensure_surface(33);
+        assert!(layout.consume_into_column(33, HorizontalDirection::Left));
+
+        assert_eq!(layout.coordinates_for_surface(22), Some(TilingCoordinates { column_index: 1, row_index: 0 }));
+        assert_eq!(layout.focus_column(22, HorizontalDirection::Left), Some(11));
+        assert_eq!(layout.focus_window(22, VerticalDirection::Down), Some(33));
+        assert!(layout.move_window(33, VerticalDirection::Up));
+        assert_eq!(layout.columns[1].surface_ids, vec![33, 22]);
+        assert!(layout.move_column(22, HorizontalDirection::Left));
+        assert_eq!(layout.columns[0].surface_ids, vec![33, 22]);
+    }
+
+    #[test]
+    fn expel_and_retain_prune_empty_columns() {
         let mut tiling = WorkspaceTilingState::default();
         tiling.ensure_surface(UNASSIGNED_WORKSPACE_TILING_ID, 11);
-        tiling.ensure_surface(2, 22);
-        tiling.retain_known(&[(11, 3_u32), (22, 2_u32)].into_iter().collect());
-        tiling.ensure_surface(3, 11);
+        tiling.ensure_surface(UNASSIGNED_WORKSPACE_TILING_ID, 22);
+        assert!(tiling.consume_into_column(UNASSIGNED_WORKSPACE_TILING_ID, 22, HorizontalDirection::Left));
+        assert!(tiling.expel_from_column(UNASSIGNED_WORKSPACE_TILING_ID, 22, HorizontalDirection::Right));
 
+        let layout = tiling.workspaces.get(&UNASSIGNED_WORKSPACE_TILING_ID).expect("workspace");
+        assert_eq!(layout.columns.len(), 2);
+        assert_eq!(layout.columns[0].surface_ids, vec![11]);
+        assert_eq!(layout.columns[1].surface_ids, vec![22]);
+
+        tiling.retain_known(&[(22, 3_u32)].into_iter().collect());
+        tiling.ensure_surface(3, 22);
         assert!(!tiling.workspaces.contains_key(&UNASSIGNED_WORKSPACE_TILING_ID));
-        let Some(workspace_2) = tiling.workspaces.get(&2) else {
-            panic!("workspace 2");
-        };
-        let Some(workspace_3) = tiling.workspaces.get(&3) else {
-            panic!("workspace 3");
-        };
-        assert_eq!(workspace_2.leaf_surfaces, vec![22]);
-        assert_eq!(workspace_3.leaf_surfaces, vec![11]);
+        assert_eq!(tiling.workspaces[&3].columns.len(), 1);
     }
 
     #[test]
-    fn retained_tree_keeps_explicit_split_axes_for_remaining_surfaces() {
-        let mut tiling = WorkspaceTilingState::default();
-        tiling.ensure_surface(1, 11);
-        tiling.ensure_surface(1, 22);
-        tiling.ensure_surface(1, 33);
-        tiling.set_surface_split_axis(1, 22, SplitAxis::Horizontal);
-        tiling.retain_known(&[(11, 1_u32), (22, 1_u32)].into_iter().collect());
+    fn snapped_viewport_helpers_use_column_and_row_anchors() {
+        let mut layout = WorkspaceColumnLayout::default();
+        layout.ensure_surface(11);
+        layout.ensure_surface(22);
+        assert!(layout.consume_into_column(22, HorizontalDirection::Left));
+        layout.ensure_surface(33);
+        let work_area = WorkArea { x: 0, y: 32, width: 1280, height: 688 };
 
-        let Some(tree) = tiling.workspaces.get(&1) else {
-            panic!("workspace tree should remain");
-        };
-        assert_eq!(tree.leaf_surfaces, vec![11, 22]);
-        assert_eq!(tree.split_axis_for_surface(11), Some(SplitAxis::Horizontal));
-        assert_eq!(tree.split_axis_for_surface(22), Some(SplitAxis::Horizontal));
+        assert_eq!(layout.snapped_viewport_for_surface(&work_area, 33), Some((1280, 32)));
+        assert_eq!(
+            layout.snapped_viewport_after_pan(&work_area, Some(11), 75, 500, TilingPanDirection::Right),
+            Some((1280, 500))
+        );
+        assert_eq!(
+            layout.snapped_viewport_after_pan(&work_area, Some(11), 0, 500, TilingPanDirection::Up),
+            Some((0, 32))
+        );
     }
 }

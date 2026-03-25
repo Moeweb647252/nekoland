@@ -23,9 +23,10 @@ use nekoland_ecs::resources::SelectionOwner;
 use nekoland_ecs::resources::{
     CommandExecutionStatus, CommandHistoryState, CompositorClock, EntityIndex,
     ExternalCommandRequest, FpsHudRuntimeState, KeyboardFocusState, PendingExternalCommandRequests,
-    PendingOutputControls, PendingPopupServerRequests, PendingWindowControls,
-    PendingWorkspaceControls, PopupServerAction, PopupServerRequest, PresentAuditElementKind,
-    RenderPlan, RenderPlanItem, SeatRegistry, WaylandFeedback, WaylandIngress,
+    PendingOutputControls, PendingPopupServerRequests, PendingTilingControls,
+    PendingWindowControls, PendingWorkspaceControls, PopupServerAction, PopupServerRequest,
+    PresentAuditElementKind, RenderPlan, RenderPlanItem, SeatRegistry, WaylandFeedback,
+    WaylandIngress, WorkspaceTilingState,
 };
 use nekoland_ecs::selectors::{
     OutputName, SurfaceId, WorkspaceLookup, WorkspaceName, WorkspaceSelector,
@@ -40,7 +41,8 @@ use crate::commands::query::{
     WorkspaceSnapshot,
 };
 use crate::commands::{
-    ActionCommand, FpsHudMode, OutputCommand, PopupCommand, WindowCommand, WorkspaceCommand,
+    ActionCommand, FpsHudMode, OutputCommand, PopupCommand, TilingCommand, WindowCommand,
+    WorkspaceCommand,
 };
 use crate::subscribe::{
     IpcSubscription, IpcSubscriptionEvent, PendingSubscriptionEvents, SubscriptionTopic,
@@ -117,12 +119,14 @@ type IpcSurfaceQuery<'w, 's> = Query<'w, 's, &'static WlSurfaceHandle, Allow<Dis
 struct IpcRequestDispatchCtx<'a> {
     query_cache: &'a IpcQueryCache,
     config: &'a CompositorConfig,
+    keyboard_focus: &'a KeyboardFocusState,
     app_lifecycle: &'a mut AppLifecycleState,
     config_reload: &'a mut ConfigReloadRequest,
     keyboard_layout_state: &'a mut KeyboardLayoutState,
     fps_hud_state: &'a mut FpsHudRuntimeState,
     pending_external_commands: &'a mut PendingExternalCommandRequests,
     pending_popup_requests: &'a mut PendingPopupServerRequests,
+    pending_tiling_controls: &'a mut PendingTilingControls,
     pending_window_controls: &'a mut PendingWindowControls,
     pending_workspace_controls: &'a mut PendingWorkspaceControls,
     pending_output_controls: &'a mut PendingOutputControls,
@@ -133,6 +137,7 @@ pub(crate) struct IpcPumpParams<'w, 's> {
     server_state: ResMut<'w, IpcServerState>,
     query_cache: Res<'w, IpcQueryCache>,
     config: Res<'w, CompositorConfig>,
+    keyboard_focus: Res<'w, KeyboardFocusState>,
     app_lifecycle: ResMut<'w, AppLifecycleState>,
     config_reload: Option<ResMut<'w, ConfigReloadRequest>>,
     keyboard_layout_state: ResMut<'w, KeyboardLayoutState>,
@@ -140,6 +145,7 @@ pub(crate) struct IpcPumpParams<'w, 's> {
     pending_subscription_events: ResMut<'w, PendingSubscriptionEvents>,
     pending_external_commands: ResMut<'w, PendingExternalCommandRequests>,
     pending_popup_requests: ResMut<'w, PendingPopupServerRequests>,
+    pending_tiling_controls: ResMut<'w, PendingTilingControls>,
     pending_window_controls: ResMut<'w, PendingWindowControls>,
     pending_workspace_controls: ResMut<'w, PendingWorkspaceControls>,
     pending_output_controls: ResMut<'w, PendingOutputControls>,
@@ -159,6 +165,7 @@ pub(crate) struct IpcQuerySnapshotInputs<'w, 's> {
     command_history: Res<'w, CommandHistoryState>,
     config: Res<'w, CompositorConfig>,
     keyboard_layout_state: Res<'w, KeyboardLayoutState>,
+    tiling: Option<Res<'w, WorkspaceTilingState>>,
     wayland_ingress: Option<Res<'w, WaylandIngress>>,
     wayland_feedback: Option<Res<'w, WaylandFeedback>>,
     config_source: Option<Res<'w, LoadedConfigSource>>,
@@ -519,6 +526,7 @@ pub(crate) fn accept_connections_system(
         mut server_state,
         query_cache,
         config,
+        keyboard_focus,
         mut app_lifecycle,
         mut config_reload,
         mut keyboard_layout_state,
@@ -526,6 +534,7 @@ pub(crate) fn accept_connections_system(
         mut pending_subscription_events,
         mut pending_external_commands,
         mut pending_popup_requests,
+        mut pending_tiling_controls,
         mut pending_window_controls,
         mut pending_workspace_controls,
         mut pending_output_controls,
@@ -538,12 +547,14 @@ pub(crate) fn accept_connections_system(
     let mut request_ctx = IpcRequestDispatchCtx {
         query_cache: &query_cache,
         config: &config,
+        keyboard_focus: &keyboard_focus,
         app_lifecycle: &mut app_lifecycle,
         config_reload,
         keyboard_layout_state: &mut keyboard_layout_state,
         fps_hud_state: &mut fps_hud_state,
         pending_external_commands: &mut pending_external_commands,
         pending_popup_requests: &mut pending_popup_requests,
+        pending_tiling_controls: &mut pending_tiling_controls,
         pending_window_controls: &mut pending_window_controls,
         pending_workspace_controls: &mut pending_workspace_controls,
         pending_output_controls: &mut pending_output_controls,
@@ -578,6 +589,7 @@ pub(crate) fn refresh_query_cache_system(
         command_history,
         config,
         keyboard_layout_state,
+        tiling,
         wayland_ingress,
         wayland_feedback,
         config_source,
@@ -724,6 +736,20 @@ pub(crate) fn refresh_query_cache_system(
             focused: keyboard_focus.focused_surface == Some(window.surface_id()),
             visible_in_viewport: window.viewport_visibility.visible,
             render_index: render_indices.get(&window.surface_id()).copied(),
+            tiled_column_index: window_workspace_runtime_id(window.child_of, &workspaces)
+                .and_then(|workspace_id| {
+                    tiling
+                        .as_deref()
+                        .and_then(|tiling| tiling.coordinates_for_surface(workspace_id, window.surface_id()))
+                })
+                .map(|coords| coords.column_index),
+            tiled_row_index: window_workspace_runtime_id(window.child_of, &workspaces)
+                .and_then(|workspace_id| {
+                    tiling
+                        .as_deref()
+                        .and_then(|tiling| tiling.coordinates_for_surface(workspace_id, window.surface_id()))
+                })
+                .map(|coords| coords.row_index),
         })
         .collect::<Vec<_>>();
     window_snapshots.sort_by(|left, right| {
@@ -1175,18 +1201,20 @@ fn reply_for_request(
     let IpcRequestDispatchCtx {
         query_cache,
         config,
+        keyboard_focus,
         app_lifecycle,
         config_reload,
         keyboard_layout_state,
         fps_hud_state,
         pending_external_commands,
         pending_popup_requests,
+        pending_tiling_controls,
         pending_window_controls,
         pending_workspace_controls,
         pending_output_controls,
     } = request_ctx;
-    let keyboard_focus = KeyboardFocusState::default();
-    let mut windows = WindowControlApi::new(&keyboard_focus, pending_window_controls);
+    let mut windows = WindowControlApi::new(keyboard_focus, pending_window_controls);
+    let mut tiling = nekoland_ecs::control::TilingControlApi::new(pending_tiling_controls);
     let mut workspaces = WorkspaceControlApi::new(pending_workspace_controls);
     let mut outputs = OutputControlApi::new(pending_output_controls);
     match request.command {
@@ -1383,6 +1411,39 @@ fn reply_for_request(
                 payload: None,
             })
         }
+        IpcCommand::Tiling(command) => {
+            let message = match command {
+                TilingCommand::FocusColumn { direction } => {
+                    tiling.controls().focus_column(direction);
+                    format!("queued tiling focus-column {:?}", direction)
+                }
+                TilingCommand::FocusWindow { direction } => {
+                    tiling.controls().focus_window(direction);
+                    format!("queued tiling focus-window {:?}", direction)
+                }
+                TilingCommand::MoveColumn { direction } => {
+                    tiling.controls().move_column(direction);
+                    format!("queued tiling move-column {:?}", direction)
+                }
+                TilingCommand::MoveWindow { direction } => {
+                    tiling.controls().move_window(direction);
+                    format!("queued tiling move-window {:?}", direction)
+                }
+                TilingCommand::ConsumeIntoColumn { direction } => {
+                    tiling.controls().consume_into_column(direction);
+                    format!("queued tiling consume {:?}", direction)
+                }
+                TilingCommand::ExpelFromColumn { direction } => {
+                    tiling.controls().expel_from_column(direction);
+                    format!("queued tiling expel {:?}", direction)
+                }
+                TilingCommand::PanViewport { direction } => {
+                    tiling.controls().pan_viewport(direction);
+                    format!("queued tiling viewport pan {:?}", direction)
+                }
+            };
+            RequestDisposition::Reply(IpcReply { ok: true, message, payload: None })
+        }
         IpcCommand::Window(WindowCommand::Close { surface_id }) => {
             windows.surface(SurfaceId(surface_id)).close();
             RequestDisposition::Reply(IpcReply {
@@ -1412,14 +1473,6 @@ fn reply_for_request(
             RequestDisposition::Reply(IpcReply {
                 ok: true,
                 message: format!("queued resize request for surface {surface_id}"),
-                payload: None,
-            })
-        }
-        IpcCommand::Window(WindowCommand::Split { surface_id, axis }) => {
-            windows.surface(SurfaceId(surface_id)).split(axis);
-            RequestDisposition::Reply(IpcReply {
-                ok: true,
-                message: format!("queued {axis:?} split request for surface {surface_id}"),
                 payload: None,
             })
         }
@@ -1550,21 +1603,24 @@ mod tests {
         Workspace, WorkspaceId, XdgWindow,
     };
     use nekoland_ecs::resources::PendingPopupServerRequests;
-    use nekoland_ecs::resources::SplitAxis;
     use nekoland_ecs::resources::{
         CompositorClock, EntityIndex, FpsHudRuntimeState, KeyboardFocusState,
-        PendingExternalCommandRequests, PendingOutputControls, PendingWindowControls,
-        PendingWorkspaceControls, PresentAuditElement, PresentAuditElementKind, RenderPlan,
-        WaylandFeedback,
+        PendingExternalCommandRequests, PendingOutputControls, PendingTilingControls,
+        PendingWindowControls, PendingWorkspaceControls, PresentAuditElement,
+        PresentAuditElementKind, RenderPlan, WaylandFeedback,
     };
 
     use super::{
         IpcRequestDispatchCtx, RequestDisposition, refresh_query_cache_system, reply_for_request,
     };
     use super::{event_filter_matches, subscription_matches};
-    use crate::commands::{ActionCommand, FpsHudMode, WindowCommand};
+    use crate::commands::{
+        ActionCommand, FpsHudMode, HorizontalDirection, TilingCommand, WindowCommand,
+    };
     use crate::subscribe::{IpcSubscription, IpcSubscriptionEvent, SubscriptionTopic};
     use crate::{IpcCommand, IpcQueryCache, IpcReply, IpcRequest};
+
+    static EMPTY_FOCUS: KeyboardFocusState = KeyboardFocusState { focused_surface: None };
 
     fn request_dispatch_ctx<'a>(
         query_cache: &'a IpcQueryCache,
@@ -1575,6 +1631,7 @@ mod tests {
         fps_hud_state: &'a mut FpsHudRuntimeState,
         pending_external_commands: &'a mut PendingExternalCommandRequests,
         pending_popup_requests: &'a mut PendingPopupServerRequests,
+        pending_tiling_controls: &'a mut PendingTilingControls,
         pending_window_controls: &'a mut PendingWindowControls,
         pending_workspace_controls: &'a mut PendingWorkspaceControls,
         pending_output_controls: &'a mut PendingOutputControls,
@@ -1582,12 +1639,14 @@ mod tests {
         IpcRequestDispatchCtx {
             query_cache,
             config,
+            keyboard_focus: &EMPTY_FOCUS,
             app_lifecycle,
             config_reload,
             keyboard_layout_state,
             fps_hud_state,
             pending_external_commands,
             pending_popup_requests,
+            pending_tiling_controls,
             pending_window_controls,
             pending_workspace_controls,
             pending_output_controls,
@@ -1730,7 +1789,7 @@ mod tests {
     }
 
     #[test]
-    fn reply_for_request_stages_window_split_control() {
+    fn reply_for_request_stages_tiling_control() {
         let config = CompositorConfig::default();
         let mut pending_popup_requests = PendingPopupServerRequests::default();
         let mut app_lifecycle = AppLifecycleState::default();
@@ -1738,6 +1797,7 @@ mod tests {
         let mut keyboard_layout_state = KeyboardLayoutState::default();
         let mut fps_hud_state = FpsHudRuntimeState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
+        let mut pending_tiling_controls = PendingTilingControls::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
@@ -1751,6 +1811,7 @@ mod tests {
             &mut fps_hud_state,
             &mut pending_external_commands,
             &mut pending_popup_requests,
+            &mut pending_tiling_controls,
             &mut pending_window_controls,
             &mut pending_workspace_controls,
             &mut pending_output_controls,
@@ -1759,9 +1820,8 @@ mod tests {
         let disposition = reply_for_request(
             IpcRequest {
                 correlation_id: 1,
-                command: IpcCommand::Window(WindowCommand::Split {
-                    surface_id: 42,
-                    axis: SplitAxis::Vertical,
+                command: IpcCommand::Tiling(TilingCommand::FocusColumn {
+                    direction: HorizontalDirection::Right,
                 }),
             },
             &mut request_ctx,
@@ -1774,9 +1834,14 @@ mod tests {
         assert!(pending_popup_requests.is_empty());
         assert!(pending_workspace_controls.is_empty());
         assert!(pending_output_controls.is_empty());
-        assert_eq!(pending_window_controls.as_slice().len(), 1);
-        assert_eq!(pending_window_controls.as_slice()[0].surface_id.0, 42);
-        assert_eq!(pending_window_controls.as_slice()[0].split_axis, Some(SplitAxis::Vertical));
+        assert!(pending_window_controls.is_empty());
+        assert_eq!(pending_tiling_controls.as_slice().len(), 1);
+        assert_eq!(
+            pending_tiling_controls.as_slice()[0],
+            nekoland_ecs::resources::PendingTilingControl::FocusColumn {
+                direction: HorizontalDirection::Right
+            }
+        );
     }
 
     #[test]
@@ -1788,6 +1853,7 @@ mod tests {
         let mut keyboard_layout_state = KeyboardLayoutState::default();
         let mut fps_hud_state = FpsHudRuntimeState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
+        let mut pending_tiling_controls = PendingTilingControls::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
@@ -1801,6 +1867,7 @@ mod tests {
             &mut fps_hud_state,
             &mut pending_external_commands,
             &mut pending_popup_requests,
+            &mut pending_tiling_controls,
             &mut pending_window_controls,
             &mut pending_workspace_controls,
             &mut pending_output_controls,
@@ -1841,6 +1908,7 @@ mod tests {
         let mut keyboard_layout_state = KeyboardLayoutState::default();
         let mut fps_hud_state = FpsHudRuntimeState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
+        let mut pending_tiling_controls = PendingTilingControls::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
@@ -1854,6 +1922,7 @@ mod tests {
             &mut fps_hud_state,
             &mut pending_external_commands,
             &mut pending_popup_requests,
+            &mut pending_tiling_controls,
             &mut pending_window_controls,
             &mut pending_workspace_controls,
             &mut pending_output_controls,
@@ -1892,6 +1961,7 @@ mod tests {
         let mut keyboard_layout_state = KeyboardLayoutState::default();
         let mut fps_hud_state = FpsHudRuntimeState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
+        let mut pending_tiling_controls = PendingTilingControls::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
@@ -1906,6 +1976,7 @@ mod tests {
                 &mut fps_hud_state,
                 &mut pending_external_commands,
                 &mut pending_popup_requests,
+                &mut pending_tiling_controls,
                 &mut pending_window_controls,
                 &mut pending_workspace_controls,
                 &mut pending_output_controls,
@@ -1932,6 +2003,7 @@ mod tests {
                 &mut fps_hud_state,
                 &mut pending_external_commands,
                 &mut pending_popup_requests,
+                &mut pending_tiling_controls,
                 &mut pending_window_controls,
                 &mut pending_workspace_controls,
                 &mut pending_output_controls,
@@ -1955,6 +2027,7 @@ mod tests {
         let mut keyboard_layout_state = KeyboardLayoutState::default();
         let mut fps_hud_state = FpsHudRuntimeState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
+        let mut pending_tiling_controls = PendingTilingControls::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
@@ -1970,6 +2043,7 @@ mod tests {
                 &mut fps_hud_state,
                 &mut pending_external_commands,
                 &mut pending_popup_requests,
+                &mut pending_tiling_controls,
                 &mut pending_window_controls,
                 &mut pending_workspace_controls,
                 &mut pending_output_controls,
@@ -1995,6 +2069,7 @@ mod tests {
                 &mut fps_hud_state,
                 &mut pending_external_commands,
                 &mut pending_popup_requests,
+                &mut pending_tiling_controls,
                 &mut pending_window_controls,
                 &mut pending_workspace_controls,
                 &mut pending_output_controls,
@@ -2030,6 +2105,7 @@ mod tests {
         );
         let mut fps_hud_state = FpsHudRuntimeState::default();
         let mut pending_external_commands = PendingExternalCommandRequests::default();
+        let mut pending_tiling_controls = PendingTilingControls::default();
         let mut pending_window_controls = PendingWindowControls::default();
         let mut pending_workspace_controls = PendingWorkspaceControls::default();
         let mut pending_output_controls = PendingOutputControls::default();
@@ -2044,6 +2120,7 @@ mod tests {
                 &mut fps_hud_state,
                 &mut pending_external_commands,
                 &mut pending_popup_requests,
+                &mut pending_tiling_controls,
                 &mut pending_window_controls,
                 &mut pending_workspace_controls,
                 &mut pending_output_controls,
@@ -2069,6 +2146,7 @@ mod tests {
                 &mut fps_hud_state,
                 &mut pending_external_commands,
                 &mut pending_popup_requests,
+                &mut pending_tiling_controls,
                 &mut pending_window_controls,
                 &mut pending_workspace_controls,
                 &mut pending_output_controls,
@@ -2096,6 +2174,7 @@ mod tests {
                 &mut fps_hud_state,
                 &mut pending_external_commands,
                 &mut pending_popup_requests,
+                &mut pending_tiling_controls,
                 &mut pending_window_controls,
                 &mut pending_workspace_controls,
                 &mut pending_output_controls,

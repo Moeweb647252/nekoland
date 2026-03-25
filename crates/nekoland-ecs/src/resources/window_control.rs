@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::components::WorkspaceCoord;
 use crate::selectors::{OutputName, SurfaceId, WindowSelector};
 
-use super::{KeyboardFocusState, SplitAxis};
+use super::KeyboardFocusState;
 
 /// High-level window control updates staged by IPC, keybindings, or other systems.
 ///
@@ -25,7 +25,6 @@ pub struct PendingWindowControl {
     pub surface_id: SurfaceId,
     pub position: Option<WindowControlPosition>,
     pub size: Option<WindowControlSize>,
-    pub split_axis: Option<SplitAxis>,
     pub background: Option<WindowBackgroundControl>,
     pub focus: bool,
     pub close: bool,
@@ -132,22 +131,6 @@ impl WindowControlHandle<'_> {
         self
     }
 
-    /// Stage a tiled split-axis update for the target window.
-    pub fn split(&mut self, axis: SplitAxis) -> &mut Self {
-        self.control.split_axis = Some(axis);
-        self
-    }
-
-    /// Stage a horizontal split for the target window.
-    pub fn split_horizontal(&mut self) -> &mut Self {
-        self.split(SplitAxis::Horizontal)
-    }
-
-    /// Stage a vertical split for the target window.
-    pub fn split_vertical(&mut self) -> &mut Self {
-        self.split(SplitAxis::Vertical)
-    }
-
     /// Stage focus for the target window.
     pub fn focus(&mut self) -> &mut Self {
         self.control.focus = true;
@@ -176,7 +159,6 @@ impl WindowControlHandle<'_> {
 #[cfg(test)]
 mod tests {
     use crate::resources::KeyboardFocusState;
-    use crate::resources::SplitAxis;
     use crate::selectors::{OutputName, SurfaceId};
 
     use super::{PendingWindowControls, WindowBackgroundControl};
@@ -188,7 +170,6 @@ mod tests {
             .surface(SurfaceId(7))
             .move_to(10, 20)
             .resize_to(800, 600)
-            .split_vertical()
             .background_on("Virtual-1")
             .focus()
             .close();
@@ -200,7 +181,6 @@ mod tests {
         assert_eq!(control.position.map(|position| position.y), Some(20));
         assert_eq!(control.size.map(|size| size.width), Some(800));
         assert_eq!(control.size.map(|size| size.height), Some(600));
-        assert_eq!(control.split_axis, Some(SplitAxis::Vertical));
         assert!(matches!(
             control.background,
             Some(WindowBackgroundControl::Set { output: OutputName(ref output) })

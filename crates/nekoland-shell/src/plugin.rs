@@ -13,9 +13,9 @@ use nekoland_ecs::resources::{
     CommandHistoryState, FocusedOutputState, FpsHudRuntimeState, GlobalPointerPosition,
     OutputOverlayState, OverlayUiFrame, PendingExternalCommandRequests, PendingOutputControls,
     PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
-    PendingWindowControls, PendingWindowServerRequests, PendingWorkspaceControls, ShellRenderInput,
-    SurfacePresentationSnapshot, WaylandCommands, WaylandFeedback, WaylandIngress,
-    WindowStackingState, WorkArea, WorkspaceTilingState,
+    PendingTilingControls, PendingWindowControls, PendingWindowServerRequests,
+    PendingWorkspaceControls, ShellRenderInput, SurfacePresentationSnapshot, WaylandCommands,
+    WaylandFeedback, WaylandIngress, WindowStackingState, WorkArea, WorkspaceTilingState,
 };
 
 use crate::{
@@ -35,6 +35,7 @@ impl NekolandPlugin for ShellPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PendingPopupServerRequests>()
             .init_resource::<PendingWindowControls>()
+            .init_resource::<PendingTilingControls>()
             .init_resource::<PendingWindowServerRequests>()
             .init_resource::<PendingWorkspaceControls>()
             .init_resource::<PendingOutputControls>()
@@ -99,6 +100,7 @@ impl NekolandPlugin for ShellPlugin {
                         xdg::configure::configure_sequence_system,
                         window_switcher::window_switcher_input_system,
                         window_control::window_control_request_system,
+                        layout::tiling::tiling_control_request_system,
                     )
                         .chain(),
                     (
@@ -116,6 +118,7 @@ impl NekolandPlugin for ShellPlugin {
                         surface_presentation::surface_presentation_snapshot_system,
                         presentation::window_presentation_sync_system,
                         focus::focus_management_system,
+                        layout::tiling::tiling_focus_auto_align_system,
                         decorations::server_decoration_system,
                         fps_hud::emit_fps_hud_system,
                         sync_shell_render_boundary_system,

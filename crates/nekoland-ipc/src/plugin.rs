@@ -7,7 +7,8 @@ use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, RenderSchedule};
 use nekoland_ecs::resources::{
     FpsHudRuntimeState, PendingExternalCommandRequests, PendingOutputControls,
-    PendingPopupServerRequests, PendingWindowControls, PendingWorkspaceControls,
+    PendingPopupServerRequests, PendingTilingControls, PendingWindowControls,
+    PendingWorkspaceControls,
 };
 
 use crate::{server, subscribe};
@@ -29,6 +30,7 @@ impl NekolandPlugin for IpcPlugin {
             .init_resource::<subscribe::PendingSubscriptionEvents>()
             .init_resource::<PendingExternalCommandRequests>()
             .init_resource::<PendingPopupServerRequests>()
+            .init_resource::<PendingTilingControls>()
             .init_resource::<PendingWindowControls>()
             .init_resource::<PendingWorkspaceControls>()
             .init_resource::<PendingOutputControls>()

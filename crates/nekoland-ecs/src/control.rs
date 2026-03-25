@@ -9,7 +9,7 @@ use bevy_ecs::system::{Single, SystemParam};
 use crate::components::{ActiveWorkspace, OutputDevice, WlSurfaceHandle, Workspace};
 use crate::resources::{
     KeyboardFocusState, OutputControlHandle, PendingOutputControls, PendingWindowControls,
-    PendingWorkspaceControls, WindowControlHandle,
+    PendingTilingControls, PendingWorkspaceControls, TilingControlHandle, WindowControlHandle,
 };
 use crate::selectors::{
     OutputName, OutputSelector, SurfaceId, WindowSelector, WorkspaceLookup, WorkspaceName,
@@ -119,6 +119,11 @@ pub struct OutputControlApi<'a> {
     pending: &'a mut PendingOutputControls,
 }
 
+/// Lightweight high-level API for staging tiling control updates from plain Rust helpers.
+pub struct TilingControlApi<'a> {
+    pending: &'a mut PendingTilingControls,
+}
+
 impl<'a> OutputControlApi<'a> {
     /// Creates an output-control facade over the pending output queue.
     pub fn new(pending: &'a mut PendingOutputControls) -> Self {
@@ -143,6 +148,18 @@ impl<'a> OutputControlApi<'a> {
     /// Returns a staged handle for the currently focused output.
     pub fn focused(&mut self) -> OutputControlHandle<'_> {
         self.pending.select(OutputSelector::Focused)
+    }
+}
+
+impl<'a> TilingControlApi<'a> {
+    /// Creates a tiling-control facade over the pending tiling queue.
+    pub fn new(pending: &'a mut PendingTilingControls) -> Self {
+        Self { pending }
+    }
+
+    /// Returns the mutable staged tiling control handle.
+    pub fn controls(&mut self) -> TilingControlHandle<'_> {
+        self.pending.api()
     }
 }
 
@@ -271,6 +288,12 @@ pub struct OutputOps<'w, 's> {
     _marker: std::marker::PhantomData<&'s ()>,
 }
 
+/// SystemParam façade over high-level tiling controls.
+#[derive(SystemParam)]
+pub struct TilingOps<'w> {
+    pending: ResMut<'w, PendingTilingControls>,
+}
+
 impl<'w, 's> OutputOps<'w, 's> {
     /// Returns the plain Rust facade layered on top of this system param.
     pub fn api(&mut self) -> OutputControlApi<'_> {
@@ -306,14 +329,27 @@ impl<'w, 's> OutputOps<'w, 's> {
     }
 }
 
+impl<'w> TilingOps<'w> {
+    /// Returns the plain Rust facade layered on top of this system param.
+    pub fn api(&mut self) -> TilingControlApi<'_> {
+        TilingControlApi::new(&mut self.pending)
+    }
+
+    /// Returns the mutable staged tiling control handle.
+    pub fn controls(&mut self) -> TilingControlHandle<'_> {
+        self.pending.api()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::resources::{
-        KeyboardFocusState, PendingOutputControls, PendingWindowControls, PendingWorkspaceControls,
+        HorizontalDirection, KeyboardFocusState, PendingOutputControls, PendingTilingControls,
+        PendingWindowControls, PendingWorkspaceControls, TilingPanDirection,
     };
     use crate::selectors::{OutputName, SurfaceId, WorkspaceName};
 
-    use super::{OutputControlApi, WindowControlApi, WorkspaceControlApi};
+    use super::{OutputControlApi, TilingControlApi, WindowControlApi, WorkspaceControlApi};
 
     #[test]
     fn plain_control_apis_stage_updates_without_system_param() {
@@ -321,13 +357,19 @@ mod tests {
         let mut windows = PendingWindowControls::default();
         let mut workspaces = PendingWorkspaceControls::default();
         let mut outputs = PendingOutputControls::default();
+        let mut tiling = PendingTilingControls::default();
 
         WindowControlApi::new(&focus, &mut windows).surface(SurfaceId(7)).close();
         WorkspaceControlApi::new(&mut workspaces).switch_or_create_named(WorkspaceName::from("2"));
         OutputControlApi::new(&mut outputs).named(OutputName::from("Virtual-1")).enable();
+        TilingControlApi::new(&mut tiling)
+            .controls()
+            .focus_column(HorizontalDirection::Right)
+            .pan_viewport(TilingPanDirection::Left);
 
         assert!(windows.as_slice()[0].close);
         assert_eq!(workspaces.as_slice().len(), 1);
         assert_eq!(outputs.as_slice()[0].enabled, Some(true));
+        assert_eq!(tiling.as_slice().len(), 2);
     }
 }

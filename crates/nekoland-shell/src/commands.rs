@@ -6,7 +6,8 @@ use bevy_ecs::system::SystemParam;
 use nekoland_config::resources::{CompositorConfig, ConfiguredAction};
 use nekoland_core::lifecycle::AppLifecycleState;
 use nekoland_ecs::control::{
-    OutputControlApi, OutputOps, WindowControlApi, WindowOps, WorkspaceControlApi, WorkspaceOps,
+    OutputControlApi, OutputOps, TilingControlApi, TilingOps, WindowControlApi, WindowOps,
+    WorkspaceControlApi, WorkspaceOps,
 };
 use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
 use nekoland_ecs::resources::{
@@ -53,6 +54,7 @@ pub struct StartupActionDispatch<'w, 's> {
     windows: WindowOps<'w, 's>,
     workspaces: WorkspaceOps<'w, 's>,
     outputs: OutputOps<'w, 's>,
+    tiling: TilingOps<'w>,
 }
 
 struct ActionDispatchContext<'a, 'ops> {
@@ -63,6 +65,7 @@ struct ActionDispatchContext<'a, 'ops> {
     windows: &'a mut WindowControlApi<'ops>,
     workspaces: &'a mut WorkspaceControlApi<'ops>,
     outputs: &'a mut OutputControlApi<'ops>,
+    tiling: &'a mut TilingControlApi<'ops>,
 }
 
 impl<'a, 'ops> ActionDispatchContext<'a, 'ops> {
@@ -184,6 +187,7 @@ pub fn startup_action_queue_system(startup: StartupActionDispatch<'_, '_>) {
         mut windows,
         mut workspaces,
         mut outputs,
+        mut tiling,
     } = startup;
 
     if startup_actions.queued {
@@ -214,6 +218,7 @@ pub fn startup_action_queue_system(startup: StartupActionDispatch<'_, '_>) {
     let mut window_controls = windows.api();
     let mut workspace_controls = workspaces.api();
     let mut output_controls = outputs.api();
+    let mut tiling_controls = tiling.api();
     let mut dispatch = ActionDispatchContext {
         source: "startup",
         origin: "startup",
@@ -222,6 +227,7 @@ pub fn startup_action_queue_system(startup: StartupActionDispatch<'_, '_>) {
         windows: &mut window_controls,
         workspaces: &mut workspace_controls,
         outputs: &mut output_controls,
+        tiling: &mut tiling_controls,
     };
     let mut applied_actions = 0_usize;
     for action in &config.startup_actions {
@@ -341,11 +347,26 @@ fn dispatch_configured_action(
             };
             window.resize_to(*width, *height);
         }
-        ConfiguredAction::SplitFocusedWindow { axis } => {
-            let Some(mut window) = dispatch.focused_window(action) else {
-                return false;
-            };
-            window.split(*axis);
+        ConfiguredAction::FocusTilingColumn { direction } => {
+            dispatch.tiling.controls().focus_column(*direction);
+        }
+        ConfiguredAction::FocusTilingWindow { direction } => {
+            dispatch.tiling.controls().focus_window(*direction);
+        }
+        ConfiguredAction::MoveTilingColumn { direction } => {
+            dispatch.tiling.controls().move_column(*direction);
+        }
+        ConfiguredAction::MoveTilingWindow { direction } => {
+            dispatch.tiling.controls().move_window(*direction);
+        }
+        ConfiguredAction::ConsumeIntoTilingColumn { direction } => {
+            dispatch.tiling.controls().consume_into_column(*direction);
+        }
+        ConfiguredAction::ExpelFromTilingColumn { direction } => {
+            dispatch.tiling.controls().expel_from_column(*direction);
+        }
+        ConfiguredAction::PanTilingViewport { direction } => {
+            dispatch.tiling.controls().pan_viewport(*direction);
         }
         ConfiguredAction::BackgroundFocusedWindow { output } => {
             let Some(mut window) = dispatch.focused_window(action) else {

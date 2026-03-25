@@ -8,6 +8,8 @@ pub mod output;
 pub mod popup;
 /// Read-only query commands and snapshot payloads.
 pub mod query;
+/// Tiling-management commands.
+pub mod tiling;
 /// Window-management commands.
 pub mod window;
 /// Workspace-management commands.
@@ -23,5 +25,6 @@ pub use query::{
     PrimarySelectionSnapshot, QueryCommand, SelectionOwnerSnapshot, TreeSnapshot, WindowSnapshot,
     WorkspaceSnapshot,
 };
-pub use window::{SplitAxis, WindowCommand};
+pub use tiling::{HorizontalDirection, TilingCommand, TilingPanDirection, VerticalDirection};
+pub use window::WindowCommand;
 pub use workspace::WorkspaceCommand;

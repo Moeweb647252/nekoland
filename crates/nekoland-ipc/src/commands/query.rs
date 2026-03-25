@@ -107,6 +107,8 @@ pub struct WindowSnapshot {
     pub focused: bool,
     pub visible_in_viewport: bool,
     pub render_index: Option<usize>,
+    pub tiled_column_index: Option<usize>,
+    pub tiled_row_index: Option<usize>,
 }
 
 /// Popup tree entry returned by `get_tree`.

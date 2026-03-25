@@ -18,8 +18,8 @@ use nekoland_ecs::components::{
 };
 use nekoland_ecs::resources::{FramePacingState, KeyboardFocusState, RenderPlan, RenderPlanItem};
 use nekoland_ipc::commands::{
-    OutputCommand, OutputSnapshot, QueryCommand, SplitAxis, TreeSnapshot, WindowCommand,
-    WorkspaceCommand, WorkspaceSnapshot,
+    HorizontalDirection, OutputCommand, OutputSnapshot, QueryCommand, TilingCommand,
+    TreeSnapshot, WindowCommand, WorkspaceCommand, WorkspaceSnapshot,
 };
 use nekoland_ipc::{IpcCommand, IpcReply, IpcRequest, IpcServerState, send_request_to_path};
 
@@ -236,7 +236,7 @@ fn ipc_control_commands_update_window_workspace_and_output_state() {
 }
 
 #[test]
-fn ipc_window_split_command_updates_tiled_geometry() {
+fn ipc_tiling_consume_command_updates_tiled_geometry() {
     let _env_lock = common::env_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _backend_guard = common::EnvVarGuard::set("NEKOLAND_BACKEND", "virtual");
     let _startup_guard = common::EnvVarGuard::set("NEKOLAND_DISABLE_STARTUP_COMMANDS", "1");
@@ -268,7 +268,7 @@ fn ipc_window_split_command_updates_tiled_geometry() {
         }
     };
 
-    let ipc_thread = thread::spawn(move || run_ipc_split_sequence(&ipc_socket_path));
+    let ipc_thread = thread::spawn(move || run_ipc_tiling_sequence(&ipc_socket_path));
     if let Err(error) = app.run() {
         panic!("nekoland app should complete the configured frame budget: {error}");
     }
@@ -277,14 +277,14 @@ fn ipc_window_split_command_updates_tiled_geometry() {
         Ok(result) => match result {
             Ok(summary) => summary,
             Err(common::TestControl::Skip(reason)) => {
-                eprintln!("skipping IPC split test in restricted environment: {reason}");
+                eprintln!("skipping IPC tiling test in restricted environment: {reason}");
                 return;
             }
             Err(common::TestControl::Fail(reason)) => {
-                panic!("IPC split sequence failed: {reason}");
+                panic!("IPC tiling sequence failed: {reason}");
             }
         },
-        Err(_) => panic!("IPC split thread should exit cleanly"),
+        Err(_) => panic!("IPC tiling thread should exit cleanly"),
     };
 
     let first = summary
@@ -306,7 +306,7 @@ fn ipc_window_split_command_updates_tiled_geometry() {
     assert_eq!(first.height, second.height);
     assert!(
         first.y < second.y,
-        "vertical split should stack the second tiled window below the first: {summary:?}"
+        "consume-left should stack the second tiled window below the first inside one column: {summary:?}"
     );
 }
 
@@ -485,7 +485,7 @@ fn run_ipc_control_sequence(socket_path: &Path) -> Result<IpcControlSummary, com
     Ok(IpcControlSummary { output_name })
 }
 
-fn run_ipc_split_sequence(socket_path: &Path) -> Result<TreeSnapshot, common::TestControl> {
+fn run_ipc_tiling_sequence(socket_path: &Path) -> Result<TreeSnapshot, common::TestControl> {
     let initial = wait_for_tree(socket_path, |tree| {
         tree.windows.iter().any(|window| window.surface_id == SPLIT_PRIMARY_SURFACE_ID)
             && tree.windows.iter().any(|window| window.surface_id == SPLIT_TARGET_SURFACE_ID)
@@ -505,9 +505,14 @@ fn run_ipc_split_sequence(socket_path: &Path) -> Result<TreeSnapshot, common::Te
 
     send_command(
         socket_path,
-        IpcCommand::Window(WindowCommand::Split {
-            surface_id: SPLIT_TARGET_SURFACE_ID,
-            axis: SplitAxis::Vertical,
+        IpcCommand::Window(WindowCommand::Focus { surface_id: SPLIT_TARGET_SURFACE_ID }),
+    )?;
+    let _ = wait_for_tree(socket_path, |tree| tree.focused_surface == Some(SPLIT_TARGET_SURFACE_ID))
+        .map_err(|error| annotate_test_control(error, "after focusing the target tiled window"))?;
+    send_command(
+        socket_path,
+        IpcCommand::Tiling(TilingCommand::ConsumeIntoColumn {
+            direction: HorizontalDirection::Left,
         }),
     )?;
 

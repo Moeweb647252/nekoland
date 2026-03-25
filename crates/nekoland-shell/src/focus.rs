@@ -190,11 +190,10 @@ pub fn focus_management_system(
         }
     }
 
-    if focus
-        .keyboard_focus
-        .focused_surface
-        .is_some_and(|surface_id| !visible_surfaces.contains(&surface_id))
-    {
+    if focus.keyboard_focus.focused_surface.is_some_and(|surface_id| {
+        !visible_surfaces.contains(&surface_id)
+            && !preserves_offscreen_tiled_focus(surface_id, &focus.windows)
+    }) {
         focus.keyboard_focus.focused_surface = None;
     }
 
@@ -203,6 +202,19 @@ pub fn focus_management_system(
     }
 
     tracing::trace!(focused_surface = ?focus.keyboard_focus.focused_surface, "focus management tick");
+}
+
+fn preserves_offscreen_tiled_focus(
+    surface_id: u64,
+    windows: &Query<WindowFocusRuntime, With<Window>>,
+) -> bool {
+    windows.iter().any(|window| {
+        window.surface_id() == surface_id
+            && window.role.is_managed()
+            && !window.management_hints.helper_surface
+            && *window.layout == WindowLayout::Tiled
+            && *window.mode != WindowMode::Hidden
+    })
 }
 
 fn visible_window_geometries(
@@ -340,6 +352,43 @@ mod tests {
         app.inner_mut().world_mut().spawn(WindowBundle {
             surface: WlSurfaceHandle { id: 22 },
             geometry: SurfaceGeometry { x: 0, y: 0, width: 120, height: 120 },
+            ..Default::default()
+        });
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let focus = app.inner().world().resource::<KeyboardFocusState>();
+        assert_eq!(focus.focused_surface, Some(22));
+    }
+
+    #[test]
+    fn offscreen_tiled_focus_is_preserved_for_auto_alignment() {
+        let mut app = NekolandApp::new("focus-offscreen-tiled-preserve-test");
+        let config = CompositorConfig { focus_follows_mouse: false, ..CompositorConfig::default() };
+        app.inner_mut()
+            .insert_resource(WaylandIngress::default())
+            .insert_resource(config)
+            .insert_resource(GlobalPointerPosition::default())
+            .insert_resource(KeyboardFocusState { focused_surface: Some(22) })
+            .insert_resource(WindowStackingState {
+                workspaces: std::collections::BTreeMap::from([(
+                    UNASSIGNED_WORKSPACE_STACK_ID,
+                    vec![11],
+                )]),
+            })
+            .add_systems(LayoutSchedule, focus_management_system);
+
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 11 },
+            geometry: SurfaceGeometry { x: 0, y: 0, width: 120, height: 120 },
+            layout: WindowLayout::Tiled,
+            ..Default::default()
+        });
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 22 },
+            geometry: SurfaceGeometry { x: 1280, y: 0, width: 120, height: 120 },
+            viewport_visibility: WindowViewportVisibility { visible: false, output: None },
+            layout: WindowLayout::Tiled,
             ..Default::default()
         });
 

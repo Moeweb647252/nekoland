@@ -62,7 +62,13 @@ pub enum ConfiguredActionConfig {
     Close { close: bool },
     Move { r#move: [isize; 2] },
     Resize { resize: [u32; 2] },
-    Split { split: nekoland_ecs::resources::SplitAxis },
+    TilingFocusColumn { tiling_focus_column: nekoland_ecs::resources::HorizontalDirection },
+    TilingFocusWindow { tiling_focus_window: nekoland_ecs::resources::VerticalDirection },
+    TilingMoveColumn { tiling_move_column: nekoland_ecs::resources::HorizontalDirection },
+    TilingMoveWindow { tiling_move_window: nekoland_ecs::resources::VerticalDirection },
+    TilingConsume { tiling_consume: nekoland_ecs::resources::HorizontalDirection },
+    TilingExpel { tiling_expel: nekoland_ecs::resources::HorizontalDirection },
+    TilingPan { tiling_pan: nekoland_ecs::resources::TilingPanDirection },
     Background { background: OutputName },
     ClearBackground { clear_background: bool },
     Workspace { workspace: WorkspaceLookup },
@@ -115,7 +121,27 @@ impl TryFrom<ConfiguredActionConfig> for ConfiguredAction {
             ConfiguredActionConfig::Resize { resize } => {
                 Ok(Self::ResizeFocusedWindow { width: resize[0], height: resize[1] })
             }
-            ConfiguredActionConfig::Split { split } => Ok(Self::SplitFocusedWindow { axis: split }),
+            ConfiguredActionConfig::TilingFocusColumn { tiling_focus_column } => {
+                Ok(Self::FocusTilingColumn { direction: tiling_focus_column })
+            }
+            ConfiguredActionConfig::TilingFocusWindow { tiling_focus_window } => {
+                Ok(Self::FocusTilingWindow { direction: tiling_focus_window })
+            }
+            ConfiguredActionConfig::TilingMoveColumn { tiling_move_column } => {
+                Ok(Self::MoveTilingColumn { direction: tiling_move_column })
+            }
+            ConfiguredActionConfig::TilingMoveWindow { tiling_move_window } => {
+                Ok(Self::MoveTilingWindow { direction: tiling_move_window })
+            }
+            ConfiguredActionConfig::TilingConsume { tiling_consume } => {
+                Ok(Self::ConsumeIntoTilingColumn { direction: tiling_consume })
+            }
+            ConfiguredActionConfig::TilingExpel { tiling_expel } => {
+                Ok(Self::ExpelFromTilingColumn { direction: tiling_expel })
+            }
+            ConfiguredActionConfig::TilingPan { tiling_pan } => {
+                Ok(Self::PanTilingViewport { direction: tiling_pan })
+            }
             ConfiguredActionConfig::Background { background } => {
                 Ok(Self::BackgroundFocusedWindow { output: background })
             }
