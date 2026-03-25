@@ -20,6 +20,7 @@ use nekoland_ecs::resources::{
 };
 
 const OVERLAY_TEXT_CACHE_LIMIT: usize = 256;
+const MIN_OVERLAY_TEXT_RASTER_SCALE: u32 = 4;
 
 #[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
 pub struct OverlayUiSceneSyncState {
@@ -234,7 +235,7 @@ fn overlay_ui_scene_entry(
             let image = text_rasterizer.rasterize_text(
                 text.text.as_str(),
                 text.font_size,
-                output_scale.max(1),
+                output_scale.max(MIN_OVERLAY_TEXT_RASTER_SCALE),
                 text.color,
             )?;
             let scale = image.scale.max(1);
@@ -304,6 +305,9 @@ fn rasterize_text_image(
         return None;
     }
 
+    let width = padded_dimension(width, scale.max(1))?;
+    let height = padded_dimension(height, scale.max(1))?;
+
     let mut pixels = vec![0_u8; usize::try_from(width.checked_mul(height)?.checked_mul(4)?).ok()?];
     for glyph in glyphs {
         let (metrics, bitmap) = font.rasterize_config(glyph.key);
@@ -334,6 +338,11 @@ fn rasterize_text_image(
     }
 
     Some(QuadRasterImage { width, height, scale: scale.max(1), pixels_rgba: pixels })
+}
+
+fn padded_dimension(size: u32, scale: u32) -> Option<u32> {
+    let scale = scale.max(1);
+    Some(size.div_ceil(scale).checked_mul(scale)?)
 }
 
 fn discover_system_font() -> Option<(PathBuf, Vec<u8>)> {
@@ -569,5 +578,12 @@ mod tests {
             scale: 1,
             color: [255, 255, 255, 255],
         }));
+    }
+
+    #[test]
+    fn padded_dimension_rounds_up_to_scale_multiple() {
+        assert_eq!(super::padded_dimension(11, 2), Some(12));
+        assert_eq!(super::padded_dimension(12, 2), Some(12));
+        assert_eq!(super::padded_dimension(13, 3), Some(15));
     }
 }

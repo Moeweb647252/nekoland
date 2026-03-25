@@ -42,13 +42,11 @@ use wayland_client::{
     globals::{BindError, GlobalListContents, registry_queue_init},
     protocol::{wl_registry, wl_seat, wl_surface},
 };
+use wayland_egl as wegl;
 use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
-    zwp_keyboard_shortcuts_inhibit_manager_v1::{
-        self, ZwpKeyboardShortcutsInhibitManagerV1,
-    },
+    zwp_keyboard_shortcuts_inhibit_manager_v1::{self, ZwpKeyboardShortcutsInhibitManagerV1},
     zwp_keyboard_shortcuts_inhibitor_v1::ZwpKeyboardShortcutsInhibitorV1,
 };
-use wayland_egl as wegl;
 
 pub(crate) const HOST_WINIT_DEVICE: &str = "winit";
 
@@ -91,8 +89,10 @@ impl HostWinitGraphicsBackend {
     }
 
     pub(crate) fn sync_wayland_shortcuts_inhibitor(&mut self) {
-        let should_inhibit =
-            should_inhibit_host_wayland_shortcuts(self.window.fullscreen().is_some(), self.window.has_focus());
+        let should_inhibit = should_inhibit_host_wayland_shortcuts(
+            self.window.fullscreen().is_some(),
+            self.window.has_focus(),
+        );
         let Some(state) = self.wayland_shortcuts_inhibit.as_mut() else {
             return;
         };
@@ -216,17 +216,18 @@ impl HostWaylandShortcutsInhibitState {
         let connection = Connection::from_backend(unsafe {
             wayland_client::backend::Backend::from_foreign_display(display_ptr)
         });
-        let (globals, event_queue) =
-            match registry_queue_init::<HostWaylandShortcutDispatchState>(&connection) {
-                Ok(state) => state,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        "failed to initialize host Wayland registry queue for keyboard shortcut inhibitor"
-                    );
-                    return None;
-                }
-            };
+        let (globals, event_queue) = match registry_queue_init::<HostWaylandShortcutDispatchState>(
+            &connection,
+        ) {
+            Ok(state) => state,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to initialize host Wayland registry queue for keyboard shortcut inhibitor"
+                );
+                return None;
+            }
+        };
         let queue_handle = event_queue.handle();
         let manager = match globals.bind::<ZwpKeyboardShortcutsInhibitManagerV1, _, _>(
             &queue_handle,
@@ -260,7 +261,10 @@ impl HostWaylandShortcutsInhibitState {
             }
         };
         let surface_id = unsafe {
-            wayland_client::backend::ObjectId::from_ptr(wl_surface::WlSurface::interface(), surface_ptr)
+            wayland_client::backend::ObjectId::from_ptr(
+                wl_surface::WlSurface::interface(),
+                surface_ptr,
+            )
         };
         let surface_id = match surface_id {
             Ok(surface_id) => surface_id,
@@ -305,7 +309,8 @@ impl HostWaylandShortcutsInhibitState {
 
     fn create_inhibitor(&mut self) -> Result<(), String> {
         let queue_handle = self.event_queue.handle();
-        let inhibitor = self.manager.inhibit_shortcuts(&self.surface, &self.seat, &queue_handle, ());
+        let inhibitor =
+            self.manager.inhibit_shortcuts(&self.surface, &self.seat, &queue_handle, ());
         self.inhibitor = Some(inhibitor);
         self.flush_requests()
     }
@@ -361,9 +366,12 @@ where
         return Err(BindError::UnsupportedVersion);
     }
 
-    Ok(globals
-        .registry()
-        .bind::<I, _, _>(global.name, global.version.min(version_end), queue_handle, ()))
+    Ok(globals.registry().bind::<I, _, _>(
+        global.name,
+        global.version.min(version_end),
+        queue_handle,
+        (),
+    ))
 }
 
 fn should_inhibit_host_wayland_shortcuts(fullscreen: bool, focused: bool) -> bool {
@@ -765,7 +773,9 @@ mod tests {
     use smithay::reexports::winit::event::{DeviceEvent, MouseButton, MouseScrollDelta};
     use smithay::reexports::winit::window::CursorGrabMode;
 
-    use crate::winit::host::{should_inhibit_host_wayland_shortcuts, translate_device_mouse_motion};
+    use crate::winit::host::{
+        should_inhibit_host_wayland_shortcuts, translate_device_mouse_motion,
+    };
 
     use super::{translate_button_code, translate_scroll_delta, xorg_mouse_to_libinput};
 

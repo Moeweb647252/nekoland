@@ -952,7 +952,8 @@ fn install_host_winit_source(
                 if let Some(backend) = shared.backend.as_mut() {
                     set_host_cursor_capture(backend.window(), focused, capture_mode.as_ref());
                     backend.sync_wayland_shortcuts_inhibitor();
-                    let seed_event = locked_pointer_seed_event(backend.window(), capture_mode.get());
+                    let seed_event =
+                        locked_pointer_seed_event(backend.window(), capture_mode.get());
                     if let Some(seed_event) = seed_event {
                         shared.pending_input_events.push(seed_event);
                     }
