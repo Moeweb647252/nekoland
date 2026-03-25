@@ -318,7 +318,10 @@ mod tests {
                     ..Default::default()
                 },
                 WindowPlacement {
-                    floating_position: Some(FloatingPosition::Explicit(WindowPosition { x: 0, y: 0 })),
+                    floating_position: Some(FloatingPosition::Explicit(WindowPosition {
+                        x: 0,
+                        y: 0,
+                    })),
                     floating_size: Some(WindowSize { width: 3000, height: 2000 }),
                 },
             ))

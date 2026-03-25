@@ -72,7 +72,9 @@ pub(crate) fn center_viewport_on_scene_geometry(
     viewport.origin_y = target_y.saturating_sub(half_height);
 }
 
-pub(crate) fn preferred_primary_output_id(wayland_ingress: Option<&WaylandIngress>) -> Option<OutputId> {
+pub(crate) fn preferred_primary_output_id(
+    wayland_ingress: Option<&WaylandIngress>,
+) -> Option<OutputId> {
     wayland_ingress.and_then(|ingress| ingress.primary_output.id)
 }
 

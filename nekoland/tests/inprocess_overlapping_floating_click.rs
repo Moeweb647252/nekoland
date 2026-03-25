@@ -198,8 +198,7 @@ fn overlapping_floating_click_targets_topmost_wayland_client() {
     if !pump.arranged && (!bottom.configured || !top.configured) {
         eprintln!(
             "skipping overlap click test in restricted environment: bottom_configured={} top_configured={} pump={pump:?}",
-            bottom.configured,
-            top.configured,
+            bottom.configured, top.configured,
         );
         return;
     }
@@ -297,9 +296,9 @@ fn drive_overlap_click_scenario(
         .filter_map(|item| match item {
             RenderPlanItem::Surface(item) if item.surface_id != 0 => Some(item.surface_id),
             RenderPlanItem::Surface(_) => None,
-            RenderPlanItem::Quad(_)
-            | RenderPlanItem::Backdrop(_)
-            | RenderPlanItem::Cursor(_) => None,
+            RenderPlanItem::Quad(_) | RenderPlanItem::Backdrop(_) | RenderPlanItem::Cursor(_) => {
+                None
+            }
         })
         .last();
     if top_render_surface != Some(top_id) {

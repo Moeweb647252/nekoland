@@ -2,8 +2,7 @@ use bevy_ecs::message::{MessageReader, MessageWriter};
 use bevy_ecs::prelude::{Commands, Query, Res, ResMut, Resource, With};
 use bevy_ecs::system::SystemParam;
 use nekoland_ecs::components::{
-    PendingInteractiveResize, Window, WindowLayout, WindowPosition, WindowSceneGeometry,
-    WindowSize,
+    PendingInteractiveResize, Window, WindowLayout, WindowPosition, WindowSceneGeometry, WindowSize,
 };
 use nekoland_ecs::events::{PointerButton, WindowMoved};
 use nekoland_ecs::resources::{
@@ -99,7 +98,8 @@ pub fn window_grab_system(
     }
 
     let resize_grab = matches!(grab_state.mode, WindowGrabMode::Resize { .. });
-    let next_geometry = geometry_for_pointer(&grab_state, &grab.pointer, Some(&window.scene_geometry));
+    let next_geometry =
+        geometry_for_pointer(&grab_state, &grab.pointer, Some(&window.scene_geometry));
     let moved =
         window.scene_geometry.x != next_geometry.x || window.scene_geometry.y != next_geometry.y;
     let resized = window.scene_geometry.width != next_geometry.width

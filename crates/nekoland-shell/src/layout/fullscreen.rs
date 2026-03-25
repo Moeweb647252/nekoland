@@ -90,8 +90,12 @@ mod tests {
     #[test]
     fn fullscreen_layout_prefers_named_target_output_over_workspace_output() {
         let mut app = NekolandApp::new("fullscreen-target-output-test");
-        app.insert_resource(WaylandIngress::default())
-            .insert_resource(WorkArea { x: 0, y: 0, width: 800, height: 600 });
+        app.insert_resource(WaylandIngress::default()).insert_resource(WorkArea {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        });
         app.inner_mut().add_systems(
             LayoutSchedule,
             (fullscreen_layout_system, window_viewport_projection_system).chain(),
@@ -181,7 +185,8 @@ mod tests {
                     buffer: Default::default(),
                     content_version: Default::default(),
                     window: XdgWindow::default(),
-                    management_hints: nekoland_ecs::components::WindowManagementHints::native_wayland(),
+                    management_hints:
+                        nekoland_ecs::components::WindowManagementHints::native_wayland(),
                     layout: WindowLayout::Floating,
                     mode: WindowMode::Fullscreen,
                     decoration: Default::default(),

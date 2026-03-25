@@ -84,12 +84,8 @@ impl SeatRegistry {
 
     pub fn bind_backend_name(&mut self, seat_id: SeatId, backend_name: impl Into<String>) {
         let backend_name = backend_name.into();
-        if let Some(previous) = self
-            .seats
-            .entry(seat_id)
-            .or_default()
-            .backend_name
-            .replace(backend_name.clone())
+        if let Some(previous) =
+            self.seats.entry(seat_id).or_default().backend_name.replace(backend_name.clone())
         {
             self.backend_names.remove(&previous);
         }
@@ -98,12 +94,8 @@ impl SeatRegistry {
 
     pub fn bind_wayland_name(&mut self, seat_id: SeatId, wayland_name: impl Into<String>) {
         let wayland_name = wayland_name.into();
-        if let Some(previous) = self
-            .seats
-            .entry(seat_id)
-            .or_default()
-            .wayland_name
-            .replace(wayland_name.clone())
+        if let Some(previous) =
+            self.seats.entry(seat_id).or_default().wayland_name.replace(wayland_name.clone())
         {
             self.wayland_names.remove(&previous);
         }
@@ -132,10 +124,7 @@ mod tests {
     fn ensure_wayland_name_returns_same_id_for_existing_name() {
         let mut registry = SeatRegistry::default();
 
-        assert_eq!(
-            registry.ensure_wayland_name(DEFAULT_WAYLAND_SEAT_NAME),
-            SeatId::PRIMARY
-        );
+        assert_eq!(registry.ensure_wayland_name(DEFAULT_WAYLAND_SEAT_NAME), SeatId::PRIMARY);
     }
 
     #[test]

@@ -356,8 +356,8 @@ mod tests {
     use super::Window;
     use crate::components::{
         BufferState, SurfaceGeometry, WindowAnimation, WindowLayout, WindowManagementHints,
-        WindowMode, WindowPlacement, WindowPolicyState, WindowRestoreSnapshot,
-        WindowSceneGeometry, WindowViewportVisibility,
+        WindowMode, WindowPlacement, WindowPolicyState, WindowRestoreSnapshot, WindowSceneGeometry,
+        WindowViewportVisibility,
     };
 
     #[test]

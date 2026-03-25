@@ -154,10 +154,10 @@ mod tests {
     use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::components::OutputId;
     use nekoland_ecs::resources::{
-        MaterialParamsId, OutputRenderPlan, PendingScreenshotRequests, RenderItemId,
-        RenderItemIdentity, RenderItemInstance, RenderMaterialId, RenderPassGraph, RenderPassKind,
-        RenderPhasePlan, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId,
-        ShellRenderInput, QuadContent, QuadRenderItem, SurfaceRenderItem,
+        MaterialParamsId, OutputRenderPlan, PendingScreenshotRequests, QuadContent, QuadRenderItem,
+        RenderItemId, RenderItemIdentity, RenderItemInstance, RenderMaterialId, RenderPassGraph,
+        RenderPassKind, RenderPhasePlan, RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole,
+        RenderSourceId, ShellRenderInput, SurfaceRenderItem,
     };
 
     use crate::material::{RenderMaterialRequest, RenderMaterialRequestQueue};

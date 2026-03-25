@@ -36,10 +36,10 @@ use nekoland_ecs::resources::{
     ClipboardSelection, ClipboardSelectionState, DragAndDropDrop, DragAndDropSession,
     DragAndDropState, LayerLifecycleAction, LayerLifecycleRequest, LayerSurfaceCreateSpec,
     OutputEventRecord, PendingLayerRequests, PendingOutputEvents, PendingPopupEvents,
-    PendingWindowControls, PendingWindowEvents, PendingXdgRequests, PopupEvent,
-    PopupEventRequest, PopupPlacement, PrimarySelection, PrimarySelectionState, ResizeEdges,
+    PendingWindowControls, PendingWindowEvents, PendingXdgRequests, PopupEvent, PopupEventRequest,
+    PopupPlacement, PrimarySelection, PrimarySelectionState, ResizeEdges, SeatRegistry,
     SelectionOwner, SurfaceExtent, WindowEvent, WindowEventRequest, WindowManagerRequest,
-    SeatRegistry, X11WindowGeometry, XdgSurfaceRole,
+    X11WindowGeometry, XdgSurfaceRole,
 };
 use nekoland_ecs::selectors::SurfaceId;
 use serde::{Deserialize, Serialize};
@@ -368,7 +368,10 @@ mod tests {
         assert!(matches!(events[0].action, WindowEvent::Upsert { .. }));
         assert!(matches!(
             events[1].action,
-            WindowEvent::Committed { size: Some(SurfaceExtent { width: 800, height: 600 }), attached: true }
+            WindowEvent::Committed {
+                size: Some(SurfaceExtent { width: 800, height: 600 }),
+                attached: true
+            }
         ));
     }
 
@@ -526,14 +529,8 @@ impl ProtocolState {
                     });
                 }
                 ProtocolEvent::ConfigureRequested { role: XdgSurfaceRole::Popup, .. } => {}
-                ProtocolEvent::ConfigureRequested {
-                    role: XdgSurfaceRole::Toplevel,
-                    ..
-                }
-                | ProtocolEvent::AckConfigure {
-                    role: XdgSurfaceRole::Toplevel,
-                    ..
-                } => {}
+                ProtocolEvent::ConfigureRequested { role: XdgSurfaceRole::Toplevel, .. }
+                | ProtocolEvent::AckConfigure { role: XdgSurfaceRole::Toplevel, .. } => {}
                 ProtocolEvent::AckConfigure { role: XdgSurfaceRole::Popup, .. } => {}
                 ProtocolEvent::ToplevelMetadataChanged { surface_id, title, app_id } => {
                     pending_window_events.push(WindowEventRequest {
@@ -618,19 +615,11 @@ impl ProtocolState {
                         action: PopupEvent::Grab { seat_id, serial },
                     });
                 }
-                ProtocolEvent::SurfaceDestroyed {
-                    surface_id,
-                    role: XdgSurfaceRole::Toplevel,
-                } => {
-                    pending_window_events.push(WindowEventRequest {
-                        surface_id,
-                        action: WindowEvent::Closed,
-                    });
+                ProtocolEvent::SurfaceDestroyed { surface_id, role: XdgSurfaceRole::Toplevel } => {
+                    pending_window_events
+                        .push(WindowEventRequest { surface_id, action: WindowEvent::Closed });
                 }
-                ProtocolEvent::SurfaceDestroyed {
-                    surface_id,
-                    role: XdgSurfaceRole::Popup,
-                } => {
+                ProtocolEvent::SurfaceDestroyed { surface_id, role: XdgSurfaceRole::Popup } => {
                     pending_popup_events
                         .push(PopupEventRequest { surface_id, action: PopupEvent::Closed });
                 }
@@ -898,10 +887,8 @@ impl ProtocolState {
                             .push(PopupEventRequest { surface_id, action: PopupEvent::Closed });
                         continue;
                     }
-                    pending_window_events.push(WindowEventRequest {
-                        surface_id,
-                        action: WindowEvent::Closed,
-                    });
+                    pending_window_events
+                        .push(WindowEventRequest { surface_id, action: WindowEvent::Closed });
                 }
                 ProtocolEvent::OutputAnnounced { output_name } => {
                     pending_output_events

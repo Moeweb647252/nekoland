@@ -23,9 +23,9 @@ pub fn frame_callback_system(
         .flat_map(|plan| plan.iter_ordered())
         .filter_map(|item| match item {
             RenderPlanItem::Surface(item) => Some(item.surface_id),
-            RenderPlanItem::Quad(_)
-            | RenderPlanItem::Backdrop(_)
-            | RenderPlanItem::Cursor(_) => None,
+            RenderPlanItem::Quad(_) | RenderPlanItem::Backdrop(_) | RenderPlanItem::Cursor(_) => {
+                None
+            }
         })
         .collect::<BTreeSet<_>>();
     let known_surface_ids = shell_render_input

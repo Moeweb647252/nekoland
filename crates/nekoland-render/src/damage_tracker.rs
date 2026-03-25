@@ -367,8 +367,8 @@ mod tests {
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
         BufferState, DesiredOutputName, LayerShellSurface, OutputDevice, OutputId, OutputKind,
-        OutputProperties, SurfaceContentVersion, SurfaceGeometry, WindowViewportVisibility,
-        PopupSurface, WlSurfaceHandle, XdgWindow,
+        OutputProperties, PopupSurface, SurfaceContentVersion, SurfaceGeometry,
+        WindowViewportVisibility, WlSurfaceHandle, XdgWindow,
     };
     use nekoland_ecs::resources::{
         CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState, CursorRenderItem,

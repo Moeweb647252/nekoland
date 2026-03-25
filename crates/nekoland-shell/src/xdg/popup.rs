@@ -55,13 +55,12 @@ type PopupManagementQuery<'w, 's> = Query<
     ),
     (Without<Window>, Allow<Disabled>),
 >;
-type PopupProjectionParents<'w, 's> =
-    Query<
-        'w,
-        's,
-        (Entity, &'static SurfaceGeometry),
-        (With<Window>, Without<PopupSurface>, Allow<Disabled>),
-    >;
+type PopupProjectionParents<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static SurfaceGeometry),
+    (With<Window>, Without<PopupSurface>, Allow<Disabled>),
+>;
 type PopupProjectionQuery<'w, 's> = Query<
     'w,
     's,
@@ -102,7 +101,9 @@ pub(crate) fn popup_management_system(
 
     for request in requests {
         match request.action.clone() {
-            PopupEvent::Created { parent_surface_id, placement } if known_popups.insert(request.surface_id) => {
+            PopupEvent::Created { parent_surface_id, placement }
+                if known_popups.insert(request.surface_id) =>
+            {
                 let Some(parent_entity) = popup_parent_entity(
                     parent_surface_id,
                     &entity_index,
@@ -341,11 +342,11 @@ mod tests {
     use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
-    use nekoland_ecs::components::{
-        BufferState, PopupGrab, PopupSurface, SurfaceContentVersion, SurfaceGeometry, WlSurfaceHandle,
-        XdgWindow,
-    };
     use nekoland_ecs::components::WindowAnimation;
+    use nekoland_ecs::components::{
+        BufferState, PopupGrab, PopupSurface, SurfaceContentVersion, SurfaceGeometry,
+        WlSurfaceHandle, XdgWindow,
+    };
     use nekoland_ecs::resources::{
         EntityIndex, PopupEvent, PopupEventRequest, PopupPlacement, rebuild_entity_index_system,
     };
@@ -355,8 +356,7 @@ mod tests {
     #[test]
     fn popup_creation_inserts_child_of_parent_when_parent_exists() {
         let mut app = NekolandApp::new("popup-management-test");
-        app.insert_resource(EntityIndex::default())
-            .insert_resource(DeferredPopupEvents::default());
+        app.insert_resource(EntityIndex::default()).insert_resource(DeferredPopupEvents::default());
         app.inner_mut().add_systems(
             LayoutSchedule,
             (rebuild_entity_index_system, popup_management_system).chain(),
@@ -372,21 +372,19 @@ mod tests {
             ))
             .id();
 
-        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(
-            PopupEventRequest {
-                surface_id: 100,
-                action: PopupEvent::Created {
-                    parent_surface_id: 42,
-                    placement: PopupPlacement {
-                        x: 10,
-                        y: 12,
-                        width: 200,
-                        height: 120,
-                        reposition_token: Some(7),
-                    },
+        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(PopupEventRequest {
+            surface_id: 100,
+            action: PopupEvent::Created {
+                parent_surface_id: 42,
+                placement: PopupPlacement {
+                    x: 10,
+                    y: 12,
+                    width: 200,
+                    height: 120,
+                    reposition_token: Some(7),
                 },
             },
-        );
+        });
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
@@ -406,8 +404,7 @@ mod tests {
     #[test]
     fn popup_projection_tracks_parent_geometry_changes() {
         let mut app = NekolandApp::new("popup-projection-test");
-        app.insert_resource(EntityIndex::default())
-            .insert_resource(DeferredPopupEvents::default());
+        app.insert_resource(EntityIndex::default()).insert_resource(DeferredPopupEvents::default());
         app.inner_mut().add_systems(
             LayoutSchedule,
             (rebuild_entity_index_system, popup_management_system, popup_projection_system).chain(),
@@ -423,21 +420,19 @@ mod tests {
             ))
             .id();
 
-        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(
-            PopupEventRequest {
-                surface_id: 100,
-                action: PopupEvent::Created {
-                    parent_surface_id: 42,
-                    placement: PopupPlacement {
-                        x: 10,
-                        y: 12,
-                        width: 200,
-                        height: 120,
-                        reposition_token: Some(7),
-                    },
+        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(PopupEventRequest {
+            surface_id: 100,
+            action: PopupEvent::Created {
+                parent_surface_id: 42,
+                placement: PopupPlacement {
+                    x: 10,
+                    y: 12,
+                    width: 200,
+                    height: 120,
+                    reposition_token: Some(7),
                 },
             },
-        );
+        });
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
         {
@@ -468,8 +463,7 @@ mod tests {
     #[test]
     fn popup_creation_accepts_popup_parent_surfaces() {
         let mut app = NekolandApp::new("nested-popup-management-test");
-        app.insert_resource(EntityIndex::default())
-            .insert_resource(DeferredPopupEvents::default());
+        app.insert_resource(EntityIndex::default()).insert_resource(DeferredPopupEvents::default());
         app.inner_mut().add_systems(
             LayoutSchedule,
             (rebuild_entity_index_system, popup_management_system).chain(),
@@ -496,21 +490,19 @@ mod tests {
             .id();
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
-        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(
-            PopupEventRequest {
-                surface_id: 200,
-                action: PopupEvent::Created {
-                    parent_surface_id: 100,
-                    placement: PopupPlacement {
-                        x: 10,
-                        y: 12,
-                        width: 160,
-                        height: 80,
-                        reposition_token: Some(9),
-                    },
+        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(PopupEventRequest {
+            surface_id: 200,
+            action: PopupEvent::Created {
+                parent_surface_id: 100,
+                placement: PopupPlacement {
+                    x: 10,
+                    y: 12,
+                    width: 160,
+                    height: 80,
+                    reposition_token: Some(9),
                 },
             },
-        );
+        });
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
@@ -530,8 +522,7 @@ mod tests {
     #[test]
     fn popup_destroy_is_idempotent_when_duplicate_requests_arrive() {
         let mut app = NekolandApp::new("popup-destroy-idempotent-test");
-        app.insert_resource(EntityIndex::default())
-            .insert_resource(DeferredPopupEvents::default());
+        app.insert_resource(EntityIndex::default()).insert_resource(DeferredPopupEvents::default());
         app.inner_mut().add_systems(
             LayoutSchedule,
             (rebuild_entity_index_system, popup_management_system).chain(),
@@ -576,14 +567,14 @@ mod tests {
         ));
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
-        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(PopupEventRequest {
-            surface_id: 100,
-            action: PopupEvent::Closed,
-        });
-        app.inner_mut().world_mut().resource_mut::<DeferredPopupEvents>().push(PopupEventRequest {
-            surface_id: 100,
-            action: PopupEvent::Closed,
-        });
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<DeferredPopupEvents>()
+            .push(PopupEventRequest { surface_id: 100, action: PopupEvent::Closed });
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<DeferredPopupEvents>()
+            .push(PopupEventRequest { surface_id: 100, action: PopupEvent::Closed });
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 

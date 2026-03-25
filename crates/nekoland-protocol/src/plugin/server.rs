@@ -1231,9 +1231,11 @@ impl SmithayProtocolRuntime {
                     height: geometry.height.max(1),
                 })
             } else {
-                scene_geometry.as_ref().map(|scene_geometry| nekoland_ecs::resources::SurfaceExtent {
-                    width: scene_geometry.width.max(1),
-                    height: scene_geometry.height.max(1),
+                scene_geometry.as_ref().map(|scene_geometry| {
+                    nekoland_ecs::resources::SurfaceExtent {
+                        width: scene_geometry.width.max(1),
+                        height: scene_geometry.height.max(1),
+                    }
                 })
             };
             return self.sync_xdg_toplevel_state(surface_id, size, fullscreen, maximized, resizing);
@@ -1358,8 +1360,7 @@ impl SmithayProtocolRuntime {
 
         let focus = focus.and_then(|focus| {
             let root_surface = self.surface_for_id(focus.surface_id)?;
-            let surface_origin =
-                adjusted_surface_tree_origin(&root_surface, focus.surface_origin);
+            let surface_origin = adjusted_surface_tree_origin(&root_surface, focus.surface_origin);
             smithay::desktop::utils::under_from_surface_tree(
                 &root_surface,
                 location,
@@ -1927,9 +1928,9 @@ fn adjusted_surface_tree_origin_from_offset(
 mod tests {
     use smithay::utils::Point;
 
+    use super::SyntheticPointerGrab;
     use super::adjusted_surface_tree_origin_from_offset;
     use super::synthetic_pointer_grab_matches;
-    use super::SyntheticPointerGrab;
     use crate::plugin::surface::InteractiveRequestKind;
 
     #[test]

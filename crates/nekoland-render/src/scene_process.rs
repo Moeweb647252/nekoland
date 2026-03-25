@@ -487,8 +487,8 @@ mod tests {
     use nekoland_ecs::resources::{
         CompositorClock, CompositorSceneEntry, CompositorSceneEntryId, CompositorSceneState,
         OutputCompositorScene, OutputGeometrySnapshot, RenderItemInstance, RenderRect,
-        RenderSceneRole, ShellRenderInput, SurfacePresentationRole, WaylandIngress,
-        SurfacePresentationState,
+        RenderSceneRole, ShellRenderInput, SurfacePresentationRole, SurfacePresentationState,
+        WaylandIngress,
     };
 
     use crate::animation::{

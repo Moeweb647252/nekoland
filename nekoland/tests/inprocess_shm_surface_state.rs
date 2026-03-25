@@ -129,7 +129,8 @@ fn shm_buffer_commit_populates_renderer_surface_state() {
     };
     let wl_surface = {
         let wayland_world = app.inner().sub_app(WaylandSubApp).world();
-        let Some(registry) = wayland_world.get_non_send_resource::<ProtocolSurfaceRegistry>() else {
+        let Some(registry) = wayland_world.get_non_send_resource::<ProtocolSurfaceRegistry>()
+        else {
             panic!("protocol surface registry should be initialized");
         };
         registry.surface(surface_id).cloned().unwrap_or_else(|| {

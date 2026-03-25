@@ -8,8 +8,7 @@ use nekoland_ecs::components::{OutputId, SurfaceGeometry, Window, WindowLayout, 
 use nekoland_ecs::events::PointerButton;
 use nekoland_ecs::resources::{
     GlobalPointerPosition, KeyboardFocusState, OutputSnapshotState, UNASSIGNED_WORKSPACE_STACK_ID,
-    ViewportAnimationActivityState, ViewportPointerPanState, WaylandIngress,
-    WindowStackingState,
+    ViewportAnimationActivityState, ViewportPointerPanState, WaylandIngress, WindowStackingState,
 };
 use nekoland_ecs::views::{WindowFocusRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
@@ -199,16 +198,16 @@ fn visible_window_geometries(
                 && window.viewport_visibility.visible
                 && window.role.is_managed()
                 && !window.management_hints.helper_surface)
-            .then_some((
-                window.surface_id(),
-                (
-                    window.geometry.clone(),
-                    window_workspace_runtime_id(window.child_of, workspaces)
-                        .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID),
-                    window.viewport_visibility.output.clone(),
-                    *window.layout,
-                ),
-            ))
+                .then_some((
+                    window.surface_id(),
+                    (
+                        window.geometry.clone(),
+                        window_workspace_runtime_id(window.child_of, workspaces)
+                            .unwrap_or(UNASSIGNED_WORKSPACE_STACK_ID),
+                        window.viewport_visibility.output.clone(),
+                        *window.layout,
+                    ),
+                ))
         })
         .collect()
 }
@@ -588,14 +587,20 @@ mod tests {
         app.inner_mut().world_mut().spawn(WindowBundle {
             surface: WlSurfaceHandle { id: 11 },
             geometry: SurfaceGeometry { x: 0, y: 0, width: 120, height: 120 },
-            viewport_visibility: WindowViewportVisibility { visible: true, output: Some(output_id) },
+            viewport_visibility: WindowViewportVisibility {
+                visible: true,
+                output: Some(output_id),
+            },
             layout: WindowLayout::Tiled,
             ..Default::default()
         });
         app.inner_mut().world_mut().spawn(WindowBundle {
             surface: WlSurfaceHandle { id: 22 },
             geometry: SurfaceGeometry { x: 40, y: 40, width: 120, height: 120 },
-            viewport_visibility: WindowViewportVisibility { visible: true, output: Some(output_id) },
+            viewport_visibility: WindowViewportVisibility {
+                visible: true,
+                output: Some(output_id),
+            },
             layout: WindowLayout::Tiled,
             ..Default::default()
         });

@@ -230,7 +230,7 @@ mod tests {
     use crate::components::OutputId;
     use crate::resources::{
         OutputOverlayCollection, OutputOverlayId, OutputOverlaySpec, OutputOverlayState,
-        OutputOverlayUpdate, QuadContent, PendingOutputOverlayControls, RenderColor, RenderRect,
+        OutputOverlayUpdate, PendingOutputOverlayControls, QuadContent, RenderColor, RenderRect,
     };
 
     #[test]

@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
 use nekoland_ecs::components::{
-    BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, SurfaceGeometry,
-    PopupSurface, Window, WlSurfaceHandle,
+    BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, PopupSurface,
+    SurfaceGeometry, Window, WlSurfaceHandle,
 };
 use nekoland_ecs::presentation_logic::{
     layer_visible, managed_window_visible, output_background_window_visible, popup_visible,
@@ -182,8 +182,8 @@ mod tests {
     use bevy_ecs::system::RunSystemOnce;
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
-        BufferState, OutputDevice, OutputId, OutputKind, OutputProperties, SurfaceGeometry,
-        PopupSurface, WlSurfaceHandle,
+        BufferState, OutputDevice, OutputId, OutputKind, OutputProperties, PopupSurface,
+        SurfaceGeometry, WlSurfaceHandle,
     };
     use nekoland_ecs::resources::{
         OutputGeometrySnapshot, OutputSnapshotState, SurfacePresentationSnapshot, WaylandIngress,

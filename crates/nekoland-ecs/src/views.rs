@@ -6,11 +6,11 @@ use bevy_ecs::query::QueryData;
 use crate::components::{
     BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, OutputBackgroundWindow,
     OutputCurrentWorkspace, OutputDevice, OutputId, OutputPlacement, OutputProperties,
-    OutputViewport, OutputWorkArea, PendingInteractiveResize, PopupGrab, SurfaceContentVersion,
-    SurfaceGeometry, Window, WindowCommittedSize, WindowFullscreenTarget, WindowLayout,
-    WindowManagementHints, WindowMode, WindowPlacement, WindowPolicyState, WindowRestoreSnapshot,
-    WindowRole, WindowSceneGeometry, WindowViewportVisibility, WlSurfaceHandle, Workspace,
-    X11Window, PopupSurface,
+    OutputViewport, OutputWorkArea, PendingInteractiveResize, PopupGrab, PopupSurface,
+    SurfaceContentVersion, SurfaceGeometry, Window, WindowCommittedSize, WindowFullscreenTarget,
+    WindowLayout, WindowManagementHints, WindowMode, WindowPlacement, WindowPolicyState,
+    WindowRestoreSnapshot, WindowRole, WindowSceneGeometry, WindowViewportVisibility,
+    WlSurfaceHandle, Workspace, X11Window,
 };
 
 /// Common read-only runtime view over one surface-backed entity with committed geometry.

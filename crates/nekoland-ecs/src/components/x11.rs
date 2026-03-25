@@ -48,7 +48,10 @@ impl X11Window {
             )
     }
 
-    pub fn management_hints(&self, transient_parent_surface_id: Option<u64>) -> WindowManagementHints {
+    pub fn management_hints(
+        &self,
+        transient_parent_surface_id: Option<u64>,
+    ) -> WindowManagementHints {
         let helper_surface = self.is_helper_surface();
         let bypass_window_rules = self.override_redirect;
         WindowManagementHints::x11(

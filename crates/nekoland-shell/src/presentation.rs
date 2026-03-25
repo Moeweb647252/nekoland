@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::prelude::{Local, Query, ResMut, With};
 use nekoland_ecs::components::{SurfaceGeometry, Window, WindowMode, WindowSceneGeometry};
-use nekoland_ecs::resources::{PendingWindowServerRequests, WindowServerAction, WindowServerRequest};
+use nekoland_ecs::resources::{
+    PendingWindowServerRequests, WindowServerAction, WindowServerRequest,
+};
 use nekoland_ecs::views::WindowRuntime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,10 +78,8 @@ fn desired_presentation_state(
         })
     } else if window.pending_resize.is_some() {
         let pending_resize = window.pending_resize.as_deref().expect("checked above");
-        let target_geometry = pending_resize
-            .inflight_geometry
-            .as_ref()
-            .unwrap_or(&pending_resize.requested_geometry);
+        let target_geometry =
+            pending_resize.inflight_geometry.as_ref().unwrap_or(&pending_resize.requested_geometry);
         Some(WindowPresentationState::Sync {
             geometry: SurfaceGeometry {
                 x: window.geometry.x,
@@ -127,14 +127,19 @@ fn window_server_action_for_presentation_state(
     state: &WindowPresentationState,
 ) -> WindowServerAction {
     match state {
-        WindowPresentationState::Sync { geometry, scene_geometry, fullscreen, maximized, resizing } =>
-            WindowServerAction::SyncPresentation {
-                geometry: geometry.clone(),
-                scene_geometry: scene_geometry.clone(),
-                fullscreen: *fullscreen,
-                maximized: *maximized,
-                resizing: *resizing,
-            },
+        WindowPresentationState::Sync {
+            geometry,
+            scene_geometry,
+            fullscreen,
+            maximized,
+            resizing,
+        } => WindowServerAction::SyncPresentation {
+            geometry: geometry.clone(),
+            scene_geometry: scene_geometry.clone(),
+            fullscreen: *fullscreen,
+            maximized: *maximized,
+            resizing: *resizing,
+        },
     }
 }
 
@@ -481,11 +486,9 @@ mod tests {
             },
             WindowCommittedSize { width: 1600, height: 900 },
             WindowPlacement {
-                floating_position: Some(
-                    nekoland_ecs::components::FloatingPosition::Auto(
-                        nekoland_ecs::components::WindowPosition { x: 4000, y: 5000 },
-                    ),
-                ),
+                floating_position: Some(nekoland_ecs::components::FloatingPosition::Auto(
+                    nekoland_ecs::components::WindowPosition { x: 4000, y: 5000 },
+                )),
                 ..WindowPlacement::default()
             },
         ));

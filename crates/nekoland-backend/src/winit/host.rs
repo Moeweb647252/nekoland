@@ -346,9 +346,8 @@ pub(crate) fn init_host_winit(
         EventLoopBuilderExtWayland::with_any_thread(&mut event_loop_builder, true);
         EventLoopBuilderExtX11::with_any_thread(&mut event_loop_builder, true);
     }
-    let event_loop = event_loop_builder
-        .build()
-        .map_err(|error| NekolandError::Runtime(error.to_string()))?;
+    let event_loop =
+        event_loop_builder.build().map_err(|error| NekolandError::Runtime(error.to_string()))?;
     event_loop.listen_device_events(DeviceEvents::WhenFocused);
 
     #[allow(deprecated)]

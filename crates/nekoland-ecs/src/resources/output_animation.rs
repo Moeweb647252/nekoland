@@ -29,9 +29,7 @@ impl OutputViewportAnimation {
 
     pub fn is_complete(&self, current_uptime_millis: u128) -> bool {
         current_uptime_millis
-            >= self
-                .start_uptime_millis
-                .saturating_add(u128::from(self.duration_millis.max(1)))
+            >= self.start_uptime_millis.saturating_add(u128::from(self.duration_millis.max(1)))
     }
 }
 

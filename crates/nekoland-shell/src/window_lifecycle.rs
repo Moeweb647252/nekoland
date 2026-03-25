@@ -14,10 +14,11 @@ use bevy_ecs::system::SystemParam;
 use nekoland_config::resources::{CompositorConfig, WindowRuleContext};
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    BorderTheme, BufferState, PendingInteractiveResize, ServerDecoration, SurfaceContentVersion,
-    PopupSurface, SurfaceGeometry, Window, WindowAnimation, WindowFullscreenTarget, WindowLayout,
-    WindowManagementHints, WindowMode, WindowPlacement, WindowPolicyState, WindowPosition,
-    WindowRole, WindowSceneGeometry, WindowSize, WlSurfaceHandle, WindowCommittedSize,
+    BorderTheme, BufferState, PendingInteractiveResize, PopupSurface, ServerDecoration,
+    SurfaceContentVersion, SurfaceGeometry, Window, WindowAnimation, WindowCommittedSize,
+    WindowFullscreenTarget, WindowLayout, WindowManagementHints, WindowMode, WindowPlacement,
+    WindowPolicyState, WindowPosition, WindowRole, WindowSceneGeometry, WindowSize,
+    WlSurfaceHandle,
 };
 use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
 use nekoland_ecs::resources::{
@@ -30,12 +31,13 @@ use nekoland_ecs::views::{OutputRuntime, PopupRuntime, WindowRuntime, WorkspaceR
 use nekoland_ecs::workspace_membership::focused_or_primary_workspace_runtime_target;
 
 use crate::interaction::{ActiveWindowGrab, WindowGrabMode, begin_window_grab};
-use crate::layout::floating::{centre_x, centre_y, placement_work_area, should_auto_place_floating_window};
+use crate::layout::floating::{
+    centre_x, centre_y, placement_work_area, should_auto_place_floating_window,
+};
 use crate::viewport::{preferred_primary_output_id, resolve_output_state_for_workspace};
 use crate::window_policy::{
-    WindowBackgroundState, enter_temporary_window_mode,
-    refresh_window_policy, resolve_background_output_id, restore_window_state,
-    sync_window_background_role,
+    WindowBackgroundState, enter_temporary_window_mode, refresh_window_policy,
+    resolve_background_output_id, restore_window_state, sync_window_background_role,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Resource)]
@@ -115,29 +117,32 @@ pub(crate) fn window_lifecycle_system(
     let mut requests = deferred_window_events.take();
     requests.extend(wayland_ingress.pending_window_events.iter().cloned());
 
-    let mut known_surfaces = existing_surfaces.iter().map(|surface| surface.id).collect::<BTreeSet<_>>();
+    let mut known_surfaces =
+        existing_surfaces.iter().map(|surface| surface.id).collect::<BTreeSet<_>>();
     let mut deferred = Vec::new();
 
     for request in requests {
         let result = match request.action.clone() {
-            WindowEvent::Upsert { title, app_id, hints, scene_geometry, attached } => upsert_window(
-                request.surface_id,
-                title,
-                app_id,
-                hints,
-                scene_geometry,
-                attached,
-                &config,
-                &outputs,
-                &workspaces,
-                active_workspace_entity,
-                &entity_index,
-                &mut windows,
-                &mut commands,
-                &mut window_created,
-                &mut window_moved,
-                &mut known_surfaces,
-            ),
+            WindowEvent::Upsert { title, app_id, hints, scene_geometry, attached } => {
+                upsert_window(
+                    request.surface_id,
+                    title,
+                    app_id,
+                    hints,
+                    scene_geometry,
+                    attached,
+                    &config,
+                    &outputs,
+                    &workspaces,
+                    active_workspace_entity,
+                    &entity_index,
+                    &mut windows,
+                    &mut commands,
+                    &mut window_created,
+                    &mut window_moved,
+                    &mut known_surfaces,
+                )
+            }
             WindowEvent::Committed { size, attached } => apply_committed_window_state(
                 request.surface_id,
                 size,
@@ -286,10 +291,9 @@ fn upsert_window(
                 && !window.management_hints.client_driven_resize
             {
                 if should_use_explicit_floating_position(&geometry, &hints) {
-                    window.placement.set_explicit_position(WindowPosition {
-                        x: geometry.x,
-                        y: geometry.y,
-                    });
+                    window
+                        .placement
+                        .set_explicit_position(WindowPosition { x: geometry.x, y: geometry.y });
                     window.placement.floating_size = Some(WindowSize {
                         width: geometry.width.max(1),
                         height: geometry.height.max(1),
@@ -307,7 +311,9 @@ fn upsert_window(
                 y: geometry.y as i64,
             });
         }
-        if window.child_of.is_none() && let Some(workspace_entity) = active_workspace_entity {
+        if window.child_of.is_none()
+            && let Some(workspace_entity) = active_workspace_entity
+        {
             commands.entity(entity).insert(ChildOf(workspace_entity));
         }
         known_surfaces.insert(surface_id);
@@ -342,10 +348,7 @@ fn upsert_window(
                 viewport_visibility: Default::default(),
                 buffer: BufferState { attached, scale: 1 },
                 content_version: SurfaceContentVersion::default(),
-                window: Window {
-                    app_id: resolved_app_id.clone(),
-                    title: resolved_title.clone(),
-                },
+                window: Window { app_id: resolved_app_id.clone(), title: resolved_title.clone() },
                 management_hints: hints.clone(),
                 layout: policy.layout,
                 mode: policy.mode,
@@ -356,10 +359,7 @@ fn upsert_window(
                 },
                 animation: WindowAnimation::default(),
             },
-            WindowCommittedSize {
-                width: geometry.width.max(1),
-                height: geometry.height.max(1),
-            },
+            WindowCommittedSize { width: geometry.width.max(1), height: geometry.height.max(1) },
             WindowPolicyState { applied: policy, locked: false },
             placement,
         ))
@@ -389,9 +389,13 @@ fn upsert_window(
         ),
         None,
     );
-    commands
-        .entity(window_entity)
-        .insert((scene_geometry.clone(), fullscreen_target, layout, mode, role));
+    commands.entity(window_entity).insert((
+        scene_geometry.clone(),
+        fullscreen_target,
+        layout,
+        mode,
+        role,
+    ));
     if let Some(workspace_entity) = active_workspace_entity {
         commands.entity(window_entity).insert(ChildOf(workspace_entity));
     }
@@ -423,10 +427,8 @@ fn apply_committed_window_state(
         return Ok(());
     };
 
-    if !matches!(
-        *window.mode,
-        WindowMode::Maximized | WindowMode::Fullscreen | WindowMode::Hidden
-    ) {
+    if !matches!(*window.mode, WindowMode::Maximized | WindowMode::Fullscreen | WindowMode::Hidden)
+    {
         let committed_width = size.width.max(1);
         let committed_height = size.height.max(1);
         window.committed_size.width = committed_width;
@@ -480,8 +482,7 @@ fn apply_committed_window_state(
         } else {
             window.scene_geometry.width = committed_width;
             window.scene_geometry.height = committed_height;
-            if *window.layout == WindowLayout::Floating
-                && window.placement.floating_size.is_some()
+            if *window.layout == WindowLayout::Floating && window.placement.floating_size.is_some()
             {
                 window.placement.floating_size =
                     Some(WindowSize { width: committed_width, height: committed_height });
@@ -728,14 +729,11 @@ fn apply_committed_geometry(
     window.scene_geometry.y = committed_geometry.y;
     window.scene_geometry.width = committed_geometry.width;
     window.scene_geometry.height = committed_geometry.height;
-    window.placement.set_explicit_position(WindowPosition {
-        x: committed_geometry.x,
-        y: committed_geometry.y,
-    });
-    window.placement.floating_size = Some(WindowSize {
-        width: committed_geometry.width,
-        height: committed_geometry.height,
-    });
+    window
+        .placement
+        .set_explicit_position(WindowPosition { x: committed_geometry.x, y: committed_geometry.y });
+    window.placement.floating_size =
+        Some(WindowSize { width: committed_geometry.width, height: committed_geometry.height });
 }
 
 fn placement_area_for_workspace(
@@ -796,8 +794,8 @@ mod tests {
     use nekoland_ecs::events::{WindowClosed, WindowCreated, WindowMoved};
     use nekoland_ecs::resources::{
         EntityIndex, FocusedOutputState, GlobalPointerPosition, KeyboardFocusState,
-        PendingPopupServerRequests, SurfaceExtent, WaylandIngress, WindowEvent,
-        WindowEventRequest, WorkArea, rebuild_entity_index_system,
+        PendingPopupServerRequests, SurfaceExtent, WaylandIngress, WindowEvent, WindowEventRequest,
+        WorkArea, rebuild_entity_index_system,
     };
 
     use crate::interaction::ActiveWindowGrab;
@@ -817,10 +815,14 @@ mod tests {
             .insert_resource(ActiveWindowGrab::default())
             .insert_resource(KeyboardFocusState::default())
             .insert_resource(WaylandIngress::default());
-        app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_message::<WindowMoved>().add_systems(
-            LayoutSchedule,
-            (rebuild_entity_index_system, window_lifecycle_system).chain(),
-        );
+        app.inner_mut()
+            .add_message::<WindowCreated>()
+            .add_message::<WindowClosed>()
+            .add_message::<WindowMoved>()
+            .add_systems(
+                LayoutSchedule,
+                (rebuild_entity_index_system, window_lifecycle_system).chain(),
+            );
 
         app.inner_mut().world_mut().spawn(Workspace {
             id: WorkspaceId(1),
@@ -848,12 +850,8 @@ mod tests {
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner_mut().world_mut();
-        let mut windows = world.query::<(
-            &WlSurfaceHandle,
-            &Window,
-            &WindowManagementHints,
-            &WindowPlacement,
-        )>();
+        let mut windows =
+            world.query::<(&WlSurfaceHandle, &Window, &WindowManagementHints, &WindowPlacement)>();
         let Some((surface, window, hints, placement)) =
             windows.iter(world).find(|(surface, _, _, _)| surface.id == 41)
         else {
@@ -880,10 +878,14 @@ mod tests {
             .insert_resource(ActiveWindowGrab::default())
             .insert_resource(KeyboardFocusState::default())
             .insert_resource(WaylandIngress::default());
-        app.inner_mut().add_message::<WindowCreated>().add_message::<WindowClosed>().add_message::<WindowMoved>().add_systems(
-            LayoutSchedule,
-            (rebuild_entity_index_system, window_lifecycle_system).chain(),
-        );
+        app.inner_mut()
+            .add_message::<WindowCreated>()
+            .add_message::<WindowClosed>()
+            .add_message::<WindowMoved>()
+            .add_systems(
+                LayoutSchedule,
+                (rebuild_entity_index_system, window_lifecycle_system).chain(),
+            );
 
         let entity = app
             .inner_mut()
@@ -914,7 +916,12 @@ mod tests {
                 },
                 WindowCommittedSize { width: 800, height: 600 },
                 PendingInteractiveResize {
-                    requested_geometry: WindowSceneGeometry { x: 10, y: 120, width: 800, height: 500 },
+                    requested_geometry: WindowSceneGeometry {
+                        x: 10,
+                        y: 120,
+                        width: 800,
+                        height: 500,
+                    },
                     inflight_geometry: Some(WindowSceneGeometry {
                         x: 10,
                         y: 120,

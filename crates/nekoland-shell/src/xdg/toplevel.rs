@@ -9,8 +9,8 @@ use bevy_ecs::system::SystemParam;
 use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::bundles::WindowBundle;
 use nekoland_ecs::components::{
-    BorderTheme, BufferState, PendingInteractiveResize, ServerDecoration, SurfaceContentVersion,
-    PopupSurface, SurfaceGeometry, WindowAnimation, WindowFullscreenTarget, WindowLayout,
+    BorderTheme, BufferState, PendingInteractiveResize, PopupSurface, ServerDecoration,
+    SurfaceContentVersion, SurfaceGeometry, WindowAnimation, WindowFullscreenTarget, WindowLayout,
     WindowManagementHints, WindowMode, WindowPolicyState, WindowPosition, WindowRole,
     WindowSceneGeometry, WindowSize, WlSurfaceHandle, XdgWindow,
 };
@@ -283,8 +283,12 @@ pub(crate) fn toplevel_lifecycle_system(
                     {
                         let workspace_id =
                             window_workspace_runtime_id(window.child_of, &workspaces);
-                let placement_area =
-                    placement_area_for_workspace(&outputs, workspace_id, primary_output_id, &work_area);
+                        let placement_area = placement_area_for_workspace(
+                            &outputs,
+                            workspace_id,
+                            primary_output_id,
+                            &work_area,
+                        );
                         restored.geometry.x = centre_x(&placement_area, 0, restored.geometry.width);
                         restored.geometry.y =
                             centre_y(&placement_area, 0, restored.geometry.height);
@@ -359,8 +363,7 @@ pub(crate) fn toplevel_lifecycle_system(
                 if let Some(app_id) = &app_id {
                     window.app_id = app_id.clone();
                 }
-                let (window_app_id, window_title) =
-                    (window.app_id.clone(), window.title.clone());
+                let (window_app_id, window_title) = (window.app_id.clone(), window.title.clone());
                 let policy = config.resolve_window_policy(&window_app_id, &window_title, false);
                 refresh_window_policy(
                     policy,
@@ -567,16 +570,16 @@ mod tests {
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
         BufferState, OutputCurrentWorkspace, OutputDevice, OutputKind, OutputProperties,
-        OutputWorkArea, PendingInteractiveResize, SurfaceGeometry, WindowAnimation, WindowLayout,
-        WindowManagementHints, WindowMode, WindowPlacement, WindowPosition,
+        OutputWorkArea, PendingInteractiveResize, PopupSurface, SurfaceGeometry, WindowAnimation,
+        WindowLayout, WindowManagementHints, WindowMode, WindowPlacement, WindowPosition,
         WindowRestoreSnapshot, WindowRestoreState, WindowSceneGeometry, WindowSize,
-        PopupSurface, WlSurfaceHandle, Workspace, WorkspaceId, XdgWindow,
+        WlSurfaceHandle, Workspace, WorkspaceId, XdgWindow,
     };
     use nekoland_ecs::events::{WindowClosed, WindowCreated};
     use nekoland_ecs::resources::{
         EntityIndex, FocusedOutputState, PendingPopupServerRequests, PopupServerAction,
-        ResizeEdges, SurfaceExtent, WaylandIngress, WindowLifecycleAction,
-        WindowLifecycleRequest, WorkArea, XdgSurfaceRole, rebuild_entity_index_system,
+        ResizeEdges, SurfaceExtent, WaylandIngress, WindowLifecycleAction, WindowLifecycleRequest,
+        WorkArea, XdgSurfaceRole, rebuild_entity_index_system,
     };
 
     use crate::xdg::DeferredXdgRequests;
@@ -926,7 +929,12 @@ mod tests {
                     animation: WindowAnimation::default(),
                 },
                 PendingInteractiveResize {
-                    requested_geometry: WindowSceneGeometry { x: 10, y: 20, width: 1200, height: 900 },
+                    requested_geometry: WindowSceneGeometry {
+                        x: 10,
+                        y: 20,
+                        width: 1200,
+                        height: 900,
+                    },
                     inflight_geometry: Some(WindowSceneGeometry {
                         x: 10,
                         y: 20,
@@ -998,7 +1006,12 @@ mod tests {
                     animation: WindowAnimation::default(),
                 },
                 PendingInteractiveResize {
-                    requested_geometry: WindowSceneGeometry { x: 10, y: 20, width: 1400, height: 1000 },
+                    requested_geometry: WindowSceneGeometry {
+                        x: 10,
+                        y: 20,
+                        width: 1400,
+                        height: 1000,
+                    },
                     inflight_geometry: Some(WindowSceneGeometry {
                         x: 10,
                         y: 20,
@@ -1077,7 +1090,12 @@ mod tests {
                     animation: WindowAnimation::default(),
                 },
                 PendingInteractiveResize {
-                    requested_geometry: WindowSceneGeometry { x: 10, y: 120, width: 800, height: 500 },
+                    requested_geometry: WindowSceneGeometry {
+                        x: 10,
+                        y: 120,
+                        width: 800,
+                        height: 500,
+                    },
                     inflight_geometry: Some(WindowSceneGeometry {
                         x: 10,
                         y: 120,
@@ -1109,12 +1127,9 @@ mod tests {
         assert_eq!(
             world.world().get::<WindowPlacement>(entity),
             Some(&WindowPlacement {
-                floating_position: Some(
-                    nekoland_ecs::components::FloatingPosition::Explicit(WindowPosition {
-                        x: 10,
-                        y: 100,
-                    }),
-                ),
+                floating_position: Some(nekoland_ecs::components::FloatingPosition::Explicit(
+                    WindowPosition { x: 10, y: 100 }
+                ),),
                 floating_size: Some(WindowSize { width: 800, height: 520 }),
             })
         );

@@ -9,9 +9,7 @@ use serde::{Deserialize, Serialize};
 static NEXT_SEAT_ID: AtomicU64 = AtomicU64::new(2);
 
 /// Runtime-stable identity for one logical input seat.
-#[derive(
-    Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
-)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(transparent)]
 pub struct SeatId(pub u64);
 

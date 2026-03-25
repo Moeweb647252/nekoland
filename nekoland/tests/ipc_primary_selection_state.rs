@@ -193,10 +193,7 @@ fn ipc_reports_primary_selection_query_and_subscription_updates() {
     let Ok(event_snapshot) = serde_json::from_value::<PrimarySelectionSnapshot>(payload) else {
         panic!("primary_selection_changed payload should decode");
     };
-    assert_eq!(
-        event_snapshot.seat_id,
-        Some(nekoland_ecs::components::SeatId::PRIMARY)
-    );
+    assert_eq!(event_snapshot.seat_id, Some(nekoland_ecs::components::SeatId::PRIMARY));
     assert_eq!(event_snapshot.seat_name.as_deref(), Some("seat-0"));
     assert_eq!(event_snapshot.mime_types, vec![TEST_MIME_TYPE.to_owned()]);
     assert_eq!(event_snapshot.owner, Some(SelectionOwnerSnapshot::Compositor));

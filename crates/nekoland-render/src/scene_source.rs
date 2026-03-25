@@ -5,8 +5,7 @@ use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
     BackdropRenderItem, CompositorSceneItem, CompositorSceneState, CursorRenderItem,
     CursorRenderSource, QuadContent, QuadRenderItem, RenderItemId, RenderItemIdentity,
-    RenderItemInstance, RenderPlanItem, RenderSourceId, SurfacePresentationRole,
-    SurfaceRenderItem,
+    RenderItemInstance, RenderPlanItem, RenderSourceId, SurfacePresentationRole, SurfaceRenderItem,
 };
 
 use crate::scene_process::{
@@ -116,7 +115,11 @@ impl RenderSceneContribution {
         }
     }
 
-    pub fn quad(key: RenderInstanceKey, content: QuadContent, instance: RenderItemInstance) -> Self {
+    pub fn quad(
+        key: RenderInstanceKey,
+        content: QuadContent,
+        instance: RenderItemInstance,
+    ) -> Self {
         Self { key, instance, payload: RenderSceneContributionPayload::Quad { content } }
     }
 
@@ -335,9 +338,7 @@ mod tests {
                 scene_role: RenderSceneRole::Overlay,
             },
             payload: RenderSceneContributionPayload::Quad {
-                content: QuadContent::SolidColor {
-                    color: RenderColor { r: 1, g: 2, b: 3, a: 4 },
-                },
+                content: QuadContent::SolidColor { color: RenderColor { r: 1, g: 2, b: 3, a: 4 } },
             },
         };
 
@@ -418,9 +419,6 @@ mod tests {
             contributions[0].key.source_key,
             RenderSourceKey::compositor(nekoland_ecs::resources::CompositorSceneEntryId(9))
         );
-        assert!(matches!(
-            contributions[0].payload,
-            RenderSceneContributionPayload::Quad { .. }
-        ));
+        assert!(matches!(contributions[0].payload, RenderSceneContributionPayload::Quad { .. }));
     }
 }

@@ -439,9 +439,7 @@ fn run_ipc_control_sequence(socket_path: &Path) -> Result<IpcControlSummary, com
         Err(common::TestControl::Fail(reason))
             if reason.contains("timed out waiting for IPC query GetOutputs") =>
         {
-            return Err(common::TestControl::Skip(format!(
-                "after viewport move/pan: {reason}"
-            )));
+            return Err(common::TestControl::Skip(format!("after viewport move/pan: {reason}")));
         }
         Err(error) => return Err(annotate_test_control(error, "after viewport move/pan")),
     }

@@ -16,10 +16,10 @@ pub mod final_output_plan;
 pub mod frame_callback;
 /// Typed material registration, request queuing, and frame-state projection.
 pub mod material;
-/// Overlay-UI scene extraction and compositor-owned UI rendering.
-pub mod overlay_ui;
 /// Output overlay scene extraction.
 pub mod output_overlay;
+/// Overlay-UI scene extraction and compositor-owned UI rendering.
+pub mod overlay_ui;
 /// Render-phase planning derived from ordered scene contributions and effect requests.
 pub mod phase_plan;
 /// Pipeline specialization and cache-key projection.

@@ -118,10 +118,7 @@ fn seed_windows(world: &mut bevy_ecs::world::World) {
         world.spawn((WindowBundle {
             surface: WlSurfaceHandle { id: surface_id },
             geometry: SurfaceGeometry { x, y: 32, width: 440, height: 700 },
-            window: XdgWindow {
-                app_id: "org.nekoland.focus".to_owned(),
-                title: title.to_owned(),
-            },
+            window: XdgWindow { app_id: "org.nekoland.focus".to_owned(), title: title.to_owned() },
             layout: WindowLayout::Tiled,
             mode: WindowMode::Normal,
             ..Default::default()

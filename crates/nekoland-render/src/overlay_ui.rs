@@ -327,7 +327,8 @@ fn discover_system_font() -> Option<(PathBuf, Vec<u8>)> {
 }
 
 fn collect_font_candidates() -> Vec<PathBuf> {
-    let mut roots = vec![PathBuf::from("/usr/share/fonts"), PathBuf::from("/usr/local/share/fonts")];
+    let mut roots =
+        vec![PathBuf::from("/usr/share/fonts"), PathBuf::from("/usr/local/share/fonts")];
     if let Some(home) = std::env::var_os("HOME") {
         roots.push(PathBuf::from(&home).join(".fonts"));
         roots.push(PathBuf::from(home).join(".local/share/fonts"));
@@ -361,11 +362,8 @@ fn collect_font_candidates_from_dir(path: &Path, candidates: &mut Vec<PathBuf>) 
 }
 
 fn font_priority(path: &Path) -> (u8, String) {
-    let filename = path
-        .file_name()
-        .and_then(OsStr::to_str)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let filename =
+        path.file_name().and_then(OsStr::to_str).unwrap_or_default().to_ascii_lowercase();
     let preferred = [
         "notosanscjk",
         "notosans",
@@ -385,11 +383,11 @@ fn font_priority(path: &Path) -> (u8, String) {
 
 #[cfg(test)]
 mod tests {
+    use nekoland_core::prelude::NekolandApp;
+    use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::components::{
         OutputDevice, OutputId, OutputPlacement, OutputProperties, OutputViewport, OutputWorkArea,
     };
-    use nekoland_core::prelude::NekolandApp;
-    use nekoland_core::schedules::RenderSchedule;
     use nekoland_ecs::resources::{
         CompositorSceneState, OverlayUiLayer, QuadContent, QuadRasterImage, RenderColor,
         RenderRect, ShellRenderInput,
