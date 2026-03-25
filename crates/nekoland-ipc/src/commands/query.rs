@@ -1,3 +1,7 @@
+//! Read-only IPC query commands and serialized snapshot payloads.
+
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use nekoland_config::resources::ConfiguredAction;

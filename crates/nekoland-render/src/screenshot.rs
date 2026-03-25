@@ -1,6 +1,11 @@
+//! Screenshot service markers and tracing hooks used by the render schedule.
+
 use bevy_ecs::prelude::Res;
 use nekoland_ecs::resources::{CompositorClock, ShellRenderInput};
 
+/// Marker resource for the screenshot/readback service stage.
+///
+/// The actual readback work is deferred to backend execution once a readback pass reaches present.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScreenshotService;
 

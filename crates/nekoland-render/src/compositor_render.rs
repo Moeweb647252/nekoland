@@ -2,6 +2,7 @@
 //!
 //! This module converts shell-owned visibility and ordering state into output-local render scene
 //! contributions, then assembles those contributions into stable render-plan items.
+#![allow(missing_docs)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,14 +31,17 @@ use crate::scene_source::{
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Marker type documenting the desktop frame-composition subsystem.
 pub struct FrameComposer;
 
 #[derive(bevy_ecs::prelude::Resource, Debug, Clone, Default, PartialEq, Eq)]
+/// Output-view snapshot extracted from `WaylandIngress.output_snapshots`.
 pub struct RenderViewSnapshot {
     pub views: Vec<RenderViewState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One output-local render view consumed by render extraction and graph compilation.
 pub struct RenderViewState {
     pub output_id: nekoland_ecs::components::OutputId,
     pub x: i32,
@@ -48,21 +52,25 @@ pub struct RenderViewState {
 }
 
 impl RenderViewSnapshot {
+    /// Iterates the output ids present in this render-view snapshot.
     pub fn ids(&self) -> impl Iterator<Item = nekoland_ecs::components::OutputId> + '_ {
         self.views.iter().map(|view| view.output_id)
     }
 
+    /// Returns the render-view state for the requested output.
     pub fn view(&self, output_id: nekoland_ecs::components::OutputId) -> Option<&RenderViewState> {
         self.views.iter().find(|view| view.output_id == output_id)
     }
 }
 
 #[derive(bevy_ecs::prelude::Resource, Debug, Clone, Default, PartialEq, Eq)]
+/// Output-local surface ordering snapshot derived from shell visibility and stacking state.
 pub struct DesktopSurfaceOrderSnapshot {
     pub outputs: BTreeMap<nekoland_ecs::components::OutputId, Vec<u64>>,
 }
 
 #[derive(SystemParam)]
+/// System parameters required to build desktop scene contributions directly from the main world.
 pub struct FrameCompositionInputs<'w, 's> {
     outputs: Query<'w, 's, OutputRuntime>,
     layers: Query<'w, 's, LayerRenderRuntime, With<nekoland_ecs::components::LayerShellSurface>>,
@@ -77,6 +85,7 @@ pub struct FrameCompositionInputs<'w, 's> {
 }
 
 #[derive(SystemParam)]
+/// System parameters required to assemble a render plan from live world queries.
 pub struct RenderPlanAssemblyInputs<'w, 's> {
     outputs: Query<'w, 's, OutputRuntime>,
     scene_contributions: Res<'w, RenderSceneContributionQueue>,
@@ -85,6 +94,7 @@ pub struct RenderPlanAssemblyInputs<'w, 's> {
 }
 
 #[derive(SystemParam)]
+/// System parameters required to assemble a render plan from extracted snapshots.
 pub struct RenderPlanSnapshotAssemblyInputs<'w> {
     views: Res<'w, RenderViewSnapshot>,
     scene_contributions: Res<'w, RenderSceneContributionQueue>,
@@ -93,6 +103,7 @@ pub struct RenderPlanSnapshotAssemblyInputs<'w> {
 }
 
 #[derive(SystemParam)]
+/// System parameters required to snapshot desktop surface ordering.
 pub struct DesktopSurfaceOrderInputs<'w, 's> {
     outputs: Query<'w, 's, OutputRuntime>,
     layers: Query<'w, 's, LayerRenderRuntime, With<nekoland_ecs::components::LayerShellSurface>>,
@@ -312,6 +323,7 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
 }
 
 /// Resolves stable render item ids and assembles the final output-scoped render plan.
+/// Assembles one render plan directly from live main-world queries.
 pub fn assemble_render_plan_system(assembly: RenderPlanAssemblyInputs<'_, '_>) {
     let RenderPlanAssemblyInputs {
         outputs,
@@ -342,6 +354,7 @@ pub fn assemble_render_plan_system(assembly: RenderPlanAssemblyInputs<'_, '_>) {
     );
 }
 
+/// Assembles one render plan from extracted render-world snapshots.
 pub fn assemble_render_plan_from_snapshot_system(assembly: RenderPlanSnapshotAssemblyInputs<'_>) {
     let RenderPlanSnapshotAssemblyInputs {
         views,
@@ -366,6 +379,7 @@ pub fn assemble_render_plan_from_snapshot_system(assembly: RenderPlanSnapshotAss
     render_plan.outputs = plans;
 }
 
+/// Snapshots output-local desktop surface ordering for render-world consumption.
 pub fn snapshot_desktop_surface_order_system(inputs: DesktopSurfaceOrderInputs<'_, '_>) {
     let DesktopSurfaceOrderInputs {
         outputs,
@@ -535,6 +549,7 @@ pub fn snapshot_desktop_surface_order_system(inputs: DesktopSurfaceOrderInputs<'
     ordered_surfaces.outputs = ordered;
 }
 
+/// Emits desktop scene contributions using previously extracted ordering and view snapshots.
 pub fn emit_desktop_scene_contributions_from_snapshot_system(
     views: Res<'_, RenderViewSnapshot>,
     ordered_surfaces: Res<'_, DesktopSurfaceOrderSnapshot>,

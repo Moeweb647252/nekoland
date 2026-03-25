@@ -57,6 +57,8 @@ use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 const DEFAULT_IPC_SOCKET_NAME: &str = "nekoland-ipc.sock";
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Runtime health snapshot of the IPC server socket and its recent failures.
+#[allow(missing_docs)]
 #[derive(Resource, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IpcServerState {
     pub socket_path: PathBuf,
@@ -159,6 +161,8 @@ pub(crate) struct IpcQuerySnapshotInputs<'w, 's> {
     entity_index: Option<Res<'w, EntityIndex>>,
 }
 
+/// Materialized IPC query results reused by request/response handlers and subscriptions.
+#[allow(missing_docs)]
 #[derive(Resource, Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct IpcQueryCache {
     pub tree: TreeSnapshot,
@@ -459,6 +463,7 @@ impl IpcConnection {
     }
 }
 
+/// Returns the default Unix-domain socket path used by the compositor IPC server.
 pub fn default_socket_path() -> PathBuf {
     if let Some(path) = env::var_os("NEKOLAND_IPC_SOCKET") {
         return PathBuf::from(path);
@@ -473,10 +478,12 @@ pub fn default_socket_path() -> PathBuf {
     PathBuf::from("/tmp").join(DEFAULT_IPC_SOCKET_NAME)
 }
 
+/// Sends one IPC request to the default compositor socket and waits for the reply.
 pub fn send_request(request: &IpcRequest) -> io::Result<IpcReply> {
     send_request_to_path(&default_socket_path(), request)
 }
 
+/// Sends one IPC request to an explicit socket path and waits for the reply.
 pub fn send_request_to_path(socket_path: &Path, request: &IpcRequest) -> io::Result<IpcReply> {
     let mut stream = UnixStream::connect(socket_path)?;
     stream.set_read_timeout(Some(IPC_IO_TIMEOUT))?;

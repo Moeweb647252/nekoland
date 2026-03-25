@@ -1,3 +1,6 @@
+//! Blur effect feature registration and request emission.
+#![allow(missing_docs)]
+
 use bevy_app::App;
 use bevy_ecs::prelude::{Res, ResMut, Resource};
 use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -50,13 +53,16 @@ impl RenderMaterialSpec for BlurPostProcessMaterial {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Feature plugin that wires blur config and blur request emission into the render pipeline.
 pub struct BlurEffectPlugin;
 
 impl BlurEffectPlugin {
+    /// Installs the shared blur configuration resource on the main world.
     pub fn init_config(app: &mut App) {
         app.init_resource::<BlurEffectConfig>();
     }
 
+    /// Installs blur request emitters inside the render sub-app.
     pub fn install_render_subapp(app: &mut App) {
         app.init_resource::<BlurEffectConfig>()
             .add_systems(RenderSchedule, blur_effect_system.in_set(RenderPrepareSystems))

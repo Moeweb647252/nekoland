@@ -1,3 +1,6 @@
+//! Synchronization of user-controlled output overlays into the compositor scene.
+#![allow(missing_docs)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::prelude::{Res, ResMut, Resource};

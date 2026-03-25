@@ -1,3 +1,6 @@
+//! Shadow effect feature registration and request emission.
+#![allow(missing_docs)]
+
 use bevy_app::App;
 use bevy_ecs::prelude::{Res, ResMut, Resource};
 use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -32,13 +35,16 @@ impl RenderMaterialSpec for ShadowPostProcessMaterial {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Feature plugin that wires shadow config and shadow request emission into the render pipeline.
 pub struct ShadowEffectPlugin;
 
 impl ShadowEffectPlugin {
+    /// Installs the shared shadow configuration resource on the main world.
     pub fn init_config(app: &mut App) {
         app.init_resource::<ShadowEffectConfig>();
     }
 
+    /// Installs shadow request emitters inside the render sub-app.
     pub fn install_render_subapp(app: &mut App) {
         app.init_resource::<ShadowEffectConfig>()
             .add_systems(RenderSchedule, shadow_effect_system.in_set(RenderPrepareSystems));

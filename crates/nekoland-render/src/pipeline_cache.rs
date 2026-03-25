@@ -1,3 +1,9 @@
+//! Pipeline specialization keys and cache-state projection derived from render plans.
+//!
+//! This module mostly contains render-internal key/value data structures. The module-level
+//! description is the important part; variant and field names intentionally stay lightweight.
+#![allow(missing_docs)]
+
 use std::collections::BTreeSet;
 
 use bevy_ecs::prelude::{Res, ResMut, Resource};
@@ -68,6 +74,7 @@ pub struct RenderPipelineCacheState {
     pub readback_targets: BTreeSet<RenderTargetId>,
 }
 
+/// Projects scene-draw pipeline requirements out of the current render plan and graph.
 pub fn build_render_pipeline_cache_state_system(
     render_plan: Res<'_, RenderPlan>,
     render_graph: Res<'_, RenderPassGraph>,
@@ -105,6 +112,7 @@ pub fn build_render_pipeline_cache_state_system(
     cache.readback_targets = readback_targets;
 }
 
+/// Projects process-pass pipeline requirements out of the current process plan.
 pub fn build_process_pipeline_cache_state_system(
     process_plan: Res<'_, nekoland_ecs::resources::RenderProcessPlan>,
     mut cache: ResMut<'_, RenderPipelineCacheState>,

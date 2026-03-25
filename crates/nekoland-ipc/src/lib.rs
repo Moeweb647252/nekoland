@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 //! IPC protocol, server runtime, query snapshots, and subscription helpers shared by the
 //! compositor and the `nekoland-msg` client.
 

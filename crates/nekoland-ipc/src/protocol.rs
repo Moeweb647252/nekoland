@@ -1,3 +1,7 @@
+//! Wire-level request and reply envelopes exchanged over the IPC socket.
+
+#![allow(missing_docs)]
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

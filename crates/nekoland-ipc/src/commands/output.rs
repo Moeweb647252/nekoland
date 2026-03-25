@@ -1,3 +1,7 @@
+//! Output-management commands accepted over IPC.
+
+#![allow(missing_docs)]
+
 use serde::{Deserialize, Serialize};
 
 /// Mutable output-management commands accepted by the IPC server.

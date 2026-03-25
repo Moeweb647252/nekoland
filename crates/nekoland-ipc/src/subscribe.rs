@@ -30,6 +30,7 @@ use crate::{IpcCommand, IpcReply, IpcRequest};
 
 const SUBSCRIPTION_IO_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// Canonical topic names accepted by `subscribe` requests.
 pub const SUPPORTED_SUBSCRIPTION_TOPIC_NAMES: &[&str] = &[
     "window",
     "popup",
@@ -45,6 +46,7 @@ pub const SUPPORTED_SUBSCRIPTION_TOPIC_NAMES: &[&str] = &[
     "tree",
     "all",
 ];
+/// Semantic event names the server may emit over subscription streams.
 pub const KNOWN_SUBSCRIPTION_EVENT_NAMES: &[&str] = &[
     "window_created",
     "window_closed",
@@ -76,6 +78,8 @@ pub const KNOWN_SUBSCRIPTION_EVENT_NAMES: &[&str] = &[
     "tree_changed",
 ];
 
+/// High-level subscription topic selector used during the IPC handshake.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SubscriptionTopic {
     Window,
@@ -94,12 +98,16 @@ pub enum SubscriptionTopic {
     All,
 }
 
+/// Focus-change payload emitted for focus-oriented subscription events.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FocusChangeSnapshot {
     pub previous_surface: Option<u64>,
     pub focused_surface: Option<u64>,
 }
 
+/// Window-geometry delta emitted when a window moves or resizes.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowGeometryChangeSnapshot {
     pub surface_id: u64,
@@ -113,6 +121,8 @@ pub struct WindowGeometryChangeSnapshot {
     pub height: u32,
 }
 
+/// Window-state delta emitted when a window changes state.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowStateChangeSnapshot {
     pub surface_id: u64,
@@ -120,6 +130,8 @@ pub struct WindowStateChangeSnapshot {
     pub state: String,
 }
 
+/// Popup-geometry delta emitted when popup placement changes.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PopupGeometryChangeSnapshot {
     pub surface_id: u64,
@@ -134,6 +146,8 @@ pub struct PopupGeometryChangeSnapshot {
     pub height: u32,
 }
 
+/// Popup-grab delta emitted when popup grab status changes.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PopupGrabChangeSnapshot {
     pub surface_id: u64,
@@ -144,12 +158,16 @@ pub struct PopupGrabChangeSnapshot {
     pub grab_serial: Option<u32>,
 }
 
+/// Window-focus delta emitted for focused-window subscription events.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowFocusChangeSnapshot {
     pub previous_surface: Option<u64>,
     pub focused_surface: Option<u64>,
 }
 
+/// Workspace-activation payload emitted when the active workspace changes.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceActivatedSnapshot {
     pub previous_workspace: Option<u32>,
@@ -157,6 +175,8 @@ pub struct WorkspaceActivatedSnapshot {
     pub output: Option<String>,
 }
 
+/// Subscription request payload sent by IPC clients.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IpcSubscription {
     pub topic: SubscriptionTopic,
@@ -165,6 +185,8 @@ pub struct IpcSubscription {
     pub events: Vec<String>,
 }
 
+/// One semantic event emitted on an IPC subscription stream.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IpcSubscriptionEvent {
     pub topic: SubscriptionTopic,
@@ -174,6 +196,7 @@ pub struct IpcSubscriptionEvent {
 
 impl nekoland_ecs::kinds::SubscriptionEvent for IpcSubscriptionEvent {}
 
+/// Queue of subscription events awaiting socket fan-out.
 pub type PendingSubscriptionEvents = SubscriptionEventQueue<IpcSubscriptionEvent>;
 
 #[cfg(test)]
@@ -189,6 +212,7 @@ mod kind_tests {
     }
 }
 
+/// Blocking reader over a newline-delimited IPC subscription connection.
 #[derive(Debug)]
 pub struct IpcSubscriptionStream {
     reader: BufReader<UnixStream>,
@@ -218,6 +242,7 @@ pub(crate) struct SubscriptionDispatchMessages<'w, 's> {
     pending_events: ResMut<'w, PendingSubscriptionEvents>,
 }
 
+/// Connects to the default compositor socket and starts a subscription stream.
 pub fn subscribe(subscription: &IpcSubscription) -> io::Result<IpcSubscriptionStream> {
     subscribe_to_path(&default_socket_path(), subscription)
 }

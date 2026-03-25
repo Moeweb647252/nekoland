@@ -1,3 +1,5 @@
+//! Cursor snapshotting and cursor-scene contribution emission.
+
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 
@@ -12,6 +14,7 @@ use crate::compositor_render::RenderViewSnapshot;
 use crate::scene_source::RenderSceneContribution;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Marker type documenting the cursor-rendering subsystem.
 pub struct CursorRenderer;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -30,6 +33,7 @@ struct CursorImageMetadata {
 }
 
 #[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
+/// Cache of cursor-theme geometry metadata keyed by theme, icon, and scale.
 pub struct CursorThemeGeometryCache {
     metadata: BTreeMap<CursorThemeCacheKey, CursorImageMetadata>,
 }

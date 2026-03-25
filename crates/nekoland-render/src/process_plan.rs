@@ -1,3 +1,5 @@
+//! Compilation of composite and post-process passes into backend process units.
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::{Res, ResMut};
@@ -8,6 +10,10 @@ use nekoland_ecs::resources::{
     RenderProcessPlan,
 };
 
+/// Translate process-capable render passes into backend execution units.
+///
+/// The resulting plan preserves per-output ordering and expands material-backed post-process passes
+/// into explicit shader keys, input/output target references, and uniform blocks.
 pub fn build_render_process_plan_system(
     render_graph: Res<'_, RenderPassGraph>,
     materials: Res<'_, RenderMaterialFrameState>,

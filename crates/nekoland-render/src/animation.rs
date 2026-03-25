@@ -1,3 +1,10 @@
+//! Frame-local animation sampling used by render-side appearance and projection snapshots.
+//!
+//! This module is primarily a render-internal data model. Type- and function-level documentation
+//! captures the intent, while individual enum variants and fields intentionally rely on their
+//! containing type docs to avoid repeating obvious shape information.
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::{Res, ResMut, Resource};
@@ -61,11 +68,13 @@ pub struct AnimationTimelineStore {
 }
 
 impl AnimationTimelineStore {
+    /// Inserts or replaces the track for one binding/property pair.
     pub fn upsert_track(&mut self, binding: AnimationBindingKey, track: AnimationTrack) {
         let key = AnimationTrackKey { binding, property: track.property };
         self.tracks.insert(key, track);
     }
 
+    /// Removes one track and any sampled value previously derived from it.
     pub fn remove_track(&mut self, binding: &AnimationBindingKey, property: AnimationProperty) {
         self.tracks.remove(&AnimationTrackKey { binding: binding.clone(), property });
         if let Some(samples) = self.sampled_values.get_mut(binding) {
@@ -76,6 +85,7 @@ impl AnimationTimelineStore {
         }
     }
 
+    /// Returns the last sampled value for the provided binding/property pair.
     pub fn sampled_value(
         &self,
         binding: &AnimationBindingKey,
@@ -84,6 +94,7 @@ impl AnimationTimelineStore {
         self.sampled_values.get(binding).and_then(|values| values.get(&property))
     }
 
+    /// Retains only tracks accepted by the provided predicate and clears rejected samples.
     pub fn retain_tracks<F>(&mut self, mut retain: F)
     where
         F: FnMut(&AnimationBindingKey, AnimationProperty, &AnimationTrack) -> bool,
@@ -107,6 +118,7 @@ impl AnimationTimelineStore {
         }
     }
 
+    /// Returns the elapsed time since the previous animation tick in milliseconds.
     pub fn delta_millis(&self, current_uptime_millis: u128) -> u32 {
         self.last_tick_uptime_millis
             .map(|previous| {

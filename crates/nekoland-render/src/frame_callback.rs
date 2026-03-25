@@ -1,3 +1,5 @@
+//! Frame-callback recipient selection derived from the compiled render plan.
+
 use std::collections::BTreeSet;
 
 use bevy_ecs::prelude::{Res, ResMut};
@@ -7,6 +9,7 @@ use nekoland_ecs::resources::{
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Marker type documenting the frame-callback dispatch subsystem.
 pub struct FrameCallbackDispatcher;
 
 /// Computes which surfaces should receive frame callbacks from the current render plan and marks

@@ -1,3 +1,5 @@
+//! Output-local damage tracking derived from render plans and content-version changes.
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -11,6 +13,7 @@ use nekoland_ecs::resources::{
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Marker type documenting the render damage-tracking subsystem.
 pub struct DamageTracker;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

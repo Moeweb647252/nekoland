@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 //! Render-list composition, visual-state projection, damage tracking, and compositor effects.
 
 /// Animation-state helpers used while projecting visual snapshots into the render world.
