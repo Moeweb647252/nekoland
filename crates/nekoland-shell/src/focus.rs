@@ -14,6 +14,7 @@ use nekoland_ecs::views::{WindowFocusRuntime, WorkspaceRuntime};
 use nekoland_ecs::workspace_membership::window_workspace_runtime_id;
 
 use crate::interaction::ActiveWindowGrab;
+use crate::window_switcher::WindowSwitcherState;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 /// Marker type documenting the shell focus subsystem.
@@ -36,6 +37,7 @@ pub struct FocusManagementParams<'w, 's> {
     keyboard_focus: ResMut<'w, KeyboardFocusState>,
     wayland_ingress: Res<'w, WaylandIngress>,
     stacking: Res<'w, WindowStackingState>,
+    window_switcher: Option<Res<'w, WindowSwitcherState>>,
     viewport_animation: Option<Res<'w, ViewportAnimationActivityState>>,
     viewport_pan: Option<Res<'w, ViewportPointerPanState>>,
     windows: FocusWindows<'w, 's>,
@@ -51,10 +53,16 @@ pub fn pointer_button_focus_system(
     mut pointer_buttons: MessageReader<PointerButton>,
     mut keyboard_focus: ResMut<KeyboardFocusState>,
     mut stacking: ResMut<WindowStackingState>,
+    window_switcher: Option<Res<WindowSwitcherState>>,
     windows: Query<WindowFocusRuntime, With<Window>>,
     wayland_ingress: Res<WaylandIngress>,
     workspaces: Query<(bevy_ecs::prelude::Entity, WorkspaceRuntime)>,
 ) {
+    if window_switcher.as_deref().is_some_and(|switcher| switcher.active) {
+        let _ = pointer_buttons.read().count();
+        return;
+    }
+
     if !pointer_buttons.read().any(|event| event.pressed) {
         return;
     }
@@ -101,6 +109,16 @@ pub fn focus_management_system(
     mut hover_state: Local<FocusHoverState>,
     mut focus: FocusManagementParams<'_, '_>,
 ) {
+    if focus.window_switcher.as_deref().is_some_and(|switcher| switcher.active) {
+        hover_state.initialized = true;
+        hover_state.hovered_surface = None;
+        tracing::trace!(
+            focused_surface = ?focus.keyboard_focus.focused_surface,
+            "focus management paused for active window switcher session"
+        );
+        return;
+    }
+
     let visible_windows = visible_window_geometries(&focus.windows, &focus.workspaces);
     let output_context = pointer_output_context(&pointer, &focus.wayland_ingress.output_snapshots);
     let visible_surfaces = focus.stacking.ordered_surfaces(
@@ -254,6 +272,7 @@ mod tests {
     };
 
     use super::{focus_management_system, pointer_button_focus_system};
+    use crate::window_switcher::WindowSwitcherState;
 
     #[test]
     fn clicking_visible_lower_window_raises_and_focuses_it() {
@@ -540,6 +559,40 @@ mod tests {
         app.inner_mut().world_mut().spawn(WindowBundle {
             surface: WlSurfaceHandle { id: 22 },
             geometry: SurfaceGeometry { x: 40, y: 40, width: 120, height: 120 },
+            layout: WindowLayout::Tiled,
+            ..Default::default()
+        });
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let focus = app.inner().world().resource::<KeyboardFocusState>();
+        assert_eq!(focus.focused_surface, Some(22));
+    }
+
+    #[test]
+    fn active_window_switcher_pauses_focus_management() {
+        let mut app = NekolandApp::new("focus-hover-window-switcher-test");
+        app.inner_mut()
+            .insert_resource(WaylandIngress::default())
+            .insert_resource(CompositorConfig { focus_follows_mouse: false, ..Default::default() })
+            .insert_resource(GlobalPointerPosition { x: 10.0, y: 10.0 })
+            .insert_resource(KeyboardFocusState { focused_surface: Some(22) })
+            .insert_resource(WindowSwitcherState {
+                active: true,
+                anchor_surface: Some(nekoland_ecs::selectors::SurfaceId(22)),
+                ..Default::default()
+            })
+            .insert_resource(WindowStackingState {
+                workspaces: std::collections::BTreeMap::from([(
+                    UNASSIGNED_WORKSPACE_STACK_ID,
+                    vec![11],
+                )]),
+            })
+            .add_systems(LayoutSchedule, focus_management_system);
+
+        app.inner_mut().world_mut().spawn(WindowBundle {
+            surface: WlSurfaceHandle { id: 11 },
+            geometry: SurfaceGeometry { x: 0, y: 0, width: 120, height: 120 },
             layout: WindowLayout::Tiled,
             ..Default::default()
         });
