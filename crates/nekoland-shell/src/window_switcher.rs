@@ -80,6 +80,8 @@ struct WindowSwitcherCandidate {
     surface_id: SurfaceId,
     title: String,
     app_id: String,
+    width: u32,
+    height: u32,
 }
 
 struct SwitcherContext {
@@ -200,11 +202,13 @@ pub fn window_switcher_overlay_system(
     let (start, end) = visible_candidate_window(candidates.len(), selected_index);
     let visible = &candidates[start..end];
 
-    let row_height = 32_i32;
-    let row_spacing = 8_i32;
+    let row_height = 70_i32;
+    let row_spacing = 10_i32;
     let padding = 18_i32;
     let header_height = 28_i32;
-    let panel_width = output.properties.width.saturating_sub(120).min(640).max(320);
+    let thumbnail_width = 96_u32;
+    let thumbnail_height = 54_u32;
+    let panel_width = output.properties.width.saturating_sub(120).min(760).max(420);
     let content_rows = visible.len() as i32;
     let panel_height = (padding * 2
         + header_height
@@ -259,18 +263,58 @@ pub fn window_switcher_overlay_system(
                 15,
             );
         }
-        output_overlay.text(
-            format!("window_switcher.label.{}", candidate.surface_id.0),
+        let thumbnail_frame = RenderRect {
+            x: item_rect.x + 12,
+            y: item_rect.y + ((row_height - thumbnail_height as i32) / 2),
+            width: thumbnail_width,
+            height: thumbnail_height,
+        };
+        output_overlay.panel(
+            format!("window_switcher.thumb_frame.{}", candidate.surface_id.0),
             OverlayUiLayer::Foreground,
-            panel_x + padding + 10,
-            cursor_y + 2,
+            thumbnail_frame,
             Some(panel_rect),
-            candidate_label(candidate),
-            16.0,
+            RenderColor { r: 11, g: 15, b: 22, a: 255 },
+            0.95,
+            18,
+        );
+        output_overlay.surface(
+            format!("window_switcher.thumb.{}", candidate.surface_id.0),
+            OverlayUiLayer::Foreground,
+            candidate.surface_id.0,
+            fit_rect_within(thumbnail_frame, candidate.width.max(1), candidate.height.max(1)),
+            None,
+            1.0,
+            19,
+        );
+        let title_x = thumbnail_frame.x + thumbnail_frame.width as i32 + 16;
+        let title_clip = Some(panel_rect);
+        output_overlay.text(
+            format!("window_switcher.title.{}", candidate.surface_id.0),
+            OverlayUiLayer::Foreground,
+            title_x,
+            item_rect.y + 18,
+            title_clip,
+            candidate_title(candidate),
+            15.0,
             RenderColor { r: 247, g: 250, b: 255, a: 255 },
             1.0,
             25,
         );
+        if let Some(app_label) = candidate_app_label(candidate) {
+            output_overlay.text(
+                format!("window_switcher.app.{}", candidate.surface_id.0),
+                OverlayUiLayer::Foreground,
+                title_x,
+                item_rect.y + 40,
+                title_clip,
+                app_label,
+                12.0,
+                RenderColor { r: 173, g: 181, b: 197, a: 255 },
+                1.0,
+                24,
+            );
+        }
         cursor_y += row_height + row_spacing;
     }
 }
@@ -397,6 +441,8 @@ fn switcher_candidates(
                 surface_id: SurfaceId(window.surface_id()),
                 title: window.window.title.clone(),
                 app_id: window.window.app_id.clone(),
+                width: window.geometry.width.max(1),
+                height: window.geometry.height.max(1),
             },
         );
     }
@@ -455,11 +501,40 @@ fn visible_candidate_window(candidate_count: usize, selected_index: usize) -> (u
     (start, end)
 }
 
-fn candidate_label(candidate: &WindowSwitcherCandidate) -> String {
-    if candidate.app_id.is_empty() {
-        candidate.title.clone()
+fn candidate_title(candidate: &WindowSwitcherCandidate) -> String {
+    if candidate.title.is_empty() {
+        format!("Window {}", candidate.surface_id.0)
     } else {
-        format!("{} ({})", candidate.title, candidate.app_id)
+        candidate.title.clone()
+    }
+}
+
+fn candidate_app_label(candidate: &WindowSwitcherCandidate) -> Option<String> {
+    (!candidate.app_id.is_empty()).then(|| candidate.app_id.clone())
+}
+
+fn fit_rect_within(frame: RenderRect, content_width: u32, content_height: u32) -> RenderRect {
+    if frame.is_empty() {
+        return frame;
+    }
+
+    let content_width = content_width.max(1);
+    let content_height = content_height.max(1);
+    let width_limited_height =
+        ((u64::from(frame.width) * u64::from(content_height)) / u64::from(content_width)) as u32;
+    let (fitted_width, fitted_height) = if width_limited_height <= frame.height {
+        (frame.width, width_limited_height.max(1))
+    } else {
+        let height_limited_width = ((u64::from(frame.height) * u64::from(content_width))
+            / u64::from(content_height)) as u32;
+        (height_limited_width.max(1), frame.height)
+    };
+
+    RenderRect {
+        x: frame.x + ((frame.width as i32 - fitted_width as i32) / 2),
+        y: frame.y + ((frame.height as i32 - fitted_height as i32) / 2),
+        width: fitted_width,
+        height: fitted_height,
     }
 }
 
@@ -467,6 +542,7 @@ fn candidate_label(candidate: &WindowSwitcherCandidate) -> String {
 mod tests {
     use bevy_ecs::hierarchy::ChildOf;
     use bevy_ecs::prelude::World;
+    use bevy_ecs::schedule::IntoScheduleConfigs;
     use nekoland_core::prelude::NekolandApp;
     use nekoland_core::schedules::LayoutSchedule;
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
@@ -476,12 +552,14 @@ mod tests {
         WorkspaceId,
     };
     use nekoland_ecs::resources::{
-        KeyboardFocusState, PendingOutputControls, PendingWindowControls, WaylandIngress,
-        WindowStackingState, register_entity_index_hooks,
+        KeyboardFocusState, OverlayUiFrame, OverlayUiPrimitive, PendingOutputControls,
+        PendingWindowControls, WaylandIngress, WindowStackingState, register_entity_index_hooks,
     };
     use nekoland_ecs::selectors::{OutputSelector, SurfaceId};
 
-    use super::{WindowSwitcherState, window_switcher_input_system};
+    use super::{
+        WindowSwitcherState, window_switcher_input_system, window_switcher_overlay_system,
+    };
 
     fn build_switcher_test_app() -> (NekolandApp, OutputId) {
         let mut app = NekolandApp::new("window-switcher-test");
@@ -493,8 +571,12 @@ mod tests {
             .init_resource::<PendingWindowControls>()
             .init_resource::<WindowStackingState>()
             .init_resource::<WaylandIngress>()
+            .init_resource::<OverlayUiFrame>()
             .init_resource::<WindowSwitcherState>()
-            .add_systems(LayoutSchedule, window_switcher_input_system);
+            .add_systems(
+                LayoutSchedule,
+                (window_switcher_input_system, window_switcher_overlay_system).chain(),
+            );
 
         let workspace = app
             .inner_mut()
@@ -659,5 +741,27 @@ mod tests {
             Some(nekoland_ecs::resources::OutputViewportOrigin { x: 100, y: 200 })
         );
         assert!(controls.as_slice()[0].center_viewport_on.is_none());
+    }
+
+    #[test]
+    fn switcher_overlay_emits_live_surface_thumbnails() {
+        let (mut app, output_id) = build_switcher_test_app();
+        press_alt_tab(app.inner_mut().world_mut());
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let overlay = app
+            .inner()
+            .world()
+            .resource::<OverlayUiFrame>()
+            .outputs
+            .get(&output_id)
+            .expect("switcher overlay should target the origin output");
+        assert!(overlay.primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                OverlayUiPrimitive::Surface(surface) if surface.surface_id == 11
+            )
+        }));
     }
 }

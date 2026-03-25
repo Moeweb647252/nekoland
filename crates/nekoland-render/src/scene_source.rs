@@ -12,6 +12,7 @@ use nekoland_ecs::resources::{
     BackdropRenderItem, CompositorSceneItem, CompositorSceneState, CursorRenderItem,
     CursorRenderSource, QuadContent, QuadRenderItem, RenderItemId, RenderItemIdentity,
     RenderItemInstance, RenderPlanItem, RenderSourceId, SurfacePresentationRole, SurfaceRenderItem,
+    SurfaceRenderMode,
 };
 
 use crate::scene_process::{
@@ -103,7 +104,7 @@ impl RenderInstanceKey {
 /// Provider-local payload emitted into the scene contribution queue before final plan assembly.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderSceneContributionPayload {
-    Surface { surface_id: u64 },
+    Surface { surface_id: u64, mode: SurfaceRenderMode },
     Quad { content: QuadContent },
     Backdrop,
     Cursor { source: CursorRenderSource },
@@ -123,13 +124,14 @@ impl RenderSceneContribution {
         output_id: OutputId,
         source_key: RenderSourceKey,
         surface_id: u64,
+        mode: SurfaceRenderMode,
         instance_slot: u32,
         instance: RenderItemInstance,
     ) -> Self {
         Self {
             key: RenderInstanceKey::new(source_key, output_id, instance_slot),
             instance,
-            payload: RenderSceneContributionPayload::Surface { surface_id },
+            payload: RenderSceneContributionPayload::Surface { surface_id, mode },
         }
     }
 
@@ -252,6 +254,14 @@ pub fn emit_compositor_scene_contributions_system(
             );
 
             let contribution = match &entry.item {
+                CompositorSceneItem::Surface { surface_id } => RenderSceneContribution::surface(
+                    *output_id,
+                    key.source_key.clone(),
+                    *surface_id,
+                    SurfaceRenderMode::Thumbnail,
+                    0,
+                    instance,
+                ),
                 CompositorSceneItem::Quad { content } => {
                     RenderSceneContribution::quad(key, content.clone(), instance)
                 }
@@ -269,10 +279,11 @@ pub fn contribution_to_plan_item(
 ) -> RenderPlanItem {
     let identity = identity_registry.identity_for(&contribution.key);
     match contribution.payload {
-        RenderSceneContributionPayload::Surface { surface_id } => {
+        RenderSceneContributionPayload::Surface { surface_id, mode } => {
             RenderPlanItem::Surface(SurfaceRenderItem {
                 identity,
                 surface_id,
+                mode,
                 instance: contribution.instance,
             })
         }

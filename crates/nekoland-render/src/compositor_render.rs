@@ -309,7 +309,12 @@ pub fn emit_desktop_scene_contributions_system(composition: FrameCompositionInpu
                 projection,
             );
             contributions.entry(output_id).or_default().push(RenderSceneContribution::surface(
-                output_id, source_key, surface_id, 0, instance,
+                output_id,
+                source_key,
+                surface_id,
+                nekoland_ecs::resources::SurfaceRenderMode::Direct,
+                0,
+                instance,
             ));
         }
     }
@@ -599,7 +604,12 @@ pub fn emit_desktop_scene_contributions_from_snapshot_system(
                 projection,
             );
             contributions.entry(*output_id).or_default().push(RenderSceneContribution::surface(
-                *output_id, source_key, surface_id, 0, instance,
+                *output_id,
+                source_key,
+                surface_id,
+                nekoland_ecs::resources::SurfaceRenderMode::Direct,
+                0,
+                instance,
             ));
         }
     }

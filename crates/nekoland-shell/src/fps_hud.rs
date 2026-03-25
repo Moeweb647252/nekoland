@@ -165,7 +165,7 @@ mod tests {
             .iter()
             .filter_map(|primitive| match primitive {
                 OverlayUiPrimitive::Text(text) => Some(text.text.clone()),
-                OverlayUiPrimitive::Panel(_) => None,
+                _ => None,
             })
             .collect::<Vec<_>>();
         texts.sort();

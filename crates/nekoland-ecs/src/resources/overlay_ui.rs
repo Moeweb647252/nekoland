@@ -76,12 +76,25 @@ pub struct OverlayUiText {
     pub z_index: i32,
 }
 
+/// One frame-local live surface thumbnail primitive in the overlay HUD.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct OverlayUiSurface {
+    pub id: OverlayUiPrimitiveId,
+    pub layer: OverlayUiLayer,
+    pub surface_id: u64,
+    pub rect: RenderRect,
+    pub clip_rect: Option<RenderRect>,
+    pub opacity: f32,
+    pub z_index: i32,
+}
+
 /// One frame-local overlay UI primitive.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum OverlayUiPrimitive {
     Panel(OverlayUiPanel),
     Text(OverlayUiText),
+    Surface(OverlayUiSurface),
 }
 
 impl OverlayUiPrimitive {
@@ -89,6 +102,7 @@ impl OverlayUiPrimitive {
         match self {
             Self::Panel(panel) => &panel.id,
             Self::Text(text) => &text.id,
+            Self::Surface(surface) => &surface.id,
         }
     }
 
@@ -96,6 +110,7 @@ impl OverlayUiPrimitive {
         match self {
             Self::Panel(panel) => panel.layer,
             Self::Text(text) => text.layer,
+            Self::Surface(surface) => surface.layer,
         }
     }
 
@@ -103,6 +118,7 @@ impl OverlayUiPrimitive {
         match self {
             Self::Panel(panel) => panel.z_index,
             Self::Text(text) => text.z_index,
+            Self::Surface(surface) => surface.z_index,
         }
     }
 }
@@ -185,6 +201,28 @@ impl OverlayUiOutputBuilder<'_> {
         self
     }
 
+    pub fn surface(
+        &mut self,
+        id: impl Into<OverlayUiPrimitiveId>,
+        layer: OverlayUiLayer,
+        surface_id: u64,
+        rect: RenderRect,
+        clip_rect: Option<RenderRect>,
+        opacity: f32,
+        z_index: i32,
+    ) -> &mut Self {
+        self.upsert(OverlayUiPrimitive::Surface(OverlayUiSurface {
+            id: id.into(),
+            layer,
+            surface_id,
+            rect,
+            clip_rect,
+            opacity: opacity.clamp(0.0, 1.0),
+            z_index,
+        }));
+        self
+    }
+
     fn upsert(&mut self, primitive: OverlayUiPrimitive) {
         let primitive_id = primitive.id().clone();
         self.primitives.retain(|existing| existing.id() != &primitive_id);
@@ -228,5 +266,28 @@ mod tests {
         };
         assert_eq!(panel.rect.x, 5);
         assert_eq!(panel.layer, OverlayUiLayer::Foreground);
+    }
+
+    #[test]
+    fn output_builder_can_store_surface_primitives() {
+        let mut frame = OverlayUiFrame::default();
+        frame.output(OutputId(5)).surface(
+            "thumbnail",
+            OverlayUiLayer::Foreground,
+            77,
+            RenderRect { x: 10, y: 20, width: 40, height: 30 },
+            None,
+            0.8,
+            9,
+        );
+
+        let output = frame.outputs.get(&OutputId(5)).expect("overlay UI output should exist");
+        assert_eq!(output.primitives.len(), 1);
+        let crate::resources::OverlayUiPrimitive::Surface(surface) = &output.primitives[0] else {
+            panic!("expected surface primitive");
+        };
+        assert_eq!(surface.surface_id, 77);
+        assert_eq!(surface.rect.width, 40);
+        assert_eq!(surface.layer, OverlayUiLayer::Foreground);
     }
 }

@@ -15,6 +15,7 @@ use nekoland_ecs::resources::{
 };
 use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::element::Element;
 use smithay::backend::renderer::element::Id;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::memory::{
@@ -25,7 +26,9 @@ use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
 use smithay::backend::renderer::element::texture::TextureRenderElement;
-use smithay::backend::renderer::element::utils::CropRenderElement;
+use smithay::backend::renderer::element::utils::{
+    CropRenderElement, Relocate, RelocateRenderElement,
+};
 use smithay::backend::renderer::gles::{
     GlesError, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName, UniformType,
     UniformValue,
@@ -479,23 +482,15 @@ fn build_scene_pass_elements(
         };
         match item {
             PreparedSceneItem::Surface(item) => {
-                let import_ready = prepared_gpu
-                    .and_then(|prepared_gpu| prepared_gpu.surface_imports.get(&item.surface_id))
-                    .map(|prepared_import| {
-                        !matches!(
-                            prepared_import.strategy,
-                            nekoland_ecs::resources::PreparedSurfaceImportStrategy::Unsupported
-                        )
-                    })
-                    .unwrap_or(item.import_ready);
-                if !import_ready {
+                if !prepared_surface_import_ready(prepared_gpu, item.surface_id, item.import_ready)
+                {
                     continue;
                 }
-                let Some(clip_rect) = render_rect_to_physical(&item.visible_rect, output_scale)
-                else {
+                let Some(surface) = surface_registry.surface(item.surface_id) else {
                     continue;
                 };
-                let Some(surface) = surface_registry.surface(item.surface_id) else {
+                let Some(clip_rect) = render_rect_to_physical(&item.visible_rect, output_scale)
+                else {
                     continue;
                 };
                 let surface_origin =
@@ -515,6 +510,26 @@ fn build_scene_pass_elements(
                     })
                     .map(CommonGlesRenderElement::from),
                 );
+            }
+            PreparedSceneItem::SurfaceThumbnail(item) => {
+                if !prepared_surface_import_ready(prepared_gpu, item.surface_id, item.import_ready)
+                {
+                    continue;
+                }
+                let Some(surface) = surface_registry.surface(item.surface_id) else {
+                    continue;
+                };
+                let Some(element) = build_thumbnail_surface_element(
+                    renderer,
+                    surface,
+                    item.surface_kind,
+                    &item.target_rect,
+                    output_scale,
+                    item.opacity,
+                ) else {
+                    continue;
+                };
+                elements.push(element);
             }
             PreparedSceneItem::Quad(item) => match &item.content {
                 nekoland_ecs::resources::QuadContent::SolidColor { color } => {
@@ -580,16 +595,8 @@ fn build_scene_pass_elements(
                 }
             }
             PreparedSceneItem::CursorSurface(item) => {
-                let import_ready = prepared_gpu
-                    .and_then(|prepared_gpu| prepared_gpu.surface_imports.get(&item.surface_id))
-                    .map(|prepared_import| {
-                        !matches!(
-                            prepared_import.strategy,
-                            nekoland_ecs::resources::PreparedSurfaceImportStrategy::Unsupported
-                        )
-                    })
-                    .unwrap_or(item.import_ready);
-                if !import_ready {
+                if !prepared_surface_import_ready(prepared_gpu, item.surface_id, item.import_ready)
+                {
                     continue;
                 }
                 let Some(clip_rect) = render_rect_to_physical(&item.visible_rect, output_scale)
@@ -619,6 +626,22 @@ fn build_scene_pass_elements(
     }
 
     ScenePassBuilt { elements, backdrop_regions }
+}
+
+fn prepared_surface_import_ready(
+    prepared_gpu: Option<&OutputPreparedGpuResources>,
+    surface_id: u64,
+    import_ready: bool,
+) -> bool {
+    prepared_gpu
+        .and_then(|prepared_gpu| prepared_gpu.surface_imports.get(&surface_id))
+        .map(|prepared_import| {
+            !matches!(
+                prepared_import.strategy,
+                nekoland_ecs::resources::PreparedSurfaceImportStrategy::Unsupported
+            )
+        })
+        .unwrap_or(import_ready)
 }
 
 fn surface_tree_origin(
@@ -653,6 +676,103 @@ fn xdg_window_geometry_offset(
             .geometry
             .map(|geometry| geometry.loc)
     })
+}
+
+fn render_element_reference_rect<E: Element>(
+    elements: &[E],
+    output_scale: u32,
+) -> Option<Rectangle<i32, Physical>> {
+    let scale = Scale::from(output_scale.max(1) as f64);
+    let mut iter = elements.iter().map(|element| element.geometry(scale));
+    let first = iter.next()?;
+    let mut left = first.loc.x;
+    let mut top = first.loc.y;
+    let mut right = first.loc.x.saturating_add(first.size.w);
+    let mut bottom = first.loc.y.saturating_add(first.size.h);
+    for rect in iter {
+        left = left.min(rect.loc.x);
+        top = top.min(rect.loc.y);
+        right = right.max(rect.loc.x.saturating_add(rect.size.w));
+        bottom = bottom.max(rect.loc.y.saturating_add(rect.size.h));
+    }
+    Some(Rectangle::new(
+        (left, top).into(),
+        (right.saturating_sub(left), bottom.saturating_sub(top)).into(),
+    ))
+}
+
+fn build_thumbnail_surface_element(
+    renderer: &mut GlesRenderer,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    surface_kind: nekoland_ecs::resources::PlatformSurfaceKind,
+    target_rect: &RenderRect,
+    output_scale: u32,
+    opacity: f32,
+) -> Option<CommonGlesRenderElement> {
+    let target_rect = render_rect_to_physical(target_rect, output_scale)?;
+    let surface_origin = surface_tree_origin(0, 0, surface_kind, surface);
+    let surface_elements = render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
+        renderer,
+        surface,
+        surface_origin,
+        output_scale as f64,
+        1.0,
+        Kind::Unspecified,
+    );
+    let reference_rect = render_element_reference_rect(&surface_elements, output_scale)?;
+    let reference_size = reference_rect.size;
+    if reference_size.w <= 0 || reference_size.h <= 0 {
+        return None;
+    }
+
+    let mut texture = Offscreen::<GlesTexture>::create_buffer(
+        renderer,
+        Fourcc::Abgr8888,
+        Size::<i32, Buffer>::from((reference_size.w, reference_size.h)),
+    )
+    .ok()?;
+    let output_rect = Rectangle::from_size(reference_size);
+    {
+        let mut framebuffer = renderer.bind(&mut texture).ok()?;
+        let mut frame =
+            renderer.render(&mut framebuffer, reference_size, Transform::Normal).ok()?;
+        frame.clear(Color32F::new(0.0, 0.0, 0.0, 0.0), &[output_rect]).ok()?;
+        let relocated = surface_elements
+            .into_iter()
+            .map(|element| {
+                RelocateRenderElement::from_element(
+                    element,
+                    (-reference_rect.loc.x, -reference_rect.loc.y),
+                    Relocate::Relative,
+                )
+            })
+            .collect::<Vec<_>>();
+        draw_render_elements::<
+            GlesRenderer,
+            _,
+            RelocateRenderElement<WaylandSurfaceRenderElement<_>>,
+        >(&mut frame, Scale::from(output_scale as f64), &relocated, &[output_rect])
+        .ok()?;
+        let sync = frame.finish().ok()?;
+        renderer.wait(&sync).ok()?;
+    }
+
+    Some(
+        TextureRenderElement::from_static_texture(
+            Id::new(),
+            renderer.context_id(),
+            Point::from((f64::from(target_rect.loc.x), f64::from(target_rect.loc.y))),
+            texture,
+            1,
+            Transform::Normal,
+            Some(opacity),
+            Some(Rectangle::from_size(reference_size.to_logical(1).to_f64())),
+            Some(target_rect.size.to_logical(output_scale as i32)),
+            None,
+            Kind::Unspecified,
+        )
+        .into(),
+    )
 }
 
 fn scene_pass_item_ids_in_presentation_order(
@@ -968,6 +1088,7 @@ fn importable_surface_imports(
         .filter_map(|item_id| prepared_scene.items.get(item_id))
         .filter_map(|item| match item {
             PreparedSceneItem::Surface(item) if item.import_ready => Some(item.surface_id),
+            PreparedSceneItem::SurfaceThumbnail(item) if item.import_ready => Some(item.surface_id),
             PreparedSceneItem::CursorSurface(item) if item.import_ready => Some(item.surface_id),
             _ => None,
         })
@@ -1129,10 +1250,10 @@ mod tests {
         MaterialParamsId, OutputPreparedGpuResources, OutputPreparedSceneResources,
         PreparedGpuResources, PreparedMaterialBinding, PreparedMaterialBindingKey,
         PreparedSceneItem, PreparedSurfaceCursorSceneItem, PreparedSurfaceImport,
-        PreparedSurfaceImportStrategy, PreparedSurfaceSceneItem, RenderBindGroupLayoutKey,
-        RenderItemId, RenderMaterialDescriptor, RenderMaterialId, RenderMaterialKind,
-        RenderMaterialParamBlock, RenderMaterialPipelineKey, RenderMaterialQueueKind,
-        RenderMaterialShaderSource, RenderPipelineStage, RenderRect,
+        PreparedSurfaceImportStrategy, PreparedSurfaceSceneItem, PreparedSurfaceThumbnailSceneItem,
+        RenderBindGroupLayoutKey, RenderItemId, RenderMaterialDescriptor, RenderMaterialId,
+        RenderMaterialKind, RenderMaterialParamBlock, RenderMaterialPipelineKey,
+        RenderMaterialQueueKind, RenderMaterialShaderSource, RenderPipelineStage, RenderRect,
         SurfaceTextureImportDescriptor,
     };
 
@@ -1222,6 +1343,16 @@ mod tests {
                 ),
                 (
                     RenderItemId(3),
+                    PreparedSceneItem::SurfaceThumbnail(PreparedSurfaceThumbnailSceneItem {
+                        surface_id: 44,
+                        surface_kind: nekoland_ecs::resources::PlatformSurfaceKind::Toplevel,
+                        target_rect: RenderRect { x: 2, y: 3, width: 8, height: 6 },
+                        opacity: 1.0,
+                        import_ready: true,
+                    }),
+                ),
+                (
+                    RenderItemId(4),
                     PreparedSceneItem::CursorSurface(PreparedSurfaceCursorSceneItem {
                         surface_id: 33,
                         x: 0,
@@ -1232,7 +1363,7 @@ mod tests {
                     }),
                 ),
             ]),
-            ordered_items: vec![RenderItemId(1), RenderItemId(2), RenderItemId(3)],
+            ordered_items: vec![RenderItemId(1), RenderItemId(2), RenderItemId(3), RenderItemId(4)],
         };
         let prepared_gpu = OutputPreparedGpuResources {
             surface_imports: BTreeMap::from([
@@ -1311,13 +1442,39 @@ mod tests {
                         },
                     },
                 ),
+                (
+                    44,
+                    PreparedSurfaceImport {
+                        surface_id: 44,
+                        descriptor: SurfaceTextureImportDescriptor {
+                            surface_id: 44,
+                            surface_kind: nekoland_ecs::resources::PlatformSurfaceKind::Toplevel,
+                            buffer_source:
+                                nekoland_ecs::resources::PlatformSurfaceBufferSource::Shm,
+                            dmabuf_format: None,
+                            import_strategy:
+                                nekoland_ecs::resources::PlatformSurfaceImportStrategy::ShmUpload,
+                            target_outputs: Default::default(),
+                            content_version: 1,
+                            attached: true,
+                            scale: 1,
+                        },
+                        strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                        cache_key: nekoland_ecs::resources::PreparedSurfaceImportCacheKey {
+                            surface_id: 44,
+                            content_version: 1,
+                            strategy: PreparedSurfaceImportStrategy::ShmUpload,
+                        },
+                    },
+                ),
             ]),
             ..Default::default()
         };
 
         let imports = importable_surface_imports(&prepared_scene, Some(&prepared_gpu));
-        assert_eq!(imports.len(), 1);
+        assert_eq!(imports.len(), 2);
         assert_eq!(imports[0].surface_id, 11);
+        assert_eq!(imports[1].surface_id, 44);
     }
 
     #[test]

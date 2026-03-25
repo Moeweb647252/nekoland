@@ -155,6 +155,7 @@ pub struct PreparedMaterialBinding {
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum PreparedSceneItem {
     Surface(PreparedSurfaceSceneItem),
+    SurfaceThumbnail(PreparedSurfaceThumbnailSceneItem),
     Quad(PreparedQuadSceneItem),
     Backdrop(PreparedBackdropSceneItem),
     CursorNamed(PreparedNamedCursorSceneItem),
@@ -168,6 +169,15 @@ pub struct PreparedSurfaceSceneItem {
     pub x: i32,
     pub y: i32,
     pub visible_rect: RenderRect,
+    pub opacity: f32,
+    pub import_ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PreparedSurfaceThumbnailSceneItem {
+    pub surface_id: u64,
+    pub surface_kind: PlatformSurfaceKind,
+    pub target_rect: RenderRect,
     pub opacity: f32,
     pub import_ready: bool,
 }

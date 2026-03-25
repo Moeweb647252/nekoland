@@ -106,11 +106,22 @@ impl RenderItemInstance {
     }
 }
 
+/// Surface sampling mode for one render-plan surface item.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceRenderMode {
+    #[default]
+    Direct,
+    Thumbnail,
+}
+
 /// One surface instance for a specific output in the current frame.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SurfaceRenderItem {
     pub identity: RenderItemIdentity,
     pub surface_id: u64,
+    #[serde(default)]
+    pub mode: SurfaceRenderMode,
     pub instance: RenderItemInstance,
 }
 
@@ -281,6 +292,7 @@ mod tests {
         BackdropRenderItem, CursorRenderItem, CursorRenderSource, OutputRenderPlan, QuadContent,
         QuadRenderItem, RenderColor, RenderItemId, RenderItemIdentity, RenderItemInstance,
         RenderPlan, RenderPlanItem, RenderRect, RenderSceneRole, RenderSourceId, SurfaceRenderItem,
+        SurfaceRenderMode,
     };
 
     #[test]
@@ -289,6 +301,7 @@ mod tests {
         plan.insert(RenderPlanItem::Surface(SurfaceRenderItem {
             identity: RenderItemIdentity { source_id: RenderSourceId(2), item_id: RenderItemId(2) },
             surface_id: 2,
+            mode: SurfaceRenderMode::Direct,
             instance: RenderItemInstance {
                 rect: RenderRect::default(),
                 opacity: 1.0,
@@ -354,6 +367,7 @@ mod tests {
         let surface = RenderPlanItem::Surface(SurfaceRenderItem {
             identity: RenderItemIdentity { source_id: RenderSourceId(7), item_id: RenderItemId(7) },
             surface_id: 7,
+            mode: SurfaceRenderMode::Direct,
             instance: RenderItemInstance {
                 rect: RenderRect::default(),
                 opacity: 1.0,

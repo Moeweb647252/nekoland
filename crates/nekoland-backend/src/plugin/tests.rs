@@ -400,6 +400,7 @@ fn backend_present_system_populates_multi_output_present_audit() {
                     RenderPlanItem::Surface(SurfaceRenderItem {
                         identity: identity(11),
                         surface_id: 11,
+                        mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                         instance: RenderItemInstance {
                             rect: RenderRect { x: 10, y: 20, width: 300, height: 200 },
                             opacity: 1.0,
@@ -411,6 +412,7 @@ fn backend_present_system_populates_multi_output_present_audit() {
                     RenderPlanItem::Surface(SurfaceRenderItem {
                         identity: identity(33),
                         surface_id: 33,
+                        mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                         instance: RenderItemInstance {
                             rect: RenderRect { x: 70, y: 80, width: 128, height: 96 },
                             opacity: 0.5,
@@ -427,6 +429,7 @@ fn backend_present_system_populates_multi_output_present_audit() {
                     RenderPlanItem::Surface(SurfaceRenderItem {
                         identity: identity(34),
                         surface_id: 33,
+                        mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                         instance: RenderItemInstance {
                             rect: RenderRect { x: 70, y: 80, width: 128, height: 96 },
                             opacity: 0.5,
@@ -438,6 +441,7 @@ fn backend_present_system_populates_multi_output_present_audit() {
                     RenderPlanItem::Surface(SurfaceRenderItem {
                         identity: identity(22),
                         surface_id: 22,
+                        mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
                         instance: RenderItemInstance {
                             rect: RenderRect { x: 40, y: 50, width: 320, height: 240 },
                             opacity: 0.7,
