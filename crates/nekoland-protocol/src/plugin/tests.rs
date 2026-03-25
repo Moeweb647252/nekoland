@@ -114,6 +114,7 @@ fn platform_surface_import_strategy_marks_non_renderable_dmabufs_as_external_tex
         formats: vec![format],
         renderable_formats: Vec::new(),
         importable: true,
+        main_device: None,
     };
 
     assert_eq!(
@@ -137,6 +138,7 @@ fn platform_surface_import_strategy_keeps_renderable_dmabufs_on_direct_import_pa
         formats: vec![format],
         renderable_formats: vec![format],
         importable: true,
+        main_device: None,
     };
 
     assert_eq!(
@@ -147,6 +149,19 @@ fn platform_surface_import_strategy_keeps_renderable_dmabufs_on_direct_import_pa
         ),
         PlatformSurfaceImportStrategy::DmaBufImport
     );
+}
+
+#[test]
+fn dmabuf_support_tracks_main_device_from_backend_feedback() {
+    let format = DmabufFormat { code: Fourcc::Argb8888, modifier: Modifier::Linear };
+    let mut support = ProtocolDmabufSupport::default();
+
+    support.merge_formats([format], [format], true, Some(0xdead_beef));
+
+    assert_eq!(support.main_device, Some(0xdead_beef));
+    assert_eq!(support.formats, vec![format]);
+    assert_eq!(support.renderable_formats, vec![format]);
+    assert!(support.importable);
 }
 
 #[test]

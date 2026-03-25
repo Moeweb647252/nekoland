@@ -159,6 +159,13 @@ impl HostWinitGraphicsBackend {
             .map(|formats| formats.iter().copied().collect::<Vec<_>>())
             .unwrap_or_default()
     }
+
+    pub(crate) fn dmabuf_main_device(&self) -> Option<u64> {
+        smithay::backend::egl::EGLDevice::device_for_display(&self._display)
+            .ok()
+            .and_then(|device| device.try_get_render_node().ok().flatten())
+            .map(|node| node.dev_id())
+    }
 }
 
 #[derive(Debug, Default)]
