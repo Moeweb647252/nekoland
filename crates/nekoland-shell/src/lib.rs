@@ -24,6 +24,8 @@ pub mod viewport;
 pub mod window_control;
 mod window_lifecycle;
 mod window_policy;
+/// Feature-local Alt+Tab style window switcher state and overlay generation.
+pub mod window_switcher;
 /// Workspace creation, switching, and output/workspace routing.
 pub mod workspace;
 /// XDG-shell request handling and popup/configure sequencing.

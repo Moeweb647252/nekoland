@@ -135,6 +135,18 @@ impl PressedKeys {
         &self.held
     }
 
+    pub fn is_key_held(&self, keycode: u32) -> bool {
+        self.held.contains(&keycode)
+    }
+
+    pub fn was_key_just_pressed(&self, keycode: u32) -> bool {
+        self.just_pressed.contains(&keycode)
+    }
+
+    pub fn was_key_just_released(&self, keycode: u32) -> bool {
+        self.just_released.contains(&keycode)
+    }
+
     pub fn is_pressed(&self, shortcut: &KeyShortcut) -> bool {
         shortcut.keycode.is_none_or(|keycode| self.held.contains(&keycode))
             && modifiers_match_exact(&self.modifiers, &shortcut.modifiers)
@@ -185,5 +197,41 @@ fn normalize_modifier_name(token: &str) -> Option<&'static str> {
         "shift" => Some("shift"),
         "super" | "logo" | "meta" => Some("logo"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ModifierMask, PressedKeys};
+
+    #[test]
+    fn raw_key_queries_track_hold_and_frame_transitions() {
+        let mut pressed = PressedKeys::default();
+        pressed.record_key(23, true);
+
+        assert!(pressed.is_key_held(23));
+        assert!(pressed.was_key_just_pressed(23));
+        assert!(!pressed.was_key_just_released(23));
+
+        pressed.clear_frame_transitions();
+
+        assert!(pressed.is_key_held(23));
+        assert!(!pressed.was_key_just_pressed(23));
+
+        pressed.record_key(23, false);
+
+        assert!(!pressed.is_key_held(23));
+        assert!(pressed.was_key_just_released(23));
+    }
+
+    #[test]
+    fn required_modifier_match_allows_extra_modifiers() {
+        let mut pressed = PressedKeys::default();
+        pressed.record_key(64, true);
+        pressed.record_key(50, true);
+
+        assert!(ModifierMask::new(false, true, false, false).matches_required(pressed.modifiers()));
+        assert!(ModifierMask::new(false, true, true, false).matches_required(pressed.modifiers()));
+        assert!(!ModifierMask::new(true, true, false, false).matches_required(pressed.modifiers()));
     }
 }

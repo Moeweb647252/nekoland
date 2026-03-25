@@ -29,8 +29,6 @@ pub mod frame_pacing;
 pub mod keyboard_state;
 /// Typed render-material frame state.
 pub mod material_frame;
-/// Overlay UI state used by compositor-owned status or debug overlays.
-pub mod overlay_ui;
 /// Output viewport animation state mirrored into shell policy.
 pub mod output_animation;
 /// High-level output control queues and staged handles.
@@ -45,6 +43,8 @@ pub mod output_requests;
 pub mod output_snapshot;
 /// Backend/public output status snapshots.
 pub mod output_status;
+/// Overlay UI state used by compositor-owned status or debug overlays.
+pub mod overlay_ui;
 /// Backend descriptors and import-capability snapshots.
 pub mod platform_backend;
 /// Pointer position, deltas, and pan-mode state.
