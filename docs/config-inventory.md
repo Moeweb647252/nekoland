@@ -346,9 +346,6 @@ Supported actions:
 - `viewport-move <output> <x> <y>`
 - `viewport-pan <output> <dx> <dy>`
 - `center-viewport-on-window <output> <surface_id>`
-- `overlay-set <output> <overlay_id> <x,y,width,height> --color <r,g,b,a> [--opacity <f32>] [--z-index <i32>] [--clip <x,y,width,height>]`
-- `overlay-remove <output> <overlay_id>`
-- `overlay-clear <output>`
 
 ### `action`
 

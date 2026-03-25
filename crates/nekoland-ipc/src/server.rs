@@ -22,11 +22,10 @@ use nekoland_ecs::control::{OutputControlApi, WindowControlApi, WorkspaceControl
 use nekoland_ecs::resources::SelectionOwner;
 use nekoland_ecs::resources::{
     CommandExecutionStatus, CommandHistoryState, CompositorClock, EntityIndex,
-    ExternalCommandRequest, KeyboardFocusState, OutputOverlayId, PendingExternalCommandRequests,
+    ExternalCommandRequest, KeyboardFocusState, PendingExternalCommandRequests,
     PendingOutputControls, PendingPopupServerRequests, PendingWindowControls,
     PendingWorkspaceControls, PopupServerAction, PopupServerRequest, PresentAuditElementKind,
-    RenderColor, RenderPlan, RenderPlanItem, RenderRect, SeatRegistry, WaylandFeedback,
-    WaylandIngress,
+    RenderPlan, RenderPlanItem, SeatRegistry, WaylandFeedback, WaylandIngress,
 };
 use nekoland_ecs::selectors::{
     OutputName, SurfaceId, WorkspaceLookup, WorkspaceName, WorkspaceSelector,
@@ -41,8 +40,7 @@ use crate::commands::query::{
     WorkspaceSnapshot,
 };
 use crate::commands::{
-    ActionCommand, OutputCommand, OutputOverlayColorCommand, OutputOverlayRectCommand,
-    PopupCommand, WindowCommand, WorkspaceCommand,
+    ActionCommand, OutputCommand, PopupCommand, WindowCommand, WorkspaceCommand,
 };
 use crate::subscribe::{
     IpcSubscription, IpcSubscriptionEvent, PendingSubscriptionEvents, SubscriptionTopic,
@@ -757,14 +755,11 @@ pub(crate) fn refresh_query_cache_system(
             output: workspace_output_names.get(id).cloned(),
         })
         .collect();
-    let seat_registry = wayland_ingress
-        .as_deref()
-        .map(|ingress| ingress.seat_registry.clone())
-        .unwrap_or_default();
+    let seat_registry =
+        wayland_ingress.as_deref().map(|ingress| ingress.seat_registry.clone()).unwrap_or_default();
     let primary_seat_id = seat_registry.primary_seat_id();
-    let primary_seat_name = seat_name(&seat_registry, primary_seat_id)
-        .unwrap_or_default()
-        .to_owned();
+    let primary_seat_name =
+        seat_name(&seat_registry, primary_seat_id).unwrap_or_default().to_owned();
     query_cache.outputs = output_snapshots;
     query_cache.keyboard_layouts = KeyboardLayoutsSnapshot {
         seat_id: primary_seat_id,
@@ -1484,70 +1479,12 @@ fn reply_for_request(
                 payload: None,
             })
         }
-        IpcCommand::Output(OutputCommand::OverlaySet {
-            output,
-            overlay_id,
-            rect,
-            color,
-            opacity,
-            z_index,
-            clip_rect,
-        }) => {
-            outputs
-                .select(nekoland_ecs::selectors::OutputSelector::parse(&output))
-                .set_overlay_rect(
-                    OutputOverlayId::from(overlay_id.clone()),
-                    render_rect_from_output_overlay_rect(&rect),
-                    render_color_from_output_overlay_color(&color),
-                    opacity,
-                    z_index,
-                    clip_rect.as_ref().map(render_rect_from_output_overlay_rect),
-                );
-            RequestDisposition::Reply(IpcReply {
-                ok: true,
-                message: format!("queued overlay `{overlay_id}` on {output}"),
-                payload: None,
-            })
-        }
-        IpcCommand::Output(OutputCommand::OverlayRemove { output, overlay_id }) => {
-            outputs
-                .select(nekoland_ecs::selectors::OutputSelector::parse(&output))
-                .remove_overlay(OutputOverlayId::from(overlay_id.clone()));
-            RequestDisposition::Reply(IpcReply {
-                ok: true,
-                message: format!("queued overlay removal for `{overlay_id}` on {output}"),
-                payload: None,
-            })
-        }
-        IpcCommand::Output(OutputCommand::OverlayClear { output }) => {
-            outputs
-                .select(nekoland_ecs::selectors::OutputSelector::parse(&output))
-                .clear_overlays();
-            RequestDisposition::Reply(IpcReply {
-                ok: true,
-                message: format!("queued overlay clear for {output}"),
-                payload: None,
-            })
-        }
         IpcCommand::Raw(command) => RequestDisposition::Reply(IpcReply {
             ok: false,
             message: format!("unsupported raw IPC command: {command}"),
             payload: None,
         }),
     }
-}
-
-fn render_rect_from_output_overlay_rect(rect: &OutputOverlayRectCommand) -> RenderRect {
-    RenderRect {
-        x: rect.x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-        y: rect.y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-        width: rect.width,
-        height: rect.height,
-    }
-}
-
-fn render_color_from_output_overlay_color(color: &OutputOverlayColorCommand) -> RenderColor {
-    RenderColor { r: color.r, g: color.g, b: color.b, a: color.a }
 }
 
 fn remember_server_error(slot: &mut Option<String>, error: impl std::fmt::Display, message: &str) {
@@ -1584,10 +1521,7 @@ mod tests {
         IpcRequestDispatchCtx, RequestDisposition, refresh_query_cache_system, reply_for_request,
     };
     use super::{event_filter_matches, subscription_matches};
-    use crate::commands::{
-        ActionCommand, OutputCommand, OutputOverlayColorCommand, OutputOverlayRectCommand,
-        WindowCommand,
-    };
+    use crate::commands::{ActionCommand, WindowCommand};
     use crate::subscribe::{IpcSubscription, IpcSubscriptionEvent, SubscriptionTopic};
     use crate::{IpcCommand, IpcQueryCache, IpcReply, IpcRequest};
 
@@ -1690,10 +1624,7 @@ mod tests {
                 viewport_visibility: Default::default(),
                 buffer: BufferState { attached: true, scale: 1 },
                 content_version: nekoland_ecs::components::SurfaceContentVersion::default(),
-                window: XdgWindow {
-                    app_id: "test.app".to_owned(),
-                    title: "Test".to_owned(),
-                },
+                window: XdgWindow { app_id: "test.app".to_owned(), title: "Test".to_owned() },
                 management_hints: Default::default(),
                 layout: WindowLayout::Tiled,
                 mode: WindowMode::Normal,
@@ -1822,66 +1753,6 @@ mod tests {
             Some(nekoland_ecs::resources::WindowBackgroundControl::Set { ref output })
                 if output.as_str() == "Virtual-1"
         ));
-    }
-
-    #[test]
-    fn reply_for_request_stages_output_overlay_control() {
-        let mut pending_popup_requests = PendingPopupServerRequests::default();
-        let mut app_lifecycle = AppLifecycleState::default();
-        let mut config_reload = ConfigReloadRequest::default();
-        let mut keyboard_layout_state = KeyboardLayoutState::default();
-        let mut pending_external_commands = PendingExternalCommandRequests::default();
-        let mut pending_window_controls = PendingWindowControls::default();
-        let mut pending_workspace_controls = PendingWorkspaceControls::default();
-        let mut pending_output_controls = PendingOutputControls::default();
-        let query_cache = IpcQueryCache::default();
-        let mut request_ctx = IpcRequestDispatchCtx {
-            query_cache: &query_cache,
-            app_lifecycle: &mut app_lifecycle,
-            config_reload: &mut config_reload,
-            keyboard_layout_state: &mut keyboard_layout_state,
-            pending_external_commands: &mut pending_external_commands,
-            pending_popup_requests: &mut pending_popup_requests,
-            pending_window_controls: &mut pending_window_controls,
-            pending_workspace_controls: &mut pending_workspace_controls,
-            pending_output_controls: &mut pending_output_controls,
-        };
-
-        let disposition = reply_for_request(
-            IpcRequest {
-                correlation_id: 3,
-                command: IpcCommand::Output(OutputCommand::OverlaySet {
-                    output: "Virtual-1".to_owned(),
-                    overlay_id: "debug".to_owned(),
-                    rect: OutputOverlayRectCommand { x: 10, y: 20, width: 300, height: 200 },
-                    color: OutputOverlayColorCommand { r: 1, g: 2, b: 3, a: 255 },
-                    opacity: Some(0.5),
-                    z_index: Some(7),
-                    clip_rect: Some(OutputOverlayRectCommand {
-                        x: 30,
-                        y: 40,
-                        width: 50,
-                        height: 60,
-                    }),
-                }),
-            },
-            &mut request_ctx,
-        );
-
-        assert!(matches!(disposition, RequestDisposition::Reply(_)));
-        assert_eq!(pending_output_controls.as_slice().len(), 1);
-        let control = &pending_output_controls.as_slice()[0];
-        assert_eq!(control.selector, nekoland_ecs::selectors::OutputSelector::parse("Virtual-1"));
-        assert_eq!(control.overlay_updates.len(), 1);
-        let nekoland_ecs::resources::OutputOverlayUpdate::Set(spec) = &control.overlay_updates[0]
-        else {
-            panic!("expected overlay set update");
-        };
-        assert_eq!(spec.overlay_id.as_str(), "debug");
-        assert_eq!(spec.rect.width, 300);
-        assert_eq!(spec.clip_rect.map(|rect| rect.x), Some(30));
-        assert_eq!(spec.opacity, 0.5);
-        assert_eq!(spec.z_index, 7);
     }
 
     #[test]

@@ -9,8 +9,8 @@ use std::process::ExitCode;
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use clap_complete::{Shell, generate};
 use nekoland_ipc::commands::{
-    ActionCommand, OutputCommand, OutputOverlayColorCommand, OutputOverlayRectCommand,
-    PopupCommand, QueryCommand, SplitAxis, WindowCommand, WorkspaceCommand,
+    ActionCommand, OutputCommand, PopupCommand, QueryCommand, SplitAxis, WindowCommand,
+    WorkspaceCommand,
 };
 use nekoland_ipc::{
     IpcCommand, IpcRequest, IpcSubscription, KNOWN_SUBSCRIPTION_EVENT_NAMES,
@@ -218,101 +218,6 @@ enum OutputAction {
         output: String,
         surface_id: u64,
     },
-    OverlaySet {
-        output: String,
-        overlay_id: String,
-        #[arg(value_parser = parse_overlay_rect)]
-        rect: OverlayRectArg,
-        #[arg(long, value_parser = parse_overlay_color)]
-        color: OverlayColorArg,
-        #[arg(long)]
-        opacity: Option<f32>,
-        #[arg(long = "z-index")]
-        z_index: Option<i32>,
-        #[arg(long, value_parser = parse_overlay_rect)]
-        clip: Option<OverlayRectArg>,
-    },
-    OverlayRemove {
-        output: String,
-        overlay_id: String,
-    },
-    OverlayClear {
-        output: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OverlayRectArg {
-    x: i64,
-    y: i64,
-    width: u32,
-    height: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OverlayColorArg {
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
-}
-
-fn parse_overlay_rect(value: &str) -> Result<OverlayRectArg, String> {
-    let mut parts = value.split(',');
-    let x = parts
-        .next()
-        .ok_or_else(|| "expected x,y,width,height".to_owned())?
-        .parse::<i64>()
-        .map_err(|_| "invalid overlay rect x".to_owned())?;
-    let y = parts
-        .next()
-        .ok_or_else(|| "expected x,y,width,height".to_owned())?
-        .parse::<i64>()
-        .map_err(|_| "invalid overlay rect y".to_owned())?;
-    let width = parts
-        .next()
-        .ok_or_else(|| "expected x,y,width,height".to_owned())?
-        .parse::<u32>()
-        .map_err(|_| "invalid overlay rect width".to_owned())?;
-    let height = parts
-        .next()
-        .ok_or_else(|| "expected x,y,width,height".to_owned())?
-        .parse::<u32>()
-        .map_err(|_| "invalid overlay rect height".to_owned())?;
-    if parts.next().is_some() {
-        return Err("expected x,y,width,height".to_owned());
-    }
-
-    Ok(OverlayRectArg { x, y, width: width.max(1), height: height.max(1) })
-}
-
-fn parse_overlay_color(value: &str) -> Result<OverlayColorArg, String> {
-    let mut parts = value.split(',');
-    let r = parts
-        .next()
-        .ok_or_else(|| "expected r,g,b,a".to_owned())?
-        .parse::<u8>()
-        .map_err(|_| "invalid overlay color r".to_owned())?;
-    let g = parts
-        .next()
-        .ok_or_else(|| "expected r,g,b,a".to_owned())?
-        .parse::<u8>()
-        .map_err(|_| "invalid overlay color g".to_owned())?;
-    let b = parts
-        .next()
-        .ok_or_else(|| "expected r,g,b,a".to_owned())?
-        .parse::<u8>()
-        .map_err(|_| "invalid overlay color b".to_owned())?;
-    let a = parts
-        .next()
-        .ok_or_else(|| "expected r,g,b,a".to_owned())?
-        .parse::<u8>()
-        .map_err(|_| "invalid overlay color a".to_owned())?;
-    if parts.next().is_some() {
-        return Err("expected r,g,b,a".to_owned());
-    }
-
-    Ok(OverlayColorArg { r, g, b, a })
 }
 
 /// Arguments for the higher-level `action` command family.
@@ -566,39 +471,6 @@ where
             }
             OutputAction::CenterViewportOnWindow { output, surface_id } => {
                 IpcCommand::Output(OutputCommand::CenterViewportOnWindow { output, surface_id })
-            }
-            OutputAction::OverlaySet {
-                output,
-                overlay_id,
-                rect,
-                color,
-                opacity,
-                z_index,
-                clip,
-            } => IpcCommand::Output(OutputCommand::OverlaySet {
-                output,
-                overlay_id,
-                rect: OutputOverlayRectCommand {
-                    x: rect.x,
-                    y: rect.y,
-                    width: rect.width,
-                    height: rect.height,
-                },
-                color: OutputOverlayColorCommand { r: color.r, g: color.g, b: color.b, a: color.a },
-                opacity,
-                z_index,
-                clip_rect: clip.map(|clip| OutputOverlayRectCommand {
-                    x: clip.x,
-                    y: clip.y,
-                    width: clip.width,
-                    height: clip.height,
-                }),
-            }),
-            OutputAction::OverlayRemove { output, overlay_id } => {
-                IpcCommand::Output(OutputCommand::OverlayRemove { output, overlay_id })
-            }
-            OutputAction::OverlayClear { output } => {
-                IpcCommand::Output(OutputCommand::OverlayClear { output })
             }
         })),
         RootCommand::Action(action) => Ok(ParsedAction::Request(match action.action {
@@ -886,8 +758,7 @@ mod tests {
         SubscriptionOutputMode, parse_cli_from, render_completion, render_subscription_help,
     };
     use nekoland_ipc::commands::{
-        ActionCommand, OutputCommand, OutputOverlayColorCommand, OutputOverlayRectCommand,
-        PopupCommand, QueryCommand, WindowCommand,
+        ActionCommand, OutputCommand, PopupCommand, QueryCommand, WindowCommand,
     };
     use nekoland_ipc::{IpcCommand, IpcSubscription, SubscriptionTopic};
     use serde_json::Value;
@@ -1037,54 +908,6 @@ mod tests {
             ParsedAction::Request(IpcCommand::Output(OutputCommand::CenterViewportOnWindow {
                 output: "Virtual-1".to_owned(),
                 surface_id: 77,
-            }))
-        );
-    }
-
-    #[test]
-    fn parses_output_overlay_set() {
-        assert_eq!(
-            parse_ok([
-                "nekoland-msg",
-                "output",
-                "overlay-set",
-                "Virtual-1",
-                "debug",
-                "10,20,300,200",
-                "--color",
-                "1,2,3,255",
-                "--opacity",
-                "0.5",
-                "--z-index",
-                "7",
-                "--clip",
-                "30,40,50,60",
-            ]),
-            ParsedAction::Request(IpcCommand::Output(OutputCommand::OverlaySet {
-                output: "Virtual-1".to_owned(),
-                overlay_id: "debug".to_owned(),
-                rect: OutputOverlayRectCommand { x: 10, y: 20, width: 300, height: 200 },
-                color: OutputOverlayColorCommand { r: 1, g: 2, b: 3, a: 255 },
-                opacity: Some(0.5),
-                z_index: Some(7),
-                clip_rect: Some(OutputOverlayRectCommand { x: 30, y: 40, width: 50, height: 60 }),
-            }))
-        );
-    }
-
-    #[test]
-    fn parses_output_overlay_remove_and_clear() {
-        assert_eq!(
-            parse_ok(["nekoland-msg", "output", "overlay-remove", "Virtual-1", "debug"]),
-            ParsedAction::Request(IpcCommand::Output(OutputCommand::OverlayRemove {
-                output: "Virtual-1".to_owned(),
-                overlay_id: "debug".to_owned(),
-            }))
-        );
-        assert_eq!(
-            parse_ok(["nekoland-msg", "output", "overlay-clear", "Virtual-1"]),
-            ParsedAction::Request(IpcCommand::Output(OutputCommand::OverlayClear {
-                output: "Virtual-1".to_owned(),
             }))
         );
     }
