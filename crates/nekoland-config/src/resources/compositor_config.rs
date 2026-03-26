@@ -10,9 +10,7 @@ use std::fmt;
 
 use bevy_ecs::prelude::Resource;
 use nekoland_ecs::components::{WindowLayout, WindowMode, WindowPolicy};
-use nekoland_ecs::resources::{
-    HorizontalDirection, ModifierMask, TilingPanDirection, VerticalDirection,
-};
+use nekoland_ecs::resources::{HorizontalDirection, TilingPanDirection, VerticalDirection};
 use nekoland_ecs::selectors::{OutputName, WorkspaceLookup, WorkspaceSelector};
 use serde::{Deserialize, Serialize};
 
@@ -292,12 +290,11 @@ pub struct CompositorConfig {
     pub repeat_rate: u16,
     pub current_keyboard_layout: String,
     pub keyboard_layouts: Vec<ConfiguredKeyboardLayout>,
-    pub viewport_pan_modifiers: ModifierMask,
     pub command_history_limit: usize,
     pub startup_actions: Vec<ConfiguredAction>,
     pub outputs: Vec<ConfiguredOutput>,
     pub xwayland: XWaylandConfig,
-    pub keybindings: BTreeMap<String, Vec<ConfiguredAction>>,
+    pub keybindings: BTreeMap<String, String>,
 }
 
 impl Default for CompositorConfig {
@@ -316,7 +313,6 @@ impl Default for CompositorConfig {
             repeat_rate: 30,
             current_keyboard_layout: "us".to_owned(),
             keyboard_layouts: vec![ConfiguredKeyboardLayout::default()],
-            viewport_pan_modifiers: ModifierMask::new(false, true, false, true),
             command_history_limit: DEFAULT_COMMAND_HISTORY_LIMIT,
             startup_actions: Vec::new(),
             outputs: vec![ConfiguredOutput::default()],

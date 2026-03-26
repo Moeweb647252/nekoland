@@ -1,11 +1,11 @@
 //! Config-file schema, loading, normalization, and hot-reload support.
 #![warn(missing_docs)]
 
-/// Action-list parsing and normalization shared by startup commands and keybindings.
+/// Action-list parsing and normalization shared by startup commands and related config surfaces.
 pub mod action_config;
 /// File watching and extract-phase hot-reload entrypoints.
 pub mod hot_reload;
-/// Keybinding schema helpers and validation for user-facing config files.
+/// Shortcut override schema helpers for user-facing config files.
 pub mod keybind_config;
 /// Disk loading helpers for TOML and RON config sources.
 pub mod loader;

@@ -8,12 +8,6 @@ use crate::resources::ConfiguredAction;
 use nekoland_ecs::selectors::{OutputName, WorkspaceLookup, WorkspaceSelector};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum KeybindEntryConfig {
-    Actions(Vec<ConfiguredAction>),
-    ViewportPanMode,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum ActionListConfig {
@@ -26,31 +20,6 @@ impl ActionListConfig {
         match self {
             Self::One(action) => Ok(vec![action.try_into()?]),
             Self::Many(actions) => actions.into_iter().map(TryInto::try_into).collect(),
-        }
-    }
-
-    pub fn into_keybind_entry(self) -> Result<KeybindEntryConfig, String> {
-        match self {
-            Self::One(ConfiguredActionConfig::ViewportPanMode { viewport_pan_mode }) => {
-                require_flag("viewport_pan_mode", viewport_pan_mode)
-                    .map(|()| KeybindEntryConfig::ViewportPanMode)
-            }
-            Self::One(action) => Ok(KeybindEntryConfig::Actions(vec![action.try_into()?])),
-            Self::Many(actions) => {
-                if actions
-                    .iter()
-                    .any(|action| matches!(action, ConfiguredActionConfig::ViewportPanMode { .. }))
-                {
-                    return Err(
-                        "`viewport_pan_mode` must be the only action in a binding".to_owned()
-                    );
-                }
-                actions
-                    .into_iter()
-                    .map(TryInto::try_into)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(KeybindEntryConfig::Actions)
-            }
         }
     }
 }
@@ -80,7 +49,6 @@ pub enum ConfiguredActionConfig {
     ViewportPan { viewport_pan: [isize; 2] },
     ViewportMove { viewport_move: [isize; 2] },
     ViewportCenter { viewport_center: bool },
-    ViewportPanMode { viewport_pan_mode: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -195,9 +163,6 @@ impl TryFrom<ConfiguredActionConfig> for ConfiguredAction {
                 require_flag("viewport_center", viewport_center)
                     .map(|()| Self::CenterViewportOnFocusedWindow)
             }
-            ConfiguredActionConfig::ViewportPanMode { .. } => {
-                Err("`viewport_pan_mode` is only supported inside `[keybinds.bindings]`".to_owned())
-            }
         }
     }
 }
@@ -213,7 +178,7 @@ mod tests {
     use crate::resources::ConfiguredAction;
     use nekoland_ecs::selectors::WorkspaceSelector;
 
-    use super::{ActionListConfig, ConfiguredActionConfig, KeybindEntryConfig};
+    use super::{ActionListConfig, ConfiguredActionConfig};
 
     #[derive(Debug, Deserialize)]
     struct OneAction {
@@ -275,36 +240,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn viewport_pan_mode_is_keybind_only() {
-        let Ok(action) = toml::from_str::<OneAction>("action = { viewport_pan_mode = true }")
-        else {
-            panic!("viewport pan mode action should parse");
-        };
-        let action = action.action;
-
-        assert_eq!(
-            ConfiguredAction::try_from(action.clone()),
-            Err("`viewport_pan_mode` is only supported inside `[keybinds.bindings]`".to_owned())
-        );
-        let Ok(keybind_entry) = ActionListConfig::One(action).into_keybind_entry() else {
-            panic!("keybind entry should parse");
-        };
-        assert_eq!(keybind_entry, KeybindEntryConfig::ViewportPanMode);
-    }
-
-    #[test]
-    fn viewport_pan_mode_must_be_alone_in_binding() {
-        let Ok(actions) = toml::from_str::<ManyActions>(
-            "actions = [{ viewport_pan_mode = true }, { exec = [\"foot\"] }]",
-        ) else {
-            panic!("action list should parse");
-        };
-        let actions = actions.actions;
-
-        assert_eq!(
-            actions.into_keybind_entry(),
-            Err("`viewport_pan_mode` must be the only action in a binding".to_owned())
-        );
-    }
 }

@@ -4,12 +4,13 @@ use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::InputSchedule;
 use nekoland_ecs::events::{GestureSwipe, KeyPress, PointerButton, PointerMotion};
 use nekoland_ecs::resources::{
-    FocusedOutputState, GlobalPointerPosition, KeyboardFocusState, ModifierState,
-    PendingInputEvents, PendingOutputControls, PhysicalPointerPosition, PointerDelta, PressedKeys,
-    SeatRegistry, ViewportPointerPanState, WaylandIngress,
+    CompiledShortcutMap, FocusedOutputState, GlobalPointerPosition, KeyboardFocusState,
+    ModifierState, PendingInputEvents, PendingOutputControls, PhysicalPointerPosition,
+    PointerDelta, PressedKeys, SeatRegistry, ShortcutCompileDiagnostics, ShortcutRegistry,
+    ShortcutState, ViewportPointerPanState, WaylandIngress,
 };
 
-use crate::{gestures, keyboard, pointer, seat_manager, touch};
+use crate::{gestures, keyboard, keybindings, pointer, seat_manager, touch};
 
 #[derive(Debug, Default, Clone, Copy)]
 /// Main-world plugin that turns normalized platform input into shell-facing actions and messages.
@@ -27,6 +28,10 @@ impl NekolandPlugin for InputPlugin {
             .init_resource::<KeyboardFocusState>()
             .init_resource::<ModifierState>()
             .init_resource::<PressedKeys>()
+            .init_resource::<ShortcutRegistry>()
+            .init_resource::<CompiledShortcutMap>()
+            .init_resource::<ShortcutState>()
+            .init_resource::<ShortcutCompileDiagnostics>()
             .init_resource::<PendingInputEvents>()
             .init_resource::<PendingOutputControls>()
             .init_resource::<SeatRegistry>()
@@ -40,6 +45,8 @@ impl NekolandPlugin for InputPlugin {
                 // later systems see the current modifier state and pointer position.
                 (
                     keyboard::keyboard_input_system,
+                    keybindings::shortcut_compile_system,
+                    keybindings::shortcut_match_system,
                     pointer::pointer_input_system,
                     pointer::viewport_pointer_pan_system,
                     pointer::cursor_motion_system,
@@ -50,6 +57,11 @@ impl NekolandPlugin for InputPlugin {
                 )
                     .chain(),
             );
+
+        {
+            let mut registry = app.world_mut().resource_mut::<ShortcutRegistry>();
+            pointer::register_shortcuts(&mut registry);
+        }
     }
 }
 

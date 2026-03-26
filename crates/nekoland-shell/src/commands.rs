@@ -12,8 +12,8 @@ use nekoland_ecs::control::{
 use nekoland_ecs::events::{ExternalCommandFailed, ExternalCommandLaunched};
 use nekoland_ecs::resources::{
     CommandExecutionRecord, CommandExecutionStatus, CommandHistoryState, CompositorClock,
-    ExternalCommandRequest, InputEventRecord, ModifierMask, PendingExternalCommandRequests,
-    PendingInputEvents, PressedKeys, WaylandIngress,
+    ExternalCommandRequest, InputEventRecord, PendingExternalCommandRequests, PendingInputEvents,
+    ShortcutRegistry, ShortcutState, ShortcutTrigger, WaylandIngress,
 };
 
 /// Tracks whether startup actions have already been applied for this session.
@@ -23,8 +23,8 @@ pub struct StartupActionState {
     pub queued: bool,
 }
 
-const QUIT_SHORTCUT_MODIFIERS: ModifierMask = ModifierMask::new(false, false, true, true);
-const Q_KEYCODE: u32 = 24;
+/// Stable shortcut id for quitting the compositor.
+pub const SYSTEM_QUIT_SHORTCUT_ID: &str = "system.quit";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ChildCommandEnvironment {
@@ -87,14 +87,11 @@ impl<'a, 'ops> ActionDispatchContext<'a, 'ops> {
 
 /// Triggers orderly compositor shutdown when `Mod+Shift+Q` is pressed.
 pub fn quit_shortcut_system(
-    pressed_keys: Res<'_, PressedKeys>,
+    shortcuts: Res<'_, ShortcutState>,
     mut app_lifecycle: ResMut<'_, AppLifecycleState>,
     mut pending_input_events: ResMut<'_, PendingInputEvents>,
 ) {
-    if app_lifecycle.quit_requested
-        || !QUIT_SHORTCUT_MODIFIERS.matches_required(pressed_keys.modifiers())
-        || !pressed_keys.was_key_just_pressed(Q_KEYCODE)
-    {
+    if app_lifecycle.quit_requested || !shortcuts.just_pressed(SYSTEM_QUIT_SHORTCUT_ID) {
         return;
     }
 
@@ -103,6 +100,19 @@ pub fn quit_shortcut_system(
         source: "keyboard:shortcut".to_owned(),
         detail: "Mod+Shift+Q -> requested compositor quit".to_owned(),
     });
+}
+
+/// Registers shell-level shortcuts owned by the command subsystem.
+pub fn register_shortcuts(registry: &mut ShortcutRegistry) {
+    registry
+        .register(nekoland_ecs::resources::ShortcutSpec::new(
+            SYSTEM_QUIT_SHORTCUT_ID,
+            "system",
+            "Request orderly compositor shutdown",
+            "Super+Shift+Q",
+            ShortcutTrigger::Press,
+        ))
+        .expect("shell command shortcut ids should be unique");
 }
 
 /// Attempts to launch queued external commands and records the result as both ECS messages and
@@ -496,8 +506,8 @@ mod tests {
     use nekoland_ecs::resources::PendingInputEvents;
     use nekoland_ecs::resources::{
         CommandHistoryState, CompositorClock, KeyboardFocusState, PendingExternalCommandRequests,
-        PendingOutputControls, PendingWindowControls, PendingWorkspaceControls, PressedKeys,
-        ProtocolServerState, WaylandIngress, XWaylandServerState,
+        PendingOutputControls, PendingWindowControls, PendingWorkspaceControls, ProtocolServerState,
+        ShortcutState, WaylandIngress, XWaylandServerState,
     };
 
     use super::{StartupActionState, quit_shortcut_system, startup_action_queue_system};
@@ -506,17 +516,15 @@ mod tests {
     fn mod_shift_q_requests_quit_once() {
         let mut app = NekolandApp::new("quit-shortcut-test");
         app.insert_resource(AppLifecycleState::default())
-            .insert_resource(PressedKeys::default())
+            .insert_resource(ShortcutState::default())
             .insert_resource(PendingInputEvents::default())
             .inner_mut()
             .add_systems(LayoutSchedule, quit_shortcut_system);
 
-        {
-            let mut pressed_keys = app.inner_mut().world_mut().resource_mut::<PressedKeys>();
-            pressed_keys.record_key(133, true);
-            pressed_keys.record_key(50, true);
-            pressed_keys.record_key(24, true);
-        }
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<ShortcutState>()
+            .set(super::SYSTEM_QUIT_SHORTCUT_ID, true, true, false);
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
@@ -529,12 +537,10 @@ mod tests {
     fn plain_q_does_not_request_quit() {
         let mut app = NekolandApp::new("quit-shortcut-negative-test");
         app.insert_resource(AppLifecycleState::default())
-            .insert_resource(PressedKeys::default())
+            .insert_resource(ShortcutState::default())
             .insert_resource(PendingInputEvents::default())
             .inner_mut()
             .add_systems(LayoutSchedule, quit_shortcut_system);
-
-        app.inner_mut().world_mut().resource_mut::<PressedKeys>().record_key(24, true);
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
         let world = app.inner().world();

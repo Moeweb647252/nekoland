@@ -1,15 +1,18 @@
 use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::{Local, Res, ResMut};
 use bevy_ecs::system::SystemParam;
-use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::events::{PointerButton, PointerMotion};
 use nekoland_ecs::resources::{
-    FocusedOutputState, GlobalPointerPosition, InputEventRecord, KeyShortcut, OutputSnapshotState,
+    FocusedOutputState, GlobalPointerPosition, InputEventRecord, OutputSnapshotState,
     PendingInputEvents, PendingOutputControls, PhysicalPointerPosition, PlatformInputAction,
-    PointerDelta, PressedKeys, ViewportPointerPanState, WaylandIngress,
+    PointerDelta, ShortcutRegistry, ShortcutState, ShortcutTrigger, ViewportPointerPanState,
+    WaylandIngress,
 };
 use nekoland_ecs::selectors::OutputSelector;
+
+/// Stable shortcut id for holding viewport pan mode.
+pub const VIEWPORT_PAN_MODE_SHORTCUT_ID: &str = "viewport.pan_mode";
 
 #[derive(Debug, Default)]
 pub(crate) struct ViewportPointerPanGestureState {
@@ -23,7 +26,7 @@ const POINTER_BOUNDS_EPSILON: f64 = 0.001;
 
 #[derive(SystemParam)]
 pub(crate) struct ViewportPointerPanParams<'w, 's> {
-    pressed_keys: Res<'w, PressedKeys>,
+    shortcuts: Res<'w, ShortcutState>,
     focused_output: Res<'w, FocusedOutputState>,
     pointer_delta: ResMut<'w, PointerDelta>,
     viewport_pan: ResMut<'w, ViewportPointerPanState>,
@@ -216,11 +219,10 @@ fn pointer_within_output(
 /// Treats the configured viewport-pan shortcut plus pointer delta as direct viewport panning on
 /// the focused output.
 pub(crate) fn viewport_pointer_pan_system(
-    config: Res<CompositorConfig>,
     pan: ViewportPointerPanParams<'_, '_>,
 ) {
     let ViewportPointerPanParams {
-        pressed_keys,
+        shortcuts,
         focused_output,
         mut pointer_delta,
         mut viewport_pan,
@@ -229,8 +231,7 @@ pub(crate) fn viewport_pointer_pan_system(
         mut gesture,
     } = pan;
 
-    let combo_active =
-        pressed_keys.is_pressed(&KeyShortcut::modifier_only(config.viewport_pan_modifiers));
+    let combo_active = shortcuts.active(VIEWPORT_PAN_MODE_SHORTCUT_ID);
 
     if !combo_active {
         gesture.active_output = None;
@@ -274,47 +275,55 @@ pub(crate) fn viewport_pointer_pan_system(
     viewport_pan.active = true;
 }
 
+/// Registers pointer-owned shortcuts into the global shortcut registry.
+pub fn register_shortcuts(registry: &mut ShortcutRegistry) {
+    registry
+        .register(nekoland_ecs::resources::ShortcutSpec::new(
+            VIEWPORT_PAN_MODE_SHORTCUT_ID,
+            "viewport",
+            "Hold to pan the focused output viewport with pointer motion",
+            "Super+Alt",
+            ShortcutTrigger::Hold,
+        ))
+        .expect("viewport shortcut ids should be unique");
+}
+
 #[cfg(test)]
 mod tests {
     use bevy_ecs::message::Messages;
     use bevy_ecs::prelude::World;
     use bevy_ecs::system::RunSystemOnce;
-    use nekoland_config::resources::CompositorConfig;
     use nekoland_ecs::components::OutputId;
     use nekoland_ecs::events::{PointerButton, PointerMotion};
     use nekoland_ecs::resources::PendingInputEvents;
     use nekoland_ecs::resources::{
         BackendInputAction, BackendInputEvent, FocusedOutputState, GlobalPointerPosition,
-        ModifierMask, OutputGeometrySnapshot, OutputSnapshotState, PendingOutputControls,
+        OutputGeometrySnapshot, OutputSnapshotState, PendingOutputControls,
         PendingPlatformInputEvents, PhysicalPointerPosition, PointerDelta, PressedKeys,
-        ViewportPointerPanState, WaylandIngress,
+        ShortcutState, ViewportPointerPanState, WaylandIngress,
     };
     use nekoland_ecs::selectors::OutputSelector;
 
     use super::{
-        cursor_motion_system, focused_output_tracking_system, pointer_input_system,
+        VIEWPORT_PAN_MODE_SHORTCUT_ID, cursor_motion_system, focused_output_tracking_system, pointer_input_system,
         viewport_pointer_pan_system,
     };
 
     #[test]
     fn viewport_pointer_pan_consumes_pointer_delta_without_moving_cursor() {
         let mut world = World::default();
-        world.insert_resource(CompositorConfig::default());
         world.insert_resource(GlobalPointerPosition { x: 20.0, y: 10.0 });
         world.insert_resource(PointerDelta { dx: 4.0, dy: 7.0 });
         world.insert_resource(PressedKeys::default());
+        let mut shortcuts = ShortcutState::default();
+        shortcuts.set(VIEWPORT_PAN_MODE_SHORTCUT_ID, true, true, false);
+        world.insert_resource(shortcuts);
         world.init_resource::<PendingOutputControls>();
         world.init_resource::<PendingInputEvents>();
         world.init_resource::<ViewportPointerPanState>();
         world.init_resource::<Messages<PointerMotion>>();
         world.insert_resource(FocusedOutputState { id: Some(OutputId(7)) });
         world.insert_resource(WaylandIngress::default());
-
-        {
-            let mut pressed_keys = world.resource_mut::<PressedKeys>();
-            pressed_keys.record_key(133, true);
-            pressed_keys.record_key(64, true);
-        }
 
         let Ok(()) = world.run_system_once(viewport_pointer_pan_system) else {
             panic!("viewport pan system should run");
@@ -348,55 +357,26 @@ mod tests {
     }
 
     #[test]
-    fn viewport_pointer_pan_uses_configured_modifier_mask() {
+    fn viewport_pointer_pan_requires_active_shortcut_state() {
         let mut world = World::default();
-        let config = CompositorConfig {
-            viewport_pan_modifiers: ModifierMask::new(true, false, true, false),
-            ..CompositorConfig::default()
-        };
-        world.insert_resource(config);
         world.insert_resource(PointerDelta { dx: 4.0, dy: 7.0 });
         world.insert_resource(PressedKeys::default());
+        world.insert_resource(ShortcutState::default());
         world.init_resource::<PendingOutputControls>();
         world.init_resource::<PendingInputEvents>();
         world.init_resource::<ViewportPointerPanState>();
         world.insert_resource(FocusedOutputState { id: Some(OutputId(7)) });
         world.insert_resource(WaylandIngress::default());
 
-        {
-            let mut pressed_keys = world.resource_mut::<PressedKeys>();
-            pressed_keys.record_key(37, true);
-            pressed_keys.record_key(50, true);
-        }
-
         let Ok(()) = world.run_system_once(viewport_pointer_pan_system) else {
             panic!("viewport pan system should run");
         };
 
-        let Some(output_controls) = world.get_resource::<PendingOutputControls>() else {
-            panic!("output controls should exist");
-        };
         let Some(viewport_pan) = world.get_resource::<ViewportPointerPanState>() else {
             panic!("viewport pan state should exist");
         };
-
-        assert_eq!(
-            output_controls.as_slice(),
-            &[nekoland_ecs::resources::PendingOutputControl {
-                selector: OutputSelector::Id(OutputId(7)),
-                enabled: None,
-                configuration: None,
-                viewport_origin: None,
-                viewport_pan: Some(nekoland_ecs::resources::OutputViewportPan {
-                    delta_x: 4,
-                    delta_y: 7,
-                }),
-                center_viewport_on: None,
-                clear_overlays: false,
-                overlay_updates: Vec::new(),
-            }]
-        );
-        assert!(viewport_pan.active, "configured modifiers should activate viewport pan");
+        assert!(world.resource::<PendingOutputControls>().is_empty());
+        assert!(!viewport_pan.active, "inactive shortcut state should not engage viewport pan");
     }
 
     #[test]

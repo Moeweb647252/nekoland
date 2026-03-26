@@ -170,6 +170,7 @@ pub struct ConfigSnapshot {
     pub loaded_from_disk: bool,
     pub successful_reloads: u64,
     pub last_reload_error: Option<String>,
+    pub shortcut_compile_error: Option<String>,
     pub theme: String,
     pub cursor_theme: String,
     pub border_color: String,
@@ -180,12 +181,11 @@ pub struct ConfigSnapshot {
     pub repeat_rate: u16,
     pub configured_keyboard_layout: String,
     pub keyboard_layouts: Vec<KeyboardLayoutEntrySnapshot>,
-    pub viewport_pan_modifiers: Vec<String>,
     pub command_history_limit: usize,
     pub startup_actions: Vec<ConfiguredAction>,
     pub xwayland_enabled: bool,
     pub outputs: Vec<ConfigOutputSnapshot>,
-    pub keybindings: BTreeMap<String, Vec<ConfiguredAction>>,
+    pub keybindings: BTreeMap<String, String>,
 }
 
 /// Clipboard state exported through IPC.

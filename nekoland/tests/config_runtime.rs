@@ -16,8 +16,8 @@ use nekoland_ecs::components::{
     WindowManagementHints, WindowMode, WindowSceneGeometry, WlSurfaceHandle, XdgWindow,
 };
 use nekoland_ecs::resources::{
-    CommandHistoryState, CompositorClock, GlobalPointerPosition, KeyboardFocusState, ModifierMask,
-    WaylandIngress, WindowEvent, WindowEventRequest,
+    CommandHistoryState, CompositorClock, GlobalPointerPosition, KeyboardFocusState, WaylandIngress,
+    WindowEvent, WindowEventRequest,
 };
 use nekoland_input::InputPlugin;
 use nekoland_shell::ShellPlugin;
@@ -46,8 +46,8 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Alt" = { viewport_pan_mode = true }
-"Super+Return" = { exec = ["foot"] }
+"viewport.pan_mode" = "Super+Alt"
+"window_switcher.cycle_next" = "Super+Return"
 "##;
 
 /// Replacement config written while the app is already running.
@@ -77,8 +77,8 @@ scale = 2
 enabled = true
 
 [keybinds.bindings]
-"Ctrl+Shift" = { viewport_pan_mode = true }
-"Super+P" = { exec = ["wlogout", "--protocol", "layer-shell"] }
+"viewport.pan_mode" = "Ctrl+Shift"
+"window_switcher.cycle_prev" = "Super+P"
 "##;
 
 /// Temporary config file owned by the test.
@@ -159,7 +159,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
         };
         let configured_outputs = config.outputs.clone();
         let fps_hud_enabled = config.debug.fps_hud;
-        let viewport_pan_modifiers = config.viewport_pan_modifiers;
+        let keybindings = config.keybindings.clone();
         let border_colors = world
             .query::<&BorderTheme>()
             .iter(world)
@@ -177,7 +177,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
         assert_eq!(configured_outputs[0].scale, 1);
         assert!(!fps_hud_enabled);
         assert_eq!(history_limit, 7);
-        assert_eq!(viewport_pan_modifiers, ModifierMask::new(false, true, false, true));
+        assert_eq!(keybindings.get("viewport.pan_mode"), Some(&"Super+Alt".to_owned()));
         assert!(
             border_colors.iter().all(|color| color == "#112233"),
             "initial config border color should be applied to all existing windows: {border_colors:?}"
@@ -208,7 +208,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
         };
         let configured_outputs = config.outputs.clone();
         let fps_hud_enabled = config.debug.fps_hud;
-        let viewport_pan_modifiers = config.viewport_pan_modifiers;
+        let keybindings = config.keybindings.clone();
         let border_colors = world
             .query::<&BorderTheme>()
             .iter(world)
@@ -226,7 +226,8 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
         assert_eq!(configured_outputs[0].scale, 2);
         assert!(fps_hud_enabled);
         assert_eq!(history_limit, 3);
-        assert_eq!(viewport_pan_modifiers, ModifierMask::new(true, false, true, false));
+        assert_eq!(keybindings.get("viewport.pan_mode"), Some(&"Ctrl+Shift".to_owned()));
+        assert_eq!(keybindings.get("window_switcher.cycle_prev"), Some(&"Super+P".to_owned()));
         assert!(
             border_colors.iter().all(|color| color == "#445566"),
             "hot-reloaded border color should be applied to all existing windows: {border_colors:?}"

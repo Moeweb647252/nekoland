@@ -25,8 +25,8 @@ use nekoland_ecs::resources::{
     ExternalCommandRequest, FpsHudRuntimeState, KeyboardFocusState, PendingExternalCommandRequests,
     PendingOutputControls, PendingPopupServerRequests, PendingTilingControls,
     PendingWindowControls, PendingWorkspaceControls, PopupServerAction, PopupServerRequest,
-    PresentAuditElementKind, RenderPlan, RenderPlanItem, SeatRegistry, WaylandFeedback,
-    WaylandIngress, WorkspaceTilingState,
+    PresentAuditElementKind, RenderPlan, RenderPlanItem, SeatRegistry,
+    ShortcutCompileDiagnostics, WaylandFeedback, WaylandIngress, WorkspaceTilingState,
 };
 use nekoland_ecs::selectors::{
     OutputName, SurfaceId, WorkspaceLookup, WorkspaceName, WorkspaceSelector,
@@ -165,6 +165,7 @@ pub(crate) struct IpcQuerySnapshotInputs<'w, 's> {
     command_history: Res<'w, CommandHistoryState>,
     config: Res<'w, CompositorConfig>,
     keyboard_layout_state: Res<'w, KeyboardLayoutState>,
+    shortcut_diagnostics: Option<Res<'w, ShortcutCompileDiagnostics>>,
     tiling: Option<Res<'w, WorkspaceTilingState>>,
     wayland_ingress: Option<Res<'w, WaylandIngress>>,
     wayland_feedback: Option<Res<'w, WaylandFeedback>>,
@@ -589,6 +590,7 @@ pub(crate) fn refresh_query_cache_system(
         command_history,
         config,
         keyboard_layout_state,
+        shortcut_diagnostics,
         tiling,
         wayland_ingress,
         wayland_feedback,
@@ -838,6 +840,9 @@ pub(crate) fn refresh_query_cache_system(
         last_reload_error: config_source
             .as_ref()
             .and_then(|source| source.last_reload_error.clone()),
+        shortcut_compile_error: shortcut_diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.last_error.clone()),
         theme: config.theme.clone(),
         cursor_theme: config.cursor_theme.clone(),
         border_color: config.border_color.clone(),
@@ -852,7 +857,6 @@ pub(crate) fn refresh_query_cache_system(
             .iter()
             .map(keyboard_layout_entry_snapshot)
             .collect(),
-        viewport_pan_modifiers: config.viewport_pan_modifiers.config_tokens(),
         command_history_limit: config.command_history_limit,
         startup_actions: config.startup_actions.clone(),
         xwayland_enabled: config.xwayland.enabled,

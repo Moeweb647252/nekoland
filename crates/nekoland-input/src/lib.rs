@@ -3,6 +3,8 @@
 
 /// Gesture recognition built on top of normalized touch and pointer state.
 pub mod gestures;
+/// Shortcut registry compilation and feature-local runtime matching.
+pub mod keybindings;
 /// Keyboard-event decoding and modifier / pressed-key state tracking.
 pub mod keyboard;
 /// Plugin entrypoint that wires the input schedule together.

@@ -62,25 +62,11 @@ app_id = "ffplay"
 background = "eDP-1"
 
 [keybinds.bindings]
-# Modifier-only binding: hold these keys and move the pointer to pan the focused output viewport.
-"Super+Alt" = { viewport_pan_mode = true }
+# Shortcut overrides are keyed by stable shortcut id rather than by action payload.
+"viewport.pan_mode" = "Super+Alt"
 
-# Workspace actions are runtime-only and can be addressed by id or name.
-# "Super+1" = { workspace = 1 }
-# "Super+Shift+1" = { workspace_create = 1 }
-# "Super+Ctrl+1" = { workspace_destroy = 1 }
-# "Super+Ctrl+W" = { workspace_destroy = "active" }
-
-# Window/background helpers.
-# "Super+B" = { background = "eDP-1" }
-# "Super+Shift+B" = { clear_background = true }
-# "Super+H" = { move = [-50, 0] }
-# "Super+L" = { move = [50, 0] }
-# "Super+Shift+H" = { resize = [800, 600] }
-# "Super+S" = { split = "vertical" }
-#
-# Multiple actions can be chained in order.
-# "Super+Shift+Return" = [
-#   { workspace = 1 },
-#   { exec = ["foot"] },
-# ]
+# Shell shortcuts.
+# "system.quit" = "Super+Shift+Q"
+# "window_switcher.hold" = "Alt"
+# "window_switcher.cycle_next" = "Alt+Tab"
+# "window_switcher.cycle_prev" = "Alt+Shift+Tab"
