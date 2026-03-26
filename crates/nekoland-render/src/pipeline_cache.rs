@@ -38,6 +38,7 @@ pub enum RenderClipMode {
 pub enum ScenePipelineDrawKind {
     Surface,
     Quad,
+    Text,
     Backdrop,
     Cursor,
 }
@@ -170,6 +171,14 @@ fn scene_pipeline_key_for_item(item: &RenderPlanItem) -> ScenePipelineKey {
                     RenderSampleMode::Linear
                 }
             },
+            clip_mode,
+        },
+        RenderPlanItem::Text(_) => ScenePipelineKey {
+            draw_kind: ScenePipelineDrawKind::Text,
+            scene_role: instance.scene_role,
+            color_format: RenderColorFormat::Rgba8Unorm,
+            blend_mode: RenderBlendMode::AlphaBlend,
+            sample_mode: RenderSampleMode::Linear,
             clip_mode,
         },
         RenderPlanItem::Backdrop(_) => ScenePipelineKey {

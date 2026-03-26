@@ -167,6 +167,45 @@ pub struct QuadRenderItem {
     pub instance: RenderItemInstance,
 }
 
+/// Content payload carried by one text render item.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RenderTextContent {
+    pub text: String,
+    pub font_family: String,
+    pub color: RenderColor,
+    pub font_size_bits: u32,
+}
+
+impl RenderTextContent {
+    /// Builds one text content payload from logical font size and styling.
+    pub fn new(
+        text: impl Into<String>,
+        font_family: impl Into<String>,
+        color: RenderColor,
+        font_size: f32,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            font_family: font_family.into(),
+            color,
+            font_size_bits: font_size.max(1.0).to_bits(),
+        }
+    }
+
+    /// Returns the logical font size used by the text item.
+    pub fn font_size(&self) -> f32 {
+        f32::from_bits(self.font_size_bits)
+    }
+}
+
+/// One output-local text item in the current frame scene.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TextRenderItem {
+    pub identity: RenderItemIdentity,
+    pub content: RenderTextContent,
+    pub instance: RenderItemInstance,
+}
+
 /// One sampled output-local backdrop region reserved for future post-process work.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BackdropRenderItem {
@@ -196,6 +235,7 @@ pub struct CursorRenderItem {
 pub enum RenderPlanItem {
     Surface(SurfaceRenderItem),
     Quad(QuadRenderItem),
+    Text(TextRenderItem),
     Backdrop(BackdropRenderItem),
     Cursor(CursorRenderItem),
 }
@@ -206,6 +246,7 @@ impl RenderPlanItem {
         match self {
             Self::Surface(item) => item.identity,
             Self::Quad(item) => item.identity,
+            Self::Text(item) => item.identity,
             Self::Backdrop(item) => item.identity,
             Self::Cursor(item) => item.identity,
         }
@@ -226,6 +267,7 @@ impl RenderPlanItem {
         match self {
             Self::Surface(item) => &item.instance,
             Self::Quad(item) => &item.instance,
+            Self::Text(item) => &item.instance,
             Self::Backdrop(item) => &item.instance,
             Self::Cursor(item) => &item.instance,
         }
@@ -244,7 +286,7 @@ impl RenderPlanItem {
                 CursorRenderSource::Surface { surface_id } => Some(*surface_id),
                 CursorRenderSource::Named { .. } => None,
             },
-            Self::Quad(_) | Self::Backdrop(_) => None,
+            Self::Quad(_) | Self::Text(_) | Self::Backdrop(_) => None,
         }
     }
 }

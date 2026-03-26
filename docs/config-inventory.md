@@ -61,6 +61,7 @@ Notes:
 | --- | --- | --- | --- |
 | `theme.name` | string | `catppuccin-latte` | Theme metadata exposed through IPC/state snapshots |
 | `theme.cursor_theme` | string | `default` | Cursor theme name |
+| `theme.overlay_font_family` | string | `Noto Sans` | Font family used by compositor-owned overlay text |
 | `theme.border_color` | string | `#5c7cfa` | Hex color string |
 | `theme.background_color` | string | `#f5f7ff` | Hex color string |
 

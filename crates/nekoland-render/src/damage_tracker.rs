@@ -177,12 +177,23 @@ fn render_signature_for_item(
             }
             item.instance.opacity.to_bits().hash(&mut hasher);
         }
-        RenderPlanItem::Backdrop(_) => {
+        RenderPlanItem::Text(item) => {
             2_u8.hash(&mut hasher);
+            item.content.text.hash(&mut hasher);
+            item.content.font_family.hash(&mut hasher);
+            item.content.font_size_bits.hash(&mut hasher);
+            item.content.color.r.hash(&mut hasher);
+            item.content.color.g.hash(&mut hasher);
+            item.content.color.b.hash(&mut hasher);
+            item.content.color.a.hash(&mut hasher);
+            item.instance.opacity.to_bits().hash(&mut hasher);
+        }
+        RenderPlanItem::Backdrop(_) => {
+            3_u8.hash(&mut hasher);
             item.instance().opacity.to_bits().hash(&mut hasher);
         }
         RenderPlanItem::Cursor(item) => {
-            3_u8.hash(&mut hasher);
+            4_u8.hash(&mut hasher);
             match &item.source {
                 nekoland_ecs::resources::CursorRenderSource::Named { icon_name } => {
                     icon_name.hash(&mut hasher);

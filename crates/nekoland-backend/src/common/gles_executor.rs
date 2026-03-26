@@ -12,6 +12,7 @@ use nekoland_ecs::resources::{
     PreparedRenderTargetResource, PreparedSceneItem, ProcessRect, ProcessShaderKey,
     ProcessUniformBlock, ProcessUniformValue, RenderColor, RenderMaterialFrameState,
     RenderPassKind, RenderPassPayload, RenderRect, RenderTargetId, ScreenshotFrame,
+    TextAtlasContentKind,
 };
 use nekoland_protocol::ProtocolSurfaceRegistry;
 use smithay::backend::allocator::Fourcc;
@@ -38,7 +39,7 @@ use smithay::backend::renderer::utils::draw_render_elements;
 use smithay::backend::renderer::utils::import_surface_tree;
 use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer, Texture};
 use smithay::render_elements;
-use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform};
 
 use crate::common::cursor::SoftwareCursorCache;
 use crate::traits::OutputSnapshot;
@@ -211,11 +212,9 @@ pub(crate) fn execute_output_graph(
 
         match pass.kind {
             RenderPassKind::Scene => {
-                let target = output_cache.targets.get_mut(&pass.output_target).ok_or(
-                    GlesExecutionError::MissingExecutionTarget { target_id: pass.output_target },
-                )?;
                 let built = build_scene_pass_elements(
                     renderer,
+                    output_cache,
                     prepared_scene,
                     prepared_gpu,
                     surface_registry,
@@ -224,6 +223,9 @@ pub(crate) fn execute_output_graph(
                     output_scale,
                     pass.item_ids(),
                 );
+                let target = output_cache.targets.get_mut(&pass.output_target).ok_or(
+                    GlesExecutionError::MissingExecutionTarget { target_id: pass.output_target },
+                )?;
                 target.backdrop_regions.extend(built.backdrop_regions);
 
                 let mut framebuffer = renderer.bind(&mut target.texture)?;
@@ -419,6 +421,142 @@ fn raster_image_memory_buffer(
     ))
 }
 
+fn build_text_scene_elements(
+    renderer: &mut GlesRenderer,
+    item: &nekoland_ecs::resources::PreparedTextSceneItem,
+    prepared_gpu: Option<&OutputPreparedGpuResources>,
+) -> Vec<CommonGlesRenderElement> {
+    item.glyphs
+        .iter()
+        .filter_map(|glyph| {
+            let visible_rect = glyph.target_rect.intersection(item.visible_rect)?;
+            let page = prepared_gpu?.text_atlas_pages.get(&glyph.atlas_page_id)?;
+            let (buffer, x, y, src_width, src_height) =
+                text_glyph_memory_buffer(page, glyph, visible_rect, item.color, item.raster_scale)?;
+            let logical_src = Rectangle::<f64, Logical>::from_size(Size::from((
+                src_width as f64 / f64::from(item.raster_scale.max(1)),
+                src_height as f64 / f64::from(item.raster_scale.max(1)),
+            )));
+            let target_size = Size::<i32, Logical>::from((
+                i32::try_from(visible_rect.width).ok()?,
+                i32::try_from(visible_rect.height).ok()?,
+            ));
+
+            match MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                (f64::from(x), f64::from(y)),
+                &buffer,
+                Some(item.opacity),
+                Some(logical_src),
+                Some(target_size),
+                Kind::Unspecified,
+            ) {
+                Ok(element) => Some(element.into()),
+                Err(error) => {
+                    tracing::warn!(error = %error, "failed to upload prepared text glyph");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+fn text_glyph_memory_buffer(
+    page: &nekoland_ecs::resources::PreparedTextAtlasPage,
+    glyph: &nekoland_ecs::resources::PreparedTextGlyph,
+    visible_rect: RenderRect,
+    color: RenderColor,
+    raster_scale: u32,
+) -> Option<(MemoryRenderBuffer, i32, i32, usize, usize)> {
+    if glyph.target_rect.width == 0 || glyph.target_rect.height == 0 {
+        return None;
+    }
+
+    let scale = raster_scale.max(1);
+    let scale_i32 = i32::try_from(scale).ok()?;
+    let crop_left = visible_rect.x.checked_sub(glyph.target_rect.x)?;
+    let crop_top = visible_rect.y.checked_sub(glyph.target_rect.y)?;
+    let crop_right = glyph
+        .target_rect
+        .x
+        .checked_add(glyph.target_rect.width.min(i32::MAX as u32) as i32)?
+        .checked_sub(visible_rect.x.checked_add(visible_rect.width.min(i32::MAX as u32) as i32)?)?;
+    let crop_bottom = glyph
+        .target_rect
+        .y
+        .checked_add(glyph.target_rect.height.min(i32::MAX as u32) as i32)?
+        .checked_sub(
+            visible_rect.y.checked_add(visible_rect.height.min(i32::MAX as u32) as i32)?,
+        )?;
+
+    let src_x = usize::try_from(
+        i32::try_from(glyph.atlas_rect.x).ok()?.checked_add(crop_left.checked_mul(scale_i32)?)?,
+    )
+    .ok()?;
+    let src_y = usize::try_from(
+        i32::try_from(glyph.atlas_rect.y).ok()?.checked_add(crop_top.checked_mul(scale_i32)?)?,
+    )
+    .ok()?;
+    let src_width = usize::try_from(
+        i32::try_from(glyph.atlas_rect.width)
+            .ok()?
+            .checked_sub(crop_left.checked_mul(scale_i32)?)?
+            .checked_sub(crop_right.checked_mul(scale_i32)?)?,
+    )
+    .ok()?;
+    let src_height = usize::try_from(
+        i32::try_from(glyph.atlas_rect.height)
+            .ok()?
+            .checked_sub(crop_top.checked_mul(scale_i32)?)?
+            .checked_sub(crop_bottom.checked_mul(scale_i32)?)?,
+    )
+    .ok()?;
+    if src_width == 0 || src_height == 0 {
+        return None;
+    }
+
+    let page_width = usize::try_from(page.width).ok()?;
+    let row_len = src_width.checked_mul(4)?;
+    let mut pixels = vec![0_u8; src_height.checked_mul(row_len)?];
+    for row in 0..src_height {
+        let src_row = src_y.checked_add(row)?;
+        let src_start = src_row.checked_mul(page_width)?.checked_add(src_x)?.checked_mul(4)?;
+        let src_end = src_start.checked_add(row_len)?;
+        let src_slice = page.pixels_rgba.get(src_start..src_end)?;
+        let dst_start = row.checked_mul(row_len)?;
+        let dst_end = dst_start.checked_add(row_len)?;
+        let dst_slice = pixels.get_mut(dst_start..dst_end)?;
+
+        match page.content_kind {
+            TextAtlasContentKind::Mask => {
+                for (src_px, dst_px) in src_slice.chunks_exact(4).zip(dst_slice.chunks_exact_mut(4))
+                {
+                    let alpha = ((u16::from(src_px[3]) * u16::from(color.a)) / 255) as u8;
+                    dst_px[0] = premultiply_u8(color.r, alpha);
+                    dst_px[1] = premultiply_u8(color.g, alpha);
+                    dst_px[2] = premultiply_u8(color.b, alpha);
+                    dst_px[3] = alpha;
+                }
+            }
+            TextAtlasContentKind::Color => dst_slice.copy_from_slice(src_slice),
+        }
+    }
+
+    let buffer = MemoryRenderBuffer::from_slice(
+        &pixels,
+        Fourcc::Abgr8888,
+        (i32::try_from(src_width).ok()?, i32::try_from(src_height).ok()?),
+        scale_i32,
+        Transform::Normal,
+        None,
+    );
+    Some((buffer, visible_rect.x, visible_rect.y, src_width, src_height))
+}
+
+fn premultiply_u8(channel: u8, alpha: u8) -> u8 {
+    ((u16::from(channel) * u16::from(alpha)) / 255) as u8
+}
+
 pub(crate) fn clear_color(config: Option<&CompositorConfig>) -> Color32F {
     let Some(config) = config else {
         return Color32F::new(0.0, 0.0, 0.0, 1.0);
@@ -465,6 +603,7 @@ struct ScenePassBuilt {
 
 fn build_scene_pass_elements(
     renderer: &mut GlesRenderer,
+    _output_cache: &OutputExecutionCache,
     prepared_scene: &OutputPreparedSceneResources,
     prepared_gpu: Option<&OutputPreparedGpuResources>,
     surface_registry: &ProtocolSurfaceRegistry,
@@ -571,6 +710,9 @@ fn build_scene_pass_elements(
                     }
                 }
             },
+            PreparedSceneItem::Text(item) => {
+                elements.extend(build_text_scene_elements(renderer, item, prepared_gpu));
+            }
             PreparedSceneItem::Backdrop(item) => {
                 let Some(visible_rect) = render_rect_to_physical(&item.visible_rect, output_scale)
                 else {
@@ -1259,8 +1401,8 @@ mod tests {
 
     use super::{
         CachedMaterialBinding, CachedSurfaceImport, GlesExecutionState, importable_surface_imports,
-        needs_material_binding_refresh, needs_surface_reimport, prepare_output_material_bindings,
-        scene_pass_item_ids_in_presentation_order,
+        needs_material_binding_refresh, needs_surface_reimport, premultiply_u8,
+        prepare_output_material_bindings, scene_pass_item_ids_in_presentation_order,
     };
 
     #[test]
@@ -1270,6 +1412,13 @@ mod tests {
             scene_pass_item_ids_in_presentation_order(&item_ids).copied().collect::<Vec<_>>(),
             vec![RenderItemId(33), RenderItemId(22), RenderItemId(11)]
         );
+    }
+
+    #[test]
+    fn premultiply_zeroes_rgb_when_alpha_is_zero() {
+        assert_eq!(premultiply_u8(255, 0), 0);
+        assert_eq!(premultiply_u8(255, 127), 127);
+        assert_eq!(premultiply_u8(255, 255), 255);
     }
 
     #[test]

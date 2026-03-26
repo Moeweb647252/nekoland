@@ -6,7 +6,7 @@ use nekoland_ecs::resources::{
     OutputPresentAudit, PresentAuditElement, PresentAuditElementKind, QuadContent,
     RenderItemInstance, RenderMaterialFrameState, RenderPassGraph, RenderPassKind,
     RenderPassPayload, RenderPlan, RenderPlanItem, RenderSceneRole, RenderSurfaceRole,
-    RenderSurfaceSnapshot, RenderTargetId, RenderTargetKind,
+    RenderSurfaceSnapshot, RenderTargetId, RenderTargetKind, RenderTextContent,
 };
 
 use crate::traits::OutputSnapshot;
@@ -20,6 +20,12 @@ pub(crate) struct OutputSurfaceRenderRecord {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct OutputQuadRenderRecord {
     pub content: QuadContent,
+    pub instance: RenderItemInstance,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OutputTextRenderRecord {
+    pub content: RenderTextContent,
     pub instance: RenderItemInstance,
 }
 
@@ -38,6 +44,7 @@ pub(crate) struct OutputCursorRenderRecord {
 pub(crate) enum OutputRenderRecord {
     Surface(OutputSurfaceRenderRecord),
     Quad(OutputQuadRenderRecord),
+    Text(OutputTextRenderRecord),
     Backdrop(OutputBackdropRenderRecord),
     Cursor(OutputCursorRenderRecord),
 }
@@ -91,6 +98,7 @@ pub(crate) fn render_graph_output_surfaces_in_presentation_order(
     .filter_map(|record| match record {
         OutputRenderRecord::Surface(record) => Some(record),
         OutputRenderRecord::Quad(_)
+        | OutputRenderRecord::Text(_)
         | OutputRenderRecord::Backdrop(_)
         | OutputRenderRecord::Cursor(_) => None,
     })
@@ -130,6 +138,15 @@ pub(crate) fn render_graph_output_present_audit_elements(
                 OutputRenderRecord::Backdrop(record) => {
                     (0, record.instance, PresentAuditElementKind::Backdrop)
                 }
+                OutputRenderRecord::Text(record) => (
+                    0,
+                    record.instance,
+                    if record.instance.scene_role == RenderSceneRole::Compositor {
+                        PresentAuditElementKind::Compositor
+                    } else {
+                        PresentAuditElementKind::Quad
+                    },
+                ),
                 OutputRenderRecord::Cursor(record) => {
                     (0, record.instance, PresentAuditElementKind::Cursor)
                 }
@@ -325,6 +342,10 @@ fn output_record_from_plan_item(item: &RenderPlanItem) -> OutputRenderRecord {
             content: item.content.clone(),
             instance: item.instance,
         }),
+        RenderPlanItem::Text(item) => OutputRenderRecord::Text(OutputTextRenderRecord {
+            content: item.content.clone(),
+            instance: item.instance,
+        }),
         RenderPlanItem::Backdrop(item) => {
             OutputRenderRecord::Backdrop(OutputBackdropRenderRecord { instance: item.instance })
         }
@@ -490,6 +511,7 @@ mod tests {
                 .filter_map(|record| match record {
                     super::OutputRenderRecord::Surface(record) => Some(record.surface_id),
                     super::OutputRenderRecord::Quad(_)
+                    | super::OutputRenderRecord::Text(_)
                     | super::OutputRenderRecord::Backdrop(_)
                     | super::OutputRenderRecord::Cursor(_) => None,
                 })
@@ -507,6 +529,7 @@ mod tests {
             .filter_map(|record| match record {
                 super::OutputRenderRecord::Surface(record) => Some(record.surface_id),
                 super::OutputRenderRecord::Quad(_)
+                | super::OutputRenderRecord::Text(_)
                 | super::OutputRenderRecord::Backdrop(_)
                 | super::OutputRenderRecord::Cursor(_) => None,
             })

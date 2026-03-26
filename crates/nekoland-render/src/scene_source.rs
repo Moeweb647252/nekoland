@@ -11,8 +11,8 @@ use nekoland_ecs::components::OutputId;
 use nekoland_ecs::resources::{
     BackdropRenderItem, CompositorSceneItem, CompositorSceneState, CursorRenderItem,
     CursorRenderSource, QuadContent, QuadRenderItem, RenderItemId, RenderItemIdentity,
-    RenderItemInstance, RenderPlanItem, RenderSourceId, SurfacePresentationRole, SurfaceRenderItem,
-    SurfaceRenderMode,
+    RenderItemInstance, RenderPlanItem, RenderSourceId, RenderTextContent, SurfacePresentationRole,
+    SurfaceRenderItem, SurfaceRenderMode, TextRenderItem,
 };
 
 use crate::scene_process::{
@@ -106,6 +106,7 @@ impl RenderInstanceKey {
 pub enum RenderSceneContributionPayload {
     Surface { surface_id: u64, mode: SurfaceRenderMode },
     Quad { content: QuadContent },
+    Text { content: RenderTextContent },
     Backdrop,
     Cursor { source: CursorRenderSource },
 }
@@ -142,6 +143,15 @@ impl RenderSceneContribution {
         instance: RenderItemInstance,
     ) -> Self {
         Self { key, instance, payload: RenderSceneContributionPayload::Quad { content } }
+    }
+
+    /// Creates a text contribution.
+    pub fn text(
+        key: RenderInstanceKey,
+        content: RenderTextContent,
+        instance: RenderItemInstance,
+    ) -> Self {
+        Self { key, instance, payload: RenderSceneContributionPayload::Text { content } }
     }
 
     /// Creates a backdrop contribution.
@@ -265,6 +275,9 @@ pub fn emit_compositor_scene_contributions_system(
                 CompositorSceneItem::Quad { content } => {
                     RenderSceneContribution::quad(key, content.clone(), instance)
                 }
+                CompositorSceneItem::Text { content } => {
+                    RenderSceneContribution::text(key, content.clone(), instance)
+                }
                 CompositorSceneItem::Backdrop => RenderSceneContribution::backdrop(key, instance),
             };
             output_contributions.push(contribution);
@@ -289,6 +302,13 @@ pub fn contribution_to_plan_item(
         }
         RenderSceneContributionPayload::Quad { ref content } => {
             RenderPlanItem::Quad(QuadRenderItem {
+                identity,
+                content: content.clone(),
+                instance: contribution.instance,
+            })
+        }
+        RenderSceneContributionPayload::Text { ref content } => {
+            RenderPlanItem::Text(TextRenderItem {
                 identity,
                 content: content.clone(),
                 instance: contribution.instance,

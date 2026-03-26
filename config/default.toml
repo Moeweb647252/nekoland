@@ -5,6 +5,7 @@ default_layout = "floating"
 # Theme metadata currently exposed through IPC/state snapshots.
 name = "catppuccin-latte"
 cursor_theme = "default"
+overlay_font_family = "Noto Sans"
 border_color = "#5c7cfa"
 background_color = "#f5f7ff"
 
