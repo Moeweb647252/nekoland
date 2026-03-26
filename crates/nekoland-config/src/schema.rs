@@ -176,6 +176,7 @@ impl TryFrom<NekolandConfigFile> for CompositorConfig {
         Ok(Self {
             theme: value.theme.name,
             cursor_theme: value.theme.cursor_theme,
+            overlay_font_family: value.theme.overlay_font_family,
             border_color: value.theme.border_color,
             background_color: value.theme.background_color,
             debug: DebugConfig { fps_hud: value.debug.fps_hud },

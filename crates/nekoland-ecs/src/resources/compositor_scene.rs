@@ -8,7 +8,9 @@ use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
 
 use crate::components::OutputId;
-use crate::resources::{QuadContent, RenderColor, RenderItemInstance, RenderSceneRole};
+use crate::resources::{
+    QuadContent, RenderColor, RenderItemInstance, RenderSceneRole, RenderTextContent,
+};
 
 /// Stable identity for one compositor-owned scene entry.
 #[derive(
@@ -23,6 +25,7 @@ pub struct CompositorSceneEntryId(pub u64);
 pub enum CompositorSceneItem {
     Surface { surface_id: u64 },
     Quad { content: QuadContent },
+    Text { content: RenderTextContent },
     Backdrop,
 }
 
@@ -42,6 +45,11 @@ impl CompositorSceneEntry {
     /// Builds a compositor scene entry backed by arbitrary quad content.
     pub fn quad(content: QuadContent, instance: RenderItemInstance) -> Self {
         Self { item: CompositorSceneItem::Quad { content }, instance }
+    }
+
+    /// Builds a compositor scene entry backed by one text item.
+    pub fn text(content: RenderTextContent, instance: RenderItemInstance) -> Self {
+        Self { item: CompositorSceneItem::Text { content }, instance }
     }
 
     /// Builds a solid-color quad compositor entry.

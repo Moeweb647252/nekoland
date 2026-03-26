@@ -11,8 +11,8 @@ use crate::components::OutputId;
 use crate::resources::{
     MaterialParamsId, PlatformDmabufFormat, PlatformSurfaceBufferSource,
     PlatformSurfaceImportStrategy, PlatformSurfaceKind, ProcessShaderKey, QuadContent,
-    RenderBindGroupLayoutKey, RenderItemId, RenderMaterialDescriptor, RenderMaterialId,
-    RenderMaterialParamBlock, RenderRect, RenderTargetId, RenderTargetKind,
+    RenderBindGroupLayoutKey, RenderColor, RenderItemId, RenderMaterialDescriptor,
+    RenderMaterialId, RenderMaterialParamBlock, RenderRect, RenderTargetId, RenderTargetKind,
 };
 
 /// Snapshot of whether each surface currently has an attached buffer.
@@ -90,6 +90,7 @@ pub struct OutputPreparedGpuResources {
     pub surface_imports: BTreeMap<u64, PreparedSurfaceImport>,
     pub process_shaders: BTreeSet<ProcessShaderKey>,
     pub material_bindings: BTreeSet<PreparedMaterialBindingKey>,
+    pub text_atlas_pages: BTreeMap<TextAtlasPageId, PreparedTextAtlasPage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -166,6 +167,7 @@ pub enum PreparedSceneItem {
     Surface(PreparedSurfaceSceneItem),
     SurfaceThumbnail(PreparedSurfaceThumbnailSceneItem),
     Quad(PreparedQuadSceneItem),
+    Text(PreparedTextSceneItem),
     Backdrop(PreparedBackdropSceneItem),
     CursorNamed(PreparedNamedCursorSceneItem),
     CursorSurface(PreparedSurfaceCursorSceneItem),
@@ -197,6 +199,62 @@ pub struct PreparedQuadSceneItem {
     pub visible_rect: RenderRect,
     pub content: QuadContent,
     pub opacity: f32,
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(transparent)]
+pub struct TextAtlasPageId(pub u64);
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAtlasContentKind {
+    Mask,
+    Color,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TextAtlasRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreparedTextAtlasPageCacheKey {
+    pub page_id: TextAtlasPageId,
+    pub version: u64,
+    pub width: u32,
+    pub height: u32,
+    pub content_kind: TextAtlasContentKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreparedTextAtlasPage {
+    pub id: TextAtlasPageId,
+    pub width: u32,
+    pub height: u32,
+    pub content_kind: TextAtlasContentKind,
+    pub pixels_rgba: Vec<u8>,
+    pub cache_key: PreparedTextAtlasPageCacheKey,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreparedTextGlyph {
+    pub atlas_page_id: TextAtlasPageId,
+    pub atlas_rect: TextAtlasRect,
+    pub target_rect: RenderRect,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PreparedTextSceneItem {
+    pub visible_rect: RenderRect,
+    pub color: RenderColor,
+    pub opacity: f32,
+    pub raster_scale: u32,
+    pub glyphs: Vec<PreparedTextGlyph>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -34,6 +34,9 @@ name = "nord-light"
 # Cursor theme name used by the compositor when resolving cursor assets.
 cursor_theme = "Bibata-Modern-Ice"
 
+# Font family used by compositor-owned overlay text such as the FPS HUD and window switcher.
+overlay_font_family = "Noto Sans"
+
 # Decoration border color as a hex string.
 border_color = "#81a1c1"
 

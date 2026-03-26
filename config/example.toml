@@ -3,6 +3,7 @@ default_layout = "floating"
 [theme]
 name = "nord-light"
 cursor_theme = "Bibata-Modern-Ice"
+overlay_font_family = "Noto Sans"
 border_color = "#81a1c1"
 background_color = "#e5e9f0"
 

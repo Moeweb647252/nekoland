@@ -8,7 +8,7 @@ rust-version.workspace = true
 [dependencies]
 bevy_app.workspace = true
 bevy_ecs.workspace = true
-fontdue = "0.9"
+cosmic-text.workspace = true
 nekoland-config = { path = "../nekoland-config" }
 nekoland-core = { path = "../nekoland-core" }
 nekoland-ecs = { path = "../nekoland-ecs" }

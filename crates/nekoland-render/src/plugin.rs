@@ -17,7 +17,7 @@ use crate::{
     animation, compositor_render, cursor, damage_tracker, effects, final_output_plan,
     frame_callback, material, output_overlay, overlay_ui, phase_plan, pipeline_cache,
     prepare_resources, presentation_feedback, process_plan, readback_plan, render_graph,
-    scene_process, scene_source, screenshot,
+    scene_process, scene_source, screenshot, text,
 };
 
 pub mod extract;
@@ -63,7 +63,7 @@ impl NekolandPlugin for RenderPlugin {
             .init_resource::<CompositorSceneState>()
             .init_resource::<output_overlay::OutputOverlaySceneSyncState>()
             .init_resource::<overlay_ui::OverlayUiSceneSyncState>()
-            .init_resource::<overlay_ui::OverlayTextRasterizerState>()
+            .init_resource::<text::TextRendererState>()
             .init_resource::<scene_source::RenderSceneContributionQueue>()
             .init_resource::<scene_source::RenderSceneIdentityRegistry>()
             .init_resource::<compositor_render::DesktopSurfaceOrderSnapshot>()
@@ -118,7 +118,7 @@ impl NekolandPlugin for RenderSubAppPlugin {
             .init_resource::<ShellRenderInput>()
             .init_resource::<output_overlay::OutputOverlaySceneSyncState>()
             .init_resource::<overlay_ui::OverlayUiSceneSyncState>()
-            .init_resource::<overlay_ui::OverlayTextRasterizerState>()
+            .init_resource::<text::TextRendererState>()
             .init_resource::<scene_source::RenderSceneContributionQueue>()
             .init_resource::<scene_source::RenderSceneIdentityRegistry>()
             .init_resource::<scene_process::AppearanceSnapshot>()

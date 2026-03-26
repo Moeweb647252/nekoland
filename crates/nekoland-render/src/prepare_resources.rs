@@ -15,14 +15,16 @@ use nekoland_ecs::resources::{
     PreparedQuadSceneItem, PreparedRenderTargetCacheKey, PreparedRenderTargetResource,
     PreparedSceneItem, PreparedSceneResources, PreparedSurfaceCursorSceneItem,
     PreparedSurfaceImport, PreparedSurfaceImportCacheKey, PreparedSurfaceImportStrategy,
-    PreparedSurfaceSceneItem, PreparedSurfaceThumbnailSceneItem, RenderMaterialFrameState,
-    RenderPassGraph, RenderPlan, RenderProcessPlan, RenderTargetAllocationPlan,
-    RenderTargetAllocationSpec, ShellRenderInput, SurfaceBufferAttachmentSnapshot,
-    SurfaceBufferAttachmentState, SurfaceTextureBridgePlan, SurfaceTextureImportDescriptor,
+    PreparedSurfaceSceneItem, PreparedSurfaceThumbnailSceneItem, PreparedTextSceneItem,
+    RenderMaterialFrameState, RenderPassGraph, RenderPlan, RenderProcessPlan,
+    RenderTargetAllocationPlan, RenderTargetAllocationSpec, ShellRenderInput,
+    SurfaceBufferAttachmentSnapshot, SurfaceBufferAttachmentState, SurfaceTextureBridgePlan,
+    SurfaceTextureImportDescriptor, TextAtlasPageId,
 };
 
 use crate::compositor_render::RenderViewSnapshot;
 use crate::material::RenderMaterialRequestQueue;
+use crate::text::TextRendererState;
 
 /// Snapshot each surface's current buffer attachment state for later import planning.
 ///
@@ -145,6 +147,7 @@ pub fn build_prepared_scene_resources_system(
     views: Res<'_, RenderViewSnapshot>,
     render_plan: Res<'_, RenderPlan>,
     surface_bridge: Res<'_, SurfaceTextureBridgePlan>,
+    mut text_renderer: ResMut<'_, TextRendererState>,
     mut prepared: ResMut<'_, PreparedSceneResources>,
 ) {
     prepared.outputs = render_plan
@@ -157,7 +160,7 @@ pub fn build_prepared_scene_resources_system(
 
             for item in output_plan.iter_ordered() {
                 let Some(prepared_item) =
-                    prepare_scene_item_descriptor(item, scale, &surface_bridge)
+                    prepare_scene_item_descriptor(item, scale, &surface_bridge, &mut text_renderer)
                 else {
                     continue;
                 };
@@ -174,6 +177,7 @@ fn prepare_scene_item_descriptor(
     item: &nekoland_ecs::resources::RenderPlanItem,
     output_scale: u32,
     surface_bridge: &SurfaceTextureBridgePlan,
+    text_renderer: &mut TextRendererState,
 ) -> Option<PreparedSceneItem> {
     match item {
         nekoland_ecs::resources::RenderPlanItem::Surface(item) => {
@@ -206,6 +210,23 @@ fn prepare_scene_item_descriptor(
                 visible_rect,
                 content: item.content.clone(),
                 opacity: item.instance.opacity,
+            }))
+        }
+        nekoland_ecs::resources::RenderPlanItem::Text(item) => {
+            let visible_rect = item.instance.visible_rect()?;
+            let raster_scale = output_scale.max(4);
+            let (glyphs, _) = text_renderer.prepare_glyphs(
+                &item.content,
+                raster_scale,
+                item.instance.rect.x,
+                item.instance.rect.y,
+            )?;
+            Some(PreparedSceneItem::Text(PreparedTextSceneItem {
+                visible_rect,
+                color: item.content.color,
+                opacity: item.instance.opacity,
+                raster_scale,
+                glyphs,
             }))
         }
         nekoland_ecs::resources::RenderPlanItem::Backdrop(item) => {
@@ -245,9 +266,11 @@ fn prepare_scene_item_descriptor(
 pub fn build_prepared_gpu_resources_system(
     render_target_allocation: Res<'_, RenderTargetAllocationPlan>,
     surface_bridge: Res<'_, SurfaceTextureBridgePlan>,
+    prepared_scene: Res<'_, PreparedSceneResources>,
     material_requests: Res<'_, RenderMaterialRequestQueue>,
     materials: Res<'_, RenderMaterialFrameState>,
     process_plan: Res<'_, RenderProcessPlan>,
+    text_renderer: Res<'_, TextRendererState>,
     mut prepared: ResMut<'_, PreparedGpuResources>,
 ) {
     prepared.surface_imports = surface_bridge
@@ -387,6 +410,35 @@ pub fn build_prepared_gpu_resources_system(
                 })
                 .unwrap_or_default();
 
+            let text_atlas_pages = prepared_scene
+                .outputs
+                .get(&output_id)
+                .map(|scene| {
+                    scene
+                        .items
+                        .values()
+                        .filter_map(|item| match item {
+                            PreparedSceneItem::Text(text) => Some(
+                                text.glyphs
+                                    .iter()
+                                    .map(|glyph| glyph.atlas_page_id)
+                                    .collect::<BTreeSet<TextAtlasPageId>>(),
+                            ),
+                            PreparedSceneItem::Surface(_)
+                            | PreparedSceneItem::SurfaceThumbnail(_)
+                            | PreparedSceneItem::Quad(_)
+                            | PreparedSceneItem::Backdrop(_)
+                            | PreparedSceneItem::CursorNamed(_)
+                            | PreparedSceneItem::CursorSurface(_) => None,
+                        })
+                        .flatten()
+                        .filter_map(|page_id| {
+                            text_renderer.prepared_page(page_id).map(|page| (page_id, page))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
             (
                 output_id,
                 OutputPreparedGpuResources {
@@ -394,6 +446,7 @@ pub fn build_prepared_gpu_resources_system(
                     surface_imports,
                     process_shaders,
                     material_bindings,
+                    text_atlas_pages,
                 },
             )
         })
@@ -440,6 +493,7 @@ mod tests {
 
     use crate::compositor_render::{RenderViewSnapshot, RenderViewState};
     use crate::material::{RenderMaterialRequest, RenderMaterialRequestQueue};
+    use crate::text::TextRendererState;
 
     use super::{
         PreparedSceneResources, RenderTargetAllocationPlan, SurfaceBufferAttachmentSnapshot,
@@ -621,7 +675,9 @@ mod tests {
         world.insert_resource(RenderMaterialRequestQueue::default());
         world.insert_resource(RenderMaterialFrameState::default());
         world.insert_resource(RenderProcessPlan::default());
+        world.init_resource::<PreparedSceneResources>();
         world.init_resource::<PreparedGpuResources>();
+        world.init_resource::<TextRendererState>();
 
         let mut system = IntoSystem::into_system(build_prepared_gpu_resources_system);
         system.initialize(&mut world);
@@ -837,6 +893,7 @@ mod tests {
             )]),
         });
         world.init_resource::<PreparedSceneResources>();
+        world.init_resource::<TextRendererState>();
 
         let mut system = IntoSystem::into_system(build_prepared_scene_resources_system);
         system.initialize(&mut world);
@@ -941,7 +998,9 @@ mod tests {
                 },
             )]),
         });
+        world.init_resource::<PreparedSceneResources>();
         world.init_resource::<PreparedGpuResources>();
+        world.init_resource::<TextRendererState>();
 
         let mut system = IntoSystem::into_system(build_prepared_gpu_resources_system);
         system.initialize(&mut world);

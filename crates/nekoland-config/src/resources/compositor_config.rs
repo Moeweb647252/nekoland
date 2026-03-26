@@ -281,6 +281,7 @@ impl ConfiguredWindowRule {
 pub struct CompositorConfig {
     pub theme: String,
     pub cursor_theme: String,
+    pub overlay_font_family: String,
     pub border_color: String,
     pub background_color: String,
     pub debug: DebugConfig,
@@ -304,6 +305,7 @@ impl Default for CompositorConfig {
         Self {
             theme: "catppuccin-latte".to_owned(),
             cursor_theme: "default".to_owned(),
+            overlay_font_family: "Noto Sans".to_owned(),
             border_color: "#5c7cfa".to_owned(),
             background_color: "#f5f7ff".to_owned(),
             debug: DebugConfig::default(),

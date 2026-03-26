@@ -4,6 +4,7 @@
 //! shell-owned inputs and deriving render-world snapshots that avoid cross-world `Entity` access.
 
 use bevy_ecs::world::World;
+use nekoland_config::resources::CompositorConfig;
 use nekoland_ecs::resources::{
     CompositorClock, CompositorSceneState, OutputDamageRegions, ShellRenderInput,
     SurfaceBufferAttachmentSnapshot, SurfaceBufferAttachmentState, SurfaceContentVersionSnapshot,
@@ -16,6 +17,7 @@ pub(super) fn extract_render_subapp_inputs(main_world: &mut World, render_world:
     super::clone_resource_into::<material::RenderMaterialRegistry>(main_world, render_world);
     super::clone_resource_into::<material::RenderMaterialParamsStore>(main_world, render_world);
     super::clone_resource_into::<material::RenderMaterialRequestQueue>(main_world, render_world);
+    super::clone_resource_into::<CompositorConfig>(main_world, render_world);
     super::clone_resource_into::<ShellRenderInput>(main_world, render_world);
     super::clone_resource_into::<OutputDamageRegions>(main_world, render_world);
     super::clone_resource_into::<CompositorSceneState>(main_world, render_world);

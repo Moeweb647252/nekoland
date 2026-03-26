@@ -157,6 +157,7 @@ pub fn backdrop_blur_effect_system(
                 }
                 RenderPlanItem::Surface(_)
                 | RenderPlanItem::Quad(_)
+                | RenderPlanItem::Text(_)
                 | RenderPlanItem::Cursor(_) => None,
             })
             .collect::<Vec<_>>();

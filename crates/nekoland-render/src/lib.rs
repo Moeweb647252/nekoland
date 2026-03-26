@@ -44,6 +44,8 @@ pub mod scene_process;
 pub mod scene_source;
 /// Screenshot request bookkeeping exported from the render cleanup phase.
 pub mod screenshot;
+/// Shared text shaping and atlas caching for compositor-owned text items.
+pub mod text;
 
 pub use plugin::{
     RenderCleanupSystems, RenderExecuteSystems, RenderPlugin, RenderPrepareSystems,
