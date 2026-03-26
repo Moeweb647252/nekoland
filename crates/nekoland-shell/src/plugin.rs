@@ -14,8 +14,9 @@ use nekoland_ecs::resources::{
     OutputOverlayState, OverlayUiFrame, PendingExternalCommandRequests, PendingOutputControls,
     PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
     PendingTilingControls, PendingWindowControls, PendingWindowServerRequests,
-    PendingWorkspaceControls, ShellRenderInput, SurfacePresentationSnapshot, WaylandCommands,
-    WaylandFeedback, WaylandIngress, WindowStackingState, WorkArea, WorkspaceTilingState,
+    PendingWorkspaceControls, ShellRenderInput, ShortcutRegistry, SurfacePresentationSnapshot,
+    WaylandCommands, WaylandFeedback, WaylandIngress, WindowStackingState, WorkArea,
+    WorkspaceTilingState,
 };
 
 use crate::{
@@ -63,6 +64,13 @@ impl NekolandPlugin for ShellPlugin {
             .init_resource::<CommandHistoryState>()
             .init_resource::<commands::StartupActionState>()
             .init_resource::<PendingExternalCommandRequests>();
+
+        app.init_resource::<ShortcutRegistry>();
+        {
+            let mut registry = app.world_mut().resource_mut::<ShortcutRegistry>();
+            commands::register_shortcuts(&mut registry);
+            window_switcher::register_shortcuts(&mut registry);
+        }
 
         register_entity_index_hooks(app.world_mut());
 

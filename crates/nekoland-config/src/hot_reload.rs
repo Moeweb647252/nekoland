@@ -292,7 +292,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use crate::resources::{CompositorConfig, ConfiguredAction, KeyboardLayoutState};
+    use crate::resources::{CompositorConfig, KeyboardLayoutState};
     use bevy_ecs::error::{BevyError, DefaultErrorHandler, ErrorContext};
     use calloop::EventLoop;
     use nekoland_core::calloop::CalloopSourceRegistry;
@@ -323,9 +323,9 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Alt" = { viewport_pan_mode = true }
-"Super+Return" = { exec = ["foot"] }
-"Super+Q" = { close = true }
+"viewport.pan_mode" = "Super+Alt"
+"window_switcher.cycle_next" = "Super+Return"
+"system.quit" = "Super+Q"
 "##;
 
     const RELOADED_CONFIG: &str = r##"
@@ -349,8 +349,8 @@ scale = 2
 enabled = true
 
 [keybinds.bindings]
-"Ctrl+Shift" = { viewport_pan_mode = true }
-"Super+P" = { exec = ["wlogout", "--protocol", "layer-shell"] }
+"viewport.pan_mode" = "Ctrl+Shift"
+"window_switcher.cycle_prev" = "Super+P"
 "##;
 
     const KEYBOARD_LAYOUT_CONFIG: &str = r##"
@@ -382,7 +382,7 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Return" = { exec = ["foot"] }
+"window_switcher.cycle_next" = "Super+Return"
 "##;
 
     const INVALID_CONFIG: &str = r##"
@@ -421,14 +421,12 @@ cursor_theme = "default"
 
             assert_eq!(config.theme, "latte");
             assert_eq!(config.cursor_theme, "breeze");
+            assert_eq!(config.keybindings.get("viewport.pan_mode"), Some(&"Super+Alt".to_owned()));
             assert_eq!(
-                config.viewport_pan_modifiers,
-                nekoland_ecs::resources::ModifierMask::new(false, true, false, true)
+                config.keybindings.get("window_switcher.cycle_next"),
+                Some(&"Super+Return".to_owned())
             );
-            assert_eq!(
-                config.keybindings.get("Super+Return"),
-                Some(&vec![ConfiguredAction::Exec { argv: vec!["foot".to_owned()] }])
-            );
+            assert_eq!(config.keybindings.get("system.quit"), Some(&"Super+Q".to_owned()));
             assert!(source.loaded_from_disk);
             assert_eq!(source.successful_reloads, 1);
             assert!(source.last_reload_error.is_none());
@@ -449,20 +447,11 @@ cursor_theme = "default"
             assert_eq!(config.theme, "frappe");
             assert_eq!(config.cursor_theme, "capitaine");
             assert!(config.debug.fps_hud);
+            assert_eq!(config.keybindings.len(), 2);
+            assert_eq!(config.keybindings.get("viewport.pan_mode"), Some(&"Ctrl+Shift".to_owned()));
             assert_eq!(
-                config.viewport_pan_modifiers,
-                nekoland_ecs::resources::ModifierMask::new(true, false, true, false)
-            );
-            assert_eq!(config.keybindings.len(), 1);
-            assert_eq!(
-                config.keybindings.get("Super+P"),
-                Some(&vec![ConfiguredAction::Exec {
-                    argv: vec![
-                        "wlogout".to_owned(),
-                        "--protocol".to_owned(),
-                        "layer-shell".to_owned(),
-                    ],
-                }])
+                config.keybindings.get("window_switcher.cycle_prev"),
+                Some(&"Super+P".to_owned())
             );
             assert_eq!(source.successful_reloads, 2);
             assert!(source.last_reload_error.is_none());

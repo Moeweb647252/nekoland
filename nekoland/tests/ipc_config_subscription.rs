@@ -7,7 +7,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use nekoland::build_app;
-use nekoland_config::resources::ConfiguredAction;
 use nekoland_core::app::RunLoopSettings;
 use nekoland_ipc::commands::ConfigSnapshot;
 use nekoland_ipc::{
@@ -50,8 +49,8 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Alt" = { viewport_pan_mode = true }
-"Super+Return" = { exec = ["foot"] }
+"viewport.pan_mode" = "Super+Alt"
+"window_switcher.cycle_next" = "Super+Return"
 "##;
 
 /// Replacement config written while the compositor is already serving IPC.
@@ -96,8 +95,8 @@ scale = 2
 enabled = true
 
 [keybinds.bindings]
-"Ctrl+Shift" = { viewport_pan_mode = true }
-"Super+P" = { exec = ["wlogout", "--protocol", "layer-shell"] }
+"viewport.pan_mode" = "Ctrl+Shift"
+"window_switcher.cycle_prev" = "Super+P"
 "##;
 
 /// Verifies that the config subscription publishes the fully normalized runtime config after hot
@@ -195,23 +194,20 @@ fn config_subscription_reports_hot_reloaded_runtime_config() {
     assert_eq!(config.keyboard_layouts.len(), 2);
     assert_eq!(config.keyboard_layouts[1].name, "de");
     assert_eq!(config.keyboard_layouts[1].variant, "nodeadkeys");
-    assert_eq!(config.viewport_pan_modifiers, vec!["Ctrl".to_owned(), "Shift".to_owned()]);
+    assert_eq!(config.shortcut_compile_error, None);
     assert_eq!(config.outputs.len(), 1);
     assert_eq!(config.outputs[0].name, "HDMI-A-1");
     assert_eq!(config.outputs[0].mode, "2560x1440@75");
     assert_eq!(config.outputs[0].scale, 2);
     assert!(
+        matches!(config.keybindings.get("viewport.pan_mode"), Some(binding) if binding == "Ctrl+Shift"),
+        "config_changed should expose the reloaded shortcut override map: {:?}",
+        config.keybindings
+    );
+    assert!(
         matches!(
-            config.keybindings.get("Super+P"),
-            Some(actions)
-                if actions
-                    == &vec![ConfiguredAction::Exec {
-                        argv: vec![
-                            "wlogout".to_owned(),
-                            "--protocol".to_owned(),
-                            "layer-shell".to_owned(),
-                        ],
-                    }]
+            config.keybindings.get("window_switcher.cycle_prev"),
+            Some(binding) if binding == "Super+P"
         ),
         "config_changed should expose the reloaded keybinding map: {:?}",
         config.keybindings

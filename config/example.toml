@@ -42,4 +42,4 @@ app_id = "swaybg"
 background = "HDMI-A-1"
 
 [keybinds.bindings]
-"Ctrl+Shift" = { viewport_pan_mode = true }
+"viewport.pan_mode" = "Ctrl+Shift"

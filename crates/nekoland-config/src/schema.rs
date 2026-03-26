@@ -4,21 +4,14 @@
 //! in place of repetitive field-by-field comments.
 #![allow(missing_docs)]
 
-use std::collections::BTreeMap;
-
 use crate::resources::{
     CompositorConfig, ConfiguredAction, ConfiguredKeyboardLayout, ConfiguredOutput,
     ConfiguredWindowRule, DEFAULT_COMMAND_HISTORY_LIMIT, DebugConfig, DefaultLayout,
     XWaylandConfig,
 };
-use nekoland_ecs::resources::ModifierMask;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    action_config::{ActionListConfig, ConfiguredActionConfig, KeybindEntryConfig},
-    keybind_config::KeybindConfig,
-    theme::Theme,
-};
+use crate::{action_config::ConfiguredActionConfig, keybind_config::KeybindConfig, theme::Theme};
 
 /// TOML-facing config schema loaded from disk before normalization into `CompositorConfig`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,14 +36,6 @@ pub struct NekolandConfigFile {
 
 impl Default for NekolandConfigFile {
     fn default() -> Self {
-        let mut bindings = BTreeMap::new();
-        bindings.insert(
-            "Super+Alt".to_owned(),
-            ActionListConfig::One(ConfiguredActionConfig::ViewportPanMode {
-                viewport_pan_mode: true,
-            }),
-        );
-
         Self {
             theme: Theme::default(),
             debug: DebugSection::default(),
@@ -61,7 +46,7 @@ impl Default for NekolandConfigFile {
             startup: StartupConfig::default(),
             xwayland: XWaylandSection::default(),
             outputs: vec![OutputConfig::default()],
-            keybinds: KeybindConfig { bindings },
+            keybinds: KeybindConfig::default(),
         }
     }
 }
@@ -185,27 +170,8 @@ impl TryFrom<NekolandConfigFile> for CompositorConfig {
     type Error = String;
 
     fn try_from(value: NekolandConfigFile) -> Result<Self, Self::Error> {
-        let mut viewport_pan_modifiers = CompositorConfig::default().viewport_pan_modifiers;
-        let mut viewport_pan_mode_binding = None::<String>;
-        let mut keybindings = BTreeMap::new();
         let (keyboard_layouts, current_keyboard_layout) =
             normalize_keyboard_layouts(value.input.keyboard)?;
-
-        for (binding, actions) in value.keybinds.bindings {
-            match actions.into_keybind_entry()? {
-                KeybindEntryConfig::Actions(actions) => {
-                    keybindings.insert(binding, actions);
-                }
-                KeybindEntryConfig::ViewportPanMode => {
-                    if let Some(previous) = viewport_pan_mode_binding.replace(binding.clone()) {
-                        return Err(format!(
-                            "viewport pan mode binding may only be configured once, found `{previous}` and `{binding}`"
-                        ));
-                    }
-                    viewport_pan_modifiers = parse_viewport_pan_mode_binding(&binding)?;
-                }
-            }
-        }
 
         Ok(Self {
             theme: value.theme.name,
@@ -219,7 +185,6 @@ impl TryFrom<NekolandConfigFile> for CompositorConfig {
             repeat_rate: value.input.repeat_rate,
             current_keyboard_layout,
             keyboard_layouts,
-            viewport_pan_modifiers,
             command_history_limit: value.ipc.command_history_limit,
             startup_actions: value
                 .startup
@@ -238,7 +203,7 @@ impl TryFrom<NekolandConfigFile> for CompositorConfig {
                     enabled: output.enabled,
                 })
                 .collect(),
-            keybindings,
+            keybindings: value.keybinds.bindings,
         })
     }
 }
@@ -304,13 +269,6 @@ fn default_keyboard_layouts() -> Vec<KeyboardLayoutConfig> {
     vec![KeyboardLayoutConfig::default()]
 }
 
-fn parse_viewport_pan_mode_binding(binding: &str) -> Result<ModifierMask, String> {
-    ModifierMask::from_config_tokens(
-        binding.split('+').map(str::trim).filter(|token| !token.is_empty()),
-    )
-    .map_err(|error| format!("invalid viewport pan mode binding `{binding}`: {error}"))
-}
-
 fn default_command_history_limit() -> usize {
     DEFAULT_COMMAND_HISTORY_LIMIT
 }
@@ -322,7 +280,6 @@ fn default_xwayland_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use nekoland_ecs::components::{WindowLayout, WindowMode, WindowPolicy};
-    use nekoland_ecs::resources::ModifierMask;
 
     use super::NekolandConfigFile;
 
@@ -364,8 +321,8 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Return" = { exec = ["foot"] }
-"Super+Alt" = { viewport_pan_mode = true }
+"system.quit" = "Super+Shift+Q"
+"viewport.pan_mode" = "Super+Alt"
 "##,
         ) else {
             panic!("config should parse");
@@ -388,74 +345,8 @@ enabled = true
             runtime.resolve_window_background("swaybg", "Wallpaper", false),
             Some(nekoland_ecs::selectors::OutputName::from("eDP-1"))
         );
-        assert_eq!(runtime.viewport_pan_modifiers, ModifierMask::new(false, true, false, true));
-    }
-
-    #[test]
-    fn keybinding_viewport_pan_mode_normalizes_into_runtime_mask() {
-        let Ok(config) = toml::from_str::<NekolandConfigFile>(
-            r##"
-[theme]
-name = "latte"
-cursor_theme = "breeze"
-border_color = "#112233"
-background_color = "#ffffff"
-
-[input]
-focus_follows_mouse = true
-repeat_rate = 30
-
-[[outputs]]
-name = "eDP-1"
-mode = "1920x1080@60"
-scale = 1
-enabled = true
-
-[keybinds.bindings]
-"Super+Return" = { exec = ["foot"] }
-"Ctrl+Shift" = { viewport_pan_mode = true }
-"##,
-        ) else {
-            panic!("config should parse");
-        };
-
-        let Ok(runtime) = crate::resources::CompositorConfig::try_from(config) else {
-            panic!("config should normalize");
-        };
-        assert_eq!(runtime.viewport_pan_modifiers, ModifierMask::new(true, false, true, false));
-    }
-
-    #[test]
-    fn viewport_pan_mode_binding_rejects_non_modifier_keys() {
-        let Ok(config) = toml::from_str::<NekolandConfigFile>(
-            r##"
-[theme]
-name = "latte"
-cursor_theme = "breeze"
-border_color = "#112233"
-background_color = "#ffffff"
-
-[input]
-focus_follows_mouse = true
-repeat_rate = 30
-
-[[outputs]]
-name = "eDP-1"
-mode = "1920x1080@60"
-scale = 1
-enabled = true
-
-[keybinds.bindings]
-"Super+H" = { viewport_pan_mode = true }
-"##,
-        ) else {
-            panic!("config should parse");
-        };
-
-        assert_eq!(
-            crate::resources::CompositorConfig::try_from(config),
-            Err("invalid viewport pan mode binding `Super+H`: unsupported modifier `H`".to_owned())
-        );
+        assert_eq!(runtime.keybindings.get("system.quit"), Some(&"Super+Shift+Q".to_owned()));
+        assert_eq!(runtime.keybindings.get("viewport.pan_mode"), Some(&"Super+Alt".to_owned()));
     }
 
     #[test]
@@ -490,7 +381,7 @@ scale = 1
 enabled = true
 
 [keybinds.bindings]
-"Super+Return" = { exec = ["foot"] }
+"window_switcher.cycle_next" = "Alt+Tab"
 "##,
         ) else {
             panic!("config should parse");

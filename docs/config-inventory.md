@@ -134,7 +134,7 @@ Notes:
 Notes:
 
 - startup actions support the same action shapes as normal action lists
-- `viewport_pan_mode` is not valid here
+- shortcut overrides are configured separately in `[keybinds.bindings]`
 
 ### `[xwayland]`
 
@@ -159,22 +159,20 @@ This section is a map of:
 
 ```toml
 [keybinds.bindings]
-"Super+Return" = { exec = ["foot"] }
-"Super+Shift+Return" = [
-  { workspace = 1 },
-  { exec = ["foot"] },
-]
+"system.quit" = "Super+Shift+Q"
+"viewport.pan_mode" = "Super+Alt"
+"window_switcher.cycle_next" = "Alt+Tab"
 ```
 
 Representation notes:
 
-- key: binding string
-- value: one action object or an array of action objects
-- compiled keybindings hot-reload when `config.keybindings` changes
+- key: stable shortcut id registered by a compositor feature
+- value: combo string override
+- compiled shortcuts hot-reload when `config.keybindings` changes
 
 ## Action Shapes
 
-The following action objects are accepted in `startup.actions` and regular keybinding action lists unless noted otherwise.
+The following action objects are accepted in `startup.actions`.
 
 | Action | Shape | Notes |
 | --- | --- | --- |
@@ -200,14 +198,13 @@ The following action objects are accepted in `startup.actions` and regular keybi
 | viewport_pan | `{ viewport_pan = [dx, dy] }` | Signed integers |
 | viewport_move | `{ viewport_move = [x, y] }` | Signed integers |
 | viewport_center | `{ viewport_center = true }` | Boolean must be `true` |
-| viewport_pan_mode | `{ viewport_pan_mode = true }` | Keybinding-only; must be the only action in that binding |
+## Shortcut Override Syntax
 
-## Keybinding Syntax
-
-Regular keybindings:
+Shortcut override values:
 
 - must contain exactly one non-modifier key
 - may contain zero or more modifiers
+- may also be modifier-only for hold-style shortcuts such as `viewport.pan_mode`
 
 Accepted modifier tokens:
 
@@ -237,14 +234,6 @@ Examples:
 - `Super+Return`
 - `Super+Shift+1`
 - `Ctrl+Alt+Delete`
-
-Special case: viewport pan mode binding
-
-- configured as a normal binding entry with `{ viewport_pan_mode = true }`
-- must be defined at most once
-- must contain only modifiers
-- must include at least one modifier
-- the binding string is normalized into `viewport_pan_modifiers`
 
 ## Environment Variables
 
@@ -469,12 +458,12 @@ Fields currently included in that snapshot:
 - `focus_follows_mouse`
 - `repeat_rate`
 - configured keyboard layout and normalized keyboard layouts
-- normalized `viewport_pan_modifiers`
+- normalized keybindings
+- latest shortcut compile error, if any
 - `command_history_limit`
 - `startup_actions`
 - `xwayland_enabled`
 - normalized outputs
-- normalized keybindings
 
 Notable omission:
 

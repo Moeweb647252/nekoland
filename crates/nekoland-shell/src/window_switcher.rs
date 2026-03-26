@@ -6,8 +6,8 @@ use bevy_ecs::query::Allow;
 use nekoland_ecs::components::{OutputId, OutputViewport, Window};
 use nekoland_ecs::control::{OutputOps, WindowOps};
 use nekoland_ecs::resources::{
-    EntityIndex, ModifierMask, OverlayUiFrame, OverlayUiLayer, PressedKeys, RenderColor,
-    RenderRect, WaylandIngress, WindowStackingState,
+    EntityIndex, OverlayUiFrame, OverlayUiLayer, RenderColor, RenderRect, ShortcutRegistry,
+    ShortcutState, ShortcutTrigger, WaylandIngress, WindowStackingState,
 };
 use nekoland_ecs::selectors::{OutputSelector, SurfaceId};
 use nekoland_ecs::views::{OutputRuntime, WindowFocusRuntime, WorkspaceRuntime};
@@ -17,9 +17,14 @@ use nekoland_ecs::workspace_membership::{
 
 use crate::viewport::{preferred_primary_output_id, resolve_output_state_for_workspace};
 
-const TAB_KEYCODE: u32 = 23;
-const ALT_REQUIRED_MODIFIERS: ModifierMask = ModifierMask::new(false, true, false, false);
 const MAX_VISIBLE_SWITCHER_ITEMS: usize = 7;
+
+/// Stable shortcut id for keeping the window switcher session open.
+pub const WINDOW_SWITCHER_HOLD_SHORTCUT_ID: &str = "window_switcher.hold";
+/// Stable shortcut id for moving to the next window switcher candidate.
+pub const WINDOW_SWITCHER_CYCLE_NEXT_SHORTCUT_ID: &str = "window_switcher.cycle_next";
+/// Stable shortcut id for moving to the previous window switcher candidate.
+pub const WINDOW_SWITCHER_CYCLE_PREV_SHORTCUT_ID: &str = "window_switcher.cycle_prev";
 
 /// Session state for the shell-local Alt+Tab style window switcher.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
@@ -96,7 +101,7 @@ type SwitcherOutputs<'w, 's> = Query<'w, 's, (Entity, OutputRuntime)>;
 
 /// Drives switcher session lifecycle directly from raw pressed-key state.
 pub fn window_switcher_input_system(
-    pressed_keys: Res<'_, PressedKeys>,
+    shortcuts: Res<'_, ShortcutState>,
     wayland_ingress: Res<'_, WaylandIngress>,
     entity_index: Res<'_, EntityIndex>,
     stacking: Res<'_, WindowStackingState>,
@@ -107,12 +112,13 @@ pub fn window_switcher_input_system(
     workspaces: SwitcherWorkspaces<'_, '_>,
     outputs: SwitcherOutputs<'_, '_>,
 ) {
-    let alt_held = ALT_REQUIRED_MODIFIERS.matches_required(pressed_keys.modifiers());
-    let tab_pressed = pressed_keys.was_key_just_pressed(TAB_KEYCODE);
-    let reverse = pressed_keys.modifiers().shift;
+    let hold_active = shortcuts.active(WINDOW_SWITCHER_HOLD_SHORTCUT_ID);
+    let next_pressed = shortcuts.just_pressed(WINDOW_SWITCHER_CYCLE_NEXT_SHORTCUT_ID);
+    let prev_pressed = shortcuts.just_pressed(WINDOW_SWITCHER_CYCLE_PREV_SHORTCUT_ID);
+    let reverse = prev_pressed;
 
     if switcher.active {
-        if tab_pressed && alt_held {
+        if next_pressed || prev_pressed {
             advance_window_switcher_selection(
                 reverse,
                 &stacking,
@@ -123,13 +129,13 @@ pub fn window_switcher_input_system(
             );
         }
 
-        if !alt_held {
+        if !hold_active {
             finalize_window_switcher_session(&mut switcher, &mut window_ops, &mut output_ops);
         }
         return;
     }
 
-    if !tab_pressed || !alt_held {
+    if !(next_pressed || prev_pressed) || !hold_active {
         return;
     }
 
@@ -159,6 +165,37 @@ pub fn window_switcher_input_system(
     );
     let next_index = next_candidate_index(anchor_surface, None, &candidates, reverse);
     apply_switcher_selection(next_index, &candidates, &mut switcher, &mut output_ops);
+}
+
+/// Registers window-switcher-owned shortcuts into the global shortcut registry.
+pub fn register_shortcuts(registry: &mut ShortcutRegistry) {
+    registry
+        .register(nekoland_ecs::resources::ShortcutSpec::new(
+            WINDOW_SWITCHER_HOLD_SHORTCUT_ID,
+            "window_switcher",
+            "Hold while cycling the window switcher",
+            "Alt",
+            ShortcutTrigger::Hold,
+        ))
+        .expect("window switcher shortcut ids should be unique");
+    registry
+        .register(nekoland_ecs::resources::ShortcutSpec::new(
+            WINDOW_SWITCHER_CYCLE_NEXT_SHORTCUT_ID,
+            "window_switcher",
+            "Cycle to the next switcher candidate",
+            "Alt+Tab",
+            ShortcutTrigger::Press,
+        ))
+        .expect("window switcher shortcut ids should be unique");
+    registry
+        .register(nekoland_ecs::resources::ShortcutSpec::new(
+            WINDOW_SWITCHER_CYCLE_PREV_SHORTCUT_ID,
+            "window_switcher",
+            "Cycle to the previous switcher candidate",
+            "Alt+Shift+Tab",
+            ShortcutTrigger::Press,
+        ))
+        .expect("window switcher shortcut ids should be unique");
 }
 
 /// Emits a simple output-local overlay for the current switcher session.
@@ -566,7 +603,7 @@ mod tests {
         register_entity_index_hooks(app.inner_mut().world_mut());
         app.inner_mut()
             .init_resource::<KeyboardFocusState>()
-            .init_resource::<nekoland_ecs::resources::PressedKeys>()
+            .init_resource::<nekoland_ecs::resources::ShortcutState>()
             .init_resource::<PendingOutputControls>()
             .init_resource::<PendingWindowControls>()
             .init_resource::<WindowStackingState>()
@@ -652,25 +689,24 @@ mod tests {
     }
 
     fn press_alt_tab(world: &mut World) {
-        let mut pressed = world.resource_mut::<nekoland_ecs::resources::PressedKeys>();
-        pressed.record_key(64, true);
-        pressed.record_key(23, true);
+        let mut shortcuts = world.resource_mut::<nekoland_ecs::resources::ShortcutState>();
+        shortcuts.set(super::WINDOW_SWITCHER_HOLD_SHORTCUT_ID, true, true, false);
+        shortcuts.set(super::WINDOW_SWITCHER_CYCLE_NEXT_SHORTCUT_ID, true, true, false);
+        shortcuts.set(super::WINDOW_SWITCHER_CYCLE_PREV_SHORTCUT_ID, false, false, false);
     }
 
     fn press_alt_shift_tab(world: &mut World) {
-        let mut pressed = world.resource_mut::<nekoland_ecs::resources::PressedKeys>();
-        pressed.clear_frame_transitions();
-        pressed.record_key(23, false);
-        pressed.record_key(50, true);
-        pressed.record_key(23, true);
+        let mut shortcuts = world.resource_mut::<nekoland_ecs::resources::ShortcutState>();
+        shortcuts.set(super::WINDOW_SWITCHER_HOLD_SHORTCUT_ID, true, false, false);
+        shortcuts.set(super::WINDOW_SWITCHER_CYCLE_NEXT_SHORTCUT_ID, false, false, false);
+        shortcuts.set(super::WINDOW_SWITCHER_CYCLE_PREV_SHORTCUT_ID, true, true, false);
     }
 
     fn release_alt(world: &mut World) {
-        let mut pressed = world.resource_mut::<nekoland_ecs::resources::PressedKeys>();
-        pressed.clear_frame_transitions();
-        pressed.record_key(23, false);
-        pressed.record_key(50, false);
-        pressed.record_key(64, false);
+        let mut shortcuts = world.resource_mut::<nekoland_ecs::resources::ShortcutState>();
+        shortcuts.set(super::WINDOW_SWITCHER_HOLD_SHORTCUT_ID, false, false, true);
+        shortcuts.set(super::WINDOW_SWITCHER_CYCLE_NEXT_SHORTCUT_ID, false, false, false);
+        shortcuts.set(super::WINDOW_SWITCHER_CYCLE_PREV_SHORTCUT_ID, false, false, false);
     }
 
     #[test]
