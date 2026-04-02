@@ -57,6 +57,28 @@ pub fn shortcut_match_system(
             }
             ShortcutTrigger::Hold => (active && !previous_active, !active && previous_active),
         };
+        if just_pressed {
+            tracing::debug!(
+                shortcut_id = %shortcut.id,
+                owner = %shortcut.owner,
+                binding = %shortcut.binding,
+                trigger = ?shortcut.trigger,
+                overridden = shortcut.overridden,
+                event = "pressed",
+                "shortcut triggered"
+            );
+        }
+        if just_released {
+            tracing::debug!(
+                shortcut_id = %shortcut.id,
+                owner = %shortcut.owner,
+                binding = %shortcut.binding,
+                trigger = ?shortcut.trigger,
+                overridden = shortcut.overridden,
+                event = "released",
+                "shortcut triggered"
+            );
+        }
         next.insert(
             shortcut.id.clone(),
             ShortcutMatchState { active, just_pressed, just_released },

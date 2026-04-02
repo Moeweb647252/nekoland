@@ -6,9 +6,10 @@ use bevy_ecs::query::Allow;
 use nekoland_ecs::components::OutputId;
 use nekoland_ecs::components::{WindowLayout, WindowMode, XdgWindow};
 use nekoland_ecs::resources::{
-    KeyboardFocusState, OutputControlHandle, PendingOutputControls, PendingTilingControl,
-    PendingTilingControls, UNASSIGNED_WORKSPACE_TILING_ID, WaylandIngress, WindowStackingState,
-    WorkArea, WorkspaceTilingState,
+    HorizontalDirection, KeyboardFocusState, OutputControlHandle, PendingOutputControls,
+    PendingTilingControl, PendingTilingControls, ShortcutRegistry, ShortcutState,
+    ShortcutTrigger, TilingPanDirection, UNASSIGNED_WORKSPACE_TILING_ID, VerticalDirection,
+    WaylandIngress, WindowStackingState, WorkArea, WorkspaceTilingState,
 };
 use nekoland_ecs::selectors::OutputName;
 use nekoland_ecs::views::{OutputRuntime, WindowRuntime, WindowSnapshotRuntime, WorkspaceRuntime};
@@ -22,6 +23,174 @@ use crate::viewport::{
 /// Column/row tiled layout with snapped viewport semantics.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TilingLayout;
+
+const TILING_FOCUS_COLUMN_LEFT_SHORTCUT_ID: &str = "tiling.focus_column.left";
+const TILING_FOCUS_COLUMN_RIGHT_SHORTCUT_ID: &str = "tiling.focus_column.right";
+const TILING_FOCUS_WINDOW_UP_SHORTCUT_ID: &str = "tiling.focus_window.up";
+const TILING_FOCUS_WINDOW_DOWN_SHORTCUT_ID: &str = "tiling.focus_window.down";
+const TILING_MOVE_COLUMN_LEFT_SHORTCUT_ID: &str = "tiling.move_column.left";
+const TILING_MOVE_COLUMN_RIGHT_SHORTCUT_ID: &str = "tiling.move_column.right";
+const TILING_MOVE_WINDOW_UP_SHORTCUT_ID: &str = "tiling.move_window.up";
+const TILING_MOVE_WINDOW_DOWN_SHORTCUT_ID: &str = "tiling.move_window.down";
+const TILING_CONSUME_LEFT_SHORTCUT_ID: &str = "tiling.consume.left";
+const TILING_CONSUME_RIGHT_SHORTCUT_ID: &str = "tiling.consume.right";
+const TILING_EXPEL_LEFT_SHORTCUT_ID: &str = "tiling.expel.left";
+const TILING_EXPEL_RIGHT_SHORTCUT_ID: &str = "tiling.expel.right";
+const TILING_PAN_LEFT_SHORTCUT_ID: &str = "tiling.pan.left";
+const TILING_PAN_RIGHT_SHORTCUT_ID: &str = "tiling.pan.right";
+const TILING_PAN_UP_SHORTCUT_ID: &str = "tiling.pan.up";
+const TILING_PAN_DOWN_SHORTCUT_ID: &str = "tiling.pan.down";
+
+pub(crate) fn register_shortcuts(registry: &mut ShortcutRegistry) {
+    for (id, description, binding) in [
+        (
+            TILING_FOCUS_COLUMN_LEFT_SHORTCUT_ID,
+            "Focus the column to the left",
+            "Super+H",
+        ),
+        (
+            TILING_FOCUS_COLUMN_RIGHT_SHORTCUT_ID,
+            "Focus the column to the right",
+            "Super+L",
+        ),
+        (
+            TILING_FOCUS_WINDOW_UP_SHORTCUT_ID,
+            "Focus the window above in the current column",
+            "Super+K",
+        ),
+        (
+            TILING_FOCUS_WINDOW_DOWN_SHORTCUT_ID,
+            "Focus the window below in the current column",
+            "Super+J",
+        ),
+        (
+            TILING_MOVE_COLUMN_LEFT_SHORTCUT_ID,
+            "Move the focused column to the left",
+            "Super+Shift+H",
+        ),
+        (
+            TILING_MOVE_COLUMN_RIGHT_SHORTCUT_ID,
+            "Move the focused column to the right",
+            "Super+Shift+L",
+        ),
+        (
+            TILING_MOVE_WINDOW_UP_SHORTCUT_ID,
+            "Move the focused window upward in its column",
+            "Super+Shift+K",
+        ),
+        (
+            TILING_MOVE_WINDOW_DOWN_SHORTCUT_ID,
+            "Move the focused window downward in its column",
+            "Super+Shift+J",
+        ),
+        (
+            TILING_CONSUME_LEFT_SHORTCUT_ID,
+            "Consume the focused window into the column to the left",
+            "Super+Ctrl+H",
+        ),
+        (
+            TILING_CONSUME_RIGHT_SHORTCUT_ID,
+            "Consume the focused window into the column to the right",
+            "Super+Ctrl+L",
+        ),
+        (
+            TILING_EXPEL_LEFT_SHORTCUT_ID,
+            "Expel the focused window into a new column on the left",
+            "Super+Ctrl+Shift+H",
+        ),
+        (
+            TILING_EXPEL_RIGHT_SHORTCUT_ID,
+            "Expel the focused window into a new column on the right",
+            "Super+Ctrl+Shift+L",
+        ),
+        (
+            TILING_PAN_LEFT_SHORTCUT_ID,
+            "Pan the tiling viewport one column to the left",
+            "Super+Alt+H",
+        ),
+        (
+            TILING_PAN_RIGHT_SHORTCUT_ID,
+            "Pan the tiling viewport one column to the right",
+            "Super+Alt+L",
+        ),
+        (
+            TILING_PAN_UP_SHORTCUT_ID,
+            "Pan the tiling viewport one row up in the focused column",
+            "Super+Alt+K",
+        ),
+        (
+            TILING_PAN_DOWN_SHORTCUT_ID,
+            "Pan the tiling viewport one row down in the focused column",
+            "Super+Alt+J",
+        ),
+    ] {
+        registry
+            .register(nekoland_ecs::resources::ShortcutSpec::new(
+                id,
+                "tiling",
+                description,
+                binding,
+                ShortcutTrigger::Press,
+            ))
+            .expect("tiling shortcut ids should be unique");
+    }
+}
+
+pub(crate) fn tiling_shortcut_system(
+    shortcuts: Res<'_, ShortcutState>,
+    mut pending_tiling_controls: ResMut<'_, PendingTilingControls>,
+) {
+    let mut controls = pending_tiling_controls.api();
+
+    if shortcuts.just_pressed(TILING_FOCUS_COLUMN_LEFT_SHORTCUT_ID) {
+        controls.focus_column(HorizontalDirection::Left);
+    }
+    if shortcuts.just_pressed(TILING_FOCUS_COLUMN_RIGHT_SHORTCUT_ID) {
+        controls.focus_column(HorizontalDirection::Right);
+    }
+    if shortcuts.just_pressed(TILING_FOCUS_WINDOW_UP_SHORTCUT_ID) {
+        controls.focus_window(VerticalDirection::Up);
+    }
+    if shortcuts.just_pressed(TILING_FOCUS_WINDOW_DOWN_SHORTCUT_ID) {
+        controls.focus_window(VerticalDirection::Down);
+    }
+    if shortcuts.just_pressed(TILING_MOVE_COLUMN_LEFT_SHORTCUT_ID) {
+        controls.move_column(HorizontalDirection::Left);
+    }
+    if shortcuts.just_pressed(TILING_MOVE_COLUMN_RIGHT_SHORTCUT_ID) {
+        controls.move_column(HorizontalDirection::Right);
+    }
+    if shortcuts.just_pressed(TILING_MOVE_WINDOW_UP_SHORTCUT_ID) {
+        controls.move_window(VerticalDirection::Up);
+    }
+    if shortcuts.just_pressed(TILING_MOVE_WINDOW_DOWN_SHORTCUT_ID) {
+        controls.move_window(VerticalDirection::Down);
+    }
+    if shortcuts.just_pressed(TILING_CONSUME_LEFT_SHORTCUT_ID) {
+        controls.consume_into_column(HorizontalDirection::Left);
+    }
+    if shortcuts.just_pressed(TILING_CONSUME_RIGHT_SHORTCUT_ID) {
+        controls.consume_into_column(HorizontalDirection::Right);
+    }
+    if shortcuts.just_pressed(TILING_EXPEL_LEFT_SHORTCUT_ID) {
+        controls.expel_from_column(HorizontalDirection::Left);
+    }
+    if shortcuts.just_pressed(TILING_EXPEL_RIGHT_SHORTCUT_ID) {
+        controls.expel_from_column(HorizontalDirection::Right);
+    }
+    if shortcuts.just_pressed(TILING_PAN_LEFT_SHORTCUT_ID) {
+        controls.pan_viewport(TilingPanDirection::Left);
+    }
+    if shortcuts.just_pressed(TILING_PAN_RIGHT_SHORTCUT_ID) {
+        controls.pan_viewport(TilingPanDirection::Right);
+    }
+    if shortcuts.just_pressed(TILING_PAN_UP_SHORTCUT_ID) {
+        controls.pan_viewport(TilingPanDirection::Up);
+    }
+    if shortcuts.just_pressed(TILING_PAN_DOWN_SHORTCUT_ID) {
+        controls.pan_viewport(TilingPanDirection::Down);
+    }
+}
 
 /// Applies queued tiling mutations against the focused tiled surface and stages snapped viewport
 /// moves through the normal output-control pipeline.
@@ -68,23 +237,83 @@ pub fn tiling_control_request_system(
                 }
             }
             PendingTilingControl::MoveColumn { direction } => {
+                let reveal = structural_reveal_context(
+                    &tiling,
+                    &outputs,
+                    primary_output_id,
+                    workspace_id,
+                    focused_surface_id,
+                    &staged_viewports,
+                );
                 if tiling.move_column(workspace_id, focused_surface_id, direction) {
                     stacking.raise(workspace_id, focused_surface_id);
+                    stage_structural_reveal_if_anchor_changed(
+                        &tiling,
+                        workspace_id,
+                        focused_surface_id,
+                        reveal,
+                        &mut staged_viewports,
+                    );
                 }
             }
             PendingTilingControl::MoveWindow { direction } => {
+                let reveal = structural_reveal_context(
+                    &tiling,
+                    &outputs,
+                    primary_output_id,
+                    workspace_id,
+                    focused_surface_id,
+                    &staged_viewports,
+                );
                 if tiling.move_window(workspace_id, focused_surface_id, direction) {
                     stacking.raise(workspace_id, focused_surface_id);
+                    stage_structural_reveal_if_anchor_changed(
+                        &tiling,
+                        workspace_id,
+                        focused_surface_id,
+                        reveal,
+                        &mut staged_viewports,
+                    );
                 }
             }
             PendingTilingControl::ConsumeIntoColumn { direction } => {
+                let reveal = structural_reveal_context(
+                    &tiling,
+                    &outputs,
+                    primary_output_id,
+                    workspace_id,
+                    focused_surface_id,
+                    &staged_viewports,
+                );
                 if tiling.consume_into_column(workspace_id, focused_surface_id, direction) {
                     stacking.raise(workspace_id, focused_surface_id);
+                    stage_structural_reveal_if_anchor_changed(
+                        &tiling,
+                        workspace_id,
+                        focused_surface_id,
+                        reveal,
+                        &mut staged_viewports,
+                    );
                 }
             }
             PendingTilingControl::ExpelFromColumn { direction } => {
+                let reveal = structural_reveal_context(
+                    &tiling,
+                    &outputs,
+                    primary_output_id,
+                    workspace_id,
+                    focused_surface_id,
+                    &staged_viewports,
+                );
                 if tiling.expel_from_column(workspace_id, focused_surface_id, direction) {
                     stacking.raise(workspace_id, focused_surface_id);
+                    stage_structural_reveal_if_anchor_changed(
+                        &tiling,
+                        workspace_id,
+                        focused_surface_id,
+                        reveal,
+                        &mut staged_viewports,
+                    );
                 }
             }
             PendingTilingControl::PanViewport { direction } => {
@@ -293,6 +522,41 @@ fn tiling_output_context(
     ))
 }
 
+fn structural_reveal_context(
+    tiling: &WorkspaceTilingState,
+    outputs: &Query<(bevy_ecs::prelude::Entity, OutputRuntime)>,
+    primary_output_id: Option<OutputId>,
+    workspace_id: u32,
+    focused_surface_id: u64,
+    staged_viewports: &BTreeMap<String, (isize, isize)>,
+) -> Option<(String, WorkArea, Option<(isize, isize)>)> {
+    let (output_name, _, _, workspace_area) =
+        tiling_output_context(outputs, primary_output_id, workspace_id, staged_viewports)?;
+    let previous_anchor =
+        tiling.snapped_viewport_for_surface(workspace_id, &workspace_area, focused_surface_id);
+    Some((output_name, workspace_area, previous_anchor))
+}
+
+fn stage_structural_reveal_if_anchor_changed(
+    tiling: &WorkspaceTilingState,
+    workspace_id: u32,
+    focused_surface_id: u64,
+    reveal: Option<(String, WorkArea, Option<(isize, isize)>)>,
+    staged_viewports: &mut BTreeMap<String, (isize, isize)>,
+) {
+    let Some((output_name, workspace_area, previous_anchor)) = reveal else {
+        return;
+    };
+    let Some(next_anchor) =
+        tiling.snapped_viewport_for_surface(workspace_id, &workspace_area, focused_surface_id)
+    else {
+        return;
+    };
+    if Some(next_anchor) != previous_anchor {
+        staged_viewports.insert(output_name, next_anchor);
+    }
+}
+
 fn stage_output_viewport_moves(
     pending_output_controls: &mut PendingOutputControls,
     staged_viewports: BTreeMap<String, (isize, isize)>,
@@ -340,11 +604,66 @@ mod tests {
         WorkspaceId, XdgWindow,
     };
     use nekoland_ecs::resources::{
-        KeyboardFocusState, PendingOutputControls, PendingTilingControls,
-        TilingPanDirection, WaylandIngress, WindowStackingState, WorkArea, WorkspaceTilingState,
+        HorizontalDirection, KeyboardFocusState, PendingOutputControls, PendingTilingControl,
+        PendingTilingControls, ShortcutRegistry, ShortcutState, TilingPanDirection,
+        WaylandIngress, WindowStackingState, WorkArea, WorkspaceTilingState,
     };
 
-    use super::{tiling_control_request_system, tiling_layout_system};
+    use super::{
+        register_shortcuts, tiling_control_request_system, tiling_layout_system,
+        tiling_shortcut_system, TILING_CONSUME_RIGHT_SHORTCUT_ID, TILING_FOCUS_COLUMN_LEFT_SHORTCUT_ID,
+        TILING_MOVE_WINDOW_DOWN_SHORTCUT_ID, TILING_PAN_RIGHT_SHORTCUT_ID,
+    };
+
+    #[test]
+    fn tiling_shortcuts_register_with_expected_defaults() {
+        let mut registry = ShortcutRegistry::default();
+        register_shortcuts(&mut registry);
+
+        assert_eq!(registry.iter().count(), 16);
+        let focus_left = registry
+            .get(TILING_FOCUS_COLUMN_LEFT_SHORTCUT_ID)
+            .expect("focus left shortcut should register");
+        assert_eq!(focus_left.default_binding, "Super+H");
+        let pan_right = registry
+            .get(TILING_PAN_RIGHT_SHORTCUT_ID)
+            .expect("pan right shortcut should register");
+        assert_eq!(pan_right.default_binding, "Super+Alt+L");
+    }
+
+    #[test]
+    fn tiling_shortcut_system_enqueues_controls_in_fixed_order() {
+        let mut app = NekolandApp::new("tiling-shortcut-test");
+        app.insert_resource(ShortcutState::default())
+            .insert_resource(PendingTilingControls::default())
+            .inner_mut()
+            .add_systems(LayoutSchedule, tiling_shortcut_system);
+
+        {
+            let mut shortcuts = app.inner_mut().world_mut().resource_mut::<ShortcutState>();
+            shortcuts.set(TILING_MOVE_WINDOW_DOWN_SHORTCUT_ID, true, true, false);
+            shortcuts.set(TILING_FOCUS_COLUMN_LEFT_SHORTCUT_ID, true, true, false);
+            shortcuts.set(TILING_PAN_RIGHT_SHORTCUT_ID, true, true, false);
+            shortcuts.set(TILING_CONSUME_RIGHT_SHORTCUT_ID, true, true, false);
+        }
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let pending = app.inner().world().resource::<PendingTilingControls>();
+        assert_eq!(
+            pending.as_slice(),
+            &[
+                PendingTilingControl::FocusColumn { direction: HorizontalDirection::Left },
+                PendingTilingControl::MoveWindow {
+                    direction: nekoland_ecs::resources::VerticalDirection::Down,
+                },
+                PendingTilingControl::ConsumeIntoColumn {
+                    direction: HorizontalDirection::Right,
+                },
+                PendingTilingControl::PanViewport { direction: TilingPanDirection::Right },
+            ]
+        );
+    }
 
     #[test]
     fn tiling_layout_places_new_tiled_windows_in_full_width_columns() {
@@ -471,6 +790,70 @@ mod tests {
         let controls = app.inner().world().resource::<PendingOutputControls>();
         assert_eq!(controls.as_slice().len(), 1);
         assert_eq!(controls.as_slice()[0].viewport_origin.as_ref().map(|origin| origin.x), Some(1280));
+    }
+
+    #[test]
+    fn tiling_move_column_stages_snapped_reveal_for_focused_surface() {
+        let mut app = NekolandApp::new("tiling-move-reveal-test");
+        app.insert_resource(WaylandIngress::default())
+            .insert_resource(WorkArea { x: 0, y: 0, width: 1280, height: 720 })
+            .insert_resource(WorkspaceTilingState::default())
+            .insert_resource(WindowStackingState::default())
+            .insert_resource(KeyboardFocusState { focused_surface: Some(22) })
+            .insert_resource(PendingTilingControls::default())
+            .insert_resource(PendingOutputControls::default())
+            .inner_mut()
+            .add_systems(LayoutSchedule, (tiling_layout_system, tiling_control_request_system).chain());
+
+        let workspace = app
+            .inner_mut()
+            .world_mut()
+            .spawn(Workspace { id: WorkspaceId(1), name: "1".to_owned(), active: true })
+            .id();
+        app.inner_mut().world_mut().spawn((
+            OutputBundle {
+                output: OutputDevice {
+                    name: "Virtual-1".to_owned(),
+                    kind: OutputKind::Virtual,
+                    make: "Virtual".to_owned(),
+                    model: "test".to_owned(),
+                },
+                properties: OutputProperties {
+                    width: 1280,
+                    height: 720,
+                    refresh_millihz: 60_000,
+                    scale: 1,
+                },
+                viewport: OutputViewport { origin_x: 1280, origin_y: 0 },
+                ..Default::default()
+            },
+            OutputCurrentWorkspace { workspace: WorkspaceId(1) },
+        ));
+        for surface_id in [11, 22] {
+            app.inner_mut().world_mut().spawn((
+                WindowBundle {
+                    surface: WlSurfaceHandle { id: surface_id },
+                    geometry: SurfaceGeometry { x: 0, y: 0, width: 300, height: 200 },
+                    buffer: BufferState { attached: true, scale: 1 },
+                    window: XdgWindow::default(),
+                    layout: WindowLayout::Tiled,
+                    mode: WindowMode::Normal,
+                    ..Default::default()
+                },
+                ChildOf(workspace),
+            ));
+        }
+        app.inner_mut()
+            .world_mut()
+            .resource_mut::<PendingTilingControls>()
+            .api()
+            .move_column(HorizontalDirection::Left);
+
+        app.inner_mut().world_mut().run_schedule(LayoutSchedule);
+
+        let controls = app.inner().world().resource::<PendingOutputControls>();
+        assert_eq!(controls.as_slice().len(), 1);
+        assert_eq!(controls.as_slice()[0].viewport_origin.as_ref().map(|origin| origin.x), Some(0));
     }
 
 }

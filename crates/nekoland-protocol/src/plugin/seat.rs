@@ -1,7 +1,12 @@
+use std::collections::BTreeSet;
 use std::marker::PhantomData;
 
-use bevy_ecs::prelude::{Local, NonSendMut, Res, ResMut};
+use bevy_ecs::prelude::{Local, NonSendMut, Res, ResMut, Resource};
 use bevy_ecs::system::SystemParam;
+use nekoland_ecs::resources::{
+    BackendInputAction, CompiledShortcutMap, KeyShortcut, PendingProtocolInputEvents, PressedKeys,
+    ShortcutTrigger,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PointerSurfaceFocus {
@@ -44,6 +49,12 @@ impl Default for SeatInputSyncState {
     }
 }
 
+#[derive(Debug, Default, Resource)]
+pub(crate) struct ShortcutInputFilterState {
+    pressed_keys: PressedKeys,
+    consumed_keys: BTreeSet<u32>,
+}
+
 #[derive(SystemParam)]
 pub(crate) struct DispatchSeatInputParams<'w, 's> {
     pub(crate) clock: Option<Res<'w, nekoland_ecs::resources::CompositorClock>>,
@@ -63,6 +74,42 @@ pub(crate) struct PointerFocusInputs<'a> {
     pub(crate) surface_presentation:
         Option<&'a nekoland_ecs::resources::SurfacePresentationSnapshot>,
     pub(crate) output_snapshots: Option<&'a nekoland_ecs::resources::OutputSnapshotState>,
+}
+
+pub(crate) fn filter_consumed_shortcut_input_system(
+    compiled_shortcuts: Res<'_, CompiledShortcutMap>,
+    mut pending_protocol_input_events: ResMut<'_, PendingProtocolInputEvents>,
+    mut filter: ResMut<'_, ShortcutInputFilterState>,
+) {
+    if compiled_shortcuts.is_empty() {
+        return;
+    }
+
+    let mut filtered_events = Vec::with_capacity(pending_protocol_input_events.len());
+    for event in pending_protocol_input_events.take() {
+        let keep = match &event.action {
+            BackendInputAction::FocusChanged { focused } => {
+                if !focused {
+                    filter.pressed_keys.reset_all();
+                    filter.consumed_keys.clear();
+                }
+                true
+            }
+            BackendInputAction::Key { keycode, pressed } => {
+                !should_consume_shortcut_key_event(
+                    *keycode,
+                    *pressed,
+                    &compiled_shortcuts,
+                    &mut filter,
+                )
+            }
+            _ => true,
+        };
+        if keep {
+            filtered_events.push(event);
+        }
+    }
+    pending_protocol_input_events.replace(filtered_events);
 }
 
 pub(crate) fn dispatch_seat_input_system(
@@ -168,6 +215,75 @@ pub(crate) fn compositor_time_millis(clock: &nekoland_ecs::resources::Compositor
     clock.uptime_millis.min(u128::from(u32::MAX)) as u32
 }
 
+fn should_consume_shortcut_key_event(
+    keycode: u32,
+    pressed: bool,
+    compiled_shortcuts: &CompiledShortcutMap,
+    filter: &mut ShortcutInputFilterState,
+) -> bool {
+    let previous_pressed = filter.pressed_keys.clone();
+    let mut next_pressed = previous_pressed.clone();
+    next_pressed.clear_frame_transitions();
+    next_pressed.record_key(keycode, pressed);
+
+    let transition_consumed = compiled_shortcuts.iter().any(|shortcut| {
+        let previous_active = shortcut_active(&previous_pressed, &shortcut.combo);
+        let active = shortcut_active(&next_pressed, &shortcut.combo);
+        match shortcut.trigger {
+            ShortcutTrigger::Press => press_triggered(&next_pressed, &shortcut.combo, previous_active),
+            ShortcutTrigger::Release => {
+                release_triggered(&next_pressed, &shortcut.combo, previous_active)
+            }
+            ShortcutTrigger::Hold => active != previous_active,
+        }
+    });
+
+    let suppress = (!pressed && filter.consumed_keys.contains(&keycode)) || transition_consumed;
+
+    if pressed {
+        if suppress {
+            filter.consumed_keys.insert(keycode);
+        }
+    } else {
+        filter.consumed_keys.remove(&keycode);
+    }
+    filter.pressed_keys = next_pressed;
+
+    suppress
+}
+
+fn shortcut_active(pressed_keys: &PressedKeys, combo: &KeyShortcut) -> bool {
+    if combo.keycode.is_none() {
+        combo.modifiers.matches_required(pressed_keys.modifiers())
+    } else {
+        pressed_keys.is_pressed(combo)
+    }
+}
+
+fn press_triggered(
+    pressed_keys: &PressedKeys,
+    combo: &KeyShortcut,
+    previous_active: bool,
+) -> bool {
+    if combo.keycode.is_none() {
+        shortcut_active(pressed_keys, combo) && !previous_active
+    } else {
+        pressed_keys.just_pressed(combo)
+    }
+}
+
+fn release_triggered(
+    pressed_keys: &PressedKeys,
+    combo: &KeyShortcut,
+    previous_active: bool,
+) -> bool {
+    if combo.keycode.is_none() {
+        !shortcut_active(pressed_keys, combo) && previous_active
+    } else {
+        pressed_keys.just_released(combo)
+    }
+}
+
 fn sync_keyboard_focus_if_needed(
     server: &mut super::server::SmithayProtocolServer,
     seat_sync: &mut SeatInputSyncState,
@@ -212,6 +328,126 @@ fn sync_pointer_focus_if_needed(
     server.dispatch_pointer_motion(desired_focus, location, time);
     seat_sync.pointer_focus = desired_focus_id;
     seat_sync.pointer_location = location;
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_ecs::prelude::World;
+    use bevy_ecs::system::RunSystemOnce;
+    use nekoland_ecs::resources::{
+        BackendInputEvent, CompiledShortcut, CompiledShortcutMap, KeyShortcut, ModifierMask,
+        PendingProtocolInputEvents, ShortcutTrigger,
+    };
+
+    use super::{ShortcutInputFilterState, filter_consumed_shortcut_input_system};
+
+    fn compiled_shortcut(
+        id: &str,
+        binding: &str,
+        combo: KeyShortcut,
+        trigger: ShortcutTrigger,
+    ) -> CompiledShortcut {
+        CompiledShortcut {
+            id: id.to_owned(),
+            owner: "test".to_owned(),
+            description: id.to_owned(),
+            binding: binding.to_owned(),
+            combo,
+            trigger,
+            overridden: false,
+        }
+    }
+
+    #[test]
+    fn shortcut_filter_suppresses_consumed_shortcut_key_events() {
+        let mut world = World::new();
+        let mut compiled = CompiledShortcutMap::default();
+        compiled.replace(
+            [
+                (
+                    "window_switcher.hold".to_owned(),
+                    compiled_shortcut(
+                        "window_switcher.hold",
+                        "Alt",
+                        KeyShortcut::modifier_only(ModifierMask::new(false, true, false, false)),
+                        ShortcutTrigger::Hold,
+                    ),
+                ),
+                (
+                    "window_switcher.cycle_next".to_owned(),
+                    compiled_shortcut(
+                        "window_switcher.cycle_next",
+                        "Alt+Tab",
+                        KeyShortcut::new(ModifierMask::new(false, true, false, false), Some(23)),
+                        ShortcutTrigger::Press,
+                    ),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        world.insert_resource(compiled);
+        world.insert_resource(ShortcutInputFilterState::default());
+        world.insert_resource(PendingProtocolInputEvents::from_items(vec![
+            BackendInputEvent {
+                device: "test".to_owned(),
+                action: nekoland_ecs::resources::BackendInputAction::Key {
+                    keycode: 64,
+                    pressed: true,
+                },
+            },
+            BackendInputEvent {
+                device: "test".to_owned(),
+                action: nekoland_ecs::resources::BackendInputAction::Key {
+                    keycode: 23,
+                    pressed: true,
+                },
+            },
+            BackendInputEvent {
+                device: "test".to_owned(),
+                action: nekoland_ecs::resources::BackendInputAction::Key {
+                    keycode: 23,
+                    pressed: false,
+                },
+            },
+            BackendInputEvent {
+                device: "test".to_owned(),
+                action: nekoland_ecs::resources::BackendInputAction::Key {
+                    keycode: 64,
+                    pressed: false,
+                },
+            },
+        ]));
+
+        world
+            .run_system_once(filter_consumed_shortcut_input_system)
+            .expect("shortcut filter system should run");
+
+        assert!(
+            world.resource::<PendingProtocolInputEvents>().is_empty(),
+            "shortcut-triggering key events should not be forwarded to clients"
+        );
+    }
+
+    #[test]
+    fn shortcut_filter_leaves_non_shortcut_key_events_intact() {
+        let mut world = World::new();
+        world.insert_resource(CompiledShortcutMap::default());
+        world.insert_resource(ShortcutInputFilterState::default());
+        world.insert_resource(PendingProtocolInputEvents::from_items(vec![BackendInputEvent {
+            device: "test".to_owned(),
+            action: nekoland_ecs::resources::BackendInputAction::Key {
+                keycode: 38,
+                pressed: true,
+            },
+        }]));
+
+        world
+            .run_system_once(filter_consumed_shortcut_input_system)
+            .expect("shortcut filter system should run");
+
+        assert_eq!(world.resource::<PendingProtocolInputEvents>().len(), 1);
+    }
 }
 
 pub(crate) fn pointer_focus_target(
