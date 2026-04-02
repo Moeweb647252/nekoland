@@ -1,5 +1,7 @@
 # nekoland
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Moeweb647252/nekoland)
+
 `nekoland` is a multi-crate Bevy ECS and Smithay based Wayland compositor workspace.
 
 The repository is no longer just a compile-time scaffold. It contains a working compositor
