@@ -263,7 +263,7 @@ fn config_runtime_updates_focus_border_and_new_window_defaults() {
 }
 
 #[test]
-fn tiling_default_layout_splits_new_windows_across_work_area() {
+fn tiling_default_layout_places_new_windows_in_full_width_columns() {
     let temp_config = TempConfigFile { path: unique_temp_path("runtime-tiling-config") };
     write_config(&temp_config.path, INITIAL_CONFIG);
 
@@ -336,14 +336,14 @@ fn tiling_default_layout_splits_new_windows_across_work_area() {
     assert_eq!(second.2, WindowDisplayState::Tiled);
     assert_eq!(
         (first.1.x, first.1.y, first.1.width, first.1.height),
-        (work_area.x, work_area.y, work_area.width / 2, work_area.height)
+        (work_area.x, work_area.y, work_area.width, work_area.height)
     );
     assert_eq!(
         (second.1.x, second.1.y, second.1.width, second.1.height),
         (
-            work_area.x + (work_area.width / 2) as i32,
+            work_area.x + work_area.width as i32,
             work_area.y,
-            work_area.width - (work_area.width / 2),
+            work_area.width,
             work_area.height,
         )
     );
