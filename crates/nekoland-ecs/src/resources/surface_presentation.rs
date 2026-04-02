@@ -33,3 +33,8 @@ pub struct SurfacePresentationState {
 pub struct SurfacePresentationSnapshot {
     pub surfaces: BTreeMap<u64, SurfacePresentationState>,
 }
+
+#[derive(Resource, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SurfaceInputSnapshot {
+    pub surfaces: BTreeMap<u64, SurfaceGeometry>,
+}

@@ -30,8 +30,8 @@ use nekoland_ecs::resources::{
     PendingWindowEvents, PendingWindowServerRequests, PendingXdgRequests,
     PlatformSurfaceSnapshotState, PresentAuditState, PrimaryOutputState, PrimarySelectionState,
     ProtocolServerState, RenderPlan, SeatRegistry, ShellRenderInput, SurfaceContentVersionSnapshot,
-    VirtualOutputCaptureState, WaylandCommands, WaylandFeedback, WaylandIngress,
-    XWaylandServerState,
+    SurfaceInputSnapshot, VirtualOutputCaptureState, WaylandCommands, WaylandFeedback,
+    WaylandIngress, XWaylandServerState,
 };
 
 /// Entrypoint for the dedicated wayland subapp boundary.
@@ -62,6 +62,7 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             .init_resource::<OutputSnapshotState>()
             .init_resource::<PlatformSurfaceSnapshotState>()
             .init_resource::<SurfaceContentVersionSnapshot>()
+            .init_resource::<SurfaceInputSnapshot>()
             .init_resource::<ForeignToplevelSnapshotState>()
             .init_resource::<RenderPlan>()
             .init_resource::<WorkspaceVisibilitySnapshot>()
@@ -163,6 +164,7 @@ pub fn extract_wayland_subapp_inputs(main_world: &mut World, wayland_world: &mut
     clone_resource_into::<GlobalPointerPosition>(main_world, wayland_world);
     let shell_render_input = main_world.resource::<ShellRenderInput>().clone();
     wayland_world.insert_resource(shell_render_input.surface_presentation.clone());
+    clone_resource_into::<SurfaceInputSnapshot>(main_world, wayland_world);
     clone_resource_into::<KeyboardFocusState>(main_world, wayland_world);
     clone_default_resource_into::<SeatRegistry>(main_world, wayland_world);
     clone_resource_into::<CompositorConfig>(main_world, wayland_world);
@@ -361,6 +363,7 @@ struct WaylandIngressSyncParams<'w> {
     pointer: Res<'w, GlobalPointerPosition>,
     render_plan: Res<'w, RenderPlan>,
     surface_presentation: Res<'w, nekoland_ecs::resources::SurfacePresentationSnapshot>,
+    surface_input: Res<'w, SurfaceInputSnapshot>,
     server: Option<NonSendMut<'w, server::SmithayProtocolServer>>,
     seat_registry: Res<'w, SeatRegistry>,
     cursor_image: Res<'w, CursorImageSnapshot>,
@@ -393,6 +396,7 @@ fn sync_wayland_ingress_boundary_system(mut params: WaylandIngressSyncParams<'_>
         &seat::PointerFocusInputs {
             render_plan: Some(&params.render_plan),
             surface_presentation: Some(&params.surface_presentation),
+            surface_input: Some(&params.surface_input),
             output_snapshots: Some(&params.output_snapshots),
         },
     )

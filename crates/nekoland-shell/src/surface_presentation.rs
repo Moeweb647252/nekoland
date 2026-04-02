@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bevy_ecs::prelude::{Entity, Query, Res, ResMut, With};
 use nekoland_ecs::components::{
-    BufferState, DesiredOutputName, LayerOnOutput, LayerShellSurface, PopupSurface,
+    BufferState, DesiredOutputName, LayerAnchor, LayerOnOutput, LayerShellSurface, PopupSurface,
     SurfaceGeometry, Window, WlSurfaceHandle,
 };
 use nekoland_ecs::presentation_logic::{
@@ -10,7 +10,7 @@ use nekoland_ecs::presentation_logic::{
 };
 use nekoland_ecs::resources::{
     PrimaryOutputState, SurfacePresentationRole, SurfacePresentationSnapshot,
-    SurfacePresentationState, WaylandIngress,
+    SurfaceInputSnapshot, SurfacePresentationState, WaylandIngress,
 };
 use nekoland_ecs::views::{OutputRuntime, PopupSnapshotRuntime, WindowSnapshotRuntime};
 
@@ -21,6 +21,8 @@ type LayerPresentationQuery<'w, 's> = Query<
     's,
     (
         &'static WlSurfaceHandle,
+        &'static LayerShellSurface,
+        &'static LayerAnchor,
         &'static SurfaceGeometry,
         &'static BufferState,
         Option<&'static LayerOnOutput>,
@@ -37,6 +39,7 @@ pub fn surface_presentation_snapshot_system(
     popups: Query<(Entity, PopupSnapshotRuntime), With<PopupSurface>>,
     layers: LayerPresentationQuery<'_, '_>,
     mut snapshot: ResMut<SurfacePresentationSnapshot>,
+    mut input_snapshot: ResMut<SurfaceInputSnapshot>,
 ) {
     let live_output_ids = outputs.iter().map(|(_, output)| output.id()).collect::<BTreeSet<_>>();
     let output_ids_by_name = outputs
@@ -48,6 +51,7 @@ pub fn surface_presentation_snapshot_system(
         .or_else(|| live_output_ids.iter().next().copied());
 
     let mut surfaces = BTreeMap::new();
+    let mut input_geometries = BTreeMap::new();
     let mut presentation_by_entity = HashMap::new();
 
     for (entity, window) in windows.iter() {
@@ -84,6 +88,7 @@ pub fn surface_presentation_snapshot_system(
             damage_enabled: visible,
             role,
         };
+        input_geometries.insert(window.surface_id(), window.geometry.clone());
         presentation_by_entity.insert(entity, state.clone());
         surfaces.insert(window.surface_id(), state);
     }
@@ -118,6 +123,7 @@ pub fn surface_presentation_snapshot_system(
                 damage_enabled: visible,
                 role: SurfacePresentationRole::Popup,
             };
+            input_geometries.insert(surface_id, state.geometry.clone());
             presentation_by_entity.insert(entity, state.clone());
             surfaces.insert(surface_id, state);
             progressed = true;
@@ -137,13 +143,16 @@ pub fn surface_presentation_snapshot_system(
                 damage_enabled: false,
                 role: SurfacePresentationRole::Popup,
             };
+            input_geometries.insert(surface_id, state.geometry.clone());
             presentation_by_entity.insert(entity, state.clone());
             surfaces.insert(surface_id, state);
         }
         break;
     }
 
-    for (surface, geometry, buffer, layer_output, desired_output_name) in layers.iter() {
+    for (surface, layer_surface, anchor, geometry, buffer, layer_output, desired_output_name) in
+        layers.iter()
+    {
         let target_output = layer_output
             .and_then(|layer_output| {
                 outputs
@@ -170,9 +179,43 @@ pub fn surface_presentation_snapshot_system(
                 role: SurfacePresentationRole::Layer,
             },
         );
+        input_geometries.insert(surface.id, layer_input_geometry(layer_surface, anchor, geometry));
     }
 
     snapshot.surfaces = surfaces;
+    input_snapshot.surfaces = input_geometries;
+}
+
+fn layer_input_geometry(
+    layer_surface: &LayerShellSurface,
+    anchor: &LayerAnchor,
+    geometry: &SurfaceGeometry,
+) -> SurfaceGeometry {
+    let mut input_geometry = geometry.clone();
+    let zone = layer_surface.exclusive_zone.max(0) as u32;
+    if zone == 0 {
+        return input_geometry;
+    }
+
+    if anchor.top && anchor.left && anchor.right && !anchor.bottom {
+        input_geometry.height = input_geometry.height.min(zone).max(1);
+    } else if anchor.bottom && anchor.left && anchor.right && !anchor.top {
+        let band_height = input_geometry.height.min(zone).max(1);
+        input_geometry.y = input_geometry
+            .y
+            .saturating_add(input_geometry.height.saturating_sub(band_height) as i32);
+        input_geometry.height = band_height;
+    } else if anchor.left && anchor.top && anchor.bottom && !anchor.right {
+        input_geometry.width = input_geometry.width.min(zone).max(1);
+    } else if anchor.right && anchor.top && anchor.bottom && !anchor.left {
+        let band_width = input_geometry.width.min(zone).max(1);
+        input_geometry.x = input_geometry
+            .x
+            .saturating_add(input_geometry.width.saturating_sub(band_width) as i32);
+        input_geometry.width = band_width;
+    }
+
+    input_geometry
 }
 
 #[cfg(test)]
@@ -182,19 +225,21 @@ mod tests {
     use bevy_ecs::system::RunSystemOnce;
     use nekoland_ecs::bundles::{OutputBundle, WindowBundle};
     use nekoland_ecs::components::{
-        BufferState, OutputDevice, OutputId, OutputKind, OutputProperties, PopupSurface,
-        SurfaceGeometry, WlSurfaceHandle,
+        BufferState, LayerAnchor, LayerLevel, LayerShellSurface, OutputDevice, OutputId,
+        OutputKind, OutputProperties, PopupSurface, SurfaceGeometry, WlSurfaceHandle,
     };
     use nekoland_ecs::resources::{
-        OutputGeometrySnapshot, OutputSnapshotState, SurfacePresentationSnapshot, WaylandIngress,
+        OutputGeometrySnapshot, OutputSnapshotState, SurfaceInputSnapshot,
+        SurfacePresentationSnapshot, WaylandIngress,
     };
 
-    use super::surface_presentation_snapshot_system;
+    use super::{layer_input_geometry, surface_presentation_snapshot_system};
 
     #[test]
     fn nested_popups_inherit_visibility_from_popup_parents() {
         let mut world = World::default();
         world.insert_resource(SurfacePresentationSnapshot::default());
+        world.insert_resource(SurfaceInputSnapshot::default());
         world.insert_resource(WaylandIngress {
             output_snapshots: OutputSnapshotState {
                 outputs: vec![OutputGeometrySnapshot {
@@ -263,5 +308,27 @@ mod tests {
         assert!(snapshot.surfaces[&11].visible);
         assert!(snapshot.surfaces[&12].visible);
         assert_eq!(snapshot.surfaces[&12].target_output, Some(OutputId(1)));
+    }
+
+    #[test]
+    fn layer_input_geometry_uses_exclusive_band_for_top_panels() {
+        let geometry = SurfaceGeometry { x: 0, y: 0, width: 1920, height: 1080 };
+        let input_geometry = layer_input_geometry(
+            &LayerShellSurface {
+                namespace: "panel".to_owned(),
+                layer: LayerLevel::Top,
+                desired_width: 0,
+                desired_height: 0,
+                exclusive_zone: 36,
+                margins: Default::default(),
+            },
+            &LayerAnchor { top: true, bottom: false, left: true, right: true },
+            &geometry,
+        );
+
+        assert_eq!(input_geometry.x, 0);
+        assert_eq!(input_geometry.y, 0);
+        assert_eq!(input_geometry.width, 1920);
+        assert_eq!(input_geometry.height, 36);
     }
 }

@@ -52,6 +52,7 @@ pub(crate) struct DispatchSeatInputParams<'w, 's> {
     pub(crate) render_plan: Option<Res<'w, nekoland_ecs::resources::RenderPlan>>,
     pub(crate) surface_presentation:
         Option<Res<'w, nekoland_ecs::resources::SurfacePresentationSnapshot>>,
+    pub(crate) surface_input: Option<Res<'w, nekoland_ecs::resources::SurfaceInputSnapshot>>,
     pub(crate) pending_protocol_input_events:
         ResMut<'w, nekoland_ecs::resources::PendingProtocolInputEvents>,
     pub(crate) output_snapshots: Option<Res<'w, nekoland_ecs::resources::OutputSnapshotState>>,
@@ -62,6 +63,7 @@ pub(crate) struct PointerFocusInputs<'a> {
     pub(crate) render_plan: Option<&'a nekoland_ecs::resources::RenderPlan>,
     pub(crate) surface_presentation:
         Option<&'a nekoland_ecs::resources::SurfacePresentationSnapshot>,
+    pub(crate) surface_input: Option<&'a nekoland_ecs::resources::SurfaceInputSnapshot>,
     pub(crate) output_snapshots: Option<&'a nekoland_ecs::resources::OutputSnapshotState>,
 }
 
@@ -84,6 +86,7 @@ pub(crate) fn dispatch_seat_input_system(
         pointer,
         render_plan,
         surface_presentation,
+        surface_input,
         mut pending_protocol_input_events,
         output_snapshots,
         ..
@@ -94,6 +97,7 @@ pub(crate) fn dispatch_seat_input_system(
     let focus_inputs = PointerFocusInputs {
         render_plan: render_plan.as_deref(),
         surface_presentation: surface_presentation.as_deref(),
+        surface_input: surface_input.as_deref(),
         output_snapshots: output_snapshots.as_deref(),
     };
 
@@ -244,6 +248,24 @@ pub(crate) fn pointer_focus_target(
                 if !state.visible || !state.input_enabled {
                     continue;
                 }
+                let input_accepted = focus_inputs
+                    .surface_input
+                    .and_then(|surface_input| surface_input.surfaces.get(&item.surface_id))
+                    .map_or(true, |geometry| {
+                        global_surface_bounds_for_geometry(*placement_x, *placement_y, geometry)
+                            .is_some_and(|bounds| bounds.contains(pointer_x, pointer_y))
+                    });
+                if !input_accepted {
+                    continue;
+                }
+                let Some(bounds) =
+                    global_surface_bounds_for_item(*placement_x, *placement_y, item.instance)
+                else {
+                    continue;
+                };
+                if !bounds.contains(pointer_x, pointer_y) {
+                    continue;
+                }
                 let surface_origin = super::Point::<f64, super::Logical>::from((
                     f64::from(*placement_x + item.instance.rect.x),
                     f64::from(*placement_y + item.instance.rect.y),
@@ -255,8 +277,7 @@ pub(crate) fn pointer_focus_target(
                         surface_origin,
                     )
                 } else {
-                    global_surface_bounds_for_item(*placement_x, *placement_y, item.instance)
-                        .is_some_and(|bounds| bounds.contains(pointer_x, pointer_y))
+                    true
                 };
                 if !accepted {
                     continue;
@@ -276,6 +297,24 @@ pub(crate) fn pointer_focus_target(
             let nekoland_ecs::resources::RenderPlanItem::Surface(item) = item else {
                 continue;
             };
+            let input_accepted = focus_inputs
+                .surface_input
+                .and_then(|surface_input| surface_input.surfaces.get(&item.surface_id))
+                .map_or(true, |geometry| {
+                    global_surface_bounds_for_geometry(*placement_x, *placement_y, geometry)
+                        .is_some_and(|bounds| bounds.contains(pointer_x, pointer_y))
+                });
+            if !input_accepted {
+                continue;
+            }
+            let Some(bounds) =
+                global_surface_bounds_for_item(*placement_x, *placement_y, item.instance)
+            else {
+                continue;
+            };
+            if !bounds.contains(pointer_x, pointer_y) {
+                continue;
+            }
             let surface_origin = super::Point::<f64, super::Logical>::from((
                 f64::from(*placement_x + item.instance.rect.x),
                 f64::from(*placement_y + item.instance.rect.y),
@@ -283,8 +322,7 @@ pub(crate) fn pointer_focus_target(
             let accepted = if let Some(server) = server {
                 server.pointer_focus_candidate_accepts(item.surface_id, location, surface_origin)
             } else {
-                global_surface_bounds_for_item(*placement_x, *placement_y, item.instance)
-                    .is_some_and(|bounds| bounds.contains(pointer_x, pointer_y))
+                true
             };
             if !accepted {
                 continue;
@@ -307,6 +345,19 @@ fn global_surface_bounds_for_item(
         y: f64::from(placement_y + rect.y),
         width: f64::from(rect.width),
         height: f64::from(rect.height),
+    })
+}
+
+fn global_surface_bounds_for_geometry(
+    placement_x: i32,
+    placement_y: i32,
+    geometry: &nekoland_ecs::components::SurfaceGeometry,
+) -> Option<GlobalSurfaceBounds> {
+    (geometry.width > 0 && geometry.height > 0).then_some(GlobalSurfaceBounds {
+        x: f64::from(placement_x + geometry.x),
+        y: f64::from(placement_y + geometry.y),
+        width: f64::from(geometry.width),
+        height: f64::from(geometry.height),
     })
 }
 
