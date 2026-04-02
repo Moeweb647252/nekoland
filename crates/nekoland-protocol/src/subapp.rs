@@ -21,16 +21,17 @@ use nekoland_core::app::{
 use nekoland_core::plugin::NekolandPlugin;
 use nekoland_core::schedules::{ExtractSchedule, PresentSchedule, ProtocolSchedule};
 use nekoland_ecs::resources::{
-    ClipboardSelectionState, CompiledOutputFrames, CompletedScreenshotFrames, CompositorClock,
-    CursorImageSnapshot, DragAndDropState, FramePacingState, GlobalPointerPosition,
-    KeyboardFocusState, OutputPresentationState, OutputSnapshotState, PendingLayerRequests,
-    PendingOutputControls, PendingOutputEvents, PendingOutputOverlayControls,
-    PendingOutputServerRequests, PendingPlatformInputEvents, PendingPopupEvents,
-    PendingPopupServerRequests, PendingProtocolInputEvents, PendingWindowControls,
-    PendingWindowEvents, PendingWindowServerRequests, PendingXdgRequests,
-    PlatformSurfaceSnapshotState, PresentAuditState, PrimaryOutputState, PrimarySelectionState,
-    ProtocolServerState, RenderPlan, SeatRegistry, ShellRenderInput, SurfaceContentVersionSnapshot,
-    SurfaceInputSnapshot, VirtualOutputCaptureState, WaylandCommands, WaylandFeedback,
+    ClipboardSelectionState, CompiledOutputFrames, CompiledShortcutMap, CompletedScreenshotFrames,
+    CompositorClock, CursorImageSnapshot, DragAndDropState, FramePacingState,
+    GlobalPointerPosition, KeyboardFocusState, OutputPresentationState, OutputSnapshotState,
+    PendingLayerRequests, PendingOutputControls, PendingOutputEvents,
+    PendingOutputOverlayControls, PendingOutputServerRequests, PendingPlatformInputEvents,
+    PendingPopupEvents, PendingPopupServerRequests, PendingProtocolInputEvents,
+    PendingWindowControls, PendingWindowEvents, PendingWindowServerRequests,
+    PendingXdgRequests, PlatformSurfaceSnapshotState, PresentAuditState, PrimaryOutputState,
+    PrimarySelectionState, ProtocolServerState, RenderPlan, SeatRegistry, ShellRenderInput,
+    SurfaceContentVersionSnapshot, SurfaceInputSnapshot, VirtualOutputCaptureState,
+    WaylandCommands, WaylandFeedback,
     WaylandIngress, XWaylandServerState,
 };
 
@@ -58,6 +59,8 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             .init_resource::<KeyboardFocusState>()
             .init_resource::<PendingPlatformInputEvents>()
             .init_resource::<PendingProtocolInputEvents>()
+            .init_resource::<CompiledShortcutMap>()
+            .init_resource::<seat::ShortcutInputFilterState>()
             .init_resource::<FramePacingState>()
             .init_resource::<OutputSnapshotState>()
             .init_resource::<PlatformSurfaceSnapshotState>()
@@ -134,6 +137,9 @@ impl NekolandPlugin for WaylandSubAppPlugin {
             .add_systems(
                 PresentSchedule,
                 (
+                    seat::filter_consumed_shortcut_input_system
+                        .in_set(ProtocolSeatDispatchSystems)
+                        .in_set(WaylandPresentSystems),
                     seat::dispatch_seat_input_system
                         .in_set(ProtocolSeatDispatchSystems)
                         .in_set(WaylandPresentSystems),
@@ -168,6 +174,7 @@ pub fn extract_wayland_subapp_inputs(main_world: &mut World, wayland_world: &mut
     clone_resource_into::<KeyboardFocusState>(main_world, wayland_world);
     clone_default_resource_into::<SeatRegistry>(main_world, wayland_world);
     clone_resource_into::<CompositorConfig>(main_world, wayland_world);
+    clone_resource_into::<CompiledShortcutMap>(main_world, wayland_world);
     clone_resource_into::<KeyboardLayoutState>(main_world, wayland_world);
     clone_resource_into::<FramePacingState>(main_world, wayland_world);
     extract_surface_content_versions_snapshot(main_world, wayland_world);

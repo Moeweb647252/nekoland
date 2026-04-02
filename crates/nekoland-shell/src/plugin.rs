@@ -72,6 +72,7 @@ impl NekolandPlugin for ShellPlugin {
             let mut registry = app.world_mut().resource_mut::<ShortcutRegistry>();
             commands::register_shortcuts(&mut registry);
             window_switcher::register_shortcuts(&mut registry);
+            layout::tiling::register_shortcuts(&mut registry);
         }
 
         register_entity_index_hooks(app.world_mut());
@@ -109,6 +110,7 @@ impl NekolandPlugin for ShellPlugin {
                         xdg::popup::popup_management_system,
                         xdg::configure::configure_sequence_system,
                         window_switcher::window_switcher_input_system,
+                        layout::tiling::tiling_shortcut_system,
                         window_control::window_control_request_system,
                         layout::tiling::tiling_control_request_system,
                     )

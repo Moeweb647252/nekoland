@@ -1,0 +1,65 @@
+default_layout = "tiling"
+
+[theme]
+name = "nord-light"
+cursor_theme = "Bibata-Modern-Ice"
+overlay_font_family = "Noto Sans"
+border_color = "#81a1c1"
+background_color = "#e5e9f0"
+
+[startup]
+actions = [{ exec = ["konsole"]}]
+
+[debug]
+fps_hud = true
+
+[input]
+focus_follows_mouse = false
+repeat_rate = 40
+
+[input.keyboard]
+current = "us"
+
+[[input.keyboard.layouts]]
+name = "us"
+layout = "us"
+
+[ipc]
+command_history_limit = 128
+
+[xwayland]
+enabled = true
+
+[[outputs]]
+name = "HDMI-A-1"
+mode = "2560x1440@144"
+scale = 1
+enabled = true
+
+[keybinds.bindings]
+"viewport.pan_mode" = "Ctrl+Shift"
+
+"system.quit" = "Super+Shift+Q"
+"window_switcher.hold" = "Alt"
+"window_switcher.cycle_next" = "Alt+Tab"
+"window_switcher.cycle_prev" = "Alt+Shift+Tab"
+
+"tiling.focus_column.left" = "Super+H"
+"tiling.focus_column.right" = "Super+L"
+"tiling.focus_window.up" = "Super+K"
+"tiling.focus_window.down" = "Super+J"
+
+"tiling.move_column.left" = "Super+Shift+H"
+"tiling.move_column.right" = "Super+Shift+L"
+"tiling.move_window.up" = "Super+Shift+K"
+"tiling.move_window.down" = "Super+Shift+J"
+
+"tiling.consume.left" = "Super+Ctrl+H"
+"tiling.consume.right" = "Super+Ctrl+L"
+"tiling.expel.left" = "Super+Ctrl+Shift+H"
+"tiling.expel.right" = "Super+Ctrl+Shift+L"
+
+"tiling.pan.left" = "Super+Alt+H"
+"tiling.pan.right" = "Super+Alt+L"
+"tiling.pan.up" = "Super+Alt+K"
+"tiling.pan.down" = "Super+Alt+J"

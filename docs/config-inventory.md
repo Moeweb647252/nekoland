@@ -163,6 +163,8 @@ This section is a map of:
 "system.quit" = "Super+Shift+Q"
 "viewport.pan_mode" = "Super+Alt"
 "window_switcher.cycle_next" = "Alt+Tab"
+"tiling.focus_column.left" = "Super+H"
+"tiling.pan.right" = "Super+Alt+L"
 ```
 
 Representation notes:
@@ -170,6 +172,7 @@ Representation notes:
 - key: stable shortcut id registered by a compositor feature
 - value: combo string override
 - compiled shortcuts hot-reload when `config.keybindings` changes
+- built-in ids currently cover `system.*`, `viewport.*`, `window_switcher.*`, and `tiling.*`
 
 ## Action Shapes
 
