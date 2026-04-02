@@ -296,7 +296,10 @@ fn drive_overlap_click_scenario(
         .filter_map(|item| match item {
             RenderPlanItem::Surface(item) if item.surface_id != 0 => Some(item.surface_id),
             RenderPlanItem::Surface(_) => None,
-            RenderPlanItem::Quad(_) | RenderPlanItem::Backdrop(_) | RenderPlanItem::Cursor(_) => {
+            RenderPlanItem::Quad(_)
+            | RenderPlanItem::Text(_)
+            | RenderPlanItem::Backdrop(_)
+            | RenderPlanItem::Cursor(_) => {
                 None
             }
         })

@@ -288,6 +288,7 @@ fn layer_shell_surface_reaches_ecs_and_render_plan() {
             .filter_map(|item| match item {
                 RenderPlanItem::Surface(item) => Some(item.surface_id),
                 RenderPlanItem::Quad(_)
+                | RenderPlanItem::Text(_)
                 | RenderPlanItem::Backdrop(_)
                 | RenderPlanItem::Cursor(_) => None,
             })
