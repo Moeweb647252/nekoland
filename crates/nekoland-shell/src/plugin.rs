@@ -15,7 +15,8 @@ use nekoland_ecs::resources::{
     PendingOutputOverlayControls, PendingOutputServerRequests, PendingPopupServerRequests,
     PendingTilingControls, PendingWindowControls, PendingWindowServerRequests,
     PendingWorkspaceControls, ShellRenderInput, ShortcutRegistry, SurfacePresentationSnapshot,
-    WaylandCommands, WaylandFeedback, WaylandIngress, WindowStackingState, WorkArea,
+    SurfaceInputSnapshot, WaylandCommands, WaylandFeedback, WaylandIngress, WindowStackingState,
+    WorkArea,
     WorkspaceTilingState,
 };
 
@@ -50,6 +51,7 @@ impl NekolandPlugin for ShellPlugin {
             .init_resource::<FpsHudRuntimeState>()
             .init_resource::<OverlayUiFrame>()
             .init_resource::<SurfacePresentationSnapshot>()
+            .init_resource::<SurfaceInputSnapshot>()
             .init_resource::<WaylandCommands>()
             .init_resource::<WaylandIngress>()
             .init_resource::<WaylandFeedback>()

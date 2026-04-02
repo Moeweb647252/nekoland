@@ -21,18 +21,17 @@ const SWITCHER_PANEL_SCREEN_MARGIN: u32 = 24;
 const SWITCHER_PANEL_PADDING: u32 = 18;
 const SWITCHER_HEADER_HEIGHT: u32 = 28;
 const SWITCHER_HEADER_GRID_GAP: u32 = 16;
-const SWITCHER_CARD_WIDTH: u32 = 220;
+const SWITCHER_CARD_WIDTH: u32 = 248;
 const SWITCHER_CARD_HEIGHT: u32 = 176;
 const SWITCHER_CARD_GAP_X: u32 = 12;
 const SWITCHER_CARD_GAP_Y: u32 = 16;
 const SWITCHER_CARD_PADDING: u32 = 12;
-const SWITCHER_CARD_TITLE_HEIGHT: u32 = 34;
-const SWITCHER_CARD_TITLE_LINE_HEIGHT: i32 = 16;
-const SWITCHER_CARD_TITLE_FONT_SIZE: f32 = 13.0;
-const SWITCHER_CARD_TITLE_GAP: u32 = 8;
-const SWITCHER_CARD_TITLE_MAX_UNITS: usize = 30;
-const SWITCHER_THUMBNAIL_FRAME_WIDTH: u32 = 196;
-const SWITCHER_THUMBNAIL_FRAME_HEIGHT: u32 = 110;
+const SWITCHER_CARD_TITLE_HEIGHT: u32 = 24;
+const SWITCHER_CARD_TITLE_FONT_SIZE: f32 = 16.0;
+const SWITCHER_CARD_TITLE_GAP: u32 = 10;
+const SWITCHER_CARD_TITLE_MAX_UNITS: usize = 34;
+const SWITCHER_THUMBNAIL_FRAME_WIDTH: u32 = 224;
+const SWITCHER_THUMBNAIL_FRAME_HEIGHT: u32 = 118;
 
 /// Stable shortcut id for keeping the window switcher session open.
 pub const WINDOW_SWITCHER_HOLD_SHORTCUT_ID: &str = "window_switcher.hold";
@@ -333,24 +332,18 @@ pub fn window_switcher_overlay_system(
             width: item_rect.width.saturating_sub(SWITCHER_CARD_PADDING * 2),
             height: SWITCHER_CARD_TITLE_HEIGHT,
         };
-        for (line_index, line) in
-            wrap_switcher_title(&candidate_title(candidate), SWITCHER_CARD_TITLE_MAX_UNITS)
-                .into_iter()
-                .enumerate()
-        {
-            output_overlay.text(
-                format!("window_switcher.title.{}.{}", candidate.surface_id.0, line_index),
-                OverlayUiLayer::Foreground,
-                title_rect.x,
-                title_rect.y + line_index as i32 * SWITCHER_CARD_TITLE_LINE_HEIGHT,
-                Some(title_rect),
-                line,
-                SWITCHER_CARD_TITLE_FONT_SIZE,
-                RenderColor { r: 247, g: 250, b: 255, a: 255 },
-                1.0,
-                25,
-            );
-        }
+        output_overlay.text(
+            format!("window_switcher.title.{}", candidate.surface_id.0),
+            OverlayUiLayer::Foreground,
+            title_rect.x,
+            title_rect.y,
+            Some(title_rect),
+            truncate_switcher_title(&candidate_title(candidate), SWITCHER_CARD_TITLE_MAX_UNITS),
+            SWITCHER_CARD_TITLE_FONT_SIZE,
+            RenderColor { r: 247, g: 250, b: 255, a: 255 },
+            1.0,
+            25,
+        );
 
         let thumbnail_frame = RenderRect {
             x: item_rect.x + SWITCHER_CARD_PADDING as i32,
@@ -646,37 +639,17 @@ fn grid_axis_capacity(available: u32, item_extent: u32, gap: u32) -> usize {
     ((available.saturating_add(gap)) / item_extent.saturating_add(gap)) as usize
 }
 
-fn wrap_switcher_title(title: &str, max_units_per_line: usize) -> Vec<String> {
+fn truncate_switcher_title(title: &str, max_units_per_line: usize) -> String {
     let title = title.trim();
     if title.is_empty() {
-        return Vec::new();
+        return String::new();
     }
 
-    let mut lines = Vec::new();
-    let mut remaining = title;
-    while !remaining.is_empty() && lines.len() < 2 {
-        let (line, rest) = take_title_line(remaining, max_units_per_line);
-        if line.is_empty() {
-            break;
-        }
-        lines.push(line);
-        remaining = rest.trim_start();
-    }
-
-    if !remaining.is_empty() && !lines.is_empty() {
-        let last_index = lines.len() - 1;
-        lines[last_index] = append_ellipsis(&lines[last_index], max_units_per_line);
-    }
-
-    lines
-}
-
-fn take_title_line(text: &str, max_units_per_line: usize) -> (String, &str) {
     let mut units = 0;
     let mut last_break = None;
     let mut end = 0;
 
-    for (index, ch) in text.char_indices() {
+    for (index, ch) in title.char_indices() {
         let next_units = units + switcher_title_char_units(ch);
         if next_units > max_units_per_line {
             break;
@@ -689,39 +662,15 @@ fn take_title_line(text: &str, max_units_per_line: usize) -> (String, &str) {
     }
 
     if end == 0 {
-        let mut chars = text.chars();
-        let Some(ch) = chars.next() else {
-            return (String::new(), "");
-        };
-        let end = ch.len_utf8();
-        return (text[..end].to_owned(), &text[end..]);
+        return "...".to_owned();
     }
 
-    let split_at = last_break.filter(|break_index| *break_index < end).unwrap_or(end);
-    let line = text[..split_at].trim().to_owned();
-    let rest = &text[split_at..];
-    (line, rest)
-}
-
-fn append_ellipsis(line: &str, max_units_per_line: usize) -> String {
-    const ELLIPSIS: &str = "...";
-    let ellipsis_units = ELLIPSIS.chars().map(switcher_title_char_units).sum::<usize>();
-    let mut trimmed = String::new();
-    let mut units = 0;
-
-    for ch in line.chars() {
-        let next_units = units + switcher_title_char_units(ch);
-        if next_units + ellipsis_units > max_units_per_line {
-            break;
-        }
-        units = next_units;
-        trimmed.push(ch);
-    }
-
-    if trimmed.is_empty() {
-        ELLIPSIS.to_owned()
+    if end == title.len() {
+        title.to_owned()
     } else {
-        format!("{}{}", trimmed.trim_end(), ELLIPSIS)
+        let split_at = last_break.filter(|break_index| *break_index < end).unwrap_or(end);
+        let visible = title[..split_at].trim_end();
+        if visible.is_empty() { "...".to_owned() } else { format!("{visible}...") }
     }
 }
 
@@ -752,8 +701,8 @@ mod tests {
     use nekoland_ecs::selectors::{OutputSelector, SurfaceId};
 
     use super::{
-        WindowSwitcherState, switcher_grid_layout, visible_candidate_page,
-        window_switcher_input_system, window_switcher_overlay_system, wrap_switcher_title,
+        WindowSwitcherState, switcher_grid_layout, truncate_switcher_title, visible_candidate_page,
+        window_switcher_input_system, window_switcher_overlay_system,
     };
 
     fn build_switcher_test_app() -> (NekolandApp, OutputId) {
@@ -1007,7 +956,7 @@ mod tests {
             .iter()
             .find_map(|primitive| match primitive {
                 OverlayUiPrimitive::Text(text)
-                    if text.id.as_str().starts_with("window_switcher.title.11.") =>
+                    if text.id.as_str() == "window_switcher.title.11" =>
                 {
                     Some(text.y)
                 }
@@ -1040,23 +989,21 @@ mod tests {
 
         app.inner_mut().world_mut().run_schedule(LayoutSchedule);
 
-        let title_lines = overlay_output(&app, output_id)
+        let title = overlay_output(&app, output_id)
             .primitives
             .iter()
-            .filter_map(|primitive| match primitive {
+            .find_map(|primitive| match primitive {
                 OverlayUiPrimitive::Text(text)
-                    if text.id.as_str().starts_with("window_switcher.title.11.") =>
+                    if text.id.as_str() == "window_switcher.title.11" =>
                 {
                     Some(text.text.clone())
                 }
                 _ => None,
             })
-            .collect::<Vec<_>>();
+            .expect("title primitive should exist for the selected candidate");
 
-        assert_eq!(title_lines.len(), 2);
-        let joined = title_lines.join(" ");
-        assert!(joined.contains("README"), "title lines should keep later title words");
-        assert!(joined.contains("Terminal"), "title lines should keep the true window title");
+        assert!(title.contains("Terminal"), "title should keep the true window title");
+        assert!(title.ends_with("..."), "long titles should truncate cleanly");
     }
 
     #[test]
@@ -1122,11 +1069,11 @@ mod tests {
     }
 
     #[test]
-    fn wrap_switcher_title_uses_two_lines_before_truncating() {
-        let lines = wrap_switcher_title("Window 1 Terminal Project README.md", 18);
+    fn truncate_switcher_title_adds_single_line_ellipsis() {
+        let title = truncate_switcher_title("Window 1 Terminal Project README.md", 18);
 
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("Window"));
-        assert!(lines[1].contains("Project") || lines[1].contains("README"));
+        assert!(title.contains("Window"));
+        assert!(title.ends_with("..."));
+        assert!(!title.contains('\n'));
     }
 }

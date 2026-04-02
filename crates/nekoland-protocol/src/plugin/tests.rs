@@ -383,6 +383,7 @@ fn pointer_hit_test_prefers_layer_surfaces_above_windows() {
     let focus_inputs = PointerFocusInputs {
         render_plan: Some(&render_plan),
         surface_presentation: None,
+        surface_input: None,
         output_snapshots: Some(&OutputSnapshotState {
             outputs: vec![OutputGeometrySnapshot {
                 output_id: OutputId(1),
@@ -453,6 +454,7 @@ fn pointer_hit_test_offsets_output_local_window_geometry_by_output_placement() {
     let focus_inputs = PointerFocusInputs {
         render_plan: Some(&render_plan),
         surface_presentation: None,
+        surface_input: None,
         output_snapshots: Some(&OutputSnapshotState {
             outputs: vec![
                 OutputGeometrySnapshot {
@@ -535,6 +537,7 @@ fn pointer_hit_test_respects_render_item_clip_rect() {
     let focus_inputs = PointerFocusInputs {
         render_plan: Some(&render_plan),
         surface_presentation: None,
+        surface_input: None,
         output_snapshots: Some(&OutputSnapshotState {
             outputs: vec![OutputGeometrySnapshot {
                 output_id,
@@ -559,6 +562,174 @@ fn pointer_hit_test_respects_render_item_clip_rect() {
     };
     assert_eq!(target.surface_id, 77);
     assert_eq!(target.surface_origin, (0.0, 0.0).into());
+}
+
+#[test]
+fn pointer_hit_test_with_surface_presentation_respects_render_item_clip_rect() {
+    let mut world = World::default();
+    let output_entity = world
+        .spawn(OutputBundle {
+            output: OutputDevice { name: "Virtual-1".to_owned(), ..Default::default() },
+            properties: OutputProperties {
+                width: 128,
+                height: 128,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+            placement: OutputPlacement { x: 0, y: 0 },
+            ..Default::default()
+        })
+        .id();
+    let output_id = *world.get::<OutputId>(output_entity).expect("virtual output id");
+    world.spawn((
+        WlSurfaceHandle { id: 88 },
+        SurfaceGeometry { x: 0, y: 0, width: 80, height: 80 },
+        XdgWindow::default(),
+    ));
+
+    let render_plan = RenderPlan {
+        outputs: std::collections::BTreeMap::from([(
+            output_id,
+            OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
+                identity: identity(88),
+                surface_id: 88,
+                mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
+                instance: RenderItemInstance {
+                    rect: RenderRect { x: 0, y: 0, width: 80, height: 80 },
+                    opacity: 1.0,
+                    clip_rect: Some(RenderRect { x: 40, y: 0, width: 40, height: 80 }),
+                    z_index: 0,
+                    scene_role: RenderSceneRole::Desktop,
+                },
+            })]),
+        )]),
+    };
+    let focus_inputs = PointerFocusInputs {
+        render_plan: Some(&render_plan),
+        surface_presentation: Some(&nekoland_ecs::resources::SurfacePresentationSnapshot {
+            surfaces: std::collections::BTreeMap::from([(
+                88,
+                nekoland_ecs::resources::SurfacePresentationState {
+                    visible: true,
+                    target_output: Some(output_id),
+                    geometry: SurfaceGeometry { x: 0, y: 0, width: 80, height: 80 },
+                    input_enabled: true,
+                    damage_enabled: true,
+                    role: nekoland_ecs::resources::SurfacePresentationRole::Window,
+                },
+            )]),
+        }),
+        surface_input: None,
+        output_snapshots: Some(&OutputSnapshotState {
+            outputs: vec![OutputGeometrySnapshot {
+                output_id,
+                name: "Virtual-1".to_owned(),
+                x: 0,
+                y: 0,
+                width: 128,
+                height: 128,
+                scale: 1,
+                refresh_millihz: 60_000,
+            }],
+        }),
+    };
+
+    assert!(
+        pointer_focus_target(10.0, 10.0, None, (10.0, 10.0).into(), &focus_inputs).is_none(),
+        "clipped-out region should not receive pointer focus when surface presentation is present",
+    );
+    let Some(target) = pointer_focus_target(60.0, 10.0, None, (60.0, 10.0).into(), &focus_inputs)
+    else {
+        panic!("visible clipped region should still receive pointer focus");
+    };
+    assert_eq!(target.surface_id, 88);
+    assert_eq!(target.surface_origin, (0.0, 0.0).into());
+}
+
+#[test]
+fn pointer_hit_test_respects_surface_input_snapshot_geometry() {
+    let mut world = World::default();
+    let output_entity = world
+        .spawn(OutputBundle {
+            output: OutputDevice { name: "Virtual-1".to_owned(), ..Default::default() },
+            properties: OutputProperties {
+                width: 1280,
+                height: 720,
+                refresh_millihz: 60_000,
+                scale: 1,
+            },
+            placement: OutputPlacement { x: 0, y: 0 },
+            ..Default::default()
+        })
+        .id();
+    let output_id = *world.get::<OutputId>(output_entity).expect("virtual output id");
+    world.spawn((
+        WlSurfaceHandle { id: 99 },
+        SurfaceGeometry { x: 0, y: 0, width: 1280, height: 720 },
+        XdgWindow::default(),
+    ));
+
+    let render_plan = RenderPlan {
+        outputs: std::collections::BTreeMap::from([(
+            output_id,
+            OutputRenderPlan::from_items([RenderPlanItem::Surface(SurfaceRenderItem {
+                identity: identity(99),
+                surface_id: 99,
+                mode: nekoland_ecs::resources::SurfaceRenderMode::Direct,
+                instance: RenderItemInstance {
+                    rect: RenderRect { x: 0, y: 0, width: 1280, height: 720 },
+                    opacity: 1.0,
+                    clip_rect: None,
+                    z_index: 0,
+                    scene_role: RenderSceneRole::Desktop,
+                },
+            })]),
+        )]),
+    };
+    let focus_inputs = PointerFocusInputs {
+        render_plan: Some(&render_plan),
+        surface_presentation: Some(&nekoland_ecs::resources::SurfacePresentationSnapshot {
+            surfaces: std::collections::BTreeMap::from([(
+                99,
+                nekoland_ecs::resources::SurfacePresentationState {
+                    visible: true,
+                    target_output: Some(output_id),
+                    geometry: SurfaceGeometry { x: 0, y: 0, width: 1280, height: 720 },
+                    input_enabled: true,
+                    damage_enabled: true,
+                    role: nekoland_ecs::resources::SurfacePresentationRole::Layer,
+                },
+            )]),
+        }),
+        surface_input: Some(&nekoland_ecs::resources::SurfaceInputSnapshot {
+            surfaces: std::collections::BTreeMap::from([(
+                99,
+                SurfaceGeometry { x: 0, y: 0, width: 1280, height: 32 },
+            )]),
+        }),
+        output_snapshots: Some(&OutputSnapshotState {
+            outputs: vec![OutputGeometrySnapshot {
+                output_id,
+                name: "Virtual-1".to_owned(),
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 720,
+                scale: 1,
+                refresh_millihz: 60_000,
+            }],
+        }),
+    };
+
+    let Some(target) = pointer_focus_target(10.0, 10.0, None, (10.0, 10.0).into(), &focus_inputs)
+    else {
+        panic!("surface input snapshot should allow hits inside the clipped band");
+    };
+    assert_eq!(target.surface_id, 99);
+    assert!(
+        pointer_focus_target(10.0, 100.0, None, (10.0, 100.0).into(), &focus_inputs).is_none(),
+        "surface input snapshot should reject hits outside the interactive band",
+    );
 }
 
 #[test]
